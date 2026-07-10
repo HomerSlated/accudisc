@@ -11,8 +11,16 @@ of Mixed Mode discs. No ISO9660/CD-ROM data processing, no DVD/BD.
   pointers, CD-Text, ISRC, MCN, pregaps/indices, lead-in/lead-out where the
   drive allows. Eventually SA-CD and CD+G (R–W subchannel graphics).
 - **Write** Red Book CD-R/RW (DAO).
-- **No post-processing** — encoded audio/metadata is handed to external tools
-  (e.g. MusicBrainz lookup). AccuDisc's job ends at accurate bits on/off disc.
+- **No post-processing, no lookups** — no CDDB/MusicBrainz, no analysis;
+  AccuDisc only moves bits. Reads (whole disc / track / TOC / subchannel /
+  targeted sectors, strategy chosen by the caller, some strategies gated on
+  probed hardware support) are handed back to the calling application; writes
+  accept TOC + BIN (+ optional SUB) from it.
+- **Frame-accurate status surface** (core design constraint): per-sector
+  read/write status trackable by the caller with minimal overhead — richer
+  than a FIFO/pipe — to drive progress bars and EAC-style color-coded disc
+  maps. Design target: shared-memory status map with atomic per-sector
+  updates.
 - Hardware access via MMC over SG_IO/ioctl plus **proprietary vendor opcodes**
   (drive/firmware reverse engineering is in scope; data from Redumper, EAC,
   dbPoweramp, etc. informs the drive database).

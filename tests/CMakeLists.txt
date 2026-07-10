@@ -1,3 +1,8 @@
-add_executable(test_version test_version.c)
-target_link_libraries(test_version PRIVATE accudisc_static)
-add_test(NAME version COMMAND test_version)
+# Tests link the static lib and may include internal headers from src/ —
+# they exercise internals the public ABI deliberately hides.
+foreach(t test_version test_cdb test_sense)
+    add_executable(${t} ${t}.c)
+    target_link_libraries(${t} PRIVATE accudisc_static)
+    target_include_directories(${t} PRIVATE ${PROJECT_SOURCE_DIR}/src)
+    add_test(NAME ${t} COMMAND ${t})
+endforeach()

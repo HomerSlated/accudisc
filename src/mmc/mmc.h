@@ -1,0 +1,53 @@
+/* MMC command execution over the transport: CDB builders from cdb.h wired to
+ * adsc_dev_exec(). Ports of the command patterns proven in c2read.c. */
+
+#ifndef ADSC_MMC_H
+#define ADSC_MMC_H
+
+#include <stdint.h>
+
+#include "../internal.h"
+#include "cdb.h"
+
+int adsc_mmc_inquiry(struct accudisc_device *dev, accudisc_drive_id *out);
+
+/* READ TOC/PMA/ATIP with two-step allocation (4-byte header for the data
+ * length, then the full response). *out is malloc'd (caller frees), *out_len
+ * is the full response including the 2-byte length field. Returns
+ * ACCUDISC_ERR_SHORT for an empty response (e.g. no CD-Text on disc). */
+int adsc_mmc_read_toc_raw(struct accudisc_device *dev, unsigned format,
+                          unsigned time_bit, unsigned track,
+                          uint8_t **out, uint32_t *out_len);
+
+/* One READ CD for nsec sectors into buf (nsec * sector_len bytes, where
+ * sector_len must equal adsc_read_cd_sector_len(c2, sub)). Per-sector field
+ * order is AUDIO, C2, SUB (probed on PX-716A; matches redumper
+ * SectorOrder::DATA_C2_SUB — reprobe per drive before trusting). */
+int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
+                     unsigned sector_type, unsigned c2, unsigned sub,
+                     void *buf, uint32_t sector_len);
+
+/* MODE SENSE(10) for one page, two-step allocation. On success *len is the
+ * total bytes read (mode header + block descriptors + page) and *page_off
+ * the offset of the page itself (8 + block-descriptor length). buf must
+ * hold cap bytes; cap >= 16 required. */
+int adsc_mmc_mode_sense10(struct accudisc_device *dev, unsigned page,
+                          uint8_t *buf, uint32_t cap,
+                          uint32_t *len, uint32_t *page_off);
+
+/* MODE SELECT(10) sending back a (modified) MODE SENSE(10) response; zeroes
+ * the mode data length and clears the page's PS bit per SPC before sending.
+ * Requires an ACCUDISC_OPEN_RDWR device. */
+int adsc_mmc_mode_select10(struct accudisc_device *dev, uint8_t *buf,
+                           uint32_t len, uint32_t page_off);
+
+/* GET CONFIGURATION for a single feature (RT=10b). *out receives the raw
+ * response (8-byte header + first descriptor), cap bytes available. */
+int adsc_mmc_get_configuration(struct accudisc_device *dev, uint16_t feature,
+                               uint8_t *out, uint32_t cap);
+
+/* START STOP UNIT; start=0, loej=0 spins the spindle down without ejecting. */
+int adsc_mmc_start_stop(struct accudisc_device *dev, unsigned start,
+                        unsigned loej);
+
+#endif /* ADSC_MMC_H */

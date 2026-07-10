@@ -3,8 +3,11 @@
 
 set(ACCUDISC_SOURCES
     accudisc.c
-    # transport/
-    # mmc/
+    device.c
+    transport/sgio.c
+    transport/sense.c
+    mmc/cdb.c
+    mmc/mmc.c
     # drive/
     # cdda/
     # toc/
