@@ -21,6 +21,16 @@ of Mixed Mode discs. No ISO9660/CD-ROM data processing, no DVD/BD.
   than a FIFO/pipe — to drive progress bars and EAC-style color-coded disc
   maps. Design target: shared-memory status map with atomic per-sector
   updates.
+- **Vendor isolation** (core design constraint): libaccudisc is pure MMC/SG.
+  Proprietary/hardware-specific features live ONLY in external driver .so
+  files (`drivers/`, ABI in `include/accudisc/driver.h`). Gate order:
+  identify drive → locate driver → app permission (the attach call) →
+  selftest proving the opcode path works (read/set/re-read device state,
+  once per command invocation) → use; any failure falls back to generic
+  MMC/SG. Missing driver files are never fatal (warn only when explicitly
+  requested). The access method is queryable (`accudisc_access_method`) so
+  callers can log e.g. "using generic MMC". Factual data tables (read
+  offsets) are not features and may live in the core.
 - Hardware access via MMC over SG_IO/ioctl plus **proprietary vendor opcodes**
   (drive/firmware reverse engineering is in scope; data from Redumper, EAC,
   dbPoweramp, etc. informs the drive database).

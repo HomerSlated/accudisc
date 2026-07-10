@@ -1,10 +1,61 @@
 /* Public device lifecycle and error surface. */
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "internal.h"
 #include "mmc/mmc.h"
+
+void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...)
+{
+    char msg[256];
+    va_list ap;
+
+    if (!dev->log_fn)
+        return;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    dev->log_fn(dev->log_user, msg);
+}
+
+void accudisc_set_log(accudisc_device *dev,
+                      void (*fn)(void *user, const char *msg), void *user)
+{
+    if (!dev)
+        return;
+    dev->log_fn = fn;
+    dev->log_user = user;
+}
+
+/* ---- accudisc_host bridge (see accudisc/driver.h) ------------------------ */
+
+static int host_exec(void *devp, const uint8_t *cdb, uint8_t cdb_len,
+                     accudisc_host_dir dir, void *buf, uint32_t buf_len,
+                     uint32_t timeout_ms)
+{
+    struct accudisc_device *dev = devp;
+    adsc_cmd cmd = {0};
+
+    if (!dev || !cdb || cdb_len > ADSC_CDB_MAX)
+        return ACCUDISC_ERR_INVAL;
+    memcpy(cmd.cdb, cdb, cdb_len);
+    cmd.cdb_len = cdb_len;
+    cmd.dir = dir == ACCUDISC_HOST_IN    ? ADSC_XFER_IN
+              : dir == ACCUDISC_HOST_OUT ? ADSC_XFER_OUT
+                                         : ADSC_XFER_NONE;
+    cmd.buf = buf;
+    cmd.buf_len = buf_len;
+    cmd.timeout_ms = timeout_ms;
+    return adsc_dev_exec(dev, &cmd);
+}
+
+static void host_log(void *devp, const char *msg)
+{
+    adsc_dev_log(devp, "%s", msg);
+}
 
 const char *accudisc_strerror(int err)
 {
@@ -38,6 +89,9 @@ accudisc_device *accudisc_open(const char *path, unsigned flags, int *err)
     e = adsc_transport_open(&dev->t, path, (flags & ACCUDISC_OPEN_RDWR) != 0);
     if (e != ACCUDISC_OK)
         goto fail;
+    dev->host.dev = dev;
+    dev->host.exec = host_exec;
+    dev->host.log = host_log;
     if (err)
         *err = ACCUDISC_OK;
     return dev;
@@ -53,6 +107,7 @@ void accudisc_close(accudisc_device *dev)
 {
     if (!dev)
         return;
+    accudisc_driver_detach(dev);
     adsc_transport_close(&dev->t);
     free(dev);
 }
@@ -79,11 +134,28 @@ int adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
     return rc;
 }
 
+int adsc_dev_identify(struct accudisc_device *dev)
+{
+    int rc;
+
+    if (dev->id_valid)
+        return ACCUDISC_OK;
+    rc = adsc_mmc_inquiry(dev, &dev->id);
+    if (rc == ACCUDISC_OK)
+        dev->id_valid = 1;
+    return rc;
+}
+
 int accudisc_drive_identify(accudisc_device *dev, accudisc_drive_id *out)
 {
+    int rc;
+
     if (!dev || !out)
         return ACCUDISC_ERR_INVAL;
-    return adsc_mmc_inquiry(dev, out);
+    rc = adsc_dev_identify(dev);
+    if (rc == ACCUDISC_OK)
+        *out = dev->id;
+    return rc;
 }
 
 void accudisc_free(void *p)

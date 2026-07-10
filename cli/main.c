@@ -22,7 +22,14 @@ static void usage(FILE *to)
         "  speed-report   print max/current read speed (mode page 2A)\n"
         "  stop           spin the spindle down (no eject)\n"
         "  read           read CD-DA sectors (see read options)\n"
+        "  cxscan         hardware C1/C2/CU error census (needs --driver)\n"
         "  version        print the library version\n"
+        "\n"
+        "driver options (vendor features are OFF unless requested):\n"
+        "  --driver auto|NAME  permit loading a vendor driver: auto-match\n"
+        "                      the drive, or request NAME (warn if missing)\n"
+        "  --drivers-dir DIR   driver location (default: $ACCUDISC_DRIVER_DIR\n"
+        "                      or the installed directory)\n"
         "\n"
         "read options:\n"
         "  --start LBA    first sector (default 0)\n"
@@ -57,13 +64,91 @@ static int fail_dev(accudisc_device *dev, const char *what, int err)
 static int cmd_info(accudisc_device *dev)
 {
     accudisc_drive_id id;
+    int32_t offset;
     int err = accudisc_drive_identify(dev, &id);
 
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "identify", err);
     printf("vendor %s\nproduct %s\nrevision %s\n", id.vendor, id.product,
            id.revision);
+    if (accudisc_read_offset(dev, &offset) == ACCUDISC_OK)
+        printf("read_offset %+d samples\n", offset);
+    else
+        printf("read_offset unknown\n");
+    printf("access %s\n", accudisc_access_method(dev));
     return 0;
+}
+
+/* Plextor Q-Check style census: drive reads while the vendor counters are
+ * armed; we sample them every 75 sectors (one second of audio). */
+static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
+{
+    long start = 0;
+    unsigned speed = 0;
+
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--start") && i + 1 < argc)
+            start = strtol(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--speed") && i + 1 < argc)
+            speed = (unsigned)strtol(argv[++i], NULL, 0);
+        else {
+            usage(stderr);
+            return 2;
+        }
+    }
+
+    int err = accudisc_counter_scan_begin(dev);
+    if (err == ACCUDISC_ERR_UNSUPPORTED) {
+        fprintf(stderr, "accudisc: counter scan unsupported via %s — a "
+                        "vendor driver is required (--driver auto)\n",
+                accudisc_access_method(dev));
+        return 1;
+    }
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "counter scan begin", err);
+
+    accudisc_toc toc;
+    err = accudisc_read_toc(dev, &toc);
+    if (err != ACCUDISC_OK) {
+        accudisc_counter_scan_end(dev);
+        return fail_dev(dev, "read toc", err);
+    }
+    if (speed)
+        accudisc_set_speed(dev, speed);
+
+    uint64_t tc1 = 0, tc2 = 0, tcu = 0;
+    uint32_t peak_c1 = 0, peak_c2 = 0, peak_cu = 0;
+    int ret = 0;
+
+    for (long lba = start; lba < (long)toc.leadout_lba; lba += 75) {
+        accudisc_read_req req = {0};
+        accudisc_counters c;
+
+        req.lba = (uint32_t)lba;
+        req.count = (uint32_t)(toc.leadout_lba - lba < 75
+                                   ? toc.leadout_lba - lba : 75);
+        req.retries = 1;
+        err = accudisc_read_cdda(dev, &req, NULL, NULL, NULL);
+        if (err != ACCUDISC_OK)
+            fprintf(stderr, "accudisc: read at %ld: %s (continuing)\n", lba,
+                    accudisc_strerror(err));
+        err = accudisc_counter_scan_read(dev, &c);
+        if (err != ACCUDISC_OK) {
+            ret = fail_dev(dev, "counter read", err);
+            break;
+        }
+        printf("cx %ld %u %u %u\n", lba, c.c1, c.c2, c.cu);
+        tc1 += c.c1; tc2 += c.c2; tcu += c.cu;
+        if (c.c1 > peak_c1) peak_c1 = c.c1;
+        if (c.c2 > peak_c2) peak_c2 = c.c2;
+        if (c.cu > peak_cu) peak_cu = c.cu;
+    }
+    accudisc_counter_scan_end(dev);
+    fprintf(stderr, "cx summary: C1 %llu (peak %u/s)  C2 %llu (peak %u/s)  "
+                    "CU %llu (peak %u/s)\n",
+            (unsigned long long)tc1, peak_c1, (unsigned long long)tc2,
+            peak_c2, (unsigned long long)tcu, peak_cu);
+    return ret;
 }
 
 static int cmd_toc(accudisc_device *dev)
@@ -482,9 +567,17 @@ out:
 
 /* ---- entry -------------------------------------------------------------- */
 
+static void log_to_stderr(void *user, const char *msg)
+{
+    (void)user;
+    fprintf(stderr, "accudisc: %s\n", msg);
+}
+
 int main(int argc, char **argv)
 {
     const char *device = "/dev/sr0";
+    const char *driver = NULL;    /* --driver: NULL = vendor features off */
+    const char *drivers_dir = NULL;
     int i = 1;
 
     for (; i < argc; i++) {
@@ -492,6 +585,10 @@ int main(int argc, char **argv)
 
         if (!strcmp(a, "--device") && i + 1 < argc)
             device = argv[++i];
+        else if (!strcmp(a, "--driver") && i + 1 < argc)
+            driver = argv[++i];
+        else if (!strcmp(a, "--drivers-dir") && i + 1 < argc)
+            drivers_dir = argv[++i];
         else if (!strcmp(a, "--version") || !strcmp(a, "-V")) {
             printf("accudisc %s\n", accudisc_version_string());
             return 0;
@@ -512,12 +609,24 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* Vendor opcodes are blocked by the kernel's SG_IO filter on read-only
+     * fds, so a permitted driver implies a read-write open. */
     int err = 0;
-    accudisc_device *dev = accudisc_open(device, 0, &err);
+    accudisc_device *dev =
+        accudisc_open(device, driver ? ACCUDISC_OPEN_RDWR : 0, &err);
     if (!dev) {
         fprintf(stderr, "accudisc: open %s: %s\n", device,
                 accudisc_strerror(err));
         return 1;
+    }
+    accudisc_set_log(dev, log_to_stderr, NULL);
+
+    if (driver) {
+        const char *name = strcmp(driver, "auto") == 0 ? NULL : driver;
+        accudisc_driver_attach(dev, name, drivers_dir);
+        /* Failure detail arrives via the log sink; the device stays usable
+         * on generic MMC either way. */
+        fprintf(stderr, "accudisc: using %s\n", accudisc_access_method(dev));
     }
 
     int rc;
@@ -545,6 +654,8 @@ int main(int argc, char **argv)
             rc = fail_dev(dev, "stop", rc);
     } else if (!strcmp(command, "read"))
         rc = cmd_read(dev, argc - i, argv + i);
+    else if (!strcmp(command, "cxscan"))
+        rc = cmd_cxscan(dev, argc - i, argv + i);
     else {
         fprintf(stderr, "accudisc: unknown command '%s'\n", command);
         usage(stderr);

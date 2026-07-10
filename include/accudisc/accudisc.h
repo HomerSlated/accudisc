@@ -106,6 +106,57 @@ typedef struct accudisc_drive_id {
 ACCUDISC_API int accudisc_drive_identify(accudisc_device *dev,
                                          accudisc_drive_id *out);
 
+/* Manufacturing read offset in samples for the identified drive (positive:
+ * the drive reads early), from the built-in offset table.
+ * ACCUDISC_ERR_NOTFOUND when the model is unknown. */
+ACCUDISC_API int accudisc_read_offset(accudisc_device *dev, int32_t *samples);
+
+/* Optional log sink for library/driver diagnostics (default: discarded). */
+ACCUDISC_API void accudisc_set_log(accudisc_device *dev,
+                                   void (*fn)(void *user, const char *msg),
+                                   void *user);
+
+/* ---- vendor drivers ---------------------------------------------------------
+ * All proprietary/hardware-specific features live in external driver .so
+ * files (see accudisc/driver.h); the core library is pure MMC/SG. Calling
+ * accudisc_driver_attach IS the application's permission grant — without it
+ * a device never issues a vendor opcode. Order: identify -> locate driver
+ * (explicit name, or match by drive ID) -> load -> selftest (read/set/
+ * re-read real device state) -> attach; any failure leaves the device on
+ * generic MMC/SG, fully usable.
+ *
+ * name: driver to request ("plextor"), or NULL to auto-match the drive.
+ * dir:  driver directory, or NULL for $ACCUDISC_DRIVER_DIR, falling back to
+ *       the installed default.
+ * Returns ACCUDISC_OK (attached), ACCUDISC_ERR_NOTFOUND (no driver file /
+ * no match — warn-only situation, device stays usable), or
+ * ACCUDISC_ERR_UNSUPPORTED (driver found but selftest failed; not attached).
+ * Vendor opcodes need the kernel's full SG_IO command set: open the device
+ * with ACCUDISC_OPEN_RDWR or selftest will fail. */
+ACCUDISC_API int accudisc_driver_attach(accudisc_device *dev,
+                                        const char *name, const char *dir);
+ACCUDISC_API void accudisc_driver_detach(accudisc_device *dev);
+
+/* Human-readable access method for logging by the calling application:
+ * "generic MMC" or "driver <name> (<description>)". Never NULL. */
+ACCUDISC_API const char *accudisc_access_method(accudisc_device *dev);
+
+/* ---- hardware error counters (driver capability) ---------------------------
+ * C1/C2/CU error census counters as exposed by vendor firmware (e.g.
+ * Plextor Q-Check). ACCUDISC_ERR_UNSUPPORTED without an attached driver
+ * offering the capability. read returns the counts accumulated since the
+ * previous read and resets the interval. */
+typedef struct accudisc_counters {
+    uint32_t c1; /* correctable at C1 stage */
+    uint32_t c2; /* correctable at C2 stage */
+    uint32_t cu; /* uncorrectable */
+} accudisc_counters;
+
+ACCUDISC_API int accudisc_counter_scan_begin(accudisc_device *dev);
+ACCUDISC_API int accudisc_counter_scan_read(accudisc_device *dev,
+                                            accudisc_counters *out);
+ACCUDISC_API int accudisc_counter_scan_end(accudisc_device *dev);
+
 /* Best-effort drive read-speed control, in Nx CD speed (176 kB/s units);
  * uses the unprivileged CDROM_SELECT_SPEED path. */
 ACCUDISC_API int accudisc_set_speed(accudisc_device *dev, unsigned speed_x);

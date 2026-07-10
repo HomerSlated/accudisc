@@ -18,6 +18,7 @@ add_compile_options(-Wall -Wextra)
 include(GNUInstallDirs)
 
 add_subdirectory(src)
+add_subdirectory(drivers)
 
 if(ACCUDISC_BUILD_CLI)
     add_subdirectory(cli)

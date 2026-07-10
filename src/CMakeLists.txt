@@ -9,6 +9,8 @@ set(ACCUDISC_SOURCES
     mmc/cdb.c
     mmc/mmc.c
     drive/features.c
+    drive/driver.c
+    drive/offsets.c
     toc/toc.c
     toc/fulltoc.c
     read/engine.c
@@ -30,6 +32,9 @@ foreach(tgt accudisc accudisc_static)
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}
     )
+    target_link_libraries(${tgt} PRIVATE ${CMAKE_DL_LIBS})
+    target_compile_definitions(${tgt} PRIVATE
+        ACCUDISC_DRIVER_DIR_DEFAULT="${CMAKE_INSTALL_FULL_LIBDIR}/accudisc/drivers")
 endforeach()
 
 set_target_properties(accudisc PROPERTIES
