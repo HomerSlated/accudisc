@@ -30,5 +30,24 @@ int main(void)
     assert(ACCUDISC_MAP_STATE(adsc_map_c2_byte(0xffffffffu)) ==
            ACCUDISC_MAP_C2);
 
+    /* Recovered: severity = attempts, clamped. */
+    uint8_t r = adsc_map_recovered_byte(3);
+    assert(ACCUDISC_MAP_STATE(r) == ACCUDISC_MAP_RECOVERED);
+    assert(ACCUDISC_MAP_SEVERITY(r) == 3);
+    assert(ACCUDISC_MAP_SEVERITY(adsc_map_recovered_byte(99)) == 15);
+
+    /* Suspect: severity ~log2 of disagreeing bytes. */
+    uint8_t s = adsc_map_suspect_byte(256);
+    assert(ACCUDISC_MAP_STATE(s) == ACCUDISC_MAP_SUSPECT);
+    assert(ACCUDISC_MAP_SEVERITY(s) == 9);
+    assert(ACCUDISC_MAP_SEVERITY(adsc_map_suspect_byte(1)) == 1);
+
+    /* Audio diff counts differing bytes over one sector. */
+    uint8_t a[2352] = {0}, b[2352] = {0};
+    assert(adsc_audio_diff(a, b) == 0);
+    b[0] = 1;
+    b[2351] = 0xff;
+    assert(adsc_audio_diff(a, b) == 2);
+
     return 0;
 }

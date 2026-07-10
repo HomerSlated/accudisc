@@ -1,15 +1,19 @@
 /* The commanded-read engine: chunked READ CD with C2/subchannel companions,
- * per-sector retry narrowing with cache-defeat, zero-fill alignment, and the
- * frame-accurate status map. Port of the c2read main loop with the policy
- * hooks (sink, map, cancel) the library contract adds.
+ * per-sector retry narrowing with cache-defeat, zero-fill alignment, the
+ * frame-accurate status map, and the caller-selected accuracy strategies —
+ * C2-guided rescue rereads and multi-pass consensus verification.
  *
  * Invariants carried over from c2read:
- *  - AUDIO/C2/SUB for a sector always come from one READ CD transfer.
+ *  - AUDIO/C2/SUB for a sector always come from one READ CD transfer; when
+ *    a rescue or consensus read is accepted, the WHOLE sector is replaced.
  *  - A hard-unreadable sector is zero-filled (PCM 0, C2 all-ones, SUB 0) so
  *    the delivered streams never desync from the sector count.
- *  - Synthetic all-ones C2 from zero-fill is excluded from the C2 stats, so
- *    stats reflect the drive, not our padding.
- */
+ *  - Synthetic all-ones C2 from zero-fill is excluded from the C2 stats.
+ *
+ * Trust model (measured by the c2bench confusion matrix): a fired C2 flag
+ * reliably marks a bad byte, a clear flag is only a claim — hence verify
+ * passes compare actual audio bytes between independent reads rather than
+ * trusting "no C2" alone, and consensus demands two byte-identical reads. */
 
 #include <stdlib.h>
 #include <string.h>
@@ -22,18 +26,46 @@
 #define ADSC_DEFAULT_RETRIES 2
 /* Distance of the cache-defeat read: far enough to force a real seek. */
 #define ADSC_FLUSH_DISTANCE 5000
+/* Audio-only sector_len >= 2352 bounds the chunk at 27; round up. */
+#define ADSC_CHUNK_MAX 32
+/* Independent samples kept during consensus (the two passes + extras). */
+#define ADSC_SAMPLES_MAX 6
 
-uint8_t adsc_map_c2_byte(uint32_t c2_bits)
+static uint8_t sev_log2(uint32_t v)
 {
     unsigned sev = 0;
 
-    while (c2_bits) { /* log2 + 1, clamped to the nibble */
+    while (v) {
         sev++;
-        c2_bits >>= 1;
+        v >>= 1;
     }
-    if (sev > 15)
-        sev = 15;
-    return (uint8_t)(ACCUDISC_MAP_C2 | (sev << 4));
+    return (uint8_t)(sev > 15 ? 15 : sev);
+}
+
+uint8_t adsc_map_c2_byte(uint32_t c2_bits)
+{
+    return (uint8_t)(ACCUDISC_MAP_C2 | (sev_log2(c2_bits) << 4));
+}
+
+uint8_t adsc_map_recovered_byte(unsigned attempts)
+{
+    if (attempts > 15)
+        attempts = 15;
+    return (uint8_t)(ACCUDISC_MAP_RECOVERED | (attempts << 4));
+}
+
+uint8_t adsc_map_suspect_byte(uint32_t diff_bytes)
+{
+    return (uint8_t)(ACCUDISC_MAP_SUSPECT | (sev_log2(diff_bytes) << 4));
+}
+
+uint32_t adsc_audio_diff(const uint8_t *a, const uint8_t *b)
+{
+    uint32_t n = 0;
+
+    for (uint32_t i = 0; i < ACCUDISC_BYTES_AUDIO; i++)
+        n += a[i] != b[i];
+    return n;
 }
 
 static void map_store(uint8_t *map, uint32_t idx, uint8_t v)
@@ -51,57 +83,193 @@ static uint32_t popcount_buf(const uint8_t *p, uint32_t n)
     return bits;
 }
 
-/* Classify a hard failure's sense (already decoded into the handle). */
-static void count_sense(const struct accudisc_device *dev,
-                        accudisc_read_stats *st)
+/* ---- engine state --------------------------------------------------------- */
+
+struct rd {
+    struct accudisc_device *dev;
+    const accudisc_read_req *req;
+    unsigned sector_type;
+    uint32_t sector_len, audio_len, c2_len, sub_len;
+    unsigned retries;
+    uint8_t *flush;   /* cache-defeat throwaway, one audio sector */
+    uint8_t *scratch; /* one sector, rescue/consensus candidate */
+    uint8_t *samples; /* ADSC_SAMPLES_MAX sectors, consensus memory */
+    accudisc_read_stats st;
+};
+
+static void count_sense(struct rd *r)
 {
-    if (dev->last_sense.valid && dev->last_sense.key == 0x3)
-        st->sense_medium++;
-    else if (dev->last_sense.valid && dev->last_sense.key == 0x4)
-        st->sense_hardware++;
+    if (r->dev->last_sense.valid && r->dev->last_sense.key == 0x3)
+        r->st.sense_medium++;
+    else if (r->dev->last_sense.valid && r->dev->last_sense.key == 0x4)
+        r->st.sense_hardware++;
     else
-        st->sense_other++;
+        r->st.sense_other++;
+}
+
+/* A back-to-back reread often just replays the drive cache; read one sector
+ * far away first so the next read is a real disc access (readcd pattern). */
+static void cache_defeat(struct rd *r, uint32_t cur)
+{
+    uint32_t away = cur >= r->req->lba + ADSC_FLUSH_DISTANCE
+                        ? cur - ADSC_FLUSH_DISTANCE
+                        : cur + ADSC_FLUSH_DISTANCE;
+
+    adsc_mmc_read_cd(r->dev, away, 1, r->sector_type, ACCUDISC_C2_NONE,
+                     ACCUDISC_SUB_NONE, r->flush, ACCUDISC_BYTES_AUDIO);
+}
+
+static int read_sector(struct rd *r, uint32_t lba, uint8_t *dst)
+{
+    return adsc_mmc_read_cd(r->dev, lba, 1, r->sector_type, r->req->c2,
+                            r->req->sub, dst, r->sector_len);
+}
+
+/* One chunk with per-sector fallback. primary: zero-fill hard sectors and
+ * account them; otherwise (verify passes) only mark hard[] and leave data
+ * alone — a pass-2 failure is a disagreement, not a hard error. */
+static void read_chunk(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
+                       uint8_t *hard, int primary)
+{
+    memset(hard, 0, n);
+    if (adsc_mmc_read_cd(r->dev, lba, n, r->sector_type, r->req->c2,
+                         r->req->sub, buf, r->sector_len) == ACCUDISC_OK)
+        return;
+
+    for (uint32_t s = 0; s < n; s++) {
+        uint8_t *sec = buf + (size_t)s * r->sector_len;
+        uint32_t cur = lba + s;
+        int src = -1;
+
+        for (unsigned attempt = 0; attempt < r->retries; attempt++) {
+            if (attempt > 0)
+                cache_defeat(r, cur);
+            src = read_sector(r, cur, sec);
+            if (src == ACCUDISC_OK)
+                break;
+        }
+        if (src == ACCUDISC_OK)
+            continue;
+        hard[s] = 1;
+        if (primary) {
+            memset(sec, 0, r->audio_len);
+            memset(sec + r->audio_len, 0xff, r->c2_len);
+            if (r->sub_len)
+                memset(sec + r->audio_len + r->c2_len, 0, r->sub_len);
+            r->st.hard_errors++;
+            count_sense(r);
+        }
+    }
+}
+
+/* Hunt for a C2-clean copy of a flagged sector; the read with the fewest
+ * fired bits wins and replaces the sector wholesale. */
+static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
+                      uint32_t *bits, unsigned *attempts)
+{
+    uint32_t best = *bits;
+
+    *attempts = 0;
+    for (unsigned a = 1; a <= r->req->c2_retries && best > 0; a++) {
+        cache_defeat(r, lba);
+        if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
+            continue;
+        r->st.rereads++;
+        *attempts = a;
+        uint32_t b = popcount_buf(r->scratch + r->audio_len, r->c2_len);
+        if (b < best) {
+            memcpy(sec, r->scratch, r->sector_len);
+            best = b;
+        }
+    }
+    *bits = best;
+}
+
+/* Two passes disagreed on this sector. Collect further independent reads
+ * until any two audio payloads (among everything seen) match byte-for-byte;
+ * the agreeing read replaces the sector. 1 = recovered, 0 = suspect. */
+static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
+                     const uint8_t *alt, unsigned *attempts)
+{
+    unsigned count = 0;
+
+    memcpy(r->samples, sec, r->sector_len);
+    count = 1;
+    if (alt) {
+        memcpy(r->samples + r->sector_len, alt, r->sector_len);
+        count = 2;
+    }
+
+    for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2; a++) {
+        cache_defeat(r, lba);
+        if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
+            continue;
+        r->st.rereads++;
+        *attempts = a;
+        for (unsigned i = 0; i < count; i++) {
+            if (adsc_audio_diff(r->scratch,
+                                r->samples + (size_t)i * r->sector_len)
+                == 0) {
+                memcpy(sec, r->scratch, r->sector_len);
+                return 1;
+            }
+        }
+        if (count < ADSC_SAMPLES_MAX) {
+            memcpy(r->samples + (size_t)count * r->sector_len, r->scratch,
+                   r->sector_len);
+            count++;
+        }
+    }
+    return 0;
 }
 
 int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                        accudisc_sink_fn sink, void *user,
                        accudisc_read_stats *stats)
 {
-    accudisc_read_stats st;
+    struct rd r;
 
-    memset(&st, 0, sizeof(st));
-    st.first_flagged_lba = -1;
-    st.last_flagged_lba = -1;
+    memset(&r, 0, sizeof(r));
+    r.st.first_flagged_lba = -1;
+    r.st.last_flagged_lba = -1;
 
     if (!dev || !req || req->count == 0)
         return ACCUDISC_ERR_INVAL;
     if (req->c2 > ACCUDISC_C2_PTRS_BEB || req->sub > ACCUDISC_SUB_Q)
         return ACCUDISC_ERR_INVAL;
 
-    unsigned sector_type = req->any_type ? ADSC_SECTOR_ANY : ADSC_SECTOR_CDDA;
-    uint32_t sector_len = adsc_read_cd_sector_len(req->c2, req->sub);
-    uint32_t audio_len = ACCUDISC_BYTES_AUDIO;
-    uint32_t c2_len = sector_len - audio_len -
-                      (req->sub == ACCUDISC_SUB_RAW ? ACCUDISC_BYTES_SUB_RAW
-                       : req->sub == ACCUDISC_SUB_Q ? ACCUDISC_BYTES_SUB_Q
-                                                    : 0);
-    uint32_t sub_len = sector_len - audio_len - c2_len;
+    r.dev = dev;
+    r.req = req;
+    r.sector_type = req->any_type ? ADSC_SECTOR_ANY : ADSC_SECTOR_CDDA;
+    r.sector_len = adsc_read_cd_sector_len(req->c2, req->sub);
+    r.audio_len = ACCUDISC_BYTES_AUDIO;
+    r.sub_len = req->sub == ACCUDISC_SUB_RAW  ? ACCUDISC_BYTES_SUB_RAW
+                : req->sub == ACCUDISC_SUB_Q  ? ACCUDISC_BYTES_SUB_Q
+                                              : 0;
+    r.c2_len = r.sector_len - r.audio_len - r.sub_len;
+    r.retries = req->retries ? req->retries : ADSC_DEFAULT_RETRIES;
 
-    uint32_t max_chunk = ADSC_MAX_XFER / sector_len;
+    uint32_t max_chunk = ADSC_MAX_XFER / r.sector_len;
+    if (max_chunk > ADSC_CHUNK_MAX)
+        max_chunk = ADSC_CHUNK_MAX;
     uint32_t chunk = req->chunk_sectors ? req->chunk_sectors : max_chunk;
     if (chunk > max_chunk)
         chunk = max_chunk;
-    unsigned retries = req->retries ? req->retries : ADSC_DEFAULT_RETRIES;
+
+    unsigned passes = req->verify_passes >= 2 ? req->verify_passes : 1;
 
     if (req->speed_x)
         accudisc_set_speed(dev, req->speed_x);
 
-    uint8_t *buf = malloc((size_t)chunk * sector_len);
-    uint8_t *flushbuf = malloc(ACCUDISC_BYTES_AUDIO); /* cache-defeat throwaway */
-    uint8_t *hard = calloc(chunk, 1); /* per-sector zero-fill marks */
+    uint8_t *buf = malloc((size_t)chunk * r.sector_len);
+    uint8_t *buf2 = passes > 1 ? malloc((size_t)chunk * r.sector_len) : NULL;
+    r.flush = malloc(ACCUDISC_BYTES_AUDIO);
+    r.scratch = malloc(r.sector_len);
+    r.samples = malloc((size_t)ADSC_SAMPLES_MAX * r.sector_len);
     int rc = ACCUDISC_OK;
 
-    if (!buf || !flushbuf || !hard) {
+    if (!buf || !r.flush || !r.scratch || !r.samples ||
+        (passes > 1 && !buf2)) {
         rc = ACCUDISC_ERR_NOMEM;
         goto out;
     }
@@ -110,74 +278,97 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     uint32_t remaining = req->count;
     while (remaining > 0) {
         uint32_t n = remaining < chunk ? remaining : chunk;
+        uint8_t hard[ADSC_CHUNK_MAX], hard2[ADSC_CHUNK_MAX];
+        uint8_t recov[ADSC_CHUNK_MAX] = {0}, susp[ADSC_CHUNK_MAX] = {0};
+        unsigned att[ADSC_CHUNK_MAX] = {0};
+        uint32_t bits[ADSC_CHUNK_MAX] = {0}, diffb[ADSC_CHUNK_MAX] = {0};
 
         if (req->cancel && *req->cancel) {
             rc = ACCUDISC_ERR_CANCELLED;
             goto out;
         }
 
-        memset(hard, 0, n);
-        int crc = adsc_mmc_read_cd(dev, lba, n, sector_type, req->c2,
-                                   req->sub, buf, sector_len);
-        if (crc != ACCUDISC_OK) {
-            /* Whole-chunk failure: the drive could not return these sectors
-             * at all (distinct from a C2 flag, which returns data). Narrow to
-             * per-sector reads; a sector that still fails after the retry
-             * budget is zero-filled. */
-            for (uint32_t s = 0; s < n; s++) {
-                uint8_t *sec = buf + (size_t)s * sector_len;
-                uint32_t cur = lba + s;
-                int src = -1;
+        read_chunk(&r, lba, n, buf, hard, 1);
 
-                for (unsigned attempt = 0; attempt < retries; attempt++) {
-                    if (attempt > 0) {
-                        /* A back-to-back retry often just replays the drive
-                         * cache; read one sector far away first so the retry
-                         * is a real disc access (readcd pattern). */
-                        uint32_t away = cur >= req->lba + ADSC_FLUSH_DISTANCE
-                                            ? cur - ADSC_FLUSH_DISTANCE
-                                            : cur + ADSC_FLUSH_DISTANCE;
-                        adsc_mmc_read_cd(dev, away, 1, sector_type,
-                                         ACCUDISC_C2_NONE, ACCUDISC_SUB_NONE,
-                                         flushbuf, ACCUDISC_BYTES_AUDIO);
-                    }
-                    src = adsc_mmc_read_cd(dev, cur, 1, sector_type, req->c2,
-                                           req->sub, sec, sector_len);
-                    if (src == ACCUDISC_OK)
-                        break;
-                }
-                if (src != ACCUDISC_OK) {
-                    memset(sec, 0, audio_len);
-                    memset(sec + audio_len, 0xff, c2_len);
-                    if (sub_len)
-                        memset(sec + audio_len + c2_len, 0, sub_len);
-                    hard[s] = 1;
-                    st.hard_errors++;
-                    count_sense(dev, &st);
+        for (uint32_t s = 0; s < n; s++)
+            if (!hard[s] && r.c2_len)
+                bits[s] = popcount_buf(buf + (size_t)s * r.sector_len +
+                                       r.audio_len, r.c2_len);
+
+        /* C2-guided rescue: hunt a clean copy of every flagged sector. */
+        if (req->c2_retries && r.c2_len) {
+            for (uint32_t s = 0; s < n; s++) {
+                if (hard[s] || bits[s] == 0)
+                    continue;
+                uint32_t before = bits[s];
+                unsigned used = 0;
+                c2_rescue(&r, lba + s, buf + (size_t)s * r.sector_len,
+                          &bits[s], &used);
+                if (bits[s] == 0 && before > 0) {
+                    recov[s] = 1;
+                    att[s] = used;
                 }
             }
         }
 
+        /* Verify passes: independent rereads must agree byte-for-byte. */
+        for (unsigned pass = 2; pass <= passes; pass++) {
+            cache_defeat(&r, lba);
+            read_chunk(&r, lba, n, buf2, hard2, 0);
+            for (uint32_t s = 0; s < n; s++) {
+                if (hard[s] || susp[s])
+                    continue;
+                uint8_t *sec = buf + (size_t)s * r.sector_len;
+                const uint8_t *alt = buf2 + (size_t)s * r.sector_len;
+                uint32_t diff =
+                    hard2[s] ? 0 : adsc_audio_diff(sec, alt);
+
+                if (!hard2[s] && diff == 0)
+                    continue; /* confirmed */
+                diffb[s] = diff;
+                unsigned used = 0;
+                if (consensus(&r, lba + s, sec, hard2[s] ? NULL : alt,
+                              &used)) {
+                    recov[s] = 1;
+                    att[s] += used;
+                    if (r.c2_len)
+                        bits[s] = popcount_buf(sec + r.audio_len, r.c2_len);
+                } else {
+                    susp[s] = 1;
+                }
+            }
+        }
+
+        /* Classify, account, publish. Priority: hard > suspect > recovered
+         * > C2 > ok. */
         for (uint32_t s = 0; s < n; s++) {
-            const uint8_t *sec = buf + (size_t)s * sector_len;
             uint32_t cur = lba + s;
             uint32_t idx = cur - req->lba;
 
             if (hard[s]) {
                 map_store(req->status_map, idx, ACCUDISC_MAP_HARD);
-                continue; /* synthetic C2 stays out of the stats */
+                continue;
             }
-            uint32_t bits = c2_len ? popcount_buf(sec + audio_len, c2_len) : 0;
-            st.sectors_read++;
-            st.c2_bits += bits;
-            if (bits) {
-                st.sectors_flagged++;
-                if (bits > st.max_bits_sector)
-                    st.max_bits_sector = bits;
-                if (st.first_flagged_lba < 0)
-                    st.first_flagged_lba = cur;
-                st.last_flagged_lba = cur;
-                map_store(req->status_map, idx, adsc_map_c2_byte(bits));
+            r.st.sectors_read++;
+            r.st.c2_bits += bits[s];
+            if (bits[s]) {
+                r.st.sectors_flagged++;
+                if (bits[s] > r.st.max_bits_sector)
+                    r.st.max_bits_sector = bits[s];
+                if (r.st.first_flagged_lba < 0)
+                    r.st.first_flagged_lba = cur;
+                r.st.last_flagged_lba = cur;
+            }
+            if (susp[s]) {
+                r.st.sectors_suspect++;
+                map_store(req->status_map, idx,
+                          adsc_map_suspect_byte(diffb[s]));
+            } else if (recov[s]) {
+                r.st.sectors_recovered++;
+                map_store(req->status_map, idx,
+                          adsc_map_recovered_byte(att[s]));
+            } else if (bits[s]) {
+                map_store(req->status_map, idx, adsc_map_c2_byte(bits[s]));
             } else {
                 map_store(req->status_map, idx, ACCUDISC_MAP_OK);
             }
@@ -188,10 +379,10 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                 .lba = lba,
                 .nsec = n,
                 .data = buf,
-                .sector_len = sector_len,
-                .audio_len = audio_len,
-                .c2_len = c2_len,
-                .sub_len = sub_len,
+                .sector_len = r.sector_len,
+                .audio_len = r.audio_len,
+                .c2_len = r.c2_len,
+                .sub_len = r.sub_len,
             };
             if (sink(user, &out) != 0) {
                 rc = ACCUDISC_ERR_CANCELLED;
@@ -205,9 +396,11 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
 out:
     free(buf);
-    free(flushbuf);
-    free(hard);
+    free(buf2);
+    free(r.flush);
+    free(r.scratch);
+    free(r.samples);
     if (stats)
-        *stats = st;
+        *stats = r.st;
     return rc;
 }

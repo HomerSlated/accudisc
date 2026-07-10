@@ -43,6 +43,11 @@ static void usage(FILE *to)
         "  --subf FILE    write the subchannel stream here (needs --sub)\n"
         "  --chunk N      sectors per READ CD (default: max under 64 KiB)\n"
         "  --retries K    per-sector attempts on failed chunks (default 2)\n"
+        "  --c2-retries N hunt a C2-clean copy of each flagged sector with\n"
+        "                 up to N cache-defeated rereads (default 0 = off)\n"
+        "  --verify P     read everything P times (cache-defeated); sectors\n"
+        "                 whose reads disagree are resolved by consensus or\n"
+        "                 marked suspect (default 1 = off)\n"
         "  --speed X      set drive read speed to Xx first (best-effort)\n"
         "  --map          render a per-sector disc map when done\n"
         "  -q             quiet: no progress line\n");
@@ -387,14 +392,23 @@ static int read_sink(void *user, const accudisc_chunk *c)
 }
 
 /* Condensed terminal disc map from the status map: each cell is the WORST
- * state in its bucket (hard > C2 > pending > ok). */
+ * state in its bucket. */
 static void render_map(const uint8_t *map, uint32_t count)
 {
     enum { WIDTH = 64 };
+    static const struct { uint8_t state; int rank; char ch; } marks[] = {
+        { ACCUDISC_MAP_HARD,      5, 'X' },
+        { ACCUDISC_MAP_SUSPECT,   4, '?' },
+        { ACCUDISC_MAP_C2,        3, '!' },
+        { ACCUDISC_MAP_PENDING,   2, ' ' },
+        { ACCUDISC_MAP_RECOVERED, 1, 'r' },
+        { ACCUDISC_MAP_OK,        0, '.' },
+    };
     uint32_t bucket = (count + WIDTH - 1) / WIDTH;
 
-    fprintf(stderr, "  disc map (%u sectors/cell): '.' ok, '!' C2, "
-                    "'X' hard, ' ' pending\n  [", bucket);
+    fprintf(stderr, "  disc map (%u sectors/cell): '.' ok, 'r' recovered, "
+                    "'!' C2, '?' suspect, 'X' hard, ' ' pending\n  [",
+            bucket);
     for (uint32_t cell = 0; cell * bucket < count; cell++) {
         uint32_t from = cell * bucket;
         uint32_t to = from + bucket < count ? from + bucket : count;
@@ -403,14 +417,15 @@ static void render_map(const uint8_t *map, uint32_t count)
 
         for (uint32_t i = from; i < to; i++) {
             uint8_t st = ACCUDISC_MAP_STATE(map[i]);
-            int rank = st == ACCUDISC_MAP_HARD    ? 3
-                       : st == ACCUDISC_MAP_C2      ? 2
-                       : st == ACCUDISC_MAP_PENDING ? 1 : 0;
-            if (rank > worst) {
-                worst = rank;
-                ch = st == ACCUDISC_MAP_HARD      ? 'X'
-                     : st == ACCUDISC_MAP_C2      ? '!'
-                     : st == ACCUDISC_MAP_PENDING ? ' ' : '.';
+
+            for (size_t m = 0; m < sizeof(marks) / sizeof(marks[0]); m++) {
+                if (marks[m].state == st) {
+                    if (marks[m].rank > worst) {
+                        worst = marks[m].rank;
+                        ch = marks[m].ch;
+                    }
+                    break;
+                }
             }
         }
         fputc(ch, stderr);
@@ -460,6 +475,10 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             req.chunk_sectors = (uint16_t)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--retries") && i + 1 < argc)
             req.retries = (uint8_t)strtol(argv[++i], NULL, 0);
+        else if (!strcmp(a, "--c2-retries") && i + 1 < argc)
+            req.c2_retries = (uint8_t)strtol(argv[++i], NULL, 0);
+        else if (!strcmp(a, "--verify") && i + 1 < argc)
+            req.verify_passes = (uint8_t)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--speed") && i + 1 < argc)
             req.speed_x = (uint16_t)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--map"))
@@ -550,6 +569,12 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         fprintf(stderr, "  flagged span     : LBA %lld .. %lld\n",
                 (long long)st.first_flagged_lba,
                 (long long)st.last_flagged_lba);
+    if (req.c2_retries || req.verify_passes >= 2)
+        fprintf(stderr, "  accuracy         : %llu recovered, %llu suspect, "
+                        "%llu extra reads\n",
+                (unsigned long long)st.sectors_recovered,
+                (unsigned long long)st.sectors_suspect,
+                (unsigned long long)st.rereads);
     if (want_map)
         render_map(map, req.count);
     ret = 0;

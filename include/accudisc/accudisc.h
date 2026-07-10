@@ -242,12 +242,17 @@ ACCUDISC_API int accudisc_probe_features(accudisc_device *dev,
  * bars or EAC-style per-sector disc maps. No pipes, no events, no locks;
  * byte i is always the current best knowledge of sector (lba + i).
  *
- * Byte layout: low nibble = state, high nibble = severity (C2-flagged
- * sectors: ~log2 of the sector's C2 error bit count, 1..15; else 0). */
-#define ACCUDISC_MAP_PENDING 0x0 /* not yet attempted */
-#define ACCUDISC_MAP_OK      0x1 /* read clean */
-#define ACCUDISC_MAP_C2      0x2 /* data returned, C2 pointer(s) fired */
-#define ACCUDISC_MAP_HARD    0x3 /* unreadable — zero-filled in the output */
+ * Byte layout: low nibble = state, high nibble = severity:
+ *   C2        ~log2 of the sector's fired C2 bit count (1..15)
+ *   RECOVERED number of extra reads it took (1..15)
+ *   SUSPECT   ~log2 of the disagreeing byte count between reads
+ *   others    0 */
+#define ACCUDISC_MAP_PENDING   0x0 /* not yet attempted */
+#define ACCUDISC_MAP_OK        0x1 /* read clean */
+#define ACCUDISC_MAP_C2        0x2 /* delivered with fired C2 pointer(s) */
+#define ACCUDISC_MAP_HARD      0x3 /* unreadable — zero-filled in the output */
+#define ACCUDISC_MAP_RECOVERED 0x4 /* problem seen, clean/agreeing copy won */
+#define ACCUDISC_MAP_SUSPECT   0x5 /* reads disagree — best-effort delivered */
 
 #define ACCUDISC_MAP_STATE(b)    ((uint8_t)(b) & 0x0f)
 #define ACCUDISC_MAP_SEVERITY(b) ((uint8_t)(b) >> 4)
@@ -277,6 +282,15 @@ typedef struct accudisc_read_req {
     uint8_t retries;   /* per-sector attempts after a chunk fails; 0 = 2 */
     uint16_t chunk_sectors; /* per READ CD command; 0 = max under 64 KiB */
     uint16_t speed_x;  /* set read speed first; 0 = leave as-is */
+    /* accuracy strategy (both off = single-pass fast read): */
+    uint8_t c2_retries;    /* cache-defeated rereads hunting a C2-clean copy
+                            * of each flagged sector (requires c2 != NONE);
+                            * best read wins, whole sector replaced so
+                            * AUDIO/C2/SUB stay single-read aligned */
+    uint8_t verify_passes; /* >= 2: reread every chunk with cache defeat and
+                            * compare audio; disagreeing sectors resolved by
+                            * consensus (any two identical independent reads),
+                            * else delivered best-effort as SUSPECT */
     uint8_t *status_map;        /* count bytes, or NULL; see status map above */
     const volatile int *cancel; /* poll: nonzero aborts at the next chunk; or NULL */
 } accudisc_read_req;
@@ -309,6 +323,9 @@ typedef struct accudisc_read_stats {
     uint64_t sense_medium;    /* hard failures: sense key 3 */
     uint64_t sense_hardware;  /* sense key 4 */
     uint64_t sense_other;     /* any other terminal sense */
+    uint64_t rereads;         /* problem-driven extra sector reads issued */
+    uint64_t sectors_recovered; /* problem seen, clean/agreeing copy won */
+    uint64_t sectors_suspect;   /* consensus failed, best-effort delivered */
 } accudisc_read_stats;
 
 /* Blocking. Streams req->count sectors from req->lba into sink (which may be
