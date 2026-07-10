@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /* accudisc.h — public API for libaccudisc.
  *
  * This header is the ABI contract: the CLI and all language bindings are

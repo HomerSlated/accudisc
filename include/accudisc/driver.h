@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: MIT */
 /* driver.h — the AccuDisc vendor-driver SDK.
  *
  * libaccudisc itself is pure MMC/SG: no proprietary opcode is ever baked

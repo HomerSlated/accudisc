@@ -1,10 +1,8 @@
 /* Drive read-offset lookup.
  *
- * Seed table only: a handful of drives relevant to this project, entered as
- * facts (offset values are AccurateRip-derived public data, cross-checked
- * against redumper's table). The full ~4600-entry import from
- * reference/redumper/offsets.ixx is pending a licensing review — see
- * docs/initial-assessment.md.
+ * The table is factual user-submitted data collected by the REDUMP Disc
+ * Preservation Project (https://redump.org) — attributed as a courtesy in
+ * the docs; regenerate with tools/gen_offsets.py when upstream grows.
  *
  * Matching: INQUIRY vendor/product with whitespace runs collapsed, since
  * drives pad the fixed INQUIRY fields ("DVDR   PX-716A" vs "DVDR PX-716A").
@@ -21,14 +19,7 @@ struct offset_entry {
 };
 
 static const struct offset_entry offsets[] = {
-    { "PLEXTOR", "CD-R PREMIUM",  +30 },
-    { "PLEXTOR", "CD-R PREMIUM2", +30 },
-    { "PLEXTOR", "DVDR PX-708A",  +30 },
-    { "PLEXTOR", "DVDR PX-712A",  +30 },
-    { "PLEXTOR", "DVDR PX-716A",  +30 },
-    { "PLEXTOR", "DVDR PX-716AL", +30 },
-    { "PLEXTOR", "DVDR PX-755A",  +30 },
-    { "PLEXTOR", "DVDR PX-760A",  +30 },
+#include "offsets_db.inc"
 };
 
 /* Collapse whitespace runs to single spaces, trim ends. */

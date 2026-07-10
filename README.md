@@ -27,7 +27,17 @@ cmake -B build
 cmake --build build
 ```
 
+## License
+
+The core (library, CLI, headers, bindings) is **MIT** — usable in any
+software, free or proprietary. Vendor drivers under `drivers/` are
+standalone dlopen'd modules licensed individually; the Plextor driver is
+non-free (see `drivers/plextor/LICENSE.md`). Data and technique sources are
+credited in `docs/ATTRIBUTION.md`, notably the drive read-offset table from
+the REDUMP Disc Preservation Project (https://redump.org).
+
 ## Status
 
-Early skeleton. Core reading engine is being imported from the `c2read`
-prototype.
+Read side functional: TOC/session/CD-Text/Q-subchannel decode, C2 +
+subchannel capture with frame-accurate status mapping, vendor-driver
+architecture with Plextor error-counter scan. Write path upcoming.

@@ -73,3 +73,8 @@ opaque handles, no libc types leaking into the ABI where avoidable.
 - Reference sources in `reference/` are read-only inputs for analysis; code is
   rewritten for this codebase, not copy-pasted (mind licenses: GPL sources
   present).
+- **Licensing**: core is MIT (LICENSE); drivers are licensed individually —
+  drivers/plextor is non-free (unlicensed vendor protocol, see its
+  LICENSE.md) and must never leak into the core. Factual data may be
+  converted from reference sources (offsets table: REDUMP project data);
+  credit sources in docs/ATTRIBUTION.md and the future man page.
