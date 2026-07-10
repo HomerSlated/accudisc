@@ -1,0 +1,25 @@
+# Build output
+build/
+*.o
+*.so
+*.so.*
+*.a
+
+# Third-party / imported reference sources (local-only, see CLAUDE.md)
+reference/*
+!reference/README.md
+
+# Editors / tooling
+.cache/
+compile_commands.json
+.vscode/
+.idea/
+
+# Bindings build artifacts
+bindings/rust/target/
+bindings/python/dist/
+bindings/python/*.egg-info/
+__pycache__/
+
+# Session history
+.remember/
