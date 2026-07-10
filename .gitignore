@@ -21,5 +21,6 @@ bindings/python/dist/
 bindings/python/*.egg-info/
 __pycache__/
 
-# Session history
+# Session history + remember system (nested git repo, personal config)
 .remember/
+.claude/remember/
