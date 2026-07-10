@@ -1,0 +1,34 @@
+/* Status-map byte encoding tests. */
+
+#include <assert.h>
+
+#include <accudisc/accudisc.h>
+
+#include "read/engine.h"
+
+int main(void)
+{
+    /* States and severities round-trip through the accessor macros. */
+    assert(ACCUDISC_MAP_STATE(ACCUDISC_MAP_OK) == ACCUDISC_MAP_OK);
+    assert(ACCUDISC_MAP_SEVERITY(ACCUDISC_MAP_OK) == 0);
+
+    /* C2 severity is ~log2(bits)+1, clamped to the nibble. */
+    uint8_t b1 = adsc_map_c2_byte(1);
+    assert(ACCUDISC_MAP_STATE(b1) == ACCUDISC_MAP_C2);
+    assert(ACCUDISC_MAP_SEVERITY(b1) == 1);
+
+    assert(ACCUDISC_MAP_SEVERITY(adsc_map_c2_byte(2)) == 2);
+    assert(ACCUDISC_MAP_SEVERITY(adsc_map_c2_byte(3)) == 2);
+    assert(ACCUDISC_MAP_SEVERITY(adsc_map_c2_byte(4)) == 3);
+    assert(ACCUDISC_MAP_SEVERITY(adsc_map_c2_byte(255)) == 8);
+    /* Worst case: all 2352 bits fired. */
+    assert(ACCUDISC_MAP_SEVERITY(adsc_map_c2_byte(2352)) == 12);
+    /* Clamp holds even for impossible counts. */
+    assert(ACCUDISC_MAP_SEVERITY(adsc_map_c2_byte(0xffffffffu)) == 15);
+
+    /* Severity never collides state into another nibble. */
+    assert(ACCUDISC_MAP_STATE(adsc_map_c2_byte(0xffffffffu)) ==
+           ACCUDISC_MAP_C2);
+
+    return 0;
+}

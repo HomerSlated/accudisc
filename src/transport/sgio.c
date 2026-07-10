@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/cdrom.h>
 #include <scsi/sg.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -66,5 +67,12 @@ int adsc_transport_exec(adsc_transport *t, adsc_cmd *cmd)
         }
         return ACCUDISC_ERR_IO;
     }
+    return ACCUDISC_OK;
+}
+
+int adsc_transport_select_speed(adsc_transport *t, unsigned speed_x)
+{
+    if (ioctl(t->fd, CDROM_SELECT_SPEED, speed_x) < 0)
+        return ACCUDISC_ERR_IO;
     return ACCUDISC_OK;
 }

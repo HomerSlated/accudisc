@@ -8,10 +8,10 @@ set(ACCUDISC_SOURCES
     transport/sense.c
     mmc/cdb.c
     mmc/mmc.c
-    # drive/
+    drive/features.c
+    toc/toc.c
+    read/engine.c
     # cdda/
-    # toc/
-    # read/
     # write/
     # meta/
 )

@@ -85,3 +85,46 @@ int accudisc_drive_identify(accudisc_device *dev, accudisc_drive_id *out)
         return ACCUDISC_ERR_INVAL;
     return adsc_mmc_inquiry(dev, out);
 }
+
+void accudisc_free(void *p)
+{
+    free(p);
+}
+
+int accudisc_set_speed(accudisc_device *dev, unsigned speed_x)
+{
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+    return adsc_transport_select_speed(&dev->t, speed_x);
+}
+
+/* Page 2A read speeds, the fields cdrdao drive-info reports (max at page
+ * offset 8, current at 14, kB/s). The "page 2A lies" folklore is naive
+ * readers using the wrong offsets. */
+int accudisc_get_speed(accudisc_device *dev, unsigned *max_kbps,
+                       unsigned *cur_kbps)
+{
+    uint8_t buf[256];
+    uint32_t len = 0, off = 0;
+    int rc;
+
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+    rc = adsc_mmc_mode_sense10(dev, 0x2a, buf, sizeof(buf), &len, &off);
+    if (rc != ACCUDISC_OK)
+        return rc;
+    if ((buf[off] & 0x3f) != 0x2a || off + 16 > len)
+        return ACCUDISC_ERR_SHORT;
+    if (max_kbps)
+        *max_kbps = ((unsigned)buf[off + 8] << 8) | buf[off + 9];
+    if (cur_kbps)
+        *cur_kbps = ((unsigned)buf[off + 14] << 8) | buf[off + 15];
+    return ACCUDISC_OK;
+}
+
+int accudisc_spindle_stop(accudisc_device *dev)
+{
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+    return adsc_mmc_start_stop(dev, 0, 0);
+}

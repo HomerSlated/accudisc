@@ -50,6 +50,9 @@ void adsc_transport_close(adsc_transport *t);
  * ioctl/host/driver/transport failures (no usable sense). */
 int adsc_transport_exec(adsc_transport *t, adsc_cmd *cmd);
 
+/* CDROM_SELECT_SPEED: unprivileged Nx read-speed set via the block layer. */
+int adsc_transport_select_speed(adsc_transport *t, unsigned speed_x);
+
 /* Decode raw sense (fixed 0x70/0x71 and descriptor 0x72/0x73 formats) into
  * the public struct; out->valid = 0 if unrecognizable. */
 void adsc_sense_decode(const uint8_t *sense, unsigned len, accudisc_sense *out);
