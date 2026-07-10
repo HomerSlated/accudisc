@@ -1,6 +1,7 @@
 /* Status-map byte encoding tests. */
 
 #include <assert.h>
+#include <string.h>
 
 #include <accudisc/accudisc.h>
 
@@ -48,6 +49,34 @@ int main(void)
     b[0] = 1;
     b[2351] = 0xff;
     assert(adsc_audio_diff(a, b) == 2);
+
+    /* Slip detection: b = a shifted by +12 samples must be found; the
+     * overlap must verify end to end. */
+    uint8_t x[2352], y[2352];
+    for (int i = 0; i < 2352; i++)
+        x[i] = (uint8_t)(i * 7 + (i >> 3)); /* signal-bearing pattern */
+    memset(y, 0xAA, sizeof(y));
+    memcpy(y + 48, x, 2352 - 48); /* y holds x delayed by 12 samples */
+    int32_t sh = 0;
+    assert(adsc_shift_find(x, y, &sh) == 1);
+    assert(sh == 12);
+
+    /* Negative shift too. */
+    memset(y, 0x55, sizeof(y));
+    memcpy(y, x + 20, 2352 - 20); /* y holds x advanced by 5 samples */
+    assert(adsc_shift_find(x, y, &sh) == 1);
+    assert(sh == -5);
+
+    /* Genuine in-place damage is NOT a slip. */
+    memcpy(y, x, 2352);
+    y[1200] ^= 0xff;
+    assert(adsc_shift_find(x, y, &sh) == 0);
+
+    /* Silence carries no positional signal: no verdict, no false slip. */
+    memset(x, 0, sizeof(x));
+    memset(y, 0, sizeof(y));
+    y[0] = 1;
+    assert(adsc_shift_find(x, y, &sh) == 0);
 
     return 0;
 }

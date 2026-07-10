@@ -45,6 +45,61 @@ static int combo_smoke(struct accudisc_device *dev, unsigned c2, unsigned sub)
     return rc == ACCUDISC_OK;
 }
 
+/* Accurate Stream probe: read [lba, lba+12), then re-read from staggered
+ * start points with cache defeat in between; on an Accurate Stream drive
+ * the overlapping sectors are byte-identical regardless of where the read
+ * began. Any positional mismatch = the drive can slip. */
+#define AS_SPAN 12
+
+int accudisc_probe_accurate_stream(accudisc_device *dev, uint32_t lba,
+                                   uint8_t *accurate)
+{
+    static const uint32_t starts[] = {1, 5, 9};
+    uint32_t sec = ACCUDISC_BYTES_AUDIO;
+    uint8_t *base, *shifted;
+    int rc = ACCUDISC_OK;
+
+    if (!dev || !accurate)
+        return ACCUDISC_ERR_INVAL;
+    base = malloc((size_t)AS_SPAN * sec);
+    shifted = malloc((size_t)AS_SPAN * sec);
+    if (!base || !shifted) {
+        rc = ACCUDISC_ERR_NOMEM;
+        goto out;
+    }
+
+    rc = adsc_mmc_read_cd(dev, lba, AS_SPAN, ADSC_SECTOR_CDDA,
+                          ADSC_C2_NONE, ADSC_SUB_NONE, base,
+                          sec);
+    if (rc != ACCUDISC_OK)
+        goto out;
+
+    *accurate = 1;
+    for (size_t t = 0; t < sizeof(starts) / sizeof(starts[0]); t++) {
+        uint32_t k = starts[t];
+
+        /* Cache defeat: a far throwaway read so the staggered read hits
+         * the platter, not the drive's buffer of the base read. */
+        adsc_mmc_read_cd(dev, lba + 5000, 1, ADSC_SECTOR_CDDA,
+                         ADSC_C2_NONE, ADSC_SUB_NONE, shifted, sec);
+
+        rc = adsc_mmc_read_cd(dev, lba + k, AS_SPAN, ADSC_SECTOR_CDDA,
+                              ADSC_C2_NONE, ADSC_SUB_NONE, shifted, sec);
+        if (rc != ACCUDISC_OK)
+            goto out;
+        if (memcmp(base + (size_t)k * sec, shifted,
+                   (size_t)(AS_SPAN - k) * sec) != 0) {
+            *accurate = 0;
+            break;
+        }
+    }
+
+out:
+    free(base);
+    free(shifted);
+    return rc;
+}
+
 int accudisc_probe_features(accudisc_device *dev, accudisc_features *out)
 {
     if (!dev || !out)

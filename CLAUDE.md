@@ -73,6 +73,11 @@ opaque handles, no libc types leaking into the ABI where avoidable.
 - Reference sources in `reference/` are read-only inputs for analysis; code is
   rewritten for this codebase, not copy-pasted (mind licenses: GPL sources
   present).
+- `reference/RECOVERY_STRATEGY.md` is the source of record for recovery
+  design: roles (triage/gate/locate/repair/re-acquire), the rejected
+  approaches (R1-R7) not to rebuild, and the invariant that relative checks
+  (C2, consensus, overlap) never outrank absolute gates (AccurateRip/CTDB,
+  which live in the calling application).
 - **Licensing**: core is MIT (LICENSE); drivers are licensed individually —
   drivers/plextor is non-free (unlicensed vendor protocol, see its
   LICENSE.md) and must never leak into the core. Factual data may be

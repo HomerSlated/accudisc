@@ -338,6 +338,19 @@ static int cmd_features(accudisc_device *dev)
            f.c2_verdict == ACCUDISC_C2_SUPPORTED     ? "C2_SUPPORTED"
            : f.c2_verdict == ACCUDISC_C2_UNVERIFIED  ? "C2_UNVERIFIED"
                                                      : "C2_UNSUPPORTED");
+
+    /* Positional determinism, probed mid-disc where damage is least likely
+     * to masquerade as jitter. */
+    accudisc_toc toc;
+    uint8_t accurate = 0;
+    uint32_t probe_lba = accudisc_read_toc(dev, &toc) == ACCUDISC_OK
+                             ? toc.leadout_lba / 2 : 3000;
+    if (accudisc_probe_accurate_stream(dev, probe_lba, &accurate)
+        == ACCUDISC_OK)
+        printf("accurate_stream %s\n", accurate ? "yes" : "no");
+    else
+        printf("accurate_stream unknown\n");
+
     return f.c2_verdict == ACCUDISC_C2_SUPPORTED ? 0 : 1;
 }
 
@@ -589,12 +602,13 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         fprintf(stderr, "  flagged span     : LBA %lld .. %lld\n",
                 (long long)st.first_flagged_lba,
                 (long long)st.last_flagged_lba);
-    if (req.c2_retries || req.verify_passes >= 2)
+    if (req.c2_retries || req.verify_passes >= 2 || req.overlap_sectors)
         fprintf(stderr, "  accuracy         : %llu recovered, %llu suspect, "
-                        "%llu extra reads\n",
+                        "%llu extra reads, %llu slips\n",
                 (unsigned long long)st.sectors_recovered,
                 (unsigned long long)st.sectors_suspect,
-                (unsigned long long)st.rereads);
+                (unsigned long long)st.rereads,
+                (unsigned long long)st.slips);
     if (want_map)
         render_map(map, req.count);
     ret = 0;

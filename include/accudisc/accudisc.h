@@ -233,6 +233,19 @@ typedef struct accudisc_features {
 ACCUDISC_API int accudisc_probe_features(accudisc_device *dev,
                                          accudisc_features *out);
 
+/* Accurate Stream probe: does this drive read audio positionally
+ * deterministically? Reads a span, then re-reads it from several different
+ * starting LBAs (cache-defeated) and demands the overlapping sectors match
+ * byte-for-byte. Probe a CLEAN disc area (damage reads as jitter).
+ * *accurate = 1: positioning slips are largely prevented by the drive and
+ * boundary overlap checking is near-redundant; 0: the drive can slip —
+ * overlap checking is the only defence against the error class C2 is
+ * structurally blind to. Factual drive capability: record it alongside the
+ * read offset and C2 verdict. */
+ACCUDISC_API int accudisc_probe_accurate_stream(accudisc_device *dev,
+                                                uint32_t lba,
+                                                uint8_t *accurate);
+
 /* ---- status map ------------------------------------------------------------
  * The frame-accurate progress surface. The caller owns a buffer of one byte
  * per sector and passes it to a read (later: write) request; the engine
@@ -241,6 +254,12 @@ ACCUDISC_API int accudisc_probe_features(accudisc_device *dev,
  * memory, any process — can poll it at zero syscall cost to draw progress
  * bars or EAC-style per-sector disc maps. No pipes, no events, no locks;
  * byte i is always the current best knowledge of sector (lba + i).
+ *
+ * Every state below is a RELATIVE claim — "stable/clean/unstable across the
+ * reads of this run" — never verification against the pressing's canonical
+ * bytes. A drive that misreads deterministically passes every relative
+ * check; absolute gates (AccurateRip, CTDB) are the calling application's
+ * job and always outrank anything recorded here.
  *
  * Byte layout: low nibble = state, high nibble = severity:
  *   C2        ~log2 of the sector's fired C2 bit count (1..15)
@@ -299,8 +318,13 @@ typedef struct accudisc_read_req {
                             * 0 = off; clamped to 8 */
     /* speed ladder for problem-sector rereads: rescue/consensus attempt n
      * runs at ladder[min(n-1, len-1)] (e.g. {32,16,8,4} — descend toward
-     * slow, careful reads). The pass speed (speed_x, or the drive default)
-     * is restored before the next streaming chunk. NULL/0 = reread at the
+     * slow, careful reads). Pick rungs that differ from speed_x: consensus
+     * votes must be speed-diverse, since a drive can misread the same way
+     * at the same speed every time. (Verify passes themselves stream at
+     * speed_x — drives recalibrate on every speed change, so per-chunk
+     * speed switching thrashes; run whole-range passes at different
+     * speed_x yourself for a full speed-diverse sweep.) The pass speed is
+     * restored before the next streaming chunk. NULL/0 = reread at the
      * current speed. Caller-owned; must outlive the call. */
     const uint16_t *speed_ladder;
     uint8_t ladder_len;
@@ -339,6 +363,10 @@ typedef struct accudisc_read_stats {
     uint64_t rereads;         /* problem-driven extra sector reads issued */
     uint64_t sectors_recovered; /* problem seen, clean/agreeing copy won */
     uint64_t sectors_suspect;   /* consensus failed, best-effort delivered */
+    uint64_t slips;           /* disagreements that were a pure positional
+                               * shift (reads identical modulo offset) — the
+                               * C2-invisible slip class; a nonzero count on
+                               * a drive says: use overlap checking */
 } accudisc_read_stats;
 
 /* Blocking. Streams req->count sectors from req->lba into sink (which may be

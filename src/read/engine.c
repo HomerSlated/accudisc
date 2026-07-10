@@ -71,6 +71,49 @@ uint32_t adsc_audio_diff(const uint8_t *a, const uint8_t *b)
     return n;
 }
 
+/* Slip detector for the error class C2 is structurally blind to: the drive
+ * loses servo tracking and streams coherent audio from the WRONG position —
+ * CIRC decodes it perfectly, no flag fires (see RECOVERY_STRATEGY.md, the
+ * 8,852-sample observation). Two reads related by a pure shift are such a
+ * slip; two reads with in-place differences are data instability. */
+#define ADSC_SHIFT_MAX 588   /* samples: half a sector */
+#define ADSC_ANCHOR_BYTES 64
+
+int adsc_shift_find(const uint8_t *a, const uint8_t *b,
+                    int32_t *shift_samples)
+{
+    const int32_t center = ACCUDISC_BYTES_AUDIO / 2;
+    const uint8_t *anchor = a + center;
+
+    /* A silent/constant anchor matches anywhere — no signal, no verdict. */
+    int has_signal = 0;
+    for (int32_t i = 1; i < ADSC_ANCHOR_BYTES; i++)
+        has_signal |= anchor[i] != anchor[0];
+    if (!has_signal)
+        return 0;
+
+    for (int32_t d = -ADSC_SHIFT_MAX; d <= ADSC_SHIFT_MAX; d++) {
+        int32_t off = center + d * 4;
+
+        if (d == 0 || off < 0 ||
+            off + ADSC_ANCHOR_BYTES > (int32_t)ACCUDISC_BYTES_AUDIO)
+            continue;
+        if (memcmp(anchor, b + off, ADSC_ANCHOR_BYTES) != 0)
+            continue;
+        /* Anchor hit: the whole overlap must agree at this shift. */
+        int32_t bd = d * 4;
+        const uint8_t *pa = bd >= 0 ? a : a - bd;
+        const uint8_t *pb = bd >= 0 ? b + bd : b;
+        uint32_t len = ACCUDISC_BYTES_AUDIO - (uint32_t)(bd >= 0 ? bd : -bd);
+
+        if (memcmp(pa, pb, len) == 0) {
+            *shift_samples = d;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void map_store(uint8_t *map, uint32_t idx, uint8_t v)
 {
     if (map)
@@ -95,6 +138,7 @@ struct rd {
     uint32_t sector_len, audio_len, c2_len, sub_len;
     unsigned retries;
     int speed_dirty;  /* a ladder speed is set; restore before streaming */
+    int cur_speed;    /* last CDROM_SELECT_SPEED issued; -1 = unknown */
     uint8_t *flush;   /* cache-defeat throwaway, one audio sector */
     uint8_t *scratch; /* one sector, rescue/consensus candidate */
     uint8_t *samples; /* ADSC_SAMPLES_MAX sectors, consensus memory */
@@ -111,6 +155,16 @@ static void count_sense(struct rd *r)
         r->st.sense_other++;
 }
 
+/* Speed changes make real drives recalibrate (seconds each) — never issue
+ * a no-op change. */
+static void set_speed_once(struct rd *r, int speed)
+{
+    if (speed == r->cur_speed)
+        return;
+    accudisc_set_speed(r->dev, (unsigned)speed);
+    r->cur_speed = speed;
+}
+
 /* Rescue/consensus attempt n runs at ladder[min(n-1, len-1)]. */
 static void ladder_speed(struct rd *r, unsigned attempt)
 {
@@ -122,7 +176,7 @@ static void ladder_speed(struct rd *r, unsigned attempt)
     idx = attempt - 1;
     if (idx >= req->ladder_len)
         idx = (unsigned)req->ladder_len - 1;
-    accudisc_set_speed(r->dev, req->speed_ladder[idx]);
+    set_speed_once(r, req->speed_ladder[idx]);
     r->speed_dirty = 1;
 }
 
@@ -131,7 +185,7 @@ static void ladder_restore(struct rd *r)
 {
     if (!r->speed_dirty)
         return;
-    accudisc_set_speed(r->dev, r->req->speed_x); /* 0 = drive default */
+    set_speed_once(r, r->req->speed_x); /* 0 = drive default */
     r->speed_dirty = 0;
 }
 
@@ -280,6 +334,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                                               : 0;
     r.c2_len = r.sector_len - r.audio_len - r.sub_len;
     r.retries = req->retries ? req->retries : ADSC_DEFAULT_RETRIES;
+    r.cur_speed = -1;
 
     uint32_t overlap = req->overlap_sectors;
     if (overlap > ADSC_OVERLAP_MAX)
@@ -352,6 +407,9 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
             if (diff == 0)
                 continue;
+            int32_t sh;
+            if (adsc_shift_find(sec, alt, &sh))
+                r.st.slips++;
             diffb[s] = diff;
             unsigned used = 0;
             if (consensus(&r, lba + s, sec, alt, &used)) {
@@ -383,7 +441,15 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             }
         }
 
-        /* Verify passes: independent rereads must agree byte-for-byte. */
+        /* Verify passes: independent rereads must agree byte-for-byte.
+         * Passes run at streaming speed — real drives recalibrate on every
+         * speed change, so chunk-granular speed switching thrashes. Speed
+         * diversity against persistent same-speed misreads (RECOVERY_
+         * STRATEGY R6) comes from the consensus/rescue rereads, which run
+         * the ladder per sector; whole-range speed-diverse sweeps are the
+         * caller's layer (multiple reads at different speed_x). Pick ladder
+         * rungs that differ from speed_x so the deciding votes really are
+         * speed-diverse. */
         for (unsigned pass = 2; pass <= passes; pass++) {
             ladder_restore(&r);
             cache_defeat(&r, lba);
@@ -398,6 +464,11 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
                 if (!hard2[s] && diff == 0)
                     continue; /* confirmed */
+                if (!hard2[s]) {
+                    int32_t sh;
+                    if (adsc_shift_find(sec, alt, &sh))
+                        r.st.slips++;
+                }
                 diffb[s] = diff;
                 unsigned used = 0;
                 if (consensus(&r, lba + s, sec, hard2[s] ? NULL : alt,
