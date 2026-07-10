@@ -10,10 +10,13 @@ set(ACCUDISC_SOURCES
     mmc/mmc.c
     drive/features.c
     toc/toc.c
+    toc/fulltoc.c
     read/engine.c
-    # cdda/
+    cdda/crc16.c
+    cdda/subq.c
+    cdda/scan.c
+    meta/cdtext.c
     # write/
-    # meta/
 )
 
 add_library(accudisc SHARED ${ACCUDISC_SOURCES})

@@ -13,8 +13,10 @@ static void usage(FILE *to)
         "commands:\n"
         "  info           identify the drive (INQUIRY)\n"
         "  toc            list tracks (READ TOC, LBA)\n"
-        "  fulltoc FILE   dump the raw full TOC (sessions) to FILE\n"
+        "  fulltoc [FILE] parsed session structure, or raw dump to FILE\n"
         "  cdtext FILE    dump raw CD-Text packs to FILE (no file if absent)\n"
+        "  text           decode and print CD-Text (block 0)\n"
+        "  scan           MCN and per-track ISRCs from the Q subchannel\n"
         "  features       probe C2/subchannel capability (claim + smoke);\n"
         "                 exits 0 iff C2 is clearly usable\n"
         "  speed-report   print max/current read speed (mode page 2A)\n"
@@ -100,6 +102,121 @@ static int dump_blob(accudisc_device *dev, const char *path, const char *what,
     fclose(fp);
     accudisc_free(buf);
     fprintf(stderr, "accudisc: %s: %u bytes -> %s\n", what, len, path);
+    return 0;
+}
+
+static int cmd_fulltoc_parsed(accudisc_device *dev)
+{
+    uint8_t *raw = NULL;
+    uint32_t len = 0;
+    int err = accudisc_read_full_toc(dev, &raw, &len);
+
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "full TOC", err);
+
+    accudisc_fulltoc ft;
+    err = accudisc_fulltoc_parse(raw, len, &ft);
+    accudisc_free(raw);
+    if (err != ACCUDISC_OK) {
+        fprintf(stderr, "accudisc: full TOC parse: %s\n",
+                accudisc_strerror(err));
+        return 1;
+    }
+
+    printf("sessions %u..%u\n", ft.first_session, ft.last_session);
+    for (uint16_t i = 0; i < ft.entry_count; i++) {
+        const accudisc_fulltoc_entry *e = &ft.entries[i];
+
+        if (e->point == 0xA0)
+            printf("session %u first_track %u disc_type 0x%02x\n",
+                   e->session, e->pmin, e->psec);
+        else if (e->point == 0xA1)
+            printf("session %u last_track %u\n", e->session, e->pmin);
+        else if (e->point == 0xA2)
+            printf("session %u leadout lba %d\n", e->session,
+                   accudisc_msf_to_lba(e->pmin, e->psec, e->pframe));
+        else if (e->point <= 0x63)
+            printf("session %u track %u lba %d ctrl 0x%x\n", e->session,
+                   e->point,
+                   accudisc_msf_to_lba(e->pmin, e->psec, e->pframe),
+                   e->adr_ctrl & 0x0f);
+        else
+            printf("session %u point 0x%02x\n", e->session, e->point);
+    }
+    return 0;
+}
+
+static int cmd_text(accudisc_device *dev)
+{
+    uint8_t *raw = NULL;
+    uint32_t len = 0;
+    int err = accudisc_read_cdtext(dev, &raw, &len);
+
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "CD-Text", err);
+
+    accudisc_cdtext *text = NULL;
+    err = accudisc_cdtext_decode(raw, len, &text);
+    accudisc_free(raw);
+    if (err != ACCUDISC_OK) {
+        fprintf(stderr, "accudisc: CD-Text decode: %s\n",
+                accudisc_strerror(err));
+        return 1;
+    }
+
+    if (text->album.title[0])
+        printf("album title %s\n", text->album.title);
+    if (text->album.performer[0])
+        printf("album performer %s\n", text->album.performer);
+    if (text->album.code[0])
+        printf("album upc %s\n", text->album.code);
+    for (unsigned t = 1; t <= 99; t++) {
+        const accudisc_cdtext_strings *s = &text->track[t];
+
+        if (s->title[0])
+            printf("track %u title %s\n", t, s->title);
+        if (s->performer[0])
+            printf("track %u performer %s\n", t, s->performer);
+        if (s->songwriter[0])
+            printf("track %u songwriter %s\n", t, s->songwriter);
+        if (s->code[0])
+            printf("track %u isrc %s\n", t, s->code);
+    }
+    accudisc_free(text);
+    return 0;
+}
+
+static int cmd_scan(accudisc_device *dev)
+{
+    accudisc_toc toc;
+    int err = accudisc_read_toc(dev, &toc);
+
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "read toc", err);
+
+    char mcn[14];
+    err = accudisc_scan_mcn(dev, toc.tracks[0].lba, mcn);
+    if (err == ACCUDISC_OK)
+        printf("mcn %s\n", mcn);
+    else if (err == ACCUDISC_ERR_NOTFOUND)
+        printf("mcn absent\n");
+    else
+        return fail_dev(dev, "mcn scan", err);
+
+    for (uint8_t i = 0; i < toc.track_count; i++) {
+        const accudisc_track *t = &toc.tracks[i];
+        char isrc[13];
+
+        if (!ACCUDISC_TRACK_IS_AUDIO(t))
+            continue;
+        err = accudisc_scan_isrc(dev, t->lba, isrc);
+        if (err == ACCUDISC_OK)
+            printf("track %u isrc %s\n", t->number, isrc);
+        else if (err == ACCUDISC_ERR_NOTFOUND)
+            printf("track %u isrc absent\n", t->number);
+        else
+            return fail_dev(dev, "isrc scan", err);
+    }
     return 0;
 }
 
@@ -408,10 +525,16 @@ int main(int argc, char **argv)
         rc = cmd_info(dev);
     else if (!strcmp(command, "toc"))
         rc = cmd_toc(dev);
-    else if (!strcmp(command, "fulltoc") && i < argc)
-        rc = dump_blob(dev, argv[i], "full TOC", accudisc_read_full_toc);
+    else if (!strcmp(command, "fulltoc"))
+        rc = i < argc ? dump_blob(dev, argv[i], "full TOC",
+                                  accudisc_read_full_toc)
+                      : cmd_fulltoc_parsed(dev);
     else if (!strcmp(command, "cdtext") && i < argc)
         rc = dump_blob(dev, argv[i], "CD-Text", accudisc_read_cdtext);
+    else if (!strcmp(command, "text"))
+        rc = cmd_text(dev);
+    else if (!strcmp(command, "scan"))
+        rc = cmd_scan(dev);
     else if (!strcmp(command, "features"))
         rc = cmd_features(dev);
     else if (!strcmp(command, "speed-report"))

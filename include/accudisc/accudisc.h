@@ -58,7 +58,9 @@ typedef enum accudisc_err {
     ACCUDISC_ERR_SENSE       = -5, /* drive returned CHECK CONDITION */
     ACCUDISC_ERR_SHORT       = -6, /* response shorter than required */
     ACCUDISC_ERR_UNSUPPORTED = -7, /* not supported by drive or build */
-    ACCUDISC_ERR_CANCELLED   = -8  /* stopped by cancel flag or sink */
+    ACCUDISC_ERR_CANCELLED   = -8, /* stopped by cancel flag or sink */
+    ACCUDISC_ERR_CRC         = -9, /* checksum failed (Q frame, CD-Text pack) */
+    ACCUDISC_ERR_NOTFOUND    = -10 /* scanned data not present (MCN/ISRC) */
 } accudisc_err;
 
 /* Static human-readable name for an accudisc_err value. */
@@ -263,6 +265,103 @@ ACCUDISC_API int accudisc_read_cdda(accudisc_device *dev,
                                     const accudisc_read_req *req,
                                     accudisc_sink_fn sink, void *user,
                                     accudisc_read_stats *stats);
+
+/* ---- MSF <-> LBA ----------------------------------------------------------
+ * MSF as it appears on disc; LBA 0 == 00:02:00 (the 150-sector pregap). */
+ACCUDISC_API int32_t accudisc_msf_to_lba(uint8_t m, uint8_t s, uint8_t f);
+ACCUDISC_API void accudisc_lba_to_msf(int32_t lba, uint8_t *m, uint8_t *s,
+                                      uint8_t *f);
+
+/* ---- Q subchannel ----------------------------------------------------------
+ * Pure decoders for the 96-byte raw interleaved P-W stream captured with
+ * ACCUDISC_SUB_RAW (bit 6 of each byte is the Q channel). All BCD fields are
+ * decoded to binary; CRC-16 (X.25) is verified before anything is trusted. */
+
+/* Q ADR values */
+#define ACCUDISC_Q_POSITION 1 /* track/index/relative + absolute MSF */
+#define ACCUDISC_Q_MCN      2 /* media catalog number */
+#define ACCUDISC_Q_ISRC     3 /* track ISRC */
+
+typedef struct accudisc_q {
+    uint8_t adr;      /* ACCUDISC_Q_* */
+    uint8_t control;  /* CTRL nibble: bit 2 = data track, bit 0 = pre-emphasis */
+    uint8_t crc_ok;
+    /* adr 1 (position): */
+    uint8_t tno;      /* track number (0 in lead-in) */
+    uint8_t index;    /* 0 = pregap */
+    uint8_t rel_m, rel_s, rel_f; /* within track */
+    uint8_t abs_m, abs_s, abs_f; /* on disc */
+    /* adr 2: */
+    char mcn[14];     /* 13 digits, NUL-terminated */
+    /* adr 3: */
+    char isrc[13];    /* 12 chars, NUL-terminated */
+} accudisc_q;
+
+/* Extract the 12 Q bytes from one raw interleaved 96-byte subcode block. */
+ACCUDISC_API void accudisc_sub_extract_q(const uint8_t raw[96], uint8_t q[12]);
+
+/* Parse a 12-byte Q frame. Fields are filled best-effort either way;
+ * returns ACCUDISC_ERR_CRC when the frame's CRC does not verify. */
+ACCUDISC_API int accudisc_q_parse(const uint8_t q[12], accudisc_q *out);
+
+/* Convenience: scan the disc's Q stream (raw subchannel reads starting at
+ * lba) for an MCN / a track ISRC; ACCUDISC_ERR_NOTFOUND when the disc does
+ * not carry one. For ISRC, start at the target track's first sector. */
+ACCUDISC_API int accudisc_scan_mcn(accudisc_device *dev, uint32_t lba,
+                                   char mcn[14]);
+ACCUDISC_API int accudisc_scan_isrc(accudisc_device *dev, uint32_t lba,
+                                    char isrc[13]);
+
+/* ---- full TOC (session structure) ------------------------------------------
+ * Parses the blob from accudisc_read_full_toc (READ TOC format 2): raw
+ * lead-in entries per session. Points 0x01-0x63 are track starts (address in
+ * pmin/psec/pframe); 0xA0 = first track (+ disc type in psec), 0xA1 = last
+ * track, 0xA2 = lead-out start. MSF values are kept raw — use
+ * accudisc_msf_to_lba. */
+
+typedef struct accudisc_fulltoc_entry {
+    uint8_t session;
+    uint8_t adr_ctrl; /* ADR high nibble, CTRL low */
+    uint8_t point;
+    uint8_t min, sec, frame;    /* running time in lead-in */
+    uint8_t pmin, psec, pframe; /* the entry's address / payload */
+} accudisc_fulltoc_entry;
+
+typedef struct accudisc_fulltoc {
+    uint8_t first_session;
+    uint8_t last_session;
+    uint16_t entry_count;
+    accudisc_fulltoc_entry entries[136]; /* 99 tracks + 3/session + slack */
+} accudisc_fulltoc;
+
+ACCUDISC_API int accudisc_fulltoc_parse(const uint8_t *raw, uint32_t len,
+                                        accudisc_fulltoc *out);
+
+/* ---- CD-Text ----------------------------------------------------------------
+ * Decodes the blob from accudisc_read_cdtext (18-byte packs). v0 scope:
+ * block 0 (first language), single-byte character packs, types title /
+ * performer / songwriter / UPC-ISRC. Bytes are copied through verbatim —
+ * no character-set conversion, the caller interprets (passes UTF-8-authored
+ * discs through undamaged). Packs failing CRC are skipped. */
+
+#define ACCUDISC_TEXT_MAX 160
+
+typedef struct accudisc_cdtext_strings {
+    char title[ACCUDISC_TEXT_MAX];
+    char performer[ACCUDISC_TEXT_MAX];
+    char songwriter[ACCUDISC_TEXT_MAX];
+    char code[ACCUDISC_TEXT_MAX]; /* UPC (album) / ISRC (track), type 0x8E */
+} accudisc_cdtext_strings;
+
+typedef struct accudisc_cdtext {
+    accudisc_cdtext_strings album;      /* pack track number 0 */
+    accudisc_cdtext_strings track[100]; /* indexed by track number, 1..99 */
+} accudisc_cdtext;
+
+/* *out is library-allocated (accudisc_free). ACCUDISC_ERR_SHORT when the
+ * blob holds no usable packs. */
+ACCUDISC_API int accudisc_cdtext_decode(const uint8_t *raw, uint32_t len,
+                                        accudisc_cdtext **out);
 
 #ifdef __cplusplus
 }
