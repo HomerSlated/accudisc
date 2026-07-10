@@ -48,6 +48,12 @@ static void usage(FILE *to)
         "  --verify P     read everything P times (cache-defeated); sectors\n"
         "                 whose reads disagree are resolved by consensus or\n"
         "                 marked suspect (default 1 = off)\n"
+        "  --overlap K    boundary overlap check: extend each chunk by K\n"
+        "                 sectors and verify the seam against the next chunk\n"
+        "                 (default 0 = off, max 8)\n"
+        "  --ladder LIST  speed ladder for problem-sector rereads, e.g.\n"
+        "                 32,16,8,4 — attempt n runs at the n-th speed;\n"
+        "                 pass speed is restored for streaming\n"
         "  --speed X      set drive read speed to Xx first (best-effort)\n"
         "  --map          render a per-sector disc map when done\n"
         "  -q             quiet: no progress line\n");
@@ -440,6 +446,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     const char *pcm_path = NULL, *c2_path = NULL, *sub_path = NULL;
     long start = 0, count = -1;
     int want_map = 0;
+    uint16_t ladder[8];
 
     req.c2 = ACCUDISC_C2_PTRS;
     for (int i = 0; i < argc; i++) {
@@ -479,6 +486,19 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             req.c2_retries = (uint8_t)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--verify") && i + 1 < argc)
             req.verify_passes = (uint8_t)strtol(argv[++i], NULL, 0);
+        else if (!strcmp(a, "--overlap") && i + 1 < argc)
+            req.overlap_sectors = (uint8_t)strtol(argv[++i], NULL, 0);
+        else if (!strcmp(a, "--ladder") && i + 1 < argc) {
+            char *p = argv[++i];
+            while (*p && req.ladder_len < 8) {
+                ladder[req.ladder_len++] = (uint16_t)strtol(p, &p, 10);
+                if (*p == ',')
+                    p++;
+                else
+                    break;
+            }
+            req.speed_ladder = ladder;
+        }
         else if (!strcmp(a, "--speed") && i + 1 < argc)
             req.speed_x = (uint16_t)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--map"))

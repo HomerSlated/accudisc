@@ -1,7 +1,8 @@
 /* The commanded-read engine: chunked READ CD with C2/subchannel companions,
  * per-sector retry narrowing with cache-defeat, zero-fill alignment, the
  * frame-accurate status map, and the caller-selected accuracy strategies —
- * C2-guided rescue rereads and multi-pass consensus verification.
+ * C2-guided rescue, multi-pass consensus verification, boundary overlap
+ * checking, and a descending speed ladder for problem-sector rereads.
  *
  * Invariants carried over from c2read:
  *  - AUDIO/C2/SUB for a sector always come from one READ CD transfer; when
@@ -28,6 +29,8 @@
 #define ADSC_FLUSH_DISTANCE 5000
 /* Audio-only sector_len >= 2352 bounds the chunk at 27; round up. */
 #define ADSC_CHUNK_MAX 32
+#define ADSC_OVERLAP_MAX 8
+#define ADSC_SPAN_MAX (ADSC_CHUNK_MAX + ADSC_OVERLAP_MAX)
 /* Independent samples kept during consensus (the two passes + extras). */
 #define ADSC_SAMPLES_MAX 6
 
@@ -91,6 +94,7 @@ struct rd {
     unsigned sector_type;
     uint32_t sector_len, audio_len, c2_len, sub_len;
     unsigned retries;
+    int speed_dirty;  /* a ladder speed is set; restore before streaming */
     uint8_t *flush;   /* cache-defeat throwaway, one audio sector */
     uint8_t *scratch; /* one sector, rescue/consensus candidate */
     uint8_t *samples; /* ADSC_SAMPLES_MAX sectors, consensus memory */
@@ -105,6 +109,30 @@ static void count_sense(struct rd *r)
         r->st.sense_hardware++;
     else
         r->st.sense_other++;
+}
+
+/* Rescue/consensus attempt n runs at ladder[min(n-1, len-1)]. */
+static void ladder_speed(struct rd *r, unsigned attempt)
+{
+    const accudisc_read_req *req = r->req;
+    unsigned idx;
+
+    if (!req->ladder_len || !req->speed_ladder)
+        return;
+    idx = attempt - 1;
+    if (idx >= req->ladder_len)
+        idx = (unsigned)req->ladder_len - 1;
+    accudisc_set_speed(r->dev, req->speed_ladder[idx]);
+    r->speed_dirty = 1;
+}
+
+/* Back to the pass speed (or the drive's own management) for streaming. */
+static void ladder_restore(struct rd *r)
+{
+    if (!r->speed_dirty)
+        return;
+    accudisc_set_speed(r->dev, r->req->speed_x); /* 0 = drive default */
+    r->speed_dirty = 0;
 }
 
 /* A back-to-back reread often just replays the drive cache; read one sector
@@ -125,18 +153,20 @@ static int read_sector(struct rd *r, uint32_t lba, uint8_t *dst)
                             r->req->sub, dst, r->sector_len);
 }
 
-/* One chunk with per-sector fallback. primary: zero-fill hard sectors and
- * account them; otherwise (verify passes) only mark hard[] and leave data
- * alone — a pass-2 failure is a disagreement, not a hard error. */
-static void read_chunk(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
-                       uint8_t *hard, int primary)
+/* One span of total sectors with per-sector fallback. Sectors below
+ * primary_n are deliverable: on unrecoverable failure they are zero-filled
+ * and accounted as hard errors. Sectors at/above primary_n (overlap
+ * extension, or all of a verify pass with primary_n 0) are only marked in
+ * hard[] — their failure is a missing signal, not a hard error. */
+static void read_span(struct rd *r, uint32_t lba, uint32_t total,
+                      uint8_t *buf, uint8_t *hard, uint32_t primary_n)
 {
-    memset(hard, 0, n);
-    if (adsc_mmc_read_cd(r->dev, lba, n, r->sector_type, r->req->c2,
+    memset(hard, 0, total);
+    if (adsc_mmc_read_cd(r->dev, lba, total, r->sector_type, r->req->c2,
                          r->req->sub, buf, r->sector_len) == ACCUDISC_OK)
         return;
 
-    for (uint32_t s = 0; s < n; s++) {
+    for (uint32_t s = 0; s < total; s++) {
         uint8_t *sec = buf + (size_t)s * r->sector_len;
         uint32_t cur = lba + s;
         int src = -1;
@@ -151,7 +181,7 @@ static void read_chunk(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
         if (src == ACCUDISC_OK)
             continue;
         hard[s] = 1;
-        if (primary) {
+        if (s < primary_n) {
             memset(sec, 0, r->audio_len);
             memset(sec + r->audio_len, 0xff, r->c2_len);
             if (r->sub_len)
@@ -171,6 +201,7 @@ static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
 
     *attempts = 0;
     for (unsigned a = 1; a <= r->req->c2_retries && best > 0; a++) {
+        ladder_speed(r, a);
         cache_defeat(r, lba);
         if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
             continue;
@@ -185,7 +216,7 @@ static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
     *bits = best;
 }
 
-/* Two passes disagreed on this sector. Collect further independent reads
+/* Two reads disagreed on this sector. Collect further independent reads
  * until any two audio payloads (among everything seen) match byte-for-byte;
  * the agreeing read replaces the sector. 1 = recovered, 0 = suspect. */
 static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
@@ -201,6 +232,7 @@ static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
     }
 
     for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2; a++) {
+        ladder_speed(r, a);
         cache_defeat(r, lba);
         if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
             continue;
@@ -249,27 +281,39 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     r.c2_len = r.sector_len - r.audio_len - r.sub_len;
     r.retries = req->retries ? req->retries : ADSC_DEFAULT_RETRIES;
 
+    uint32_t overlap = req->overlap_sectors;
+    if (overlap > ADSC_OVERLAP_MAX)
+        overlap = ADSC_OVERLAP_MAX;
+
     uint32_t max_chunk = ADSC_MAX_XFER / r.sector_len;
     if (max_chunk > ADSC_CHUNK_MAX)
         max_chunk = ADSC_CHUNK_MAX;
-    uint32_t chunk = req->chunk_sectors ? req->chunk_sectors : max_chunk;
-    if (chunk > max_chunk)
-        chunk = max_chunk;
+    if (overlap >= max_chunk)
+        overlap = max_chunk - 1;
+    uint32_t chunk = req->chunk_sectors ? req->chunk_sectors
+                                        : max_chunk - overlap;
+    if (chunk > max_chunk - overlap)
+        chunk = max_chunk - overlap;
 
     unsigned passes = req->verify_passes >= 2 ? req->verify_passes : 1;
 
     if (req->speed_x)
         accudisc_set_speed(dev, req->speed_x);
 
-    uint8_t *buf = malloc((size_t)chunk * r.sector_len);
+    uint8_t *buf = malloc((size_t)(chunk + overlap) * r.sector_len);
     uint8_t *buf2 = passes > 1 ? malloc((size_t)chunk * r.sector_len) : NULL;
+    uint8_t *prev_ext =
+        overlap ? malloc((size_t)overlap * r.sector_len) : NULL;
     r.flush = malloc(ACCUDISC_BYTES_AUDIO);
     r.scratch = malloc(r.sector_len);
     r.samples = malloc((size_t)ADSC_SAMPLES_MAX * r.sector_len);
     int rc = ACCUDISC_OK;
 
+    uint8_t prev_ext_hard[ADSC_OVERLAP_MAX];
+    uint32_t prev_ext_n = 0;
+
     if (!buf || !r.flush || !r.scratch || !r.samples ||
-        (passes > 1 && !buf2)) {
+        (passes > 1 && !buf2) || (overlap && !prev_ext)) {
         rc = ACCUDISC_ERR_NOMEM;
         goto out;
     }
@@ -278,7 +322,12 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     uint32_t remaining = req->count;
     while (remaining > 0) {
         uint32_t n = remaining < chunk ? remaining : chunk;
-        uint8_t hard[ADSC_CHUNK_MAX], hard2[ADSC_CHUNK_MAX];
+        /* Extension only exists when another chunk will follow it. */
+        uint32_t ext = (overlap && remaining > n)
+                           ? (remaining - n < overlap ? remaining - n
+                                                      : overlap)
+                           : 0;
+        uint8_t hard[ADSC_SPAN_MAX], hard2[ADSC_CHUNK_MAX];
         uint8_t recov[ADSC_CHUNK_MAX] = {0}, susp[ADSC_CHUNK_MAX] = {0};
         unsigned att[ADSC_CHUNK_MAX] = {0};
         uint32_t bits[ADSC_CHUNK_MAX] = {0}, diffb[ADSC_CHUNK_MAX] = {0};
@@ -288,7 +337,30 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             goto out;
         }
 
-        read_chunk(&r, lba, n, buf, hard, 1);
+        ladder_restore(&r);
+        read_span(&r, lba, n + ext, buf, hard, n);
+
+        /* Boundary overlap check: the previous chunk read past its seam;
+         * those extension sectors must byte-match this chunk's head. A
+         * mismatch means one of the two reads slipped — consensus decides. */
+        for (uint32_t s = 0; s < prev_ext_n && s < n; s++) {
+            if (prev_ext_hard[s] || hard[s] || susp[s])
+                continue;
+            uint8_t *sec = buf + (size_t)s * r.sector_len;
+            const uint8_t *alt = prev_ext + (size_t)s * r.sector_len;
+            uint32_t diff = adsc_audio_diff(sec, alt);
+
+            if (diff == 0)
+                continue;
+            diffb[s] = diff;
+            unsigned used = 0;
+            if (consensus(&r, lba + s, sec, alt, &used)) {
+                recov[s] = 1;
+                att[s] += used;
+            } else {
+                susp[s] = 1;
+            }
+        }
 
         for (uint32_t s = 0; s < n; s++)
             if (!hard[s] && r.c2_len)
@@ -306,15 +378,16 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                           &bits[s], &used);
                 if (bits[s] == 0 && before > 0) {
                     recov[s] = 1;
-                    att[s] = used;
+                    att[s] += used;
                 }
             }
         }
 
         /* Verify passes: independent rereads must agree byte-for-byte. */
         for (unsigned pass = 2; pass <= passes; pass++) {
+            ladder_restore(&r);
             cache_defeat(&r, lba);
-            read_chunk(&r, lba, n, buf2, hard2, 0);
+            read_span(&r, lba, n, buf2, hard2, 0);
             for (uint32_t s = 0; s < n; s++) {
                 if (hard[s] || susp[s])
                     continue;
@@ -390,13 +463,23 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             }
         }
 
+        /* Stash the extension as the seam sample for the next chunk. */
+        if (ext) {
+            memcpy(prev_ext, buf + (size_t)n * r.sector_len,
+                   (size_t)ext * r.sector_len);
+            memcpy(prev_ext_hard, hard + n, ext);
+        }
+        prev_ext_n = ext;
+
         lba += n;
         remaining -= n;
     }
+    ladder_restore(&r);
 
 out:
     free(buf);
     free(buf2);
+    free(prev_ext);
     free(r.flush);
     free(r.scratch);
     free(r.samples);

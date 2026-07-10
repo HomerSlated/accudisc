@@ -282,7 +282,7 @@ typedef struct accudisc_read_req {
     uint8_t retries;   /* per-sector attempts after a chunk fails; 0 = 2 */
     uint16_t chunk_sectors; /* per READ CD command; 0 = max under 64 KiB */
     uint16_t speed_x;  /* set read speed first; 0 = leave as-is */
-    /* accuracy strategy (both off = single-pass fast read): */
+    /* accuracy strategy (all off = single-pass fast read): */
     uint8_t c2_retries;    /* cache-defeated rereads hunting a C2-clean copy
                             * of each flagged sector (requires c2 != NONE);
                             * best read wins, whole sector replaced so
@@ -291,6 +291,19 @@ typedef struct accudisc_read_req {
                             * compare audio; disagreeing sectors resolved by
                             * consensus (any two identical independent reads),
                             * else delivered best-effort as SUSPECT */
+    uint8_t overlap_sectors; /* boundary overlap check: extend each chunk
+                            * read by k trailing sectors and compare them
+                            * against the next chunk's head — catches drive
+                            * slips at chunk seams that back-to-back reads
+                            * can't see. Mismatches go to consensus.
+                            * 0 = off; clamped to 8 */
+    /* speed ladder for problem-sector rereads: rescue/consensus attempt n
+     * runs at ladder[min(n-1, len-1)] (e.g. {32,16,8,4} — descend toward
+     * slow, careful reads). The pass speed (speed_x, or the drive default)
+     * is restored before the next streaming chunk. NULL/0 = reread at the
+     * current speed. Caller-owned; must outlive the call. */
+    const uint16_t *speed_ladder;
+    uint8_t ladder_len;
     uint8_t *status_map;        /* count bytes, or NULL; see status map above */
     const volatile int *cancel; /* poll: nonzero aborts at the next chunk; or NULL */
 } accudisc_read_req;
