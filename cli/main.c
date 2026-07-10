@@ -603,9 +603,13 @@ int main(int argc, char **argv)
     const char *device = "/dev/sr0";
     const char *driver = NULL;    /* --driver: NULL = vendor features off */
     const char *drivers_dir = NULL;
-    int i = 1;
+    const char *command = NULL;
+    char *rest[64];
+    int nrest = 0;
 
-    for (; i < argc; i++) {
+    /* Global flags are accepted anywhere on the line; the first bare word
+     * is the command, everything else is handed to it. */
+    for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
 
         if (!strcmp(a, "--device") && i + 1 < argc)
@@ -620,15 +624,16 @@ int main(int argc, char **argv)
         } else if (!strcmp(a, "--help") || !strcmp(a, "-h")) {
             usage(stdout);
             return 0;
-        } else
-            break;
+        } else if (!command)
+            command = a;
+        else if (nrest < (int)(sizeof(rest) / sizeof(rest[0])))
+            rest[nrest++] = argv[i];
     }
-    if (i >= argc) {
+    if (!command) {
         usage(stderr);
         return 2;
     }
 
-    const char *command = argv[i++];
     if (!strcmp(command, "version")) {
         printf("accudisc %s\n", accudisc_version_string());
         return 0;
@@ -660,11 +665,11 @@ int main(int argc, char **argv)
     else if (!strcmp(command, "toc"))
         rc = cmd_toc(dev);
     else if (!strcmp(command, "fulltoc"))
-        rc = i < argc ? dump_blob(dev, argv[i], "full TOC",
-                                  accudisc_read_full_toc)
-                      : cmd_fulltoc_parsed(dev);
-    else if (!strcmp(command, "cdtext") && i < argc)
-        rc = dump_blob(dev, argv[i], "CD-Text", accudisc_read_cdtext);
+        rc = nrest > 0 ? dump_blob(dev, rest[0], "full TOC",
+                                   accudisc_read_full_toc)
+                       : cmd_fulltoc_parsed(dev);
+    else if (!strcmp(command, "cdtext") && nrest > 0)
+        rc = dump_blob(dev, rest[0], "CD-Text", accudisc_read_cdtext);
     else if (!strcmp(command, "text"))
         rc = cmd_text(dev);
     else if (!strcmp(command, "scan"))
@@ -678,9 +683,9 @@ int main(int argc, char **argv)
         if (rc != ACCUDISC_OK)
             rc = fail_dev(dev, "stop", rc);
     } else if (!strcmp(command, "read"))
-        rc = cmd_read(dev, argc - i, argv + i);
+        rc = cmd_read(dev, nrest, rest);
     else if (!strcmp(command, "cxscan"))
-        rc = cmd_cxscan(dev, argc - i, argv + i);
+        rc = cmd_cxscan(dev, nrest, rest);
     else {
         fprintf(stderr, "accudisc: unknown command '%s'\n", command);
         usage(stderr);
