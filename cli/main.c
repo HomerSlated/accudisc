@@ -1,7 +1,10 @@
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <accudisc/accudisc.h>
 
@@ -56,6 +59,10 @@ static void usage(FILE *to)
         "                 pass speed is restored for streaming\n"
         "  --speed X      set drive read speed to Xx first (best-effort)\n"
         "  --map          render a per-sector disc map when done\n"
+        "  --map-file F   live status map: F is exactly COUNT bytes, one\n"
+        "                 status byte per sector (ACCUDISC_MAP_* encoding,\n"
+        "                 see accudisc.h), updated in place during the read;\n"
+        "                 mmap it MAP_SHARED to watch progress/state live\n"
         "  --progress-fd N  machine progress on fd N, newline-delimited:\n"
         "                 'progress <done> <total>' lines, then a final\n"
         "                 'summary hard= c2= recovered= suspect= rereads=\n"
@@ -491,6 +498,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     accudisc_read_req req = {0};
     struct read_ctx ctx = {0};
     const char *pcm_path = NULL, *c2_path = NULL, *sub_path = NULL;
+    const char *map_path = NULL;
     long start = 0, count = -1;
     int want_map = 0;
     uint16_t ladder[8];
@@ -551,6 +559,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             req.speed_x = (uint16_t)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--map"))
             want_map = 1;
+        else if (!strcmp(a, "--map-file") && i + 1 < argc)
+            map_path = argv[++i];
         else if (!strcmp(a, "--progress-fd") && i + 1 < argc)
             ctx.prog_fd = (int)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "-q"))
@@ -586,10 +596,31 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     req.count = (uint32_t)count;
     ctx.total = req.count;
 
-    uint8_t *map = calloc(req.count, 1);
-    if (!map) {
-        fprintf(stderr, "accudisc: out of memory\n");
-        return 2;
+    /* The status map is the library's caller-owned buffer; --map-file just
+     * makes that buffer a MAP_SHARED file so any other process can watch
+     * the same bytes live. ftruncate zero-fills, and 0 = PENDING. */
+    uint8_t *map;
+    if (map_path) {
+        int mfd = open(map_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+        if (mfd < 0 || ftruncate(mfd, (off_t)req.count) != 0) {
+            perror(map_path);
+            if (mfd >= 0)
+                close(mfd);
+            return 1;
+        }
+        map = mmap(NULL, req.count, PROT_READ | PROT_WRITE, MAP_SHARED,
+                   mfd, 0);
+        close(mfd);
+        if (map == MAP_FAILED) {
+            perror(map_path);
+            return 1;
+        }
+    } else {
+        map = calloc(req.count, 1);
+        if (!map) {
+            fprintf(stderr, "accudisc: out of memory\n");
+            return 2;
+        }
     }
     req.status_map = map;
 
@@ -672,7 +703,10 @@ out:
         fclose(ctx.c2f);
     if (ctx.subf)
         fclose(ctx.subf);
-    free(map);
+    if (map_path)
+        munmap(map, req.count); /* the file stays for post-mortem reads */
+    else
+        free(map);
     return ret;
 }
 
