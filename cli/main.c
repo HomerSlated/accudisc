@@ -56,7 +56,11 @@ static void usage(FILE *to)
         "                 pass speed is restored for streaming\n"
         "  --speed X      set drive read speed to Xx first (best-effort)\n"
         "  --map          render a per-sector disc map when done\n"
-        "  -q             quiet: no progress line\n"
+        "  --progress-fd N  machine progress on fd N, newline-delimited:\n"
+        "                 'progress <done> <total>' lines, then a final\n"
+        "                 'summary hard= c2= recovered= suspect= rereads=\n"
+        "                 slips=' line (stable format; -q does not mute it)\n"
+        "  -q             quiet: no human progress line\n"
         "\n"
         "exit codes (all commands):\n"
         "  0  completed, no caveats\n"
@@ -398,6 +402,7 @@ struct read_ctx {
     FILE *pcm, *c2f, *subf;
     uint32_t total, done;
     int quiet;
+    int prog_fd; /* -1 = off; machine 'progress <done> <total>' lines */
     double last_prog;
     const uint8_t *map;
 };
@@ -427,10 +432,13 @@ static int read_sink(void *user, const accudisc_chunk *c)
     ctx->done += c->nsec;
 
     double now = mono_now();
-    if (!ctx->quiet && (now - ctx->last_prog >= 0.25 ||
-                        ctx->done == ctx->total)) {
-        fprintf(stderr, "\r  %u / %u sectors (%.1f%%) ", ctx->done,
-                ctx->total, 100.0 * ctx->done / ctx->total);
+    if (now - ctx->last_prog >= 0.25 || ctx->done == ctx->total) {
+        if (!ctx->quiet)
+            fprintf(stderr, "\r  %u / %u sectors (%.1f%%) ", ctx->done,
+                    ctx->total, 100.0 * ctx->done / ctx->total);
+        if (ctx->prog_fd >= 0)
+            dprintf(ctx->prog_fd, "progress %u %u\n", ctx->done,
+                    ctx->total);
         ctx->last_prog = now;
     }
     return 0;
@@ -487,6 +495,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     int want_map = 0;
     uint16_t ladder[8];
 
+    ctx.prog_fd = -1;
     req.c2 = ACCUDISC_C2_PTRS;
     for (int i = 0; i < argc; i++) {
         const char *a = argv[i];
@@ -542,6 +551,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             req.speed_x = (uint16_t)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--map"))
             want_map = 1;
+        else if (!strcmp(a, "--progress-fd") && i + 1 < argc)
+            ctx.prog_fd = (int)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "-q"))
             ctx.quiet = 1;
         else {
@@ -637,6 +648,18 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                 (unsigned long long)st.slips);
     if (want_map)
         render_map(map, req.count);
+    /* Machine mirror of the summary block — the stable interface for
+     * subprocess consumers (the human block above is not). */
+    if (ctx.prog_fd >= 0)
+        dprintf(ctx.prog_fd,
+                "summary hard=%llu c2=%llu recovered=%llu suspect=%llu "
+                "rereads=%llu slips=%llu\n",
+                (unsigned long long)st.hard_errors,
+                (unsigned long long)st.sectors_flagged,
+                (unsigned long long)st.sectors_recovered,
+                (unsigned long long)st.sectors_suspect,
+                (unsigned long long)st.rereads,
+                (unsigned long long)st.slips);
     /* Exit 3 = delivered but degraded: the caller should gate before
      * trusting the image (relative signals only — see the header). */
     ret = (st.hard_errors || st.sectors_suspect || st.sectors_flagged) ? 3
