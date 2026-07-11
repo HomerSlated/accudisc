@@ -269,16 +269,23 @@ ACCUDISC_API int accudisc_probe_accurate_stream(accudisc_device *dev,
  * an I/O failure.
  *
  * REPORT-ONLY: AccuDisc never applies the lag to delivered bitmaps; it is
- * a factual drive property for the caller to record and apply. Judge the
- * result by its sharpness: peak_milli well above runner_milli means an
- * unambiguous alignment. */
+ * a factual drive property for the caller to record and apply. peak_milli
+ * is agreement against a PROXY oracle (reread instability), which cannot
+ * see bytes that fail identically in paired reads — expect it well below
+ * a database oracle's precision. A verdict is only returned when the peak
+ * dominates every other shift (3x contrast) on top of evidence floors, so
+ * an OK result is already an unambiguous alignment. */
 typedef struct accudisc_c2_lag {
-    int32_t  lag_pairs;    /* the peak shift, in sample pairs (4 bytes) */
-    uint32_t flags_used;   /* fired C2 bits contributing at the peak */
-    uint32_t diff_bytes;   /* unstable byte observations accumulated */
-    uint16_t peak_milli;   /* flags landing on unstable bytes at the peak, ‰ */
-    uint16_t runner_milli; /* best agreement at any OTHER shift, ‰ */
+    int32_t  lag_pairs;     /* the peak shift, in sample pairs (4 bytes) */
+    uint32_t sectors_active;/* C2-active sectors seen in the scan pass */
+    uint32_t flags_used;    /* fired C2 bits contributing at the peak */
+    uint32_t diff_bytes;    /* unstable byte observations accumulated */
+    uint16_t peak_milli;    /* flags landing on unstable bytes at the peak, ‰ */
+    uint16_t runner_milli;  /* best agreement at any OTHER shift, ‰ */
 } accudisc_c2_lag;
+/* On ACCUDISC_ERR_NOTFOUND the struct is still filled with whatever
+ * evidence was gathered (all-zero = no C2 fired in the span at all), so
+ * callers can distinguish "clean span" from "C2 seen but inconclusive". */
 
 ACCUDISC_API int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba,
                                        uint32_t count, accudisc_c2_lag *out);

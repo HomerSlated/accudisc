@@ -37,14 +37,18 @@ component. "Caller" below always means the application invoking AccuDisc.
 
 Probes (both report-only, no database dependency):
 
-1. **C2↔audio lag probe** — **supported** (`accudisc c2lag`,
-   `accudisc_probe_c2_lag`). The C2 bitmap is misaligned with the audio by
-   a small per-drive sample-pair count (PX-716A: 2 pairs); the probe
-   cross-correlates fired flags with per-byte reread instability over
-   candidate shifts — no external oracle needed. Requires media where C2
-   actually fires; inconclusive spans return "absent" (exit 3) rather than
-   a made-up number. Sign convention documented in the header; never
-   applied to delivered bitmaps.
+1. **C2↔audio lag probe** — **supported and live-validated** (`accudisc
+   c2lag`, `accudisc_probe_c2_lag`). The C2 bitmap is misaligned with the
+   audio by a small per-drive sample-pair count; the probe cross-correlates
+   fired flags with per-byte instability across *streaming-window* rereads
+   over candidate shifts — no external oracle needed. On the PX-716A it
+   returns `pairs=2`, reproducibly, matching cdda2img's AR-oracle
+   measurement of the same drive. Requires media where C2 actually fires
+   (and fires only under streaming reads — isolated post-seek single-sector
+   rereads decode marginal defects cleanly, measured); inconclusive spans
+   return "absent" (exit 3) with their evidence counts rather than a
+   made-up number. Sign convention documented in the header; never applied
+   to delivered bitmaps.
 2. **Achievable-speed-ladder probe** — planned: set each candidate speed,
    verify what the drive actually achieves (mode page 2A can lie; timed
    reads do not).

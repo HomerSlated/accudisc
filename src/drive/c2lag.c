@@ -11,18 +11,23 @@
  * nothing, so the span is scanned for C2-active sectors first and only
  * those are reread. */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "../mmc/mmc.h"
 #include "c2lag.h"
 
-/* Per C2-active sector: reads taken (all pairs scored) and the reread
- * budget. 4 reads = 6 pairs per sector. */
-#define C2LAG_READS_PER_SECTOR 4
-/* C2-active sectors used; damage regions are bursty, so a few dozen
- * sectors already carry thousands of flag observations. */
-#define C2LAG_MAX_TARGETS 32
+/* Rereads are STREAMING WINDOW reads, not isolated single-sector reads:
+ * marginal defects fire C2 while the drive streams and decode cleanly on
+ * a careful post-seek single-sector read (verified live on the PX-716A —
+ * a streaming pass flagged ~40 sectors where per-sector rereads of the
+ * same LBAs flagged zero). Each C2-active chunk from the scan pass is
+ * reread as a whole window with a run-up lead-in so the drive is in
+ * streaming state when it crosses the damage. */
+#define C2LAG_WINDOW_READS 4   /* window reads paired = 6 pairs/sector */
+#define C2LAG_MAX_WINDOWS  8   /* C2-active chunks reread */
+#define C2LAG_RUNUP        16  /* streaming run-up sectors before a window */
 /* Cache-defeat distance, as in the read engine. */
 #define C2LAG_FLUSH_DISTANCE 5000
 
@@ -75,17 +80,28 @@ int adsc_c2lag_result(const struct adsc_c2lag_acc *acc, accudisc_c2_lag *out)
         if (i != best && prec[i] > runner)
             runner = prec[i];
 
-    if (acc->flags[best] < ADSC_C2LAG_MIN_FLAGS ||
-        acc->diff_bytes < ADSC_C2LAG_MIN_DIFFS ||
-        prec[best] < ADSC_C2LAG_MIN_PEAK_MILLI)
-        return ACCUDISC_ERR_NOTFOUND;
+    if (getenv("ACCUDISC_C2LAG_DEBUG"))
+        for (unsigned i = 0; i < ADSC_C2LAG_NSHIFT; i++)
+            fprintf(stderr, "c2lag shift %+d: tp=%llu flags=%llu prec=%u\n",
+                    (int)i - ADSC_C2LAG_MAX_SHIFT,
+                    (unsigned long long)acc->tp[i],
+                    (unsigned long long)acc->flags[i], (unsigned)prec[i]);
 
+    /* Fill the evidence either way — an inconclusive verdict with its
+     * numbers is diagnosable; a bare error is not. */
     out->lag_pairs = (int32_t)best - ADSC_C2LAG_MAX_SHIFT;
     out->flags_used = (uint32_t)acc->flags[best];
     out->diff_bytes = (uint32_t)(acc->diff_bytes > 0xffffffffu
                                      ? 0xffffffffu : acc->diff_bytes);
     out->peak_milli = (uint16_t)prec[best];
     out->runner_milli = (uint16_t)runner;
+
+    if (acc->flags[best] < ADSC_C2LAG_MIN_FLAGS ||
+        acc->tp[best] < ADSC_C2LAG_MIN_TP ||
+        acc->diff_bytes < ADSC_C2LAG_MIN_DIFFS ||
+        prec[best] < ADSC_C2LAG_MIN_PEAK_MILLI ||
+        prec[best] < ADSC_C2LAG_MIN_CONTRAST * runner)
+        return ACCUDISC_ERR_NOTFOUND;
     return ACCUDISC_OK;
 }
 
@@ -116,25 +132,27 @@ int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba, uint32_t count,
 {
     const uint32_t sector_len = ACCUDISC_BYTES_AUDIO + ACCUDISC_BYTES_C2;
     const uint32_t chunk = 24; /* keeps the transfer under 64 KiB */
+    const uint32_t wmax = chunk + C2LAG_RUNUP;
 
     if (!dev || !out || count == 0)
         return ACCUDISC_ERR_INVAL;
     memset(out, 0, sizeof(*out));
 
     uint8_t *buf = malloc((size_t)chunk * sector_len);
-    uint8_t *reads = malloc((size_t)C2LAG_READS_PER_SECTOR * sector_len);
+    uint8_t *win = malloc((size_t)C2LAG_WINDOW_READS * wmax * sector_len);
     uint8_t *flush = malloc(ACCUDISC_BYTES_AUDIO);
-    uint32_t targets[C2LAG_MAX_TARGETS];
-    uint32_t ntargets = 0;
+    struct { uint32_t lba, n; } windows[C2LAG_MAX_WINDOWS];
+    uint32_t nwin = 0;
     int rc = ACCUDISC_ERR_NOTFOUND;
 
-    if (!buf || !reads || !flush) {
+    if (!buf || !win || !flush) {
         rc = ACCUDISC_ERR_NOMEM;
         goto out_free;
     }
 
-    /* Pass 1: scan the span for C2-active sectors (the probe's fuel). */
-    for (uint32_t off = 0; off < count && ntargets < C2LAG_MAX_TARGETS;
+    /* Pass 1: stream the span chunk by chunk and remember which chunks
+     * carry fired C2 (the probe's fuel). */
+    for (uint32_t off = 0; off < count && nwin < C2LAG_MAX_WINDOWS;
          off += chunk) {
         uint32_t n = count - off < chunk ? count - off : chunk;
 
@@ -142,45 +160,58 @@ int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba, uint32_t count,
                              ACCUDISC_C2_PTRS, ACCUDISC_SUB_NONE, buf,
                              sector_len) != ACCUDISC_OK)
             continue; /* hard sectors carry no flags; skip the chunk */
-        for (uint32_t s = 0; s < n && ntargets < C2LAG_MAX_TARGETS; s++)
-            if (c2_bits(buf + (size_t)s * sector_len))
-                targets[ntargets++] = lba + off + s;
-    }
-    if (ntargets == 0)
-        goto out_free; /* clean span: honestly inconclusive */
 
-    /* Pass 2: independent rereads of each active sector; score every pair
-     * of successful reads. Flags are non-deterministic read to read, so
-     * flag-free rereads simply contribute nothing. */
+        uint32_t fired = 0;
+        for (uint32_t s = 0; s < n; s++)
+            fired += c2_bits(buf + (size_t)s * sector_len) != 0;
+        out->sectors_active += fired;
+        if (fired) {
+            windows[nwin].lba = lba + off;
+            windows[nwin].n = n;
+            nwin++;
+        }
+    }
+    if (nwin == 0)
+        goto out_free; /* no C2 anywhere in the span: honestly inconclusive */
+
+    /* Pass 2: reread each active chunk as a streaming window (run-up
+     * lead-in, cache-defeated between reads) and score every pair of
+     * successful window reads per sector. */
     struct adsc_c2lag_acc acc;
     memset(&acc, 0, sizeof(acc));
 
-    for (uint32_t t = 0; t < ntargets; t++) {
+    for (uint32_t w = 0; w < nwin; w++) {
+        uint32_t wlba = windows[w].lba >= lba + C2LAG_RUNUP
+                            ? windows[w].lba - C2LAG_RUNUP : lba;
+        uint32_t wn = windows[w].lba + windows[w].n - wlba;
         unsigned got = 0;
 
-        for (unsigned k = 0; k < C2LAG_READS_PER_SECTOR; k++) {
-            cache_defeat(dev, targets[t], lba, flush);
-            if (adsc_mmc_read_cd(dev, targets[t], 1, ADSC_SECTOR_CDDA,
+        for (unsigned k = 0; k < C2LAG_WINDOW_READS; k++) {
+            cache_defeat(dev, wlba, lba, flush);
+            if (adsc_mmc_read_cd(dev, wlba, wn, ADSC_SECTOR_CDDA,
                                  ACCUDISC_C2_PTRS, ACCUDISC_SUB_NONE,
-                                 reads + (size_t)got * sector_len,
+                                 win + (size_t)got * wmax * sector_len,
                                  sector_len) == ACCUDISC_OK)
                 got++;
         }
         for (unsigned i = 0; i + 1 < got; i++)
-            for (unsigned j = i + 1; j < got; j++) {
-                const uint8_t *a = reads + (size_t)i * sector_len;
-                const uint8_t *b = reads + (size_t)j * sector_len;
+            for (unsigned j = i + 1; j < got; j++)
+                for (uint32_t s = 0; s < wn; s++) {
+                    const uint8_t *a = win +
+                        ((size_t)i * wmax + s) * sector_len;
+                    const uint8_t *b = win +
+                        ((size_t)j * wmax + s) * sector_len;
 
-                adsc_c2lag_add(&acc, a, a + ACCUDISC_BYTES_AUDIO,
-                               b, b + ACCUDISC_BYTES_AUDIO);
-            }
+                    adsc_c2lag_add(&acc, a, a + ACCUDISC_BYTES_AUDIO,
+                                   b, b + ACCUDISC_BYTES_AUDIO);
+                }
     }
 
     rc = adsc_c2lag_result(&acc, out);
 
 out_free:
     free(buf);
-    free(reads);
+    free(win);
     free(flush);
     return rc;
 }

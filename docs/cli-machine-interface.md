@@ -87,17 +87,24 @@ One `key=value` token line on success (parse tokens, not positions; new
 keys may be appended):
 
 ```
-c2lag pairs=<L> peak=<milli> runner=<milli> flags=<n> diffs=<n>
+c2lag pairs=<L> peak=<milli> runner=<milli> flags=<n> diffs=<n> active=<n>
 ```
 
 `pairs` is the drive's C2-bitmap/audio lag in sample pairs — sign
 convention: a fired bit at bitmap position `i` describes audio byte
 `i - 4*pairs` (positive = bitmap trails the audio). `peak`/`runner` are the
 flag/instability agreement (‰) at the winning shift and at the best other
-shift — a wide gap means an unambiguous alignment. Exit 3 = inconclusive
-(not enough C2/instability evidence; the probe needs damaged media where
-flags fire). Report-only: AccuDisc never applies the lag to delivered
-bitmaps.
+shift; the agreement is against a *proxy* oracle (reread instability), so
+absolute values run well below database-oracle precision — a verdict is
+only printed when the peak dominates every other shift (3× contrast) on
+top of evidence floors, so any success line is already unambiguous.
+`active` = C2-firing sectors found in the scan pass. Exit 3 = inconclusive
+(the stderr message distinguishes "no C2 fired in the span" from "C2 seen
+but evidence too thin"); the probe needs damaged media where flags fire,
+under streaming reads at a speed where the defect is marginal.
+Report-only: AccuDisc never applies the lag to delivered bitmaps.
+Validated on the PX-716A: `pairs=2`, matching the oracle-based
+measurement of the same drive by cdda2img.
 
 ## `read` inline lead-in capture
 

@@ -14,8 +14,14 @@
 /* Evidence floors below which no verdict is honest. */
 #define ADSC_C2LAG_MIN_FLAGS 64
 #define ADSC_C2LAG_MIN_DIFFS 64
-/* An alignment exists only if the peak is a majority signal. */
-#define ADSC_C2LAG_MIN_PEAK_MILLI 500
+#define ADSC_C2LAG_MIN_TP    32
+/* The reread diff is a PROXY oracle: wrong bytes that fail identically in
+ * both paired reads are invisible to it, so absolute agreement runs well
+ * below a true oracle's (measured: 249 permil where the oracle gave 993 on
+ * the same drive/defect). Conclusiveness is therefore CONTRAST — the peak
+ * must dominate every other shift — plus a modest absolute floor. */
+#define ADSC_C2LAG_MIN_PEAK_MILLI 100
+#define ADSC_C2LAG_MIN_CONTRAST   3 /* peak >= 3x runner-up */
 
 struct adsc_c2lag_acc {
     uint64_t tp[ADSC_C2LAG_NSHIFT];    /* flags landing on unstable bytes */

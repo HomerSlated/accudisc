@@ -435,17 +435,25 @@ static int cmd_c2lag(accudisc_device *dev, int argc, char **argv)
     int err = accudisc_probe_c2_lag(dev, (uint32_t)start, (uint32_t)count,
                                     &lag);
     if (err == ACCUDISC_ERR_NOTFOUND) {
-        fprintf(stderr, "accudisc: c2lag: inconclusive — not enough C2/"
-                        "instability evidence in this span (try a damaged "
-                        "span, or a higher --speed to make flags fire)\n");
+        if (lag.sectors_active == 0)
+            fprintf(stderr, "accudisc: c2lag: inconclusive — no C2 fired "
+                            "anywhere in this span (try a damaged span, or "
+                            "a higher --speed to make flags fire)\n");
+        else
+            fprintf(stderr, "accudisc: c2lag: inconclusive — %u C2-active "
+                            "sectors but the reread evidence is too thin "
+                            "(flags=%u diffs=%u peak=%u); try a larger "
+                            "span\n",
+                    lag.sectors_active, lag.flags_used, lag.diff_bytes,
+                    lag.peak_milli);
         return 3;
     }
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "c2lag", err);
 
-    printf("c2lag pairs=%d peak=%u runner=%u flags=%u diffs=%u\n",
+    printf("c2lag pairs=%d peak=%u runner=%u flags=%u diffs=%u active=%u\n",
            lag.lag_pairs, lag.peak_milli, lag.runner_milli, lag.flags_used,
-           lag.diff_bytes);
+           lag.diff_bytes, lag.sectors_active);
     return 0;
 }
 

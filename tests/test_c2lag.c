@@ -84,6 +84,17 @@ int main(void)
     adsc_c2lag_add(&acc, aud_a, c2_a, aud_b, c2_b);
     assert(adsc_c2lag_result(&acc, &res) == ACCUDISC_ERR_NOTFOUND);
 
+    /* Two equal peaks (each wrong byte flagged at BOTH +1 and -1) is
+     * ambiguous: contrast gate must refuse a verdict. */
+    memset(&acc, 0, sizeof(acc));
+    for (unsigned sec = 0; sec < 4; sec++) {
+        make_pair(aud_a, c2_a, aud_b, c2_b, 30, 1, sec * 7);
+        for (int w = 0; w < 30; w++)
+            set_flag(c2_a, 40 + w * 67, -1); /* mirror peak at -1 */
+        adsc_c2lag_add(&acc, aud_a, c2_a, aud_b, c2_b);
+    }
+    assert(adsc_c2lag_result(&acc, &res) == ACCUDISC_ERR_NOTFOUND);
+
     /* Flags incoherent with instability (planted far off every candidate
      * shift) must not fake a peak: below the peak floor -> inconclusive. */
     memset(&acc, 0, sizeof(acc));
