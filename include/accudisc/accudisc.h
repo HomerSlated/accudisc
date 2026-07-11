@@ -290,6 +290,32 @@ typedef struct accudisc_c2_lag {
 ACCUDISC_API int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba,
                                        uint32_t count, accudisc_c2_lag *out);
 
+/* Achievable-speed-ladder probe. CDROM_SELECT_SPEED is best-effort and
+ * mode page 2A reports the SETTING, not reality — the only ground truth
+ * for what a rung delivers is a timed streaming read. For each candidate
+ * speed this sets it, lets the drive settle with a warm-up read, then
+ * times a streaming read (~1 second's worth of audio at the requested
+ * speed) in a fresh window inside [lba, lba+count) — each rung gets its
+ * own window so the drive cache can never serve a remeasure.
+ *
+ * Interpretation notes: measured_cx is achieved rate at THIS radius (CAV
+ * drives read outer tracks faster — probe mid-disc for a representative
+ * figure); rungs whose measured_cx collapse to the same value are
+ * indistinguishable on this rig (bus or firmware limited) and one of them
+ * suffices in a recovery ladder. The drive is LEFT at the last candidate
+ * tested (speed is never auto-restored, as with reads). */
+typedef struct accudisc_speed_rung {
+    uint16_t requested_x;  /* the candidate passed in */
+    uint16_t reported_x;   /* page 2A current speed after the set (0 = n/a) */
+    uint16_t measured_cx;  /* timed streaming rate, centi-x (531 = 5.31x) */
+} accudisc_speed_rung;
+
+ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
+                                             uint32_t lba, uint32_t count,
+                                             const uint16_t *candidates,
+                                             uint8_t ncand,
+                                             accudisc_speed_rung *out);
+
 /* ---- status map ------------------------------------------------------------
  * The frame-accurate progress surface. The caller owns a buffer of one byte
  * per sector and passes it to a read (later: write) request; the engine

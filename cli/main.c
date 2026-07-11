@@ -23,6 +23,9 @@ static void usage(FILE *to)
         "  features       probe C2/subchannel capability (claim + smoke);\n"
         "                 exits 0 iff C2 is clearly usable\n"
         "  speed-report   print max/current read speed (mode page 2A)\n"
+        "  speeds         probe which speed settings the drive really\n"
+        "                 honours: [--start L] [--ladder LIST] — timed\n"
+        "                 streaming reads per rung; page 2A vs measured\n"
         "  c2lag          probe the drive's C2-bitmap/audio alignment\n"
         "                 [--start L] [--count N] [--speed X] — point it at\n"
         "                 a DAMAGED span (C2 must fire); report-only\n"
@@ -395,6 +398,72 @@ static int cmd_features(accudisc_device *dev)
         printf("accurate_stream unknown\n");
 
     return f.c2_verdict == ACCUDISC_C2_SUPPORTED ? 0 : 1;
+}
+
+/* Achievable-speed probe: which --speed / --ladder values are real on
+ * this drive+bus+disc, by timed streaming reads. */
+static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
+{
+    uint16_t cand[16];
+    uint8_t ncand = 0;
+    long start = -1;
+
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--start") && i + 1 < argc)
+            start = strtol(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--ladder") && i + 1 < argc) {
+            char *p = argv[++i];
+            while (*p && ncand < 16) {
+                cand[ncand++] = (uint16_t)strtol(p, &p, 10);
+                if (*p == ',')
+                    p++;
+                else
+                    break;
+            }
+        } else {
+            usage(stderr);
+            return 1;
+        }
+    }
+
+    accudisc_toc toc;
+    int err = accudisc_read_toc(dev, &toc);
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "read toc", err);
+
+    if (ncand == 0) {
+        /* Default rungs: the common ladder, capped at the drive's page 2A
+         * maximum (the claim is good enough to pick candidates; the timed
+         * read below is what judges them). */
+        static const uint16_t common[] = {52, 48, 40, 32, 24, 16, 8, 4};
+        unsigned max_kbps = 0, cur_kbps = 0;
+        unsigned max_x = accudisc_get_speed(dev, &max_kbps, &cur_kbps)
+                             == ACCUDISC_OK ? max_kbps / 176 : 52;
+
+        for (size_t i = 0; i < sizeof(common) / sizeof(common[0]); i++)
+            if (common[i] <= max_x)
+                cand[ncand++] = common[i];
+        if (ncand == 0)
+            cand[ncand++] = (uint16_t)(max_x ? max_x : 1);
+    }
+
+    /* Middle half of the disc: representative CAV radius, headroom for
+     * one fresh window per rung. */
+    uint32_t lba = start >= 0 ? (uint32_t)start : toc.leadout_lba / 4;
+    uint32_t count = toc.leadout_lba > lba ? toc.leadout_lba - lba : 0;
+    if (count > toc.leadout_lba / 2 && start < 0)
+        count = toc.leadout_lba / 2;
+
+    accudisc_speed_rung rungs[16];
+    err = accudisc_probe_speed_ladder(dev, lba, count, cand, ncand, rungs);
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "speed probe", err);
+
+    for (uint8_t i = 0; i < ncand; i++)
+        printf("speed req=%u page2a=%u measured=%u.%02u\n",
+               rungs[i].requested_x, rungs[i].reported_x,
+               rungs[i].measured_cx / 100, rungs[i].measured_cx % 100);
+    return 0;
 }
 
 /* C2/audio alignment probe. The result is a factual drive property (like
@@ -886,6 +955,8 @@ int main(int argc, char **argv)
         rc = cmd_speed_report(dev);
     else if (!strcmp(command, "c2lag"))
         rc = cmd_c2lag(dev, nrest, rest);
+    else if (!strcmp(command, "speeds"))
+        rc = cmd_speeds(dev, nrest, rest);
     else if (!strcmp(command, "stop")) {
         rc = accudisc_spindle_stop(dev);
         if (rc != ACCUDISC_OK)

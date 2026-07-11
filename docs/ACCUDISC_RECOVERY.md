@@ -49,9 +49,14 @@ Probes (both report-only, no database dependency):
    return "absent" (exit 3) with their evidence counts rather than a
    made-up number. Sign convention documented in the header; never applied
    to delivered bitmaps.
-2. **Achievable-speed-ladder probe** — planned: set each candidate speed,
-   verify what the drive actually achieves (mode page 2A can lie; timed
-   reads do not).
+2. **Achievable-speed-ladder probe** — **supported and live-validated**
+   (`accudisc speeds`, `accudisc_probe_speed_ladder`). Sets each candidate
+   speed and measures what the drive actually delivers with a timed
+   streaming read in a per-rung cache-fresh window; page 2A is reported
+   alongside so quantization is visible. Live finding (PX-716A): req=16
+   snaps to 8 (page 2A admits it), and 40/32 both deliver ~17–18× at
+   mid-disc — so a 32,16,8,4 ladder really ran 18,8,8,4. Distinct measured
+   rates = the real rungs to feed `read --ladder`.
 
 ---
 
@@ -268,8 +273,9 @@ accudisc_read_cdda(dev, &req, sink_fn, sink_user, &st);
 - **C2 lag probe**: `accudisc_probe_c2_lag(dev, lba, count,
   accudisc_c2_lag *out)` — lag in sample pairs plus peak/runner agreement
   so callers can judge sharpness; `ACCUDISC_ERR_NOTFOUND` = inconclusive.
-- **Planned probe entry point** (placeholder, not yet in the header):
-  `accudisc_probe_speed_ladder(dev, uint16_t *rungs, size_t *n)`.
+- **Speed ladder probe**: `accudisc_probe_speed_ladder(dev, lba, count,
+  candidates, ncand, accudisc_speed_rung out[])` — per rung: requested vs
+  page-2A-reported vs timed-read-measured (centi-x).
 
 ### 3.5 Access via the binary
 
@@ -415,9 +421,9 @@ agent-facing recovery docs; this section is the coordination contract).
   same-speed consensus, vendor 0xD8 capture) stay rejected unless new
   evidence is produced. The unbuilt items (C2-weighted voting, mode-page
   01 diagnostic) stay unbuilt until a justifying disc exists.
-- **Current planned work** (AccuDisc side, in order):
-  achievable-speed-ladder probe, Python/Rust bindings + man page (must
-  mirror `docs/ATTRIBUTION.md`). The write/burn path is paused by user
+- **Current planned work** (AccuDisc side): Python/Rust bindings + man
+  page (must mirror `docs/ATTRIBUTION.md`). Both drive probes (C2 lag,
+  speed ladder) are shipped. The write/burn path is paused by user
   decision — do not start it.
 - **When updating this document**: keep §1's table synchronized with the
   CLI/API actually on `main`, move items between supported/planned/missing

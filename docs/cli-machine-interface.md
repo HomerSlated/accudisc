@@ -106,6 +106,23 @@ Report-only: AccuDisc never applies the lag to delivered bitmaps.
 Validated on the PX-716A: `pairs=2`, matching the oracle-based
 measurement of the same drive by cdda2img.
 
+## `speeds` output (stdout)
+
+One line per candidate rung (tokens; new keys may be appended):
+
+```
+speed req=<x> page2a=<x> measured=<x.xx>
+```
+
+`req` = the setting asked for, `page2a` = what mode page 2A reports after
+the set (0 = unavailable), `measured` = achieved rate from a timed
+streaming read at that rung's own cache-fresh window. `measured` is the
+ground truth; `page2a` is shown so quantization/clamping is visible (e.g.
+a drive snapping req=16 to 8). Measured rates are radius-dependent on CAV
+drives (default probe location: the middle half of the disc). The drive is
+left at the last candidate tested. Rungs with equal `measured` are one
+rung for ladder purposes.
+
 ## `read` inline lead-in capture
 
 `read --fulltoc FILE --cdtext FILE` dumps the raw READ TOC format-2 /

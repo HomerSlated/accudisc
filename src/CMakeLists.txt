@@ -10,6 +10,7 @@ set(ACCUDISC_SOURCES
     mmc/mmc.c
     drive/features.c
     drive/c2lag.c
+    drive/speeds.c
     drive/driver.c
     drive/offsets.c
     toc/toc.c
