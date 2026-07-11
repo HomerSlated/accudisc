@@ -81,6 +81,24 @@ state = m[i] & 0x0F        # sector start_lba + i
 severity = m[i] >> 4
 ```
 
+## `c2lag` output (stdout)
+
+One `key=value` token line on success (parse tokens, not positions; new
+keys may be appended):
+
+```
+c2lag pairs=<L> peak=<milli> runner=<milli> flags=<n> diffs=<n>
+```
+
+`pairs` is the drive's C2-bitmap/audio lag in sample pairs — sign
+convention: a fired bit at bitmap position `i` describes audio byte
+`i - 4*pairs` (positive = bitmap trails the audio). `peak`/`runner` are the
+flag/instability agreement (‰) at the winning shift and at the best other
+shift — a wide gap means an unambiguous alignment. Exit 3 = inconclusive
+(not enough C2/instability evidence; the probe needs damaged media where
+flags fire). Report-only: AccuDisc never applies the lag to delivered
+bitmaps.
+
 ## `read` inline lead-in capture
 
 `read --fulltoc FILE --cdtext FILE` dumps the raw READ TOC format-2 /

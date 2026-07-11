@@ -23,6 +23,9 @@ static void usage(FILE *to)
         "  features       probe C2/subchannel capability (claim + smoke);\n"
         "                 exits 0 iff C2 is clearly usable\n"
         "  speed-report   print max/current read speed (mode page 2A)\n"
+        "  c2lag          probe the drive's C2-bitmap/audio alignment\n"
+        "                 [--start L] [--count N] [--speed X] — point it at\n"
+        "                 a DAMAGED span (C2 must fire); report-only\n"
         "  stop           spin the spindle down (no eject)\n"
         "  read           read CD-DA sectors (see read options)\n"
         "  cxscan         hardware C1/C2/CU error census (needs --driver)\n"
@@ -392,6 +395,58 @@ static int cmd_features(accudisc_device *dev)
         printf("accurate_stream unknown\n");
 
     return f.c2_verdict == ACCUDISC_C2_SUPPORTED ? 0 : 1;
+}
+
+/* C2/audio alignment probe. The result is a factual drive property (like
+ * the read offset): print it, record it, never apply it here. */
+static int cmd_c2lag(accudisc_device *dev, int argc, char **argv)
+{
+    long start = 0, count = -1;
+    unsigned speed = 0;
+
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--start") && i + 1 < argc)
+            start = strtol(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--count") && i + 1 < argc)
+            count = strtol(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--speed") && i + 1 < argc)
+            speed = (unsigned)strtol(argv[++i], NULL, 0);
+        else {
+            usage(stderr);
+            return 1;
+        }
+    }
+    if (count < 0) {
+        accudisc_toc toc;
+        int err = accudisc_read_toc(dev, &toc);
+        if (err != ACCUDISC_OK)
+            return fail_dev(dev, "read toc", err);
+        if ((uint32_t)start >= toc.leadout_lba) {
+            fprintf(stderr, "accudisc: start %ld >= lead-out %u\n", start,
+                    toc.leadout_lba);
+            return 1;
+        }
+        count = (long)toc.leadout_lba - start;
+    }
+    if (speed)
+        accudisc_set_speed(dev, speed);
+
+    accudisc_c2_lag lag;
+    int err = accudisc_probe_c2_lag(dev, (uint32_t)start, (uint32_t)count,
+                                    &lag);
+    if (err == ACCUDISC_ERR_NOTFOUND) {
+        fprintf(stderr, "accudisc: c2lag: inconclusive — not enough C2/"
+                        "instability evidence in this span (try a damaged "
+                        "span, or a higher --speed to make flags fire)\n");
+        return 3;
+    }
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "c2lag", err);
+
+    printf("c2lag pairs=%d peak=%u runner=%u flags=%u diffs=%u\n",
+           lag.lag_pairs, lag.peak_milli, lag.runner_milli, lag.flags_used,
+           lag.diff_bytes);
+    return 0;
 }
 
 static int cmd_speed_report(accudisc_device *dev)
@@ -821,6 +876,8 @@ int main(int argc, char **argv)
         rc = cmd_features(dev);
     else if (!strcmp(command, "speed-report"))
         rc = cmd_speed_report(dev);
+    else if (!strcmp(command, "c2lag"))
+        rc = cmd_c2lag(dev, nrest, rest);
     else if (!strcmp(command, "stop")) {
         rc = accudisc_spindle_stop(dev);
         if (rc != ACCUDISC_OK)

@@ -35,13 +35,19 @@ component. "Caller" below always means the application invoking AccuDisc.
 | 2.12 | C1/C2/CU census | **Supported.** `cxscan` via the Plextor vendor driver (opt-in, external `.so`). |
 | 2.13 | Offset-domain management | **Honored by abstention.** AccuDisc never offset-corrects; it supplies the factual per-drive offset (`info` / `accudisc_read_offset`, REDUMP table). The one-domain discipline is the caller's. |
 
-Planned probes (both report-only, no database dependency):
+Probes (both report-only, no database dependency):
 
-1. **C2↔audio lag probe** — the C2 bitmap is misaligned with the audio by a
-   small per-drive sample-pair count (PX-716A: 2 pairs). Probe by
-   cross-correlating per-byte instability across rereads with the bitmap.
-2. **Achievable-speed-ladder probe** — set each candidate speed, verify what
-   the drive actually achieves (mode page 2A can lie; timed reads do not).
+1. **C2↔audio lag probe** — **supported** (`accudisc c2lag`,
+   `accudisc_probe_c2_lag`). The C2 bitmap is misaligned with the audio by
+   a small per-drive sample-pair count (PX-716A: 2 pairs); the probe
+   cross-correlates fired flags with per-byte reread instability over
+   candidate shifts — no external oracle needed. Requires media where C2
+   actually fires; inconclusive spans return "absent" (exit 3) rather than
+   a made-up number. Sign convention documented in the header; never
+   applied to delivered bitmaps.
+2. **Achievable-speed-ladder probe** — planned: set each candidate speed,
+   verify what the drive actually achieves (mode page 2A can lie; timed
+   reads do not).
 
 ---
 
@@ -255,8 +261,10 @@ accudisc_read_cdda(dev, &req, sink_fn, sink_user, &st);
 - **Zero-fill contract**: a hard-unreadable sector is delivered as PCM 0 /
   C2 all-ones / SUB 0; the synthetic C2 is excluded from stats. This is
   the erasure feed for downstream RS repair.
-- **Planned probe entry points** (placeholders, not yet in the header):
-  `accudisc_probe_c2_lag(dev, lba, int8_t *sample_pairs)` and
+- **C2 lag probe**: `accudisc_probe_c2_lag(dev, lba, count,
+  accudisc_c2_lag *out)` — lag in sample pairs plus peak/runner agreement
+  so callers can judge sharpness; `ACCUDISC_ERR_NOTFOUND` = inconclusive.
+- **Planned probe entry point** (placeholder, not yet in the header):
   `accudisc_probe_speed_ladder(dev, uint16_t *rungs, size_t *n)`.
 
 ### 3.5 Access via the binary
@@ -403,10 +411,10 @@ agent-facing recovery docs; this section is the coordination contract).
   same-speed consensus, vendor 0xD8 capture) stay rejected unless new
   evidence is produced. The unbuilt items (C2-weighted voting, mode-page
   01 diagnostic) stay unbuilt until a justifying disc exists.
-- **Current planned work** (AccuDisc side, in order): C2↔audio lag probe
-  (report-only), achievable-speed-ladder probe, Python/Rust bindings +
-  man page (must mirror `docs/ATTRIBUTION.md`). The write/burn path is
-  paused by user decision — do not start it.
+- **Current planned work** (AccuDisc side, in order):
+  achievable-speed-ladder probe, Python/Rust bindings + man page (must
+  mirror `docs/ATTRIBUTION.md`). The write/burn path is paused by user
+  decision — do not start it.
 - **When updating this document**: keep §1's table synchronized with the
   CLI/API actually on `main`, move items between supported/planned/missing
   with the commit hash that moved them, and keep the three audiences

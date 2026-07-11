@@ -9,6 +9,7 @@ set(ACCUDISC_SOURCES
     mmc/cdb.c
     mmc/mmc.c
     drive/features.c
+    drive/c2lag.c
     drive/driver.c
     drive/offsets.c
     toc/toc.c

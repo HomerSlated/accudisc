@@ -249,6 +249,40 @@ ACCUDISC_API int accudisc_probe_accurate_stream(accudisc_device *dev,
                                                 uint32_t lba,
                                                 uint8_t *accurate);
 
+/* C2/audio alignment probe. Some drives return the C2 bitmap misaligned
+ * with the audio bytes of the same sector by a small, constant, per-drive
+ * amount (e.g. 2 sample pairs on the Plextor PX-716A). Anything consuming
+ * fired bits as byte-exact damage positions (erasure feeds for parity
+ * repair) must correct for it — misplaced erasures actively harm decoding.
+ *
+ * Sign convention: a fired bit at bitmap position i describes audio byte
+ * i - 4*lag_pairs. Positive lag = the bitmap trails the audio.
+ *
+ * Method (no external reference needed): fired flags mark bytes the CIRC
+ * decoder failed on, and failed bytes are unstable across cache-defeated
+ * rereads — so flag positions are cross-correlated against reread
+ * instability over candidate shifts; the agreement peak is the lag. The
+ * probe scans [lba, lba+count) for C2-active sectors and rereads those, so
+ * it needs DAMAGED media (and a span/speed where flags actually fire):
+ * ACCUDISC_ERR_NOTFOUND = not enough C2/instability evidence to conclude
+ * (clean disc, clean span, or flags incoherent with instability) — never
+ * an I/O failure.
+ *
+ * REPORT-ONLY: AccuDisc never applies the lag to delivered bitmaps; it is
+ * a factual drive property for the caller to record and apply. Judge the
+ * result by its sharpness: peak_milli well above runner_milli means an
+ * unambiguous alignment. */
+typedef struct accudisc_c2_lag {
+    int32_t  lag_pairs;    /* the peak shift, in sample pairs (4 bytes) */
+    uint32_t flags_used;   /* fired C2 bits contributing at the peak */
+    uint32_t diff_bytes;   /* unstable byte observations accumulated */
+    uint16_t peak_milli;   /* flags landing on unstable bytes at the peak, ‰ */
+    uint16_t runner_milli; /* best agreement at any OTHER shift, ‰ */
+} accudisc_c2_lag;
+
+ACCUDISC_API int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba,
+                                       uint32_t count, accudisc_c2_lag *out);
+
 /* ---- status map ------------------------------------------------------------
  * The frame-accurate progress surface. The caller owns a buffer of one byte
  * per sector and passes it to a read (later: write) request; the engine
