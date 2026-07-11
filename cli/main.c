@@ -41,6 +41,9 @@ static void usage(FILE *to)
         "  --c2beb        request C2 + block-error bits (296 B) variant\n"
         "  --sub raw|q    also capture subchannel (raw P-W or formatted Q)\n"
         "  --any          expected sector type ANY (default CD-DA)\n"
+        "  --fulltoc FILE also dump the raw full TOC (single-spin capture)\n"
+        "  --cdtext FILE  also dump raw CD-Text packs; absence is noted\n"
+        "                 but does not affect the read's exit code\n"
         "  --pcm FILE     write raw s16le PCM here\n"
         "  --c2f FILE     write the C2 bitmap stream here\n"
         "  --subf FILE    write the subchannel stream here (needs --sub)\n"
@@ -498,7 +501,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     accudisc_read_req req = {0};
     struct read_ctx ctx = {0};
     const char *pcm_path = NULL, *c2_path = NULL, *sub_path = NULL;
-    const char *map_path = NULL;
+    const char *map_path = NULL, *fulltoc_path = NULL, *cdtext_path = NULL;
     long start = 0, count = -1;
     int want_map = 0;
     uint16_t ladder[8];
@@ -528,6 +531,10 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             }
         } else if (!strcmp(a, "--any"))
             req.any_type = 1;
+        else if (!strcmp(a, "--fulltoc") && i + 1 < argc)
+            fulltoc_path = argv[++i];
+        else if (!strcmp(a, "--cdtext") && i + 1 < argc)
+            cdtext_path = argv[++i];
         else if (!strcmp(a, "--pcm") && i + 1 < argc)
             pcm_path = argv[++i];
         else if (!strcmp(a, "--c2f") && i + 1 < argc)
@@ -595,6 +602,22 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     req.lba = (uint32_t)start;
     req.count = (uint32_t)count;
     ctx.total = req.count;
+
+    /* Inline lead-in capture: fold the metadata dumps into this invocation
+     * so a full capture is one spin-up instead of three. Absence (exit 3
+     * from dump_blob) is a note, not a failure; real I/O errors abort. */
+    if (fulltoc_path) {
+        int frc = dump_blob(dev, fulltoc_path, "full TOC",
+                            accudisc_read_full_toc);
+        if (frc != 0 && frc != 3)
+            return frc;
+    }
+    if (cdtext_path) {
+        int crc = dump_blob(dev, cdtext_path, "CD-Text",
+                            accudisc_read_cdtext);
+        if (crc != 0 && crc != 3)
+            return crc;
+    }
 
     /* The status map is the library's caller-owned buffer; --map-file just
      * makes that buffer a MAP_SHARED file so any other process can watch
