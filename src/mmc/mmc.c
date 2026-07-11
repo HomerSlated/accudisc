@@ -55,8 +55,9 @@ int adsc_mmc_read_toc_raw(struct accudisc_device *dev, unsigned format,
         return rc;
 
     uint32_t len = (uint32_t)(((unsigned)hdr[0] << 8) | hdr[1]) + 2;
-    if (len <= 4)
-        return ACCUDISC_ERR_SHORT; /* header only: no data on this disc */
+    if (len <= 4) /* header only: the drive answered, the disc simply has
+                   * no data of this format (e.g. no CD-Text) */
+        return ACCUDISC_ERR_NOTFOUND;
     if (len > 0xffff)
         len = 0xffff;
 

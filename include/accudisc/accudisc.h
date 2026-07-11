@@ -61,7 +61,9 @@ typedef enum accudisc_err {
     ACCUDISC_ERR_UNSUPPORTED = -7, /* not supported by drive or build */
     ACCUDISC_ERR_CANCELLED   = -8, /* stopped by cancel flag or sink */
     ACCUDISC_ERR_CRC         = -9, /* checksum failed (Q frame, CD-Text pack) */
-    ACCUDISC_ERR_NOTFOUND    = -10 /* scanned data not present (MCN/ISRC) */
+    ACCUDISC_ERR_NOTFOUND    = -10 /* requested data legitimately absent
+                                      (MCN/ISRC/CD-Text/driver/offset) —
+                                      never a transport failure */
 } accudisc_err;
 
 /* Static human-readable name for an accudisc_err value. */
@@ -198,8 +200,9 @@ ACCUDISC_API int accudisc_read_full_toc(accudisc_device *dev,
                                         uint8_t **out, uint32_t *len);
 
 /* Raw CD-Text packs from the lead-in (READ TOC format 5, undecoded).
- * Returns ACCUDISC_ERR_SHORT or ACCUDISC_ERR_SENSE when the disc carries
- * no CD-Text. */
+ * Returns ACCUDISC_ERR_NOTFOUND when the drive answers but the disc carries
+ * no CD-Text; a drive that rejects format 5 outright still surfaces as
+ * ACCUDISC_ERR_SENSE (deliberately not conflated with "absent"). */
 ACCUDISC_API int accudisc_read_cdtext(accudisc_device *dev,
                                       uint8_t **out, uint32_t *len);
 

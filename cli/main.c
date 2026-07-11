@@ -56,7 +56,15 @@ static void usage(FILE *to)
         "                 pass speed is restored for streaming\n"
         "  --speed X      set drive read speed to Xx first (best-effort)\n"
         "  --map          render a per-sector disc map when done\n"
-        "  -q             quiet: no progress line\n");
+        "  -q             quiet: no progress line\n"
+        "\n"
+        "exit codes (all commands):\n"
+        "  0  completed, no caveats\n"
+        "  1  usage / argument / local file error\n"
+        "  2  fatal: device, transport, or command could not complete\n"
+        "  3  completed with caveats: data absent (cdtext/fulltoc/scan),\n"
+        "     or read finished with hard/suspect/C2-flagged sectors\n"
+        "  (exception: 'features' keeps its frozen 0-iff-C2-usable contract)\n");
 }
 
 static int fail_dev(accudisc_device *dev, const char *what, int err)
@@ -69,7 +77,7 @@ static int fail_dev(accudisc_device *dev, const char *what, int err)
         fprintf(stderr, " (key=0x%x asc=0x%02x ascq=0x%02x)", s.key, s.asc,
                 s.ascq);
     fputc('\n', stderr);
-    return 1;
+    return 2;
 }
 
 static int cmd_info(accudisc_device *dev)
@@ -104,7 +112,7 @@ static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
             speed = (unsigned)strtol(argv[++i], NULL, 0);
         else {
             usage(stderr);
-            return 2;
+            return 1;
         }
     }
 
@@ -113,7 +121,7 @@ static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
         fprintf(stderr, "accudisc: counter scan unsupported via %s — a "
                         "vendor driver is required (--driver auto)\n",
                 accudisc_access_method(dev));
-        return 1;
+        return 2;
     }
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "counter scan begin", err);
@@ -185,6 +193,11 @@ static int dump_blob(accudisc_device *dev, const char *path, const char *what,
     uint32_t len = 0;
     int err = fn(dev, &buf, &len);
 
+    if (err == ACCUDISC_ERR_NOTFOUND) {
+        fprintf(stderr, "accudisc: %s: absent (no data on this disc)\n",
+                what);
+        return 3;
+    }
     if (err != ACCUDISC_OK)
         return fail_dev(dev, what, err);
 
@@ -207,6 +220,11 @@ static int cmd_fulltoc_parsed(accudisc_device *dev)
     uint32_t len = 0;
     int err = accudisc_read_full_toc(dev, &raw, &len);
 
+    if (err == ACCUDISC_ERR_NOTFOUND) {
+        fprintf(stderr, "accudisc: full TOC: absent (no data on this "
+                        "disc)\n");
+        return 3;
+    }
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "full TOC", err);
 
@@ -216,7 +234,7 @@ static int cmd_fulltoc_parsed(accudisc_device *dev)
     if (err != ACCUDISC_OK) {
         fprintf(stderr, "accudisc: full TOC parse: %s\n",
                 accudisc_strerror(err));
-        return 1;
+        return 2;
     }
 
     printf("sessions %u..%u\n", ft.first_session, ft.last_session);
@@ -248,6 +266,11 @@ static int cmd_text(accudisc_device *dev)
     uint32_t len = 0;
     int err = accudisc_read_cdtext(dev, &raw, &len);
 
+    if (err == ACCUDISC_ERR_NOTFOUND) {
+        fprintf(stderr, "accudisc: CD-Text: absent (no data on this "
+                        "disc)\n");
+        return 3;
+    }
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "CD-Text", err);
 
@@ -257,7 +280,7 @@ static int cmd_text(accudisc_device *dev)
     if (err != ACCUDISC_OK) {
         fprintf(stderr, "accudisc: CD-Text decode: %s\n",
                 accudisc_strerror(err));
-        return 1;
+        return 2;
     }
 
     if (text->album.title[0])
@@ -290,11 +313,13 @@ static int cmd_scan(accudisc_device *dev)
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "read toc", err);
 
+    int found = 0;
     char mcn[14];
     err = accudisc_scan_mcn(dev, toc.tracks[0].lba, mcn);
-    if (err == ACCUDISC_OK)
+    if (err == ACCUDISC_OK) {
         printf("mcn %s\n", mcn);
-    else if (err == ACCUDISC_ERR_NOTFOUND)
+        found = 1;
+    } else if (err == ACCUDISC_ERR_NOTFOUND)
         printf("mcn absent\n");
     else
         return fail_dev(dev, "mcn scan", err);
@@ -306,14 +331,15 @@ static int cmd_scan(accudisc_device *dev)
         if (!ACCUDISC_TRACK_IS_AUDIO(t))
             continue;
         err = accudisc_scan_isrc(dev, t->lba, isrc);
-        if (err == ACCUDISC_OK)
+        if (err == ACCUDISC_OK) {
             printf("track %u isrc %s\n", t->number, isrc);
-        else if (err == ACCUDISC_ERR_NOTFOUND)
+            found = 1;
+        } else if (err == ACCUDISC_ERR_NOTFOUND)
             printf("track %u isrc absent\n", t->number);
         else
             return fail_dev(dev, "isrc scan", err);
     }
-    return 0;
+    return found ? 0 : 3; /* nothing at all on this disc: a caveat */
 }
 
 static int cmd_features(accudisc_device *dev)
@@ -481,7 +507,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                 req.sub = ACCUDISC_SUB_Q;
             else {
                 usage(stderr);
-                return 2;
+                return 1;
             }
         } else if (!strcmp(a, "--any"))
             req.any_type = 1;
@@ -520,16 +546,16 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             ctx.quiet = 1;
         else {
             usage(stderr);
-            return 2;
+            return 1;
         }
     }
     if (sub_path && req.sub == ACCUDISC_SUB_NONE) {
         fprintf(stderr, "accudisc: --subf requires --sub raw|q\n");
-        return 2;
+        return 1;
     }
     if (c2_path && req.c2 == ACCUDISC_C2_NONE) {
         fprintf(stderr, "accudisc: --c2f requires C2 (drop --no-c2)\n");
-        return 2;
+        return 1;
     }
 
     if (count < 0) { /* default: through lead-out */
@@ -552,7 +578,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     uint8_t *map = calloc(req.count, 1);
     if (!map) {
         fprintf(stderr, "accudisc: out of memory\n");
-        return 1;
+        return 2;
     }
     req.status_map = map;
 
@@ -578,7 +604,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     if (!ctx.quiet)
         fputc('\n', stderr);
     if (err != ACCUDISC_OK) {
-        fail_dev(dev, "read", err);
+        ret = fail_dev(dev, "read", err);
         goto out;
     }
 
@@ -611,7 +637,10 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                 (unsigned long long)st.slips);
     if (want_map)
         render_map(map, req.count);
-    ret = 0;
+    /* Exit 3 = delivered but degraded: the caller should gate before
+     * trusting the image (relative signals only — see the header). */
+    ret = (st.hard_errors || st.sectors_suspect || st.sectors_flagged) ? 3
+                                                                       : 0;
 
 out:
     if (ctx.pcm)
@@ -665,7 +694,7 @@ int main(int argc, char **argv)
     }
     if (!command) {
         usage(stderr);
-        return 2;
+        return 1;
     }
 
     if (!strcmp(command, "version")) {
@@ -681,7 +710,7 @@ int main(int argc, char **argv)
     if (!dev) {
         fprintf(stderr, "accudisc: open %s: %s\n", device,
                 accudisc_strerror(err));
-        return 1;
+        return 2;
     }
     accudisc_set_log(dev, log_to_stderr, NULL);
 
@@ -723,7 +752,7 @@ int main(int argc, char **argv)
     else {
         fprintf(stderr, "accudisc: unknown command '%s'\n", command);
         usage(stderr);
-        rc = 2;
+        rc = 1;
     }
 
     accudisc_close(dev);

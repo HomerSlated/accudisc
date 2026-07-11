@@ -68,6 +68,9 @@ const char *accudisc_strerror(int err)
     case ACCUDISC_ERR_SENSE:       return "drive rejected command (check sense)";
     case ACCUDISC_ERR_SHORT:       return "response too short";
     case ACCUDISC_ERR_UNSUPPORTED: return "not supported";
+    case ACCUDISC_ERR_CANCELLED:   return "cancelled";
+    case ACCUDISC_ERR_CRC:         return "checksum failed";
+    case ACCUDISC_ERR_NOTFOUND:    return "data absent";
     default:                       return "unknown error";
     }
 }
