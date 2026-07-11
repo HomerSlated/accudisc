@@ -14,6 +14,8 @@ reference/*
 compile_commands.json
 .vscode/
 .idea/
+backups/
+scripts/
 
 # Bindings build artifacts
 bindings/rust/target/
