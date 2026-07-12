@@ -22,6 +22,21 @@ everything else worth remembering.
   (`gen_media_db.py` → 134 codes). *Remaining (optional):* a broader web ATIP
   database diff to catch any obscure codes none of these three list.
 
+## Recording
+
+- **Disc-ID round-trip mismatch (pregap offsets).** A burned ABBA disc's
+  Disc-ID didn't match the source. Verified NOT an AccuDisc burn fault: the
+  burned disc carries correct index-0 pregaps (Q-subchannel countdown → index 1
+  at the cue-sheet LBA), the read-back track offsets equal the parsed
+  `.toc` `index1_lba`, and the cue sheet matches cdrdao's `createCueSheet`. So
+  the divergence is in the offset *correspondence* between the original disc's
+  TOC and cdda2img's `.toc` (the `FILE`/`START` → index-1 computation), not the
+  burn. Joint diagnostic: compare three offset sets — original disc TOC vs
+  `.toc`-computed index-1 vs burned read-back — to localize. Likely a cdda2img
+  extraction detail; revisit with the cdda2img agent. Also worth adding an
+  AccuDisc read-back verify (`--verify-toc`?) that diffs the burned TOC against
+  the source `.toc` and warns on any offset delta.
+
 ## Probes / diagnostics
 
 - **Timed-read cache detection.** Borrowed from libcdio-paranoia
