@@ -4,6 +4,23 @@ Ideas parked for a later session. Not scheduled; not commitments. Recovery
 methods are considered complete (see `docs/ACCUDISC_RECOVERY.md`); this is
 everything else worth remembering.
 
+## ATIP / media identification
+
+- **Wire the ATIP catalog into a lookup + CLI.** `src/drive/media_atip_db.inc`
+  is committed data; add the lookup and a CLI surface (e.g. `accudisc media` /
+  an ATIP-info path). Read the disc ATIP via READ TOC/PMA/ATIP (opcode 0x43,
+  format 0x04), take the lead-in start time (bytes 8–10 = min:sec:frame), and
+  return manufacturer + spiral length. **Match on min:sec** (the manufacturer
+  key); the frame varies per media within a manufacturer, so treat it as a
+  secondary/optional discriminator, not exact-equality. Live example: a blank
+  Taiyo Yuden reads `97:24:01`, table has TY at `97:24:00` — matches on 97:24.
+  Core read-path work (any drive, pure MMC), report-only.
+- **Public ATIP cross-reference pass.** The catalog is a PlexTools-era snapshot
+  (78 manufacturers / 131 codes); it will miss post-2007 media. Diff our codes
+  against a public ATIP database to confirm accuracy and quantify/close the gap
+  before leaning on it hard. Fold any additions into `gen_media_db.py` output
+  or a supplementary factual table, credited in ATTRIBUTION.md.
+
 ## Probes / diagnostics
 
 - **Timed-read cache detection.** Borrowed from libcdio-paranoia
