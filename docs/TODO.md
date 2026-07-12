@@ -15,11 +15,12 @@ everything else worth remembering.
   secondary/optional discriminator, not exact-equality. Live example: a blank
   Taiyo Yuden reads `97:24:01`, table has TY at `97:24:00` — matches on 97:24.
   Core read-path work (any drive, pure MMC), report-only.
-- **Public ATIP cross-reference pass.** The catalog is a PlexTools-era snapshot
-  (78 manufacturers / 131 codes); it will miss post-2007 media. Diff our codes
-  against a public ATIP database to confirm accuracy and quantify/close the gap
-  before leaning on it hard. Fold any additions into `gen_media_db.py` output
-  or a supplementary factual table, credited in ATTRIBUTION.md.
+- **Public ATIP cross-reference pass.** *Largely done (2026-07-12):* diffed
+  against cdrecord's `diskid.c` (independent source; 107/123 agree) and Nero
+  2026 — both carry the same effectively-frozen registry, so "post-2007 gaps"
+  turned out moot. Folded cdrecord's 3 high-confidence uniques into the union
+  (`gen_media_db.py` → 134 codes). *Remaining (optional):* a broader web ATIP
+  database diff to catch any obscure codes none of these three list.
 
 ## Probes / diagnostics
 
