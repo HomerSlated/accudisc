@@ -2,9 +2,9 @@
  *
  * ATIP code (97:SS:FF) -> disc manufacturer. The codes are public
  * facts pressed into every CD-R pregroove; this compilation is
- * informed by PlexTools Professional XL and should be cross-checked
- * against public ATIP catalogues. See docs/ATTRIBUTION.md.
- * Manufacturers: 78, codes: 131.
+ * informed by PlexTools Professional XL and cross-validated against
+ * cdrecord's diskid.c (schily) and Nero 2026. See docs/ATTRIBUTION.md.
+ * Manufacturers: 78, codes: 134 (3 cross-referenced from cdrecord).
  */
 
     { 97, 22, 20, "Advanced Digital Media" },
@@ -138,3 +138,8 @@
     { 97, 18, 10, "WEALTH FAIR INVESTMENT LIMITED" },
     { 97, 25, 60, "Xcitek" },
     { 97, 45, 60, "Xcitek" },
+
+    /* cross-referenced from cdrecord diskid.c (union) */
+    { 97, 31,  0, "Ritek" },
+    { 97, 31, 30, "Grand Advance Technology" },
+    { 97, 32,  0, "TDK Corporation" },

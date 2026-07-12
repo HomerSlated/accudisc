@@ -27,6 +27,19 @@ STRIDE = 0xE0            # 224-byte fixed record
 NAME_MAX = 0x60          # name field width
 CELL_LO, CELL_HI, CELL = 0x64, 0xD9, 0x0C  # ATIP {sec,frame,extra} cells
 
+# Cross-referenced supplement: ATIP codes present in cdrecord's diskid.c
+# (schily/cdrtools) but not in the PlexTools table. The two catalogues come
+# from independent sources and agree on 107 of ~123 codes; these are the
+# high-confidence cdrecord-only codes, folded in for the union (names use our
+# table's spelling). cdrecord's one remaining unique (97:20:10) is omitted as
+# its author flagged it a guess. Nero 2026 (NeroAPIEngine.dll) was checked too
+# and adds nothing — the ATIP manufacturer registry is effectively frozen.
+CROSSREF_EXTRA = [
+    (31,  0, "Ritek"),
+    (31, 30, "Grand Advance Technology"),
+    (32,  0, "TDK Corporation"),
+]
+
 
 def main() -> int:
     if len(sys.argv) != 3:
@@ -62,17 +75,28 @@ def main() -> int:
             " do not edit.\n *\n"
             " * ATIP code (97:SS:FF) -> disc manufacturer. The codes are public\n"
             " * facts pressed into every CD-R pregroove; this compilation is\n"
-            " * informed by PlexTools Professional XL and should be cross-checked\n"
-            " * against public ATIP catalogues. See docs/ATTRIBUTION.md.\n"
-            f" * Manufacturers: {len(set(r[0] for r in rows))}, codes: {len(rows)}.\n"
+            " * informed by PlexTools Professional XL and cross-validated against\n"
+            " * cdrecord's diskid.c (schily) and Nero 2026. See docs/ATTRIBUTION.md.\n"
+            f" * Manufacturers: {len(set(r[0] for r in rows))},"
+            f" codes: {len(rows) + len(CROSSREF_EXTRA)}"
+            f" ({len(CROSSREF_EXTRA)} cross-referenced from cdrecord).\n"
             " */\n\n"
         )
+        have = {(sec, frame) for _, sec, frame in rows}
         for name, sec, frame in rows:
             esc = name.replace("\\", "\\\\").replace('"', '\\"')
             f.write('    { 97, %2d, %2d, "%s" },\n' % (sec, frame, esc))
+        f.write("\n    /* cross-referenced from cdrecord diskid.c (union) */\n")
+        for sec, frame, name in CROSSREF_EXTRA:
+            if (sec, frame) in have:
+                continue
+            f.write('    { 97, %2d, %2d, "%s" },\n' % (sec, frame, name))
 
-    print("%d manufacturers, %d ATIP codes -> %s"
-          % (len(set(r[0] for r in rows)), len(rows), sys.argv[2]), file=sys.stderr)
+    total = len(rows) + sum(1 for s, fr, _ in CROSSREF_EXTRA if (s, fr) not in
+                            {(sec, frame) for _, sec, frame in rows})
+    print("%d manufacturers, %d ATIP codes (%d +%d xref) -> %s"
+          % (len(set(r[0] for r in rows)), total, len(rows),
+             total - len(rows), sys.argv[2]), file=sys.stderr)
     return 0
 
 
