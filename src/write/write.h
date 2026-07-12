@@ -49,8 +49,12 @@ struct adsc_write_track {
     int      preemphasis;   /* 50/15us pre-emphasis flag */
     int      copy;          /* copy-permitted flag */
     char     isrc[13];      /* 12 ASCII chars + NUL; "" if none */
-    uint32_t index1_lba;    /* absolute image LBA of index 1 (track start) */
+    uint32_t index1_lba;    /* absolute image LBA of index 1 (start_lba+pregap) */
     uint32_t pregap;        /* sectors of pre-gap before index 1 (0 = none) */
+    /* For the write loop: this track occupies `sectors` LBAs starting at
+     * (index1_lba - pregap); its audio is read from the BIN at file_offset. */
+    uint32_t sectors;       /* total sectors incl. pre-gap (FILE length) */
+    uint64_t file_offset;   /* byte offset into the BIN for this track */
 };
 
 struct adsc_write_toc {
@@ -65,5 +69,11 @@ struct adsc_write_toc {
  * createCueSheet. Returns ACCUDISC_ERR_SHORT if cap is too small. */
 int adsc_cuesheet_build(const struct adsc_write_toc *toc, uint8_t *out,
                         uint32_t cap, uint32_t *out_len);
+
+/* Parse a cdrdao .toc file (NUL-terminated text) into the DAO layout model:
+ * per-track FILE offset/length, START pre-gaps, ISRC, pre-emphasis/copy, and
+ * the disc MCN. Audio tracks only. Computes each track's start_lba/index1_lba
+ * and the lead-out. Returns ACCUDISC_ERR_INVAL on malformed input. */
+int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out);
 
 #endif /* ADSC_WRITE_H */
