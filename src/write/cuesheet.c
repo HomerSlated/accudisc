@@ -1,0 +1,131 @@
+/* SEND CUE SHEET payload builder for audio Disc-At-Once.
+ *
+ * Produces the 8-byte-per-entry cue sheet the drive expects (MMC SEND CUE
+ * SHEET, 0x5D), from the DAO layout model. Entry layout and construction
+ * mirror cdrdao's GenericMMC::createCueSheet (reference/cdrdao); credited in
+ * docs/ATTRIBUTION.md. Audio-only for now (data tracks add a CTL 0x40 path).
+ *
+ * Entry := { ctlAdr, trackNr, indexNr, dataForm, scms, min, sec, frame }.
+ * Absolute MSF = image LBA + 150 (LBA 0 sits at 00:02:00).
+ */
+
+#include <string.h>
+
+#include "../mmc/mmc.h"
+#include "write.h"
+
+/* Set the MSF (bytes 5..7) of an entry from a signed absolute frame count. */
+static void put_msf(uint8_t *e, int32_t frames)
+{
+    if (frames < 0)
+        frames = 0;
+    e[5] = (uint8_t)(frames / (60 * 75));
+    e[6] = (uint8_t)((frames / 75) % 60);
+    e[7] = (uint8_t)(frames % 75);
+}
+
+int adsc_cuesheet_build(const struct adsc_write_toc *toc, uint8_t *out,
+                        uint32_t cap, uint32_t *out_len)
+{
+    uint32_t n = 0; /* entry index */
+
+    if (!toc || !out || !out_len)
+        return ACCUDISC_ERR_INVAL;
+    if (toc->ntracks < 1 || toc->ntracks > 99)
+        return ACCUDISC_ERR_INVAL;
+
+    /* Worst case: MCN(2) + lead-in(1) + per track [ISRC(2)+pregap(1)+track(1)]
+     * + lead-out(1). Bound-check every entry against cap anyway. */
+#define ENTRY(np) do {                              \
+        if (((np) + 1) * 8u > cap)                  \
+            return ACCUDISC_ERR_SHORT;              \
+        e = out + (np) * 8;                         \
+        memset(e, 0, 8);                            \
+    } while (0)
+
+    uint8_t *e;
+
+    /* Media Catalog Number: two ADR=2 entries, 13 ASCII digits split 7 + 6. */
+    if (toc->mcn[0]) {
+        ENTRY(n);
+        e[0] = 0x02;                 /* CTL=0 (audio lead-in) | ADR=2 */
+        for (int i = 0; i < 7; i++)
+            e[1 + i] = (uint8_t)toc->mcn[i];
+        n++;
+        ENTRY(n);
+        e[0] = 0x02;
+        for (int i = 0; i < 6; i++)
+            e[1 + i] = (uint8_t)toc->mcn[7 + i];
+        n++;
+    }
+
+    /* Lead-in: TNO 0, INDEX 0, audio data form, MSF 0. */
+    ENTRY(n);
+    e[0] = 0x01;                     /* CTL=0 | ADR=1 */
+    n++;
+
+    for (int ti = 0; ti < toc->ntracks; ti++) {
+        const struct adsc_write_track *t = &toc->track[ti];
+        uint8_t trackNr = (uint8_t)(ti + 1);
+        uint8_t ctl = 0;             /* audio */
+
+        if (t->copy)
+            ctl |= 0x20;
+        if (t->preemphasis)
+            ctl |= 0x10;
+
+        /* ISRC: two ADR=3 entries carrying the 12 ISRC characters. */
+        if (t->isrc[0]) {
+            ENTRY(n);
+            e[0] = (uint8_t)(ctl | 0x03);
+            e[1] = trackNr;
+            for (int i = 0; i < 6; i++)
+                e[2 + i] = (uint8_t)t->isrc[i];
+            n++;
+            ENTRY(n);
+            e[0] = (uint8_t)(ctl | 0x03);
+            e[1] = trackNr;
+            for (int i = 0; i < 6; i++)
+                e[2 + i] = (uint8_t)t->isrc[6 + i];
+            n++;
+        }
+
+        /* Pre-gap (INDEX 0). Track 1's gap anchors the session at MSF 0;
+         * later tracks emit a gap only when they carry one. */
+        if (ti == 0) {
+            ENTRY(n);
+            e[0] = (uint8_t)(ctl | 0x01);
+            e[1] = trackNr;
+            e[2] = 0;                /* INDEX 0 */
+            put_msf(e, 0);           /* session start: 00:00:00 */
+            n++;
+        } else if (t->pregap > 0) {
+            ENTRY(n);
+            e[0] = (uint8_t)(ctl | 0x01);
+            e[1] = trackNr;
+            e[2] = 0;
+            put_msf(e, (int32_t)(t->index1_lba - t->pregap) + 150);
+            n++;
+        }
+
+        /* Track start (INDEX 1). */
+        ENTRY(n);
+        e[0] = (uint8_t)(ctl | 0x01);
+        e[1] = trackNr;
+        e[2] = 1;                    /* INDEX 1 */
+        put_msf(e, (int32_t)t->index1_lba + 150);
+        n++;
+    }
+
+    /* Lead-out: TNO 0xAA, INDEX 1. */
+    ENTRY(n);
+    e[0] = 0x01;                     /* audio lead-out */
+    e[1] = 0xaa;
+    e[2] = 1;
+    put_msf(e, (int32_t)toc->leadout_lba + 150);
+    n++;
+
+#undef ENTRY
+    *out_len = n * 8;
+    return ACCUDISC_OK;
+}

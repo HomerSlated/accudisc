@@ -23,6 +23,7 @@ set(ACCUDISC_SOURCES
     meta/cdtext.c
     write/wparams.c
     write/discinfo.c
+    write/cuesheet.c
 )
 
 add_library(accudisc SHARED ${ACCUDISC_SOURCES})

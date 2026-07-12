@@ -41,4 +41,29 @@ struct adsc_disc_info {
 int adsc_write_read_disc_info(struct accudisc_device *dev,
                               struct adsc_disc_info *out);
 
+/* ------------------------------------------------------------------ */
+/* DAO layout model + cue sheet (SEND CUE SHEET, 0x5D)                 */
+
+struct adsc_write_track {
+    int      audio;         /* 1 = audio (only audio supported now) */
+    int      preemphasis;   /* 50/15us pre-emphasis flag */
+    int      copy;          /* copy-permitted flag */
+    char     isrc[13];      /* 12 ASCII chars + NUL; "" if none */
+    uint32_t index1_lba;    /* absolute image LBA of index 1 (track start) */
+    uint32_t pregap;        /* sectors of pre-gap before index 1 (0 = none) */
+};
+
+struct adsc_write_toc {
+    char     mcn[14];       /* 13 ASCII digits + NUL; "" if none */
+    int      ntracks;
+    uint32_t leadout_lba;   /* absolute image LBA of the lead-out */
+    struct adsc_write_track track[99];
+};
+
+/* Build the SEND CUE SHEET payload (8 bytes/entry) for the audio DAO layout in
+ * *toc. Writes up to cap bytes into out, sets *out_len. Mirrors cdrdao's
+ * createCueSheet. Returns ACCUDISC_ERR_SHORT if cap is too small. */
+int adsc_cuesheet_build(const struct adsc_write_toc *toc, uint8_t *out,
+                        uint32_t cap, uint32_t *out_len);
+
 #endif /* ADSC_WRITE_H */
