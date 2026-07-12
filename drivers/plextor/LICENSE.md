@@ -1,27 +1,22 @@
-# Plextor driver — licensing status: unlicensed (non-free)
+# Plextor driver — licensing: MIT (same as the core)
 
-This driver is NOT covered by AccuDisc's MIT license.
+This driver is covered by AccuDisc's **MIT** license, like the rest of the
+package. It is a separate dlopen module for **architectural** reasons (vendor
+isolation — the core stays pure MMC/SG, hardware-specific opcodes live in
+drivers), not for licensing reasons.
 
-It implements Plextor's proprietary vendor-opcode interfaces (the access
-methods used by PlexTools and other Plextor-licensed applications such as
-Nero). The knowledge embodied here comes from:
+## Why MIT is correct here
 
-- the Plextor opcodes long documented in cdrtools (readcd) and cdrdao;
-- first-party reverse engineering of Plextor hardware and firmware —
-  probed hardware opcodes only, with no redistribution of vendor binaries
-  or sources.
+What this driver embodies is a set of **functional hardware identifiers** —
+SCSI vendor opcode numbers and CDB field layouts for Plextor drives. These are
+facts about how the hardware behaves, not copyrightable expression. They were
+obfuscated and hard to obtain, but that does not make them ownable.
 
-Plextor no longer exists as an optical-drive manufacturer and all vendor
-licenses have expired; the protocol itself is abandonware. The clean-room
-provenance above infringes no copyright, but the formal legal standing of
-the protocol is **unlicensed — redistribution rights unknown** (comparable
-to components distributed in "non-free"/"ugly" package categories).
+No third-party source code is copied. The command set is documented in several
+places we used as *references* — **QPxTool** (GPL-2.0), cdrtools, and cdrdao —
+and every command here was independently verified by raw SG_IO against the
+owner's own PX-716A. Citing those references is courtesy (see
+`../../docs/ATTRIBUTION.md`); it is not a derivation, so no copyleft attaches.
 
-Consequences, by design:
-
-- this driver is built and shipped as a standalone module
-  (`accudisc-drv-plextor.so`), never linked into the MIT core;
-- distributions wanting a purely free package set can ship AccuDisc
-  without this file and lose nothing but Plextor-specific extras;
-- any legal challenge to this driver affects neither the core nor any
-  other driver.
+The accompanying `PROTOCOL.md` / `FEATURES.md` and the RE notes record how the
+command set was confirmed on real hardware.

@@ -1,9 +1,9 @@
 # Plextor consumer features — opcode binding progress (PX-716A)
 
-**Licensing: non-free.** Lives in the isolated driver zone; not part of the
-MIT core, never referenced from `src/` or `docs/`. See `LICENSE.md` and
-`PROTOCOL.md` (the detailed protocol notes). Feature names are taken from the
-PlexTools / PX-716 user manual.
+**Licensing: MIT** (same as the core; opcodes are hardware facts — see
+`LICENSE.md`). Lives in the driver zone for architectural vendor-isolation, not
+licensing. See `PROTOCOL.md` for the detailed protocol notes. Feature names are
+taken from the PlexTools / PX-716 user manual.
 
 Legend — **Identified**: opcode + CDB framing pinned. **Working**: exchange
 live-verified on the PX-716A via raw SG_IO (`re-tools/sgsend.c`). ☑ = done,

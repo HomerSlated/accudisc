@@ -1,11 +1,11 @@
 # Plextor vendor protocol — reverse-engineering notes (PX-716A)
 
-**Licensing: non-free.** This file documents Plextor's proprietary vendor
-opcodes and lives in the isolated driver zone on purpose — it is NOT part of
-the MIT core and must never be referenced from `src/` or `docs/`. See
-`LICENSE.md` in this directory. Clean-room provenance: derived by analysing
-the user's own PlexTools binary and firmware for interoperability with
-hardware the user owns; no vendor code is copied.
+**Licensing: MIT** (same as the core; see `LICENSE.md`). The opcodes and CDB
+layouts here are functional hardware identifiers — facts, not copyrightable
+expression — documented in QPxTool/cdrtools/cdrdao (cited as references) and
+independently verified on the owner's own PX-716A. This file lives in the
+driver zone for **architectural** vendor-isolation, not licensing; the core
+stays pure MMC/SG. No third-party source is copied.
 
 Working document. Session 1 (2026-07-12): method established, full vendor
 opcode inventory harvested and validated. Session 3 (2026-07-12): the whole

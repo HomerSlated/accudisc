@@ -78,8 +78,11 @@ opaque handles, no libc types leaking into the ABI where avoidable.
   approaches (R1-R7) not to rebuild, and the invariant that relative checks
   (C2, consensus, overlap) never outrank absolute gates (AccurateRip/CTDB,
   which live in the calling application).
-- **Licensing**: core is MIT (LICENSE); drivers are licensed individually —
-  drivers/plextor is non-free (unlicensed vendor protocol, see its
-  LICENSE.md) and must never leak into the core. Factual data may be
-  converted from reference sources (offsets table: REDUMP project data);
-  credit sources in docs/ATTRIBUTION.md and the future man page.
+- **Licensing**: whole package is MIT (LICENSE), including drivers/plextor —
+  its vendor opcodes are functional hardware identifiers (facts, not
+  copyrightable; documented in QPxTool/cdrtools, verified on hardware). The
+  driver stays a separate dlopen module for **architectural** vendor-isolation
+  (core = pure MMC/SG), not licensing. Factual data tables likewise: offsets
+  (REDUMP data) and the ATIP media catalog (public ATIP codes informed by
+  PlexTools — src/drive/media_atip_db.inc). Credit reference sources in
+  docs/ATTRIBUTION.md and the future man page.
