@@ -11,11 +11,20 @@
 /* Opcodes */
 #define ADSC_OP_INQUIRY       0x12
 #define ADSC_OP_START_STOP    0x1B
+#define ADSC_OP_WRITE10       0x2A
+#define ADSC_OP_SYNC_CACHE    0x35
 #define ADSC_OP_READ_TOC      0x43
 #define ADSC_OP_GET_CONFIG    0x46
+#define ADSC_OP_READ_DISC_INFO 0x51
+#define ADSC_OP_SEND_OPC      0x54
 #define ADSC_OP_MODE_SELECT10 0x55
+#define ADSC_OP_CLOSE_TRK_SES 0x5B
+#define ADSC_OP_SEND_CUE      0x5D
 #define ADSC_OP_MODE_SENSE10  0x5A
 #define ADSC_OP_READ_CD       0xBE
+
+/* MODE SENSE/SELECT pages */
+#define ADSC_MODE_WRITE_PARAMS 0x05 /* CD/DVD write-parameters page */
 
 /* READ TOC/PMA/ATIP formats */
 #define ADSC_TOC_FMT_TOC     0x00 /* track descriptors */
