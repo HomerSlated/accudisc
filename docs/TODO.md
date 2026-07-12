@@ -24,18 +24,25 @@ everything else worth remembering.
 
 ## Recording
 
-- **Disc-ID round-trip mismatch (pregap offsets).** A burned ABBA disc's
-  Disc-ID didn't match the source. Verified NOT an AccuDisc burn fault: the
-  burned disc carries correct index-0 pregaps (Q-subchannel countdown → index 1
-  at the cue-sheet LBA), the read-back track offsets equal the parsed
-  `.toc` `index1_lba`, and the cue sheet matches cdrdao's `createCueSheet`. So
-  the divergence is in the offset *correspondence* between the original disc's
-  TOC and cdda2img's `.toc` (the `FILE`/`START` → index-1 computation), not the
-  burn. Joint diagnostic: compare three offset sets — original disc TOC vs
-  `.toc`-computed index-1 vs burned read-back — to localize. Likely a cdda2img
-  extraction detail; revisit with the cdda2img agent. Also worth adding an
-  AccuDisc read-back verify (`--verify-toc`?) that diffs the burned TOC against
-  the source `.toc` and warns on any offset delta.
+- **CD-Text on write (next recording feature).** The write path does NOT burn
+  CD-Text yet, so a round-tripped disc loses album/track titles/performer (the
+  "supplemental metadata"). Have: CD-Text *read* (meta/cdtext.c) and the 2448
+  block-type in the write-parameters page (wparams.c `cdtext`). Need: a CD-Text
+  encoder (pack the CD_TEXT blocks the .toc parser currently ignores) + inject
+  it into the SEND CUE SHEET lead-in (dataForm 0x41 lead-in entry + the R-W
+  sub-channel packs). Reference: cdrdao `CdTextEncoder` / `writeCdTextLeadIn`.
+  Note: CD-Text does NOT affect the Disc ID (pure TOC) — this is content
+  fidelity, separate from the pregap item below.
+- **Disc-ID round-trip mismatch = pregap/TOC, upstream (cdda2img).** Root cause
+  pinned via 3-way compare: original disc track 1 @ LBA 33 with a 33-frame
+  pregap, lead-out 347208; cdda2img's RBI + our burn both track 1 @ 0, lead-out
+  347175 (Δ = 33). Our burned Disc IDs are byte-identical to the RBI mount, so
+  AccuDisc reproduced the .toc *exactly* — the loss is in cdda2img's extract
+  (its .toc drops track 1's pregap and must match the original TOC's index-1
+  offsets AND lead-out, not just track 1). AccuDisc verified ready: a declared
+  track-1 `START` yields the right index1_lba. Consider an AccuDisc read-back
+  verify (`--verify-toc`) that diffs the burned TOC vs the source .toc and warns
+  on any offset delta.
 
 ## Probes / diagnostics
 
