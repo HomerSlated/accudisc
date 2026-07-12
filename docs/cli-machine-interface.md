@@ -123,6 +123,24 @@ drives (default probe location: the middle half of the disc). The drive is
 left at the last candidate tested. Rungs with equal `measured` are one
 rung for ladder purposes.
 
+## `media` output (stdout)
+
+One line, from the disc ATIP (READ TOC/PMA/ATIP format 4; non-destructive):
+
+```
+atip leadin=<mm:ss:ff> leadout=<mm:ss:ff> type=<CD-R|CD-RW> manufacturer=<name>
+```
+
+`leadin` is the ATIP lead-in start = the manufacturer identification code;
+`leadout` is the last-possible lead-out start = capacity; `type` is the ATIP
+disc-type bit. **`manufacturer=` is the last field and its value may contain
+spaces** (parse it as rest-of-line); it is empty when the code is not in the
+built-in catalog — the `leadin` code is always authoritative and present.
+Lookup keys on `sec` + frame-decade, so `97:24:01` resolves the `97:24:00`
+entry. A disc with no ATIP (pressed CD, or no recordable media) prints
+`atip absent` and exits **3** (data absent, not an error). All fields are the
+raw ATIP as the disc encodes them; AccuDisc reports, it does not judge.
+
 ## `read` inline lead-in capture
 
 `read --fulltoc FILE --cdtext FILE` dumps the raw READ TOC format-2 /

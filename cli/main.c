@@ -23,6 +23,8 @@ static void usage(FILE *to)
         "  features       probe C2/subchannel capability (claim + smoke);\n"
         "                 exits 0 iff C2 is clearly usable\n"
         "  speed-report   print max/current read speed (mode page 2A)\n"
+        "  media          identify recordable media from ATIP:\n"
+        "                 manufacturer, ATIP code, capacity, CD-R/RW\n"
         "  speeds         probe which speed settings the drive really\n"
         "                 honours: [--start L] [--ladder LIST] — timed\n"
         "                 streaming reads per rung; page 2A vs measured\n"
@@ -538,6 +540,30 @@ static int cmd_speed_report(accudisc_device *dev)
     return 0;
 }
 
+static int cmd_media(accudisc_device *dev)
+{
+    accudisc_atip atip;
+    int err = accudisc_read_atip(dev, &atip);
+
+    if (err == ACCUDISC_ERR_NOTFOUND) {
+        /* No ATIP: pressed disc, or no recordable media loaded. */
+        printf("atip absent\n");
+        return 3;
+    }
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "READ ATIP", err);
+
+    /* Machine line; `manufacturer=` is last so its value may contain spaces
+     * (empty when the code is not in the catalog). */
+    printf("atip leadin=%02u:%02u:%02u leadout=%02u:%02u:%02u type=%s "
+           "manufacturer=%s\n",
+           atip.lead_in_min, atip.lead_in_sec, atip.lead_in_frame,
+           atip.lead_out_min, atip.lead_out_sec, atip.lead_out_frame,
+           atip.erasable ? "CD-RW" : "CD-R",
+           atip.manufacturer ? atip.manufacturer : "");
+    return 0;
+}
+
 /* ---- read ------------------------------------------------------------- */
 
 struct read_ctx {
@@ -953,6 +979,8 @@ int main(int argc, char **argv)
         rc = cmd_features(dev);
     else if (!strcmp(command, "speed-report"))
         rc = cmd_speed_report(dev);
+    else if (!strcmp(command, "media"))
+        rc = cmd_media(dev);
     else if (!strcmp(command, "c2lag"))
         rc = cmd_c2lag(dev, nrest, rest);
     else if (!strcmp(command, "speeds"))

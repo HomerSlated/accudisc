@@ -20,6 +20,7 @@
 /* READ TOC/PMA/ATIP formats */
 #define ADSC_TOC_FMT_TOC     0x00 /* track descriptors */
 #define ADSC_TOC_FMT_FULL    0x02 /* raw ("full") TOC incl. sessions */
+#define ADSC_TOC_FMT_ATIP    0x04 /* ATIP: recordable disc pregroove info */
 #define ADSC_TOC_FMT_CDTEXT  0x05 /* CD-Text packs from the lead-in */
 
 /* READ CD expected sector type (CDB byte 1, bits 4-2) */

@@ -6,15 +6,15 @@ everything else worth remembering.
 
 ## ATIP / media identification
 
-- **Wire the ATIP catalog into a lookup + CLI.** `src/drive/media_atip_db.inc`
-  is committed data; add the lookup and a CLI surface (e.g. `accudisc media` /
-  an ATIP-info path). Read the disc ATIP via READ TOC/PMA/ATIP (opcode 0x43,
-  format 0x04), take the lead-in start time (bytes 8–10 = min:sec:frame), and
-  return manufacturer + spiral length. **Match on min:sec** (the manufacturer
-  key); the frame varies per media within a manufacturer, so treat it as a
-  secondary/optional discriminator, not exact-equality. Live example: a blank
-  Taiyo Yuden reads `97:24:01`, table has TY at `97:24:00` — matches on 97:24.
-  Core read-path work (any drive, pure MMC), report-only.
+- ~~**Wire the ATIP catalog into a lookup + CLI.**~~ *Done (2026-07-12):*
+  `accudisc media` reads the disc ATIP (READ TOC/PMA/ATIP fmt 4) and returns
+  manufacturer + code + capacity + CD-R/RW. `accudisc_read_atip()` /
+  `accudisc_atip_manufacturer()` in `src/drive/media_db.c`; lookup keys on
+  `sec` + frame-decade (matching resolves 97:24:01 → the 97:24:00 Taiyo Yuden
+  entry; the decade distinguishes makers that share a `sec`). Unit test
+  `tests/test_media.c`; live-verified on a blank Taiyo Yuden (`97:24:01`).
+  *Possible follow-up:* also surface spiral length (record+0xDC) and the
+  ATIP reference-speed/indicative-power fields.
 - **Public ATIP cross-reference pass.** *Largely done (2026-07-12):* diffed
   against cdrecord's `diskid.c` (independent source; 107/123 agree) and Nero
   2026 — both carry the same effectively-frozen registry, so "post-2007 gaps"

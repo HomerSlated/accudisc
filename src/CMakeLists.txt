@@ -13,6 +13,7 @@ set(ACCUDISC_SOURCES
     drive/speeds.c
     drive/driver.c
     drive/offsets.c
+    drive/media_db.c
     toc/toc.c
     toc/fulltoc.c
     read/engine.c

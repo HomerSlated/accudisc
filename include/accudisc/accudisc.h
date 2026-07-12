@@ -114,6 +114,30 @@ ACCUDISC_API int accudisc_drive_identify(accudisc_device *dev,
  * ACCUDISC_ERR_NOTFOUND when the model is unknown. */
 ACCUDISC_API int accudisc_read_offset(accudisc_device *dev, int32_t *samples);
 
+/* ATIP (Absolute Time In Pregroove) of a recordable disc: the lead-in start
+ * time doubles as the manufacturer identification code (97:SS:FF for CD-R),
+ * the lead-out last-possible start gives the disc capacity, and `erasable`
+ * distinguishes CD-RW. `manufacturer` is looked up from the built-in ATIP
+ * catalog (NULL if the code is not listed). All fields are reported raw as the
+ * disc encodes them; AccuDisc does not judge them. */
+typedef struct accudisc_atip {
+    uint8_t lead_in_min, lead_in_sec, lead_in_frame;
+    uint8_t lead_out_min, lead_out_sec, lead_out_frame;
+    int         erasable;      /* 1 = CD-RW, 0 = CD-R, -1 = unknown */
+    const char *manufacturer;  /* static string, or NULL if unlisted */
+} accudisc_atip;
+
+/* Read and decode the disc ATIP. Returns ACCUDISC_ERR_NOTFOUND when the drive
+ * answers but the disc carries no ATIP (e.g. a pressed CD), distinct from
+ * ACCUDISC_ERR_SENSE. Non-destructive (a read). */
+ACCUDISC_API int accudisc_read_atip(accudisc_device *dev, accudisc_atip *out);
+
+/* Look up a manufacturer name from an ATIP code directly (min:sec:frame).
+ * Matches on min:sec (the manufacturer key); frame is a per-media variant.
+ * Returns a static string or NULL. Pure function, no device needed. */
+ACCUDISC_API const char *accudisc_atip_manufacturer(uint8_t min, uint8_t sec,
+                                                    uint8_t frame);
+
 /* Optional log sink for library/driver diagnostics (default: discarded). */
 ACCUDISC_API void accudisc_set_log(accudisc_device *dev,
                                    void (*fn)(void *user, const char *msg),
