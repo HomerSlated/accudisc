@@ -155,6 +155,51 @@ int adsc_mmc_mode_select10(struct accudisc_device *dev, uint8_t *buf,
     return adsc_dev_exec(dev, &cmd);
 }
 
+int adsc_mmc_write10(struct accudisc_device *dev, int32_t lba,
+                     uint32_t nblocks, const void *buf, uint32_t block_bytes)
+{
+    adsc_cmd cmd = {0};
+
+    if (nblocks == 0 || block_bytes == 0)
+        return ACCUDISC_ERR_INVAL;
+
+    adsc_cdb_write10(cmd.cdb, (uint32_t)lba, (uint16_t)nblocks);
+    cmd.cdb_len = 10;
+    cmd.dir = ADSC_XFER_OUT;
+    cmd.buf = (void *)buf;      /* OUT: exec reads, does not modify */
+    cmd.buf_len = nblocks * block_bytes;
+    cmd.timeout_ms = ADSC_TIMEOUT_WRITE_MS;
+    return adsc_dev_exec(dev, &cmd);
+}
+
+int adsc_mmc_sync_cache(struct accudisc_device *dev)
+{
+    adsc_cmd cmd = {0};
+
+    adsc_cdb_sync_cache(cmd.cdb);
+    cmd.cdb_len = 10;
+    cmd.dir = ADSC_XFER_NONE;
+    cmd.timeout_ms = ADSC_TIMEOUT_WRITE_MS;
+    return adsc_dev_exec(dev, &cmd);
+}
+
+int adsc_mmc_send_cue_sheet(struct accudisc_device *dev, const uint8_t *cue,
+                            uint32_t len)
+{
+    adsc_cmd cmd = {0};
+
+    if (!cue || len == 0)
+        return ACCUDISC_ERR_INVAL;
+
+    adsc_cdb_send_cue(cmd.cdb, len);
+    cmd.cdb_len = 10;
+    cmd.dir = ADSC_XFER_OUT;
+    cmd.buf = (void *)cue;
+    cmd.buf_len = len;
+    cmd.timeout_ms = ADSC_TIMEOUT_CTRL_MS;
+    return adsc_dev_exec(dev, &cmd);
+}
+
 int adsc_mmc_read_disc_info(struct accudisc_device *dev, uint8_t *buf,
                             uint32_t cap, uint32_t *len)
 {

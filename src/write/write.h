@@ -76,4 +76,24 @@ int adsc_cuesheet_build(const struct adsc_write_toc *toc, uint8_t *out,
  * and the lead-out. Returns ACCUDISC_ERR_INVAL on malformed input. */
 int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out);
 
+/* ------------------------------------------------------------------ */
+/* DAO burn orchestration                                             */
+
+struct adsc_burn_opts {
+    int simulate;   /* test-write: run the whole path with the laser off */
+    int byteswap;   /* swap each 16-bit audio sample before writing */
+    int speed;      /* 0 = leave the drive's current speed */
+};
+
+typedef void (*adsc_burn_progress)(void *user, uint32_t done, uint32_t total);
+
+/* Burn one audio session Disc-At-Once: set write parameters, verify the disc
+ * is blank, SEND CUE SHEET, write the lead-in gap + all track audio from
+ * bin_fd (per-track file_offset), then SYNCHRONIZE CACHE. Progress via cb
+ * (may be NULL). Returns ACCUDISC_OK on success. */
+int adsc_write_run(struct accudisc_device *dev,
+                   const struct adsc_write_toc *toc, int bin_fd,
+                   const struct adsc_burn_opts *opts,
+                   adsc_burn_progress cb, void *user);
+
 #endif /* ADSC_WRITE_H */

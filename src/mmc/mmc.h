@@ -55,4 +55,16 @@ int adsc_mmc_start_stop(struct accudisc_device *dev, unsigned start,
 int adsc_mmc_read_disc_info(struct accudisc_device *dev, uint8_t *buf,
                             uint32_t cap, uint32_t *len);
 
+/* WRITE(10): nblocks of block_bytes each from buf, to absolute lba (signed;
+ * the DAO lead-in gap starts at -150). */
+int adsc_mmc_write10(struct accudisc_device *dev, int32_t lba,
+                     uint32_t nblocks, const void *buf, uint32_t block_bytes);
+
+/* SYNCHRONIZE CACHE — flush the write buffer (finish DAO). */
+int adsc_mmc_sync_cache(struct accudisc_device *dev);
+
+/* SEND CUE SHEET — the DAO layout descriptor (8 bytes/entry). */
+int adsc_mmc_send_cue_sheet(struct accudisc_device *dev, const uint8_t *cue,
+                            uint32_t len);
+
 #endif /* ADSC_MMC_H */

@@ -15,6 +15,7 @@
  * cycles before the command completes or fails. */
 #define ADSC_TIMEOUT_READ_MS 60000
 #define ADSC_TIMEOUT_CTRL_MS 30000
+#define ADSC_TIMEOUT_WRITE_MS 120000
 
 typedef enum adsc_xfer_dir {
     ADSC_XFER_NONE,

@@ -25,6 +25,7 @@ set(ACCUDISC_SOURCES
     write/discinfo.c
     write/cuesheet.c
     write/tocparse.c
+    write/burn.c
 )
 
 add_library(accudisc SHARED ${ACCUDISC_SOURCES})

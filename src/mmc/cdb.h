@@ -68,6 +68,16 @@ void adsc_cdb_mode_select10(uint8_t cdb[10], uint16_t param_len);
 /* READ DISC INFORMATION, standard disc info (data type 0). */
 void adsc_cdb_read_disc_info(uint8_t cdb[10], uint16_t alloc);
 
+/* WRITE(10): nblocks starting at lba (lba is the raw 32-bit value; the DAO
+ * lead-in gap uses the two's-complement of -150). */
+void adsc_cdb_write10(uint8_t cdb[10], uint32_t lba, uint16_t nblocks);
+
+/* SYNCHRONIZE CACHE (flush written data / close). */
+void adsc_cdb_sync_cache(uint8_t cdb[10]);
+
+/* SEND CUE SHEET; len is the 24-bit payload length. */
+void adsc_cdb_send_cue(uint8_t cdb[10], uint32_t len);
+
 /* Always sets include-user-data (byte 9 bit 4); c2 = ADSC_C2_*,
  * sub = ADSC_SUB_*, sector_type = ADSC_SECTOR_*. */
 void adsc_cdb_read_cd(uint8_t cdb[12], uint32_t lba, uint32_t nsec,

@@ -39,6 +39,33 @@ void adsc_cdb_read_disc_info(uint8_t cdb[10], uint16_t alloc)
     cdb[8] = (uint8_t)(alloc & 0xff);
 }
 
+void adsc_cdb_write10(uint8_t cdb[10], uint32_t lba, uint16_t nblocks)
+{
+    memset(cdb, 0, 10);
+    cdb[0] = ADSC_OP_WRITE10;
+    cdb[2] = (uint8_t)(lba >> 24);
+    cdb[3] = (uint8_t)(lba >> 16);
+    cdb[4] = (uint8_t)(lba >> 8);
+    cdb[5] = (uint8_t)(lba);
+    cdb[7] = (uint8_t)(nblocks >> 8);
+    cdb[8] = (uint8_t)(nblocks & 0xff);
+}
+
+void adsc_cdb_sync_cache(uint8_t cdb[10])
+{
+    memset(cdb, 0, 10);
+    cdb[0] = ADSC_OP_SYNC_CACHE;
+}
+
+void adsc_cdb_send_cue(uint8_t cdb[10], uint32_t len)
+{
+    memset(cdb, 0, 10);
+    cdb[0] = ADSC_OP_SEND_CUE;
+    cdb[6] = (uint8_t)(len >> 16);
+    cdb[7] = (uint8_t)(len >> 8);
+    cdb[8] = (uint8_t)(len & 0xff);
+}
+
 void adsc_cdb_get_configuration(uint8_t cdb[10], unsigned rt,
                                 uint16_t feature, uint16_t alloc)
 {
