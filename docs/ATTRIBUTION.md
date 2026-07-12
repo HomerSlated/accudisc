@@ -33,3 +33,13 @@ and licensing; see `drivers/README.md` and each driver directory. The
 Plextor driver additionally incorporates knowledge derived from first-party
 reverse engineering (probed hardware opcodes only — no redistributed vendor
 binaries or sources).
+
+- **QPxTool** (https://qpxtool.sourceforge.io, GPL) — the Plextor vendor
+  MODE (0xE9) page numbers, GET/SET direction bits, per-feature CDB framing,
+  and the GigaRec rate-code table used in `drivers/plextor/` were cross-checked
+  against QPxTool's `lib/qpxplextor/plextor_features.cpp` as *factual*
+  reference (analogous to the REDUMP offsets), then independently verified by
+  raw SG_IO against the user's own PX-716A. No QPxTool code is copied; only the
+  command-layout facts are used, and they live only in the non-free Plextor
+  driver zone. Recorded here so the man page credits QPxTool. See
+  `drivers/plextor/PROTOCOL.md` / `FEATURES.md`.

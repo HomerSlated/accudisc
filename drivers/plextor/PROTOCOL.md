@@ -8,8 +8,14 @@ the user's own PlexTools binary and firmware for interoperability with
 hardware the user owns; no vendor code is copied.
 
 Working document. Session 1 (2026-07-12): method established, full vendor
-opcode inventory harvested and validated. Opcode→feature binding and
-parameter semantics are in progress.
+opcode inventory harvested and validated. Session 3 (2026-07-12): the whole
+consumer-feature map was pinned and **live-verified on the PX-716A** — see
+`FEATURES.md` for the per-feature table. Opcode/page constants and CDB framing
+were cross-referenced against QPxTool (GPL; credited in
+`../../docs/ATTRIBUTION.md`) after the user authorised it as a factual
+cross-reference, then independently confirmed by raw SG_IO against the user's
+own drive. **Correction to session 2: GigaRec is 0xE9 page `0x04`, not `0x06`
+(see below).**
 
 ## Sources analysed
 
@@ -99,9 +105,62 @@ This is the shape expected of the SpeedRead / SilentMode / single-session /
 book-type group. The selector→feature binding is **not yet pinned** — the
 feature strings sit several call levels up in the C++ dialog hierarchy.
 
-## GigaRec — bound (session 2)
+## The 0xE9 vendor-MODE command — verified model (session 3)
 
-**GigaRec = Plextor vendor opcode 0xE9 (vendor MODE get/set), page 0x06.**
+Opcode **0xE9** is a generic vendor GET/SET of small "mode pages", live-tested
+on the PX-716A. The command layout:
+
+```
+CDB:  E9  DIR  PAGE  VAL  ..  ..  ..  ..  ..  L9  L10  ..
+       0   1    2     3                      9  10
+```
+
+- **DIR** = CDB[1]: `0x00` = GET (read current), `0x10` = SET. (Session-2 had
+  this inverted — it guessed 0x10 = GET.)
+- **PAGE** = CDB[2]: the feature page (map below).
+- **VAL** = CDB[3..]: value(s) to write on SET; 0 on GET.
+- **Length**: the drive returns a fixed **8-byte page** and is lenient about
+  where the `0x08` sits — CDB[10] for most pages, CDB[9] for SS/Hide. The
+  transfer is always **data-in of 8 bytes, even for SET** (the drive echoes the
+  resulting state, so a SET doubles as a read-back — a free self-test anchor).
+- **Response**: `resp[0]` = page echo; **`resp[1]` = constant `0x06` header**;
+  `resp[2..]` = state/values. This `0x06` is the byte session-2 misread from
+  the status formatter as "GigaRec = page 6". It appears in *every* page's
+  response.
+
+Verified page map (all GET-confirmed live unless noted):
+
+| page | feature | value bytes |
+|------|---------|-------------|
+| 0x01 | Single-Session / Hide-CD-R | resp[2] bit0=SS, bit1=hide |
+| 0x02 | VariRec (CD; CDB[3]=`0x02\|disc_type`) | resp[2]=state, resp[3]=power, resp[5]=strategy |
+| 0x04 | **GigaRec** | resp[3]=rate, resp[4]=disc-rate |
+| 0x06/07/08 | SilentMode disc/tray/main | main returns full settings block |
+| 0x21 | Test-Write (DVD+) | resp[2]=state |
+| 0x22 | Book-Type / bitset | resp[2]=type |
+| 0xBB | **SpeedRead** | resp[2]=state |
+| 0xD5 | SecuRec state | resp[3]=state, resp[4]=disc |
+
+Non-0xE9 consumer opcodes (also live-checked): **0xE4/0xE5** = AutoStrategy
+("Write Strategy") read/write; **0xED** = PoweRec (GET: CDB[1]=00 CDB[2]=00
+len@CDB[9], resp[2]=state, `ntoh16(resp[4..5])`=recommended kB/s); **0xEA** =
+Q-Check (already in `plextor.c`). Danger opcodes catalogued in `FEATURES.md`
+(0xEE = drive reset, 0xE3 = PlexEraser — never probe live).
+
+## SpeedRead — bound and live-verified (session 3)
+
+**SpeedRead = 0xE9 page `0xBB`.** SET ON (`E9 10 BB 01 … 08` at CDB[10]) flips
+the drive's mode-page-2A max CD read speed **40× → 48×** (7056 → 8467 kB/s);
+SET OFF restores 40×. This is the one consumer feature fully testable without
+burning, and the round-trip (SET → observe page 2A → GET reads back `resp[2]=1`)
+confirms the whole 0xE9 model end-to-end. Two-way toggle verified; drive left
+as found (OFF).
+
+## GigaRec — corrected binding (session 2 → 3)
+
+**GigaRec = Plextor vendor opcode 0xE9 (vendor MODE get/set), page 0x04.**
+(Session 2 said page 0x06; that was the constant `resp[1]` header byte, not the
+page. Opcode 0xE9 and the rate table below were correct.)
 GigaRec is a write-time recording-density control: it packs 0.6×–1.4× the
 Red/Yellow-Book data onto a CD-R by adjusting the channel bit clock, trading
 capacity against compatibility. It is set before a burn and read back for
@@ -128,10 +187,9 @@ E9 | flag | page | 00 | .. | 00 | 00 | 00 | len | .. | .. | 00
 - CDB[1] = 0x00, or 0x10 when a caller flag is set (current-vs-default /
   direction selector — GET vs SET lives here; the symmetric setter at
   0x48d080 builds the same opcode with a data payload)
-- CDB[2] = **page selector = 0x06 for GigaRec** (coherent with the
-  `resp[1]==0x06` echo; the exact request byte carries the usual
-  push-adjust caveat, MEDIUM-HIGH confidence)
-- CDB[8] ≈ allocation length
+- CDB[2] = **page selector = 0x04 for GigaRec** (live-confirmed; session-2's
+  "0x06" was the `resp[1]` constant header, not the page)
+- length byte = 0x08 at CDB[10] (CDB[9] for some pages); response = 8 bytes
 
 **Rate-code table (fully decoded from the jump table, HIGH confidence).**
 The code is the page-data rate byte (`resp[3]` on read):
@@ -153,33 +211,45 @@ firmware's per-rate index (note 1.1× is 0x04, out of numeric order — use
 the table, not arithmetic). Codes 0x05–0x80 hit the default handler (no
 valid rate).
 
-Confidence: opcode 0xE9 and the rate-code table are HIGH (validated three
-ways). The page value 0x06 and the GET/SET direction bit are MEDIUM-HIGH
-(coherent with the response echo; final byte positions want the write-path
-decode, which is deferred). No driver code written — the write/burn path is
-paused, and GigaRec is a write-time feature, so this is documentation only
-for now. When implemented, the GET form (0xE9 page 6, read current rate) is
-the natural selftest anchor: read rate → set → re-read.
+Confidence: opcode 0xE9, page 0x04, and the rate-code table are now HIGH
+(the page and framing were live-verified reading GigaRec state back from the
+PX-716A; the rate table matches QPxTool's `gigarec_tbl` byte-for-byte). No
+driver code written — the write/burn path is paused and GigaRec is write-time,
+so this is documentation only. When implemented, the GET form (0xE9 page 0x04)
+is the natural selftest anchor: read rate → set → re-read.
 
-## Feature surface (remaining, from strings/RTTI, not yet bound)
+## SecuRec — the mechanism (session 3)
 
-RTTI classes still to bind: `CVariRec`, `CVariRecDVD`, `CSecuRec`,
-`CSilentMode`, `CPoweRecInfo`. Given GigaRec resolved to an 0xE9 page, the
-likely structure for the others is *also* 0xE9 pages (VariRec, SecuRec,
-SilentMode, PoweRec) plus the 0xDF four-selector group for the SpeedRead /
-single-session / book-type toggles. Bind each the same way: find its label
-strings, the switch that decodes them, and the page the get-helper requests.
+State is an 0xE9 page (`0xD5`), but activation uses the **auth opcode 0xD5
+(SEND_AUTH)**: a 16-byte data-out `[00][len][14×password]` with CDB[2]=01
+CDB[3]=01 CDB[4]=02 CDB[10]=0x10; OFF = 0xD5 with no data. So SecuRec is a
+drive-enforced read-lock (GET_AUTH/SEND_AUTH `0xD4`/`0xD5` handshake), **not**
+container encryption — the disc structure stays intact but the drive refuses
+the protected content until the password is loaded. The "special reader" the
+manual mentions is simply a drive that implements this auth command. This is
+the one consumer feature that touches AccuDisc's read path: a SecuRec disc will
+read-fault until unlocked, so the core should surface "locked" rather than
+mystify the caller (report-only; unlock stays a vendor-driver action).
 
-## Next steps (session 3+)
+## Method note (session 3)
 
-1. **Bind the remaining features** (VariRec/SecuRec/SilentMode/PoweRec via
-   0xE9 pages; SpeedRead/single-session/book-type via 0xDF) using the
-   GigaRec method above.
-2. **Enumerate the 0xE9 page numbers** — one focused pass over 0x48cf20's
-   callers listing each page selector and its decode switch would map the
-   whole vendor-MODE page space at once.
-3. **Firmware correlation.** Identify the `rome_111.bin` CPU and command
-   dispatch; cross-check the opcode/page set.
-4. **Selftest design** per feature for the driver's attach gate.
+The remaining features were pinned by cross-referencing QPxTool's
+`lib/qpxplextor/plextor_features.cpp` (installed locally at
+`/home/kgr/Git/qpxtool`) — authorised as a factual cross-reference — then
+independently confirmed with raw SG_IO (`e9 00 <page> …`) against the user's
+PX-716A. The static PlexTools RE (sessions 1–2) supplied the opcode inventory
+and the get/set helper structure; QPxTool supplied exact pages and CDB framing;
+the live drive was the final arbiter. `FEATURES.md` is the consumer-facing
+progress table.
+
+## Next steps (session 4+)
+
+1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
+   verify by burning once the write/burn path resumes; SET framing is known.
+2. **PoweRec/QCheck detail** — 0xED and 0xEA sub-modes for reporting.
+3. **Firmware correlation.** Identify the `rome_111.bin` CPU and cross-check
+   the opcode/page set against the dispatch table.
+4. **Selftest design** per feature for the driver's attach gate — SpeedRead is
+   the model (GET → SET → observe page 2A → restore).
 
 Only the 0xEA Q-Check counters are implemented in `plextor.c` today.
