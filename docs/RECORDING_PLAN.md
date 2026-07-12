@@ -167,11 +167,17 @@ CD-DA/DAO focus); cdrecord is the tie-breaker for drive-specific behaviour.
 
 ## 9. Phasing
 
-1. **MMC write primitives + `--simulate` DAO** — mode page 0x05, cue sheet,
-   WRITE(10) loop, sync; test-write only (no laser). Verifiable on the PX-716A
-   without burning media. Status map + progress-fd from day one.
+1. **MMC write primitives + `--simulate` DAO** — ✅ **DONE (2026-07-12).**
+   Write-parameters page 0x05, READ DISC INFO blank-check, SEND CUE SHEET
+   builder + parser, WRITE(10) loop + SYNCHRONIZE CACHE, `accudisc_write` +
+   CLI `write --simulate`. Full simulate of the 19-track ABBA "Gold" image
+   (347,175 sectors) verified on the PX-716A. `src/write/`. Not yet done from
+   the plan: SEND OPC (skipped in simulate), the shared-memory status map
+   (progress-fd only for now), CD-Text lead-in.
 2. **Real single-track audio burn** — one track, no CD-Text, verify by
-   read-back + `cmp` against the source BIN (offset-corrected).
+   read-back + `cmp` against the source BIN (offset-corrected). This is where
+   the s16be/s16le SWABAUDIO byte order gets settled (the read-back is the
+   oracle) and SEND OPC (power calibration) is added.
 3. **Full TOC** — multi-track, pregaps/indices, MCN/ISRC, CD-Text lead-in,
    P/Q/R–W synthesis; verify subchannel with the read path.
 4. **`--sub` passthrough** — caller-supplied raw P–W for exact reproduction.

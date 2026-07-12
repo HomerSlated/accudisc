@@ -123,6 +123,24 @@ drives (default probe location: the middle half of the disc). The drive is
 left at the last candidate tested. Rungs with equal `measured` are one
 rung for ladder purposes.
 
+## `write` output
+
+DAO audio burn from a cdrdao `.toc` + raw BIN. `--simulate` runs the whole path
+with the laser off (test-write); requires a blank disc and an O_RDWR open.
+
+- **stderr**: human `\rwriting <done>/<total> (…%)` line — not a stable
+  interface.
+- **stdout**: final `write done sectors=<n> mode=<simulate|burn>`.
+- **`--progress-fd N`**: machine tokens, throttled — `progress <done> <total>`
+  lines plus a final `summary sectors=<n> mode=<simulate|burn> result=ok`.
+- **exit**: 0 done; 1 usage / missing `--toc`/`--bin`; 2 transport failure;
+  **3 disc is not blank**.
+
+`done`/`total` are sectors; `total` is the lead-out LBA (sum of track lengths).
+`--byteswap` swaps each 16-bit audio sample before writing (audio byte order is
+drive-specific — the PX-716A advertises SWABAUDIO; settle empirically by
+read-back before trusting a real burn).
+
 ## `media` output (stdout)
 
 One line, from the disc ATIP (READ TOC/PMA/ATIP format 4; non-destructive):
