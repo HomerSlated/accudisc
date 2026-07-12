@@ -83,7 +83,17 @@ int adsc_write_run(struct accudisc_device *dev,
     if (di.status != 0)
         return ACCUDISC_ERR_UNSUPPORTED; /* not blank */
 
-    /* 3. Power calibration (SEND OPC) is skipped in simulate; TODO for real. */
+    /* 3. Power calibration for a real burn (fires the laser at the PCA).
+     * Skipped in simulate. A drive that reports "invalid command" (SK 5 /
+     * ASC 0x20) simply doesn't need it — proceed. */
+    if (!opts->simulate) {
+        ret = adsc_mmc_send_opc(dev);
+        if (ret == ACCUDISC_ERR_SENSE && dev->last_sense.key == 0x05 &&
+            dev->last_sense.asc == 0x20)
+            ret = ACCUDISC_OK;
+        if (ret != ACCUDISC_OK)
+            return ret;
+    }
 
     /* 4. SEND CUE SHEET — the whole-disc DAO layout. */
     if ((ret = adsc_cuesheet_build(toc, cue, sizeof cue, &cuelen)) != ACCUDISC_OK)

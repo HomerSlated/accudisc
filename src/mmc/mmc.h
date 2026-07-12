@@ -67,4 +67,7 @@ int adsc_mmc_sync_cache(struct accudisc_device *dev);
 int adsc_mmc_send_cue_sheet(struct accudisc_device *dev, const uint8_t *cue,
                             uint32_t len);
 
+/* SEND OPC INFORMATION (DoOPC) — power calibration before a real burn. */
+int adsc_mmc_send_opc(struct accudisc_device *dev);
+
 #endif /* ADSC_MMC_H */

@@ -200,6 +200,17 @@ int adsc_mmc_send_cue_sheet(struct accudisc_device *dev, const uint8_t *cue,
     return adsc_dev_exec(dev, &cmd);
 }
 
+int adsc_mmc_send_opc(struct accudisc_device *dev)
+{
+    adsc_cmd cmd = {0};
+
+    adsc_cdb_send_opc(cmd.cdb);
+    cmd.cdb_len = 10;
+    cmd.dir = ADSC_XFER_NONE;
+    cmd.timeout_ms = ADSC_TIMEOUT_WRITE_MS;
+    return adsc_dev_exec(dev, &cmd);
+}
+
 int adsc_mmc_read_disc_info(struct accudisc_device *dev, uint8_t *buf,
                             uint32_t cap, uint32_t *len)
 {

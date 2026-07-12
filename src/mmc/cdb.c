@@ -66,6 +66,13 @@ void adsc_cdb_send_cue(uint8_t cdb[10], uint32_t len)
     cdb[8] = (uint8_t)(len & 0xff);
 }
 
+void adsc_cdb_send_opc(uint8_t cdb[10])
+{
+    memset(cdb, 0, 10);
+    cdb[0] = ADSC_OP_SEND_OPC;
+    cdb[1] = 0x01; /* DoOPC: perform optimum power calibration */
+}
+
 void adsc_cdb_get_configuration(uint8_t cdb[10], unsigned rt,
                                 uint16_t feature, uint16_t alloc)
 {
