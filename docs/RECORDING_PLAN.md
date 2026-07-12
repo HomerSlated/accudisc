@@ -174,10 +174,13 @@ CD-DA/DAO focus); cdrecord is the tie-breaker for drive-specific behaviour.
    (347,175 sectors) verified on the PX-716A. `src/write/`. Not yet done from
    the plan: SEND OPC (skipped in simulate), the shared-memory status map
    (progress-fd only for now), CD-Text lead-in.
-2. **Real single-track audio burn** — one track, no CD-Text, verify by
-   read-back + `cmp` against the source BIN (offset-corrected). This is where
-   the s16be/s16le SWABAUDIO byte order gets settled (the read-back is the
-   oracle) and SEND OPC (power calibration) is added.
+2. **Real burn** — ✅ **DONE (2026-07-12).** SEND OPC added; the full 19-track
+   ABBA "Gold" image burned to a Taiyo Yuden CD-R and verified **bit-exact**
+   on read-back (231200/231200 samples identical, offset 0, 0 hard errors, 0
+   C2) and confirmed playable. **Byte order settled: the drive wants s16le**
+   (cdrdao `GenericMMC::bigEndianSamples()==0`), so an s16be BIN needs
+   `--byteswap`; net raw read/write offset is 0 on the PX-716A. Still open:
+   CD-Text lead-in, and per-track verify by track.
 3. **Full TOC** — multi-track, pregaps/indices, MCN/ISRC, CD-Text lead-in,
    P/Q/R–W synthesis; verify subchannel with the read path.
 4. **`--sub` passthrough** — caller-supplied raw P–W for exact reproduction.
