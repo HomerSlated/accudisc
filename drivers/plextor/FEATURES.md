@@ -36,6 +36,16 @@ book type) are not observable without a burn — the write/burn path is paused.
 | `0xF1` | EEPROM read (TLA etc.) | PX-716 reportedly rejects the TLA form. |
 | `0xF3` / `0xF5` | FE/TE (focus/tracking error) scan + readout | Diagnostic. |
 | `0xD8` | READ CD-DA (classic raw audio) | Not needed; all five `0xBE` combos work in the core. |
+| `0xDE` `0xDF` `0xE1` `0xE2` | unmapped | Not exposed by QPxTool or the manual; internal/DVD/HDD (0xDF is model-gated to PX-PH2 external HDD). Not CD-DA consumer features — left unmapped. |
+
+## Cross-validation
+
+The whole table was confirmed three independent ways: (1) PlexTools static RE
+(sessions 1–2, opcode inventory + helper structure); (2) QPxTool source
+(pages + CDB framing); (3) the live PX-716A — both raw SG_IO (`sgsend`) and
+QPxTool's own `cdvdcontrol -c`, whose reported states match the raw reads
+exactly (SpeedRead OFF, PoweRec ON, GigaRec OFF, SecuRec OFF, AutoStrategy
+AUTO[1], TestWrite OFF, …).
 
 ## The 0xE9 MODE command (verified model)
 
