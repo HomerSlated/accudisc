@@ -28,4 +28,17 @@ int adsc_write_set_params(struct accudisc_device *dev,
 int adsc_write_get_params(struct accudisc_device *dev,
                           struct adsc_write_params *out);
 
+/* Disc state relevant to writing (from READ DISC INFORMATION). */
+struct adsc_disc_info {
+    int erasable;     /* 1 = CD-RW, 0 = CD-R */
+    int status;       /* 0 = blank, 1 = appendable, 2 = complete, 3 = other */
+    int first_track;
+    int last_track;
+    int sessions;
+};
+
+/* Read + decode disc status. A DAO burn wants status == 0 (blank). */
+int adsc_write_read_disc_info(struct accudisc_device *dev,
+                              struct adsc_disc_info *out);
+
 #endif /* ADSC_WRITE_H */

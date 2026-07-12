@@ -22,6 +22,7 @@ set(ACCUDISC_SOURCES
     cdda/scan.c
     meta/cdtext.c
     write/wparams.c
+    write/discinfo.c
 )
 
 add_library(accudisc SHARED ${ACCUDISC_SOURCES})

@@ -50,4 +50,9 @@ int adsc_mmc_get_configuration(struct accudisc_device *dev, uint16_t feature,
 int adsc_mmc_start_stop(struct accudisc_device *dev, unsigned start,
                         unsigned loej);
 
+/* READ DISC INFORMATION (standard). Fills up to cap bytes of the response
+ * into buf; *len is the byte count read. */
+int adsc_mmc_read_disc_info(struct accudisc_device *dev, uint8_t *buf,
+                            uint32_t cap, uint32_t *len);
+
 #endif /* ADSC_MMC_H */

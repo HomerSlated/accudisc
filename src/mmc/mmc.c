@@ -155,6 +155,34 @@ int adsc_mmc_mode_select10(struct accudisc_device *dev, uint8_t *buf,
     return adsc_dev_exec(dev, &cmd);
 }
 
+int adsc_mmc_read_disc_info(struct accudisc_device *dev, uint8_t *buf,
+                            uint32_t cap, uint32_t *len)
+{
+    adsc_cmd cmd = {0};
+    int rc;
+
+    if (cap < 4)
+        return ACCUDISC_ERR_INVAL;
+
+    /* One pass: the standard disc-information block is 34 bytes; ask for what
+     * the caller can hold and report what came back. */
+    uint32_t want = cap > 34 ? 34 : cap;
+    adsc_cdb_read_disc_info(cmd.cdb, (uint16_t)want);
+    cmd.cdb_len = 10;
+    cmd.dir = ADSC_XFER_IN;
+    cmd.buf = buf;
+    cmd.buf_len = want;
+    cmd.timeout_ms = ADSC_TIMEOUT_CTRL_MS;
+
+    rc = adsc_dev_exec(dev, &cmd);
+    if (rc != ACCUDISC_OK)
+        return rc;
+
+    uint32_t total = (uint32_t)(((unsigned)buf[0] << 8) | buf[1]) + 2;
+    *len = total < want ? total : want;
+    return ACCUDISC_OK;
+}
+
 int adsc_mmc_get_configuration(struct accudisc_device *dev, uint16_t feature,
                                uint8_t *out, uint32_t cap)
 {

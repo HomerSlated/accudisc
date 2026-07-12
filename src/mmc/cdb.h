@@ -65,6 +65,9 @@ void adsc_cdb_get_configuration(uint8_t cdb[10], unsigned rt,
 void adsc_cdb_mode_sense10(uint8_t cdb[10], unsigned page, uint16_t alloc);
 void adsc_cdb_mode_select10(uint8_t cdb[10], uint16_t param_len);
 
+/* READ DISC INFORMATION, standard disc info (data type 0). */
+void adsc_cdb_read_disc_info(uint8_t cdb[10], uint16_t alloc);
+
 /* Always sets include-user-data (byte 9 bit 4); c2 = ADSC_C2_*,
  * sub = ADSC_SUB_*, sector_type = ADSC_SECTOR_*. */
 void adsc_cdb_read_cd(uint8_t cdb[12], uint32_t lba, uint32_t nsec,

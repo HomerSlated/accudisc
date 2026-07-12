@@ -30,6 +30,15 @@ void adsc_cdb_read_toc(uint8_t cdb[10], unsigned format, unsigned time_bit,
     cdb[8] = (uint8_t)(alloc & 0xff);
 }
 
+void adsc_cdb_read_disc_info(uint8_t cdb[10], uint16_t alloc)
+{
+    memset(cdb, 0, 10);
+    cdb[0] = ADSC_OP_READ_DISC_INFO;
+    cdb[1] = 0x00; /* data type: standard disc information */
+    cdb[7] = (uint8_t)(alloc >> 8);
+    cdb[8] = (uint8_t)(alloc & 0xff);
+}
+
 void adsc_cdb_get_configuration(uint8_t cdb[10], unsigned rt,
                                 uint16_t feature, uint16_t alloc)
 {
