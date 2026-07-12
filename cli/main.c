@@ -33,6 +33,9 @@ static void usage(FILE *to)
         "                 a DAMAGED span (C2 must fire); report-only\n"
         "  stop           spin the spindle down (no eject)\n"
         "  read           read CD-DA sectors (see read options)\n"
+        "  write          burn an audio session DAO from a cdrdao .toc:\n"
+        "                 --toc FILE --bin FILE [--simulate] [--byteswap]\n"
+        "                 [--speed X] [--progress-fd N]  (needs blank disc)\n"
         "  cxscan         hardware C1/C2/CU error census (needs --driver)\n"
         "  version        print the library version\n"
         "\n"
@@ -564,6 +567,71 @@ static int cmd_media(accudisc_device *dev)
     return 0;
 }
 
+struct write_prog {
+    int prog_fd;      /* machine progress fd, or -1 */
+    uint32_t total;
+    uint32_t last_emit;
+};
+
+static void write_progress(void *user, uint32_t done, uint32_t total)
+{
+    struct write_prog *wp = user;
+
+    wp->total = total;
+    fprintf(stderr, "\rwriting %u/%u (%.1f%%)   ", done, total,
+            total ? 100.0 * done / total : 0.0);
+    if (wp->prog_fd >= 0 && (done - wp->last_emit >= 4096 || done == total)) {
+        dprintf(wp->prog_fd, "progress %u %u\n", done, total);
+        wp->last_emit = done;
+    }
+}
+
+static int cmd_write(accudisc_device *dev, int argc, char **argv)
+{
+    const char *toc = NULL, *bin = NULL;
+    accudisc_write_opts o = {0};
+    struct write_prog wp = { -1, 0, 0 };
+
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--toc") && i + 1 < argc)
+            toc = argv[++i];
+        else if (!strcmp(argv[i], "--bin") && i + 1 < argc)
+            bin = argv[++i];
+        else if (!strcmp(argv[i], "--simulate"))
+            o.simulate = 1;
+        else if (!strcmp(argv[i], "--byteswap"))
+            o.byteswap = 1;
+        else if (!strcmp(argv[i], "--speed") && i + 1 < argc)
+            o.speed = (int)strtol(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--progress-fd") && i + 1 < argc)
+            wp.prog_fd = (int)strtol(argv[++i], NULL, 0);
+        else {
+            usage(stderr);
+            return 1;
+        }
+    }
+    if (!toc || !bin) {
+        fprintf(stderr, "accudisc: write needs --toc FILE and --bin FILE\n");
+        return 1;
+    }
+
+    int err = accudisc_write(dev, toc, bin, &o, write_progress, &wp);
+    fprintf(stderr, "\n");
+    if (err == ACCUDISC_ERR_UNSUPPORTED) {
+        fprintf(stderr, "accudisc: write: disc is not blank\n");
+        return 3;
+    }
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "write", err);
+
+    const char *mode = o.simulate ? "simulate" : "burn";
+    printf("write done sectors=%u mode=%s\n", wp.total, mode);
+    if (wp.prog_fd >= 0)
+        dprintf(wp.prog_fd, "summary sectors=%u mode=%s result=ok\n",
+                wp.total, mode);
+    return 0;
+}
+
 /* ---- read ------------------------------------------------------------- */
 
 struct read_ctx {
@@ -940,11 +1008,13 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    /* Vendor opcodes are blocked by the kernel's SG_IO filter on read-only
-     * fds, so a permitted driver implies a read-write open. */
+    /* Vendor opcodes and WRITE(10)/SEND CUE SHEET are blocked by the kernel's
+     * SG_IO filter on read-only fds, so a permitted driver or the write
+     * command implies a read-write open. */
+    int need_rdwr = driver != NULL || strcmp(command, "write") == 0;
     int err = 0;
     accudisc_device *dev =
-        accudisc_open(device, driver ? ACCUDISC_OPEN_RDWR : 0, &err);
+        accudisc_open(device, need_rdwr ? ACCUDISC_OPEN_RDWR : 0, &err);
     if (!dev) {
         fprintf(stderr, "accudisc: open %s: %s\n", device,
                 accudisc_strerror(err));
@@ -981,6 +1051,8 @@ int main(int argc, char **argv)
         rc = cmd_speed_report(dev);
     else if (!strcmp(command, "media"))
         rc = cmd_media(dev);
+    else if (!strcmp(command, "write"))
+        rc = cmd_write(dev, nrest, rest);
     else if (!strcmp(command, "c2lag"))
         rc = cmd_c2lag(dev, nrest, rest);
     else if (!strcmp(command, "speeds"))

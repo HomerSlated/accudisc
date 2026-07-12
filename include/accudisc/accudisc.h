@@ -138,6 +138,28 @@ ACCUDISC_API int accudisc_read_atip(accudisc_device *dev, accudisc_atip *out);
 ACCUDISC_API const char *accudisc_atip_manufacturer(uint8_t min, uint8_t sec,
                                                     uint8_t frame);
 
+/* ---- recording (DAO write) -------------------------------------------------
+ * Burn one audio session Disc-At-Once. The caller supplies a cdrdao .toc and
+ * the raw audio BIN it references; AccuDisc only moves the bits. Requires a
+ * blank disc and an ACCUDISC_OPEN_RDWR handle. Provisional API — the write
+ * engine is young; fields may grow. */
+typedef struct accudisc_write_opts {
+    int simulate;   /* test-write: run the full path with the laser off */
+    int byteswap;   /* swap each 16-bit audio sample before writing */
+    int speed;      /* 0 = leave the drive's current write speed */
+} accudisc_write_opts;
+
+/* Burn toc_path (a cdrdao .toc) + bin_path (the raw s16 audio it names).
+ * progress (may be NULL) is called with sectors done / total. Returns
+ * ACCUDISC_OK, ACCUDISC_ERR_UNSUPPORTED if the disc is not blank, or a
+ * transport/parse error. */
+ACCUDISC_API int accudisc_write(accudisc_device *dev, const char *toc_path,
+                                const char *bin_path,
+                                const accudisc_write_opts *opts,
+                                void (*progress)(void *user, uint32_t done,
+                                                 uint32_t total),
+                                void *user);
+
 /* Optional log sink for library/driver diagnostics (default: discarded). */
 ACCUDISC_API void accudisc_set_log(accudisc_device *dev,
                                    void (*fn)(void *user, const char *msg),
