@@ -16,8 +16,8 @@ extern "C" {
 #endif
 
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 0
-#define ACCUDISC_VERSION_PATCH 1
+#define ACCUDISC_VERSION_MINOR 1
+#define ACCUDISC_VERSION_PATCH 0
 
 #if defined(_WIN32)
 #  define ACCUDISC_API __declspec(dllexport)
@@ -205,6 +205,19 @@ ACCUDISC_API int accudisc_counter_scan_begin(accudisc_device *dev);
 ACCUDISC_API int accudisc_counter_scan_read(accudisc_device *dev,
                                             accudisc_counters *out);
 ACCUDISC_API int accudisc_counter_scan_end(accudisc_device *dev);
+
+/* ---- read-speed uncap (driver capability) ----------------------------------
+ * Firmware caps CD read speed on some media; where the vendor offers an
+ * override (Plextor: "SpeedRead"), this toggles it, raising the ceiling
+ * reported by accudisc_get_speed (PX-716A: 40x -> 48x). Speed is still
+ * commanded through accudisc_set_speed — this only lifts the limit.
+ * ACCUDISC_ERR_UNSUPPORTED without an attached driver offering it.
+ *
+ * The setting is DRIVE state: it persists after the handle is closed, until
+ * changed again or the drive is power-cycled. A caller that flips it for one
+ * operation should read the prior value first and restore it. */
+ACCUDISC_API int accudisc_speed_uncap_get(accudisc_device *dev, int *on);
+ACCUDISC_API int accudisc_speed_uncap_set(accudisc_device *dev, int on);
 
 /* Best-effort drive read-speed control, in Nx CD speed (176 kB/s units);
  * uses the unprivileged CDROM_SELECT_SPEED path. */

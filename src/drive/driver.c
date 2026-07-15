@@ -196,3 +196,21 @@ int accudisc_counter_scan_end(accudisc_device *dev)
         return ACCUDISC_ERR_UNSUPPORTED;
     return dev->drv->counter_scan_end(&dev->host);
 }
+
+int accudisc_speed_uncap_get(accudisc_device *dev, int *on)
+{
+    if (!dev || !on)
+        return ACCUDISC_ERR_INVAL;
+    if (!dev->drv || !dev->drv->speed_uncap_get)
+        return ACCUDISC_ERR_UNSUPPORTED;
+    return dev->drv->speed_uncap_get(&dev->host, on);
+}
+
+int accudisc_speed_uncap_set(accudisc_device *dev, int on)
+{
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+    if (!dev->drv || !dev->drv->speed_uncap_set)
+        return ACCUDISC_ERR_UNSUPPORTED;
+    return dev->drv->speed_uncap_set(&dev->host, on ? 1 : 0);
+}

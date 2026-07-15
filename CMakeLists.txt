@@ -22,6 +22,28 @@ add_subdirectory(drivers)
 
 if(ACCUDISC_BUILD_CLI)
     add_subdirectory(cli)
+
+    # Vendor SCSI opcodes (driver features: SpeedRead, Q-Check) and MODE
+    # SELECT (burning) are blocked by the kernel's unprivileged SG_IO filter;
+    # they need CAP_SYS_RAWIO. The base read/rip path does NOT — it uses only
+    # filter-permitted MMC commands. So this capability is opt-in, never part
+    # of the ordinary build:
+    #
+    #   doas cmake --build build --target setcap
+    #
+    # Caveats by design: setcap needs privilege, and a file capability binds
+    # to the inode — every rebuild relinks a fresh binary that must be
+    # re-capped. For a persistent grant, apply it to the *installed* binary
+    # instead. Running the CLI under doas/root is always the simpler path for
+    # one-off vendor-feature use.
+    find_program(SETCAP_EXECUTABLE setcap)
+    if(SETCAP_EXECUTABLE)
+        add_custom_target(setcap
+            COMMAND ${SETCAP_EXECUTABLE} cap_sys_rawio+ep $<TARGET_FILE:accudisc_cli>
+            DEPENDS accudisc_cli
+            COMMENT "setcap cap_sys_rawio+ep on the built accudisc (needs privilege; re-run after each rebuild)"
+            VERBATIM)
+    endif()
 endif()
 
 if(ACCUDISC_BUILD_TESTS)

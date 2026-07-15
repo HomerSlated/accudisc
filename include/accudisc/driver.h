@@ -35,7 +35,7 @@ extern "C" {
 
 /* Bumped on any incompatible change to this file; the library refuses
  * drivers built against a different ABI. */
-#define ACCUDISC_DRIVER_ABI 1
+#define ACCUDISC_DRIVER_ABI 2
 
 typedef enum accudisc_host_dir {
     ACCUDISC_HOST_NONE = 0,
@@ -76,6 +76,15 @@ typedef struct accudisc_driver {
     int (*counter_scan_read)(const accudisc_host *host,
                              accudisc_counters *out);
     int (*counter_scan_end)(const accudisc_host *host);
+
+    /* Capability: lift the drive's CD read-speed cap (e.g. Plextor
+     * SpeedRead). Firmware limits read speed on some media; where the vendor
+     * offers an override, this toggles it. The setting is drive state and
+     * persists until changed or the drive is power-cycled — set() must
+     * verify the change took. Speed itself is still commanded through the
+     * generic MMC path (accudisc_set_speed); this only raises the ceiling. */
+    int (*speed_uncap_get)(const accudisc_host *host, int *on);
+    int (*speed_uncap_set)(const accudisc_host *host, int on);
 } accudisc_driver;
 
 /* The symbol every driver .so must export. */

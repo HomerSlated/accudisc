@@ -13,7 +13,41 @@ book type) are not observable without a burn — the write/burn path is paused.
 
 | # | Feature (manual) | Opcode / page | Identified | Working | Notes |
 |---|------------------|---------------|:---------:|:-------:|-------|
-| 1 | **SpeedRead** (uncap CD read speed) | `0xE9` MODE, page `0xBB` | ☑ | ☑ | **Fully verified**: SET ON flips mode-page-2A max read speed 40×→48× (7056→8467 kB/s); SET OFF restores 40×. Value at CDB[3], state echoed at resp[2]. |
+| 1 | **SpeedRead** (uncap CD read speed) | `0xE9` MODE, page `0xBB` | ☑ | ☑ | **Fully verified**: SET ON flips mode-page-2A max read speed 40×→48× (7056→8467 kB/s); SET OFF restores 40×. Value at CDB[3], state echoed at resp[2]. **⚠ Corrupts the Q subchannel** — see below. |
+
+### ⚠ SpeedRead destroys subchannel Q on inner/mid tracks (session 4, live)
+
+Measured on the PX-716A reading ABBA *Gold* whole-disc (`read --start 0 --sub
+raw`), SpeedRead ON vs OFF, same command, same ~24.2× average, back-to-back:
+
+| SpeedRead | total Q-CRC ok | 0–10% | 10–60% (inner/mid) | 70–100% (outer) |
+|-----------|----------------|-------|--------------------|-----------------|
+| **ON**    | **40.6 %**     | 55 %  | **0.0 %** (dead)   | ~99 %           |
+| **OFF**   | **99.2 %**     | 98 %  | ~99–100 %          | ~99 %           |
+
+Cause: SpeedRead pins the drive's CAV RPM to its 48×-outer target across the
+whole disc. On inner tracks the linear velocity is far below what that RPM
+implies and the subchannel channel-clock cannot track it, so Q decodes to
+garbage; the outer tracks (linear speed matches RPM) stay clean. The **audio
+main channel is unaffected** (0 hard errors, 0 C2 both runs) — the damage is
+Q-only, and silent. An *isolated* read of an inner LBA is clean even at
+`--speed 40`, because the drive then spins only as fast as that radius needs;
+the corruption requires the sustained high RPM of a full-disc SpeedRead pass.
+
+**Rule for the read engine: never enable SpeedRead when `--sub` is requested.**
+SpeedRead is an audio-only accelerator.
+
+**Relation to the cdda2img 47 % Q loss (their §9) — NOT established.** Their
+incident predates AccuDisc's SpeedRead support, so SpeedRead cannot have been
+the cause *unless* another tool (e.g. PlexTools) had left the persistent bit
+on. Against that: a whole-disc read here with SpeedRead **off** was 99.2 %
+clean — i.e. this test does **not** reproduce their 47 % in their nominal
+config. So their cause is still open. The one suggestive link is the *pattern*:
+their missing pre-gaps (tracks 5/6/7/9) are inner/mid, matching the inner dead
+zone SpeedRead produces — which is a reason to check whether SpeedRead (or any
+high-inner-RPM condition) was in fact active, not proof that it was. Q-health
+counters in the read summary are needed to settle it by re-running the rip with
+SpeedRead verified off.
 | 2 | **Write Strategy / AutoStrategy** | `0xE4` read / `0xE5` write | ☑ | ◐ | GET-verified: AutoStrategy currently ON (resp[2]&0x0F=1). Enable/disable = `0xE4` CDB[2]=`0x10\|state`. Strategy DB read `0xE4` CDB[1]=0x02 CDB[2]=0x03; custom strategy push = `0xE5`. Manual write-strategy needs AutoStrategy OFF. Effects need a burn. |
 | 3 | **SecuRec** (disc password lock) | state `0xE9` page `0xD5`; set `0xD5` SEND_AUTH | ☑ | ◐ | State GET-verified: not protected (resp[3]=0). Password load = opcode `0xD5`, 16-byte WRITE `[00][len][14×passwd]`, CDB[2]=01 CDB[3]=01 CDB[4]=02 CDB[10]=0x10. OFF = `0xD5` with no data. Drive-enforced read-lock (auth handshake `0xD4`/`0xD5`), **not** container encryption. Not burn-tested. |
 | 4 | **GigaRec** (CD-R density 0.6–1.4×) | `0xE9` MODE, page `0x04` | ☑ | ◐ | GET-verified (off / 1.0×). **Corrects session-2: page is 0x04, not 0x06.** Rate at resp[3], disc-rate resp[4]. Rate table validated (see PROTOCOL.md). SET is write-time; effect needs a burn. |

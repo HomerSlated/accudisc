@@ -23,6 +23,10 @@ static void usage(FILE *to)
         "  features       probe C2/subchannel capability (claim + smoke);\n"
         "                 exits 0 iff C2 is clearly usable\n"
         "  speed-report   print max/current read speed (mode page 2A)\n"
+        "  speed-uncap [on|off]\n"
+        "                 report or set the vendor read-speed uncap\n"
+        "                 (Plextor: SpeedRead) — needs --driver; persistent\n"
+        "                 drive state. No argument = report only\n"
         "  media          identify recordable media from ATIP:\n"
         "                 manufacturer, ATIP code, capacity, CD-R/RW\n"
         "  speeds         probe which speed settings the drive really\n"
@@ -72,6 +76,9 @@ static void usage(FILE *to)
         "                 32,16,8,4 — attempt n runs at the n-th speed;\n"
         "                 pass speed is restored for streaming\n"
         "  --speed X      set drive read speed to Xx first (best-effort)\n"
+        "  --uncap        lift the vendor read-speed cap for this read only,\n"
+        "                 restoring the drive's prior setting afterwards\n"
+        "                 (needs --driver; Plextor: SpeedRead)\n"
         "  --map          render a per-sector disc map when done\n"
         "  --map-file F   live status map: F is exactly COUNT bytes, one\n"
         "                 status byte per sector (ACCUDISC_MAP_* encoding,\n"
@@ -543,6 +550,52 @@ static int cmd_speed_report(accudisc_device *dev)
     return 0;
 }
 
+/* Report the read-speed uncap, or set it. The resulting mode-page-2A ceiling
+ * is printed alongside, since that is the observable the setting moves. */
+static int cmd_speed_uncap(accudisc_device *dev, int argc, char **argv)
+{
+    unsigned max_kbps = 0, cur_kbps = 0;
+    int on = 0, err;
+
+    if (argc > 1) {
+        usage(stderr);
+        return 1;
+    }
+    if (argc == 1) {
+        if (!strcmp(argv[0], "on"))
+            on = 1;
+        else if (strcmp(argv[0], "off") != 0) {
+            usage(stderr);
+            return 1;
+        }
+        err = accudisc_speed_uncap_set(dev, on);
+        if (err == ACCUDISC_ERR_UNSUPPORTED) {
+            fprintf(stderr, "accudisc: read-speed uncap unsupported via %s — "
+                            "a vendor driver is required (--driver auto)\n",
+                    accudisc_access_method(dev));
+            return 2;
+        }
+        if (err != ACCUDISC_OK)
+            return fail_dev(dev, "speed-uncap set", err);
+    }
+
+    err = accudisc_speed_uncap_get(dev, &on);
+    if (err == ACCUDISC_ERR_UNSUPPORTED) {
+        fprintf(stderr, "accudisc: read-speed uncap unsupported via %s — a "
+                        "vendor driver is required (--driver auto)\n",
+                accudisc_access_method(dev));
+        return 2;
+    }
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "speed-uncap get", err);
+
+    if (accudisc_get_speed(dev, &max_kbps, &cur_kbps) != ACCUDISC_OK)
+        max_kbps = 0;
+    printf("speed-uncap %s max_kbps %u max_x %u\n", on ? "on" : "off",
+           max_kbps, max_kbps / 176);
+    return 0;
+}
+
 static int cmd_media(accudisc_device *dev)
 {
     accudisc_atip atip;
@@ -730,6 +783,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     const char *map_path = NULL, *fulltoc_path = NULL, *cdtext_path = NULL;
     long start = 0, count = -1;
     int want_map = 0;
+    int uncap = 0, uncap_prior = -1; /* -1 = never touched, nothing to restore */
     uint16_t ladder[8];
 
     ctx.prog_fd = -1;
@@ -790,6 +844,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         }
         else if (!strcmp(a, "--speed") && i + 1 < argc)
             req.speed_x = (uint16_t)strtol(argv[++i], NULL, 0);
+        else if (!strcmp(a, "--uncap"))
+            uncap = 1;
         else if (!strcmp(a, "--map"))
             want_map = 1;
         else if (!strcmp(a, "--map-file") && i + 1 < argc)
@@ -887,6 +943,62 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         goto out;
     }
 
+    /* SpeedRead is an audio-only accelerator: it pins the drive's CAV RPM to
+     * the outer-edge target across the whole disc, which corrupts the Q
+     * subchannel on inner/mid tracks (measured 0% Q-CRC there; see
+     * drivers/plextor/FEATURES.md). Never lift the cap while capturing sub. */
+    if (uncap && req.sub != ACCUDISC_SUB_NONE) {
+        fprintf(stderr, "accudisc: --uncap cannot be combined with --sub — "
+                        "SpeedRead corrupts the Q subchannel\n");
+        ret = 1;
+        goto out;
+    }
+
+    /* Warn (driver-free) if SpeedRead already looks enabled for a subchannel
+     * read: on a Plextor, mode-page-2A max read speed above 40x means the
+     * uncap is on — persistent drive state a prior session may have left set.
+     * We do not change it (caller's drive); we make the silent loss visible. */
+    if (req.sub != ACCUDISC_SUB_NONE && !ctx.quiet) {
+        accudisc_drive_id id;
+        unsigned mk = 0, ck = 0;
+        if (accudisc_drive_identify(dev, &id) == ACCUDISC_OK &&
+            !strcmp(id.vendor, "PLEXTOR") &&
+            accudisc_get_speed(dev, &mk, &ck) == ACCUDISC_OK && mk / 176 > 40)
+            fprintf(stderr,
+                "accudisc: WARNING: SpeedRead appears enabled (max read %ux) "
+                "with --sub requested;\n"
+                "  the Q subchannel will be corrupted on inner/mid tracks. "
+                "Disable it first:\n"
+                "  accudisc speed-uncap off --driver plextor\n",
+                mk / 176);
+    }
+
+    /* --uncap: lift the firmware read-speed cap for this read only. The
+     * setting is persistent drive state, so the prior value is restored
+     * afterwards — a read must not silently reconfigure the drive. */
+    if (uncap) {
+        int err = accudisc_speed_uncap_get(dev, &uncap_prior);
+
+        if (err == ACCUDISC_ERR_UNSUPPORTED) {
+            fprintf(stderr, "accudisc: --uncap unsupported via %s — a vendor "
+                            "driver is required (--driver auto)\n",
+                    accudisc_access_method(dev));
+            ret = 2;
+            goto out;
+        }
+        if (err != ACCUDISC_OK) {
+            ret = fail_dev(dev, "speed-uncap get", err);
+            goto out;
+        }
+        if ((err = accudisc_speed_uncap_set(dev, 1)) != ACCUDISC_OK) {
+            ret = fail_dev(dev, "speed-uncap set", err);
+            goto out;
+        }
+        if (!ctx.quiet)
+            fprintf(stderr, "read-speed uncap: on (was %s)\n",
+                    uncap_prior ? "on" : "off");
+    }
+
     accudisc_read_stats st;
     double t0 = mono_now();
     int err = accudisc_read_cdda(dev, &req, read_sink, &ctx, &st);
@@ -946,6 +1058,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                                                                        : 0;
 
 out:
+    if (uncap_prior >= 0)
+        accudisc_speed_uncap_set(dev, uncap_prior); /* leave the drive as found */
     if (ctx.pcm)
         fclose(ctx.pcm);
     if (ctx.c2f)
@@ -1049,6 +1163,8 @@ int main(int argc, char **argv)
         rc = cmd_features(dev);
     else if (!strcmp(command, "speed-report"))
         rc = cmd_speed_report(dev);
+    else if (!strcmp(command, "speed-uncap"))
+        rc = cmd_speed_uncap(dev, nrest, rest);
     else if (!strcmp(command, "media"))
         rc = cmd_media(dev);
     else if (!strcmp(command, "write"))
