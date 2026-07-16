@@ -231,6 +231,14 @@ ACCUDISC_API int accudisc_get_speed(accudisc_device *dev,
  * drive rather than through block-layer quirks). */
 ACCUDISC_API int accudisc_spindle_stop(accudisc_device *dev);
 
+/* Open the tray / unload the disc (START STOP UNIT, LoEj=1 Start=0). Straight
+ * to the drive, so it works without a mounted block device. */
+ACCUDISC_API int accudisc_eject(accudisc_device *dev);
+
+/* Close the tray / load the disc (START STOP UNIT, LoEj=1 Start=1). A slot
+ * loader with no disc may reject this; the drive's sense is returned. */
+ACCUDISC_API int accudisc_load(accudisc_device *dev);
+
 /* ---- TOC ------------------------------------------------------------------ */
 
 typedef struct accudisc_track {

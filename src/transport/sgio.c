@@ -76,3 +76,17 @@ int adsc_transport_select_speed(adsc_transport *t, unsigned speed_x)
         return ACCUDISC_ERR_IO;
     return ACCUDISC_OK;
 }
+
+int adsc_transport_eject(adsc_transport *t)
+{
+    if (ioctl(t->fd, CDROMEJECT) < 0)
+        return ACCUDISC_ERR_IO;
+    return ACCUDISC_OK;
+}
+
+int adsc_transport_load(adsc_transport *t)
+{
+    if (ioctl(t->fd, CDROMCLOSETRAY) < 0)
+        return ACCUDISC_ERR_IO;
+    return ACCUDISC_OK;
+}

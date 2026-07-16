@@ -36,6 +36,8 @@ static void usage(FILE *to)
         "                 [--start L] [--count N] [--speed X] — point it at\n"
         "                 a DAMAGED span (C2 must fire); report-only\n"
         "  stop           spin the spindle down (no eject)\n"
+        "  eject          open the tray / unload the disc\n"
+        "  load           close the tray / load the disc\n"
         "  read           read CD-DA sectors (see read options)\n"
         "  write          burn an audio session DAO from a cdrdao .toc:\n"
         "                 --toc FILE --bin FILE [--simulate] [--byteswap]\n"
@@ -1177,6 +1179,14 @@ int main(int argc, char **argv)
         rc = accudisc_spindle_stop(dev);
         if (rc != ACCUDISC_OK)
             rc = fail_dev(dev, "stop", rc);
+    } else if (!strcmp(command, "eject")) {
+        rc = accudisc_eject(dev);
+        if (rc != ACCUDISC_OK)
+            rc = fail_dev(dev, "eject", rc);
+    } else if (!strcmp(command, "load")) {
+        rc = accudisc_load(dev);
+        if (rc != ACCUDISC_OK)
+            rc = fail_dev(dev, "load", rc);
     } else if (!strcmp(command, "read"))
         rc = cmd_read(dev, nrest, rest);
     else if (!strcmp(command, "cxscan"))

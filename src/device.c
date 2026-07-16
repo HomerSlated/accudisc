@@ -226,3 +226,20 @@ int accudisc_spindle_stop(accudisc_device *dev)
         return ACCUDISC_ERR_INVAL;
     return adsc_mmc_start_stop(dev, 0, 0);
 }
+
+int accudisc_eject(accudisc_device *dev)
+{
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+    /* Block-layer CDROMEJECT: unprivileged for cdrom-group members, unlike
+     * MMC START STOP UNIT over SG_IO (which the kernel filter can gate on
+     * CAP_SYS_RAWIO). */
+    return adsc_transport_eject(&dev->t);
+}
+
+int accudisc_load(accudisc_device *dev)
+{
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+    return adsc_transport_load(&dev->t);
+}

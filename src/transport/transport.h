@@ -54,6 +54,11 @@ int adsc_transport_exec(adsc_transport *t, adsc_cmd *cmd);
 /* CDROM_SELECT_SPEED: unprivileged Nx read-speed set via the block layer. */
 int adsc_transport_select_speed(adsc_transport *t, unsigned speed_x);
 
+/* Tray control via the block-layer CDROM ioctls (CDROMEJECT / CDROMCLOSETRAY):
+ * unprivileged for cdrom-group members, no CAP_SYS_RAWIO needed. */
+int adsc_transport_eject(adsc_transport *t);
+int adsc_transport_load(adsc_transport *t);
+
 /* Decode raw sense (fixed 0x70/0x71 and descriptor 0x72/0x73 formats) into
  * the public struct; out->valid = 0 if unrecognizable. */
 void adsc_sense_decode(const uint8_t *sense, unsigned len, accudisc_sense *out);
