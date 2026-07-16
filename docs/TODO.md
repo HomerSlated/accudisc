@@ -61,6 +61,66 @@ path.
   deinterleave subcode faster); 25.9x with C2-but-no-sub, 21.4x audio-only.
   This is the true "max CDDA speed" for a Q-preserving read.
 
+#### Damaged-disc findings (2026-07-16, ABBA Gold, confirmed Q damage)
+Same 19-track disc as the Disc-ID work (leadout 347208). Probed the track 1->2
+boundary (index-1 at LBA 17395). Offline decoder: scratchpad/qdecode.py (ADR-aware:
+only ADR=1 frames are position; ADR=2=MCN, ADR=3=ISRC — critical, or the ~1-per-98
+MCN frames masquerade as index-0 boundaries and manufacture phantom pregaps).
+- **Q vs C2 orthogonality confirmed on real damage:** a 800-sector window read
+  0 C2-flagged sectors but 22 CRC-bad Q frames. Clean audio, dead metadata.
+- **Track 2 pregap IS present and reconstructable:** 50 frames, LBA 17345..17394,
+  countdown rel 00:00:50 -> index-1 at 17395 (matches TOC). Two frames INSIDE the
+  pregap (17346, 17357) are permanently dead, yet zero pregap info is lost — the
+  start frame (rel 50), the index-1 boundary, and the countdown anchors pin it.
+  This is the "9 of 19" mechanism: if the one boundary frame is CRC-bad and no
+  reader interpolates, the pregap looks absent though it is fully there.
+- **TWO failure populations (the key result). 3x cache-defeated re-reads of the
+  same region:** 6 LBAs bad in ALL passes (static physical defect — re-reads never
+  fix), ~6 LBAs bad in only 1-2 passes (transient — recovered by re-read+consensus,
+  exactly the PCM strategy). Neither lever alone suffices: consensus for transient,
+  deterministic-model interpolation for static.
+- **Speed barely affects Q error rate:** 4x->9 bad, 8x->7 bad, free-run(~2.4x)->7-9
+  bad on the same window. Defect-driven, not RPM-driven (matches clean baseline).
+  The old "40% @ max / 98% @ 24x" was almost certainly the SpeedRead subchannel-
+  destruction artifact, NOT honest speed. **Lever = re-reads + model, NOT slow reads.**
+
+#### Whole-disc pregap census (2026-07-16) — resolves "9 of 19" definitively
+Probed all 19 boundaries (read [i1-400, i1+30] each) + a radius damage sweep.
+scratchpad/pregap.py does the per-boundary analysis.
+- **9 tracks have real pregaps** (t2-t7, t9, t14, t18), 47-50 frames each, plus
+  track 1's 33-frame lead-in gap. Every one has its start frame (rel=len) and
+  index-1 boundary intact; dead frames inside a pregap (e.g. t2: 17346, 17357)
+  are fully covered by surviving countdown anchors -> zero pregap info lost.
+- **The other 9 tracks are genuinely GAPLESS** — index-1 -> index-1 with NO
+  index-0 frames. Confirmed even for the 2 tracks (t16, t19) whose boundary
+  regions were damaged: the surviving CRC-good frames show continuous
+  previous-track index-1 counting UP right to the boundary, no index-0.
+- **Verdict:** the "9 of 19" the good rip found is CORRECT and COMPLETE, not a
+  damage artifact. The starting hypothesis ("all tracks have pregaps, damage
+  hides them") is REFUTED for this disc — it has a gapless master for 9 of its
+  transitions. Where pregaps exist they survive; where they don't, clean frames
+  prove absence.
+- **CRC gate is load-bearing:** rejected frames decoded as abs142:38, index19,
+  adr9 — garbage that a non-CRC-checking reader would splice in as phantom
+  indices. Damage does not just lose Q metadata, it injects false Q metadata;
+  the per-frame CRC-16 is the only thing standing between the two.
+- **Damage is localized, not radius-graded.** Sweep (2000-sector windows):
+  0.6%->100, 11.5%->97.1, 25.9%->100, 40.3%->100, 54.7%->100, 69.1%->99.9,
+  83.5%->100, 97.9%->96.0. Mostly pristine with a few damaged spots (inner
+  ~LBA 40k, outer ~LBA 340k, and pinpoint hits like t16@281733). Surface
+  blemishes at specific spots, NOT an inner dead zone. So this disc needs no
+  Q recovery to get pregaps right — the recovery machinery is for a WORSE disc
+  that loses a boundary anchor entirely.
+
+#### Next build (unblocked by the above) — unified re-read predicate + Q consensus
+A sector fails if C2-dirty OR Q-CRC-bad; both come from ONE READ CD. Re-read
+Q-failures cache-defeated across passes, keep any CRC-good Q (harvests the
+transient population). Record bad-Q-frame LBAs (status-map second dimension:
+audio | Q). Residual static-bad frames -> deterministic Q reconstruction from
+surviving anchors (abs MSF +1/sector; rel countdown in pregap; track/index
+piecewise-constant), targeting index 0->1 boundaries. Reconstruction is the
+larger follow-on piece.
+
 ### Task 2 — Preserve the Q subchannel (recover pregaps) — after speed is real
 Why it matters: a damaged disc loses metadata (pregap/index/MSF), not just PCM.
 As a full-disc archival tool we must recover it; conventional rippers don't care
