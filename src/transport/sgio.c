@@ -79,6 +79,10 @@ int adsc_transport_select_speed(adsc_transport *t, unsigned speed_x)
 
 int adsc_transport_eject(adsc_transport *t)
 {
+    /* Holding the device open auto-locks the drive door (CDO_LOCK), and
+     * CDROMEJECT silently no-ops against a locked door — so unlock first,
+     * exactly as eject(1)/util-linux do. The unlock is best-effort. */
+    (void)ioctl(t->fd, CDROM_LOCKDOOR, 0);
     if (ioctl(t->fd, CDROMEJECT) < 0)
         return ACCUDISC_ERR_IO;
     return ACCUDISC_OK;
