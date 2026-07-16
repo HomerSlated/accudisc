@@ -4,7 +4,173 @@ Ideas parked for a later session. Not scheduled; not commitments. Recovery
 methods are considered complete (see `docs/ACCUDISC_RECOVERY.md`); this is
 everything else worth remembering.
 
-## NEXT SESSION — real read-speed control, then Q-channel preservation
+## NEXT SESSION — PLAN (agreed 2026-07-16). Execute Phase 0 first.
+
+Phases 0/1/3 are a chain (0 gates the rest); Phase 2 is independent and can be
+done any time. All of it was designed against measurements taken 2026-07-16 —
+see "disc-init governor — SOLVED" below for the evidence.
+
+### GOVERNING PRINCIPLE — probe, don't bake
+Everything we learned about the PX-716A is **runtime-derivable from generic
+MMC**. Nothing may be hardcoded, or we ship "PlexTools for Linux" instead of
+AccuDisc:
+
+| fact | scope | handling |
+| --- | --- | --- |
+| performance curve | generic MMC, **but CDEmu rejects it** | probe; failure => report *unknown*, never infer |
+| CLV/CAV/P-CAV/Z-CLV | derived from curve SHAPE | generic derivation from drive-supplied data |
+| curve endpoints (17-40x) | per-drive, per-medium | comes from the drive |
+| speed ladder {4,8,24,32} | per-drive | probe by set->readback; never a table |
+| governor ceiling | Plextor-documented; unknown elsewhere | read current_x/max_x; **report the fact, do NOT interpret** |
+| SpeedRead (0xE9) | Plextor vendor | already isolated in drivers/plextor |
+
+The PlexTools risk is **semantics, not opcodes**: shipping "current_x < max_x =>
+this disc is damaged" bakes a Plextor firmware behaviour into a general tool.
+CLAUDE.md forbids it ("no analysis; AccuDisc only moves bits") — report the raw
+values, let the calling app decide.
+**Test both drives every phase:** /dev/sr0 = PX-716A, /dev/sr1 = **CDEmu**
+(virtual; advertises Real-Time Streaming then rejects GET PERFORMANCE — free
+negative control for anything that trusts a feature bit over a smoke test).
+
+### PHASE 0 — fix the SET STREAMING descriptor flag bits (small; gates 1 and 3)
+Authoritative layout (schily `mmc_streaming`, both bit-order branches agree):
+bit0 RA, bit1 **Exact**, bit2 **RDD**, bits3-4 WRC (write rotation), 5-7 reserved.
+`src/mmc/cdb.c` currently writes `0x40` (normal) and `0x20` (RDD) — **both are
+reserved bits**. Consequences: the normal path works only by accident (all flags
+effectively clear => Exact=0 => ceiling), and **speed_x==0 never restores
+defaults** (real RDD is 0x04; we send a reserved bit + Read Size/Time = 0).
+- Fix to RA=0x01 / Exact=0x02 / RDD=0x04; correct the comment crediting `0x40`
+  as "the value PlexTools writes" (it is a no-op reserved bit).
+- Extend tests/test_cdb.c for the bit values.
+- Verify on hardware with `tools/speedprobe.c` (needs CAP_SYS_RAWIO).
+
+### PHASE 1 — speed + rotation
+- **GET PERFORMANCE (0xAC)** in `src/mmc/` -> public `accudisc_get_performance`.
+  CDB (12B): [0]=0xAC, [1]=Except/Write/Tolerance, [2..5]=Start LBA,
+  [8..9]=max descriptors, [10]=Type (0x00 = performance data), [11]=Control.
+  Response: 8B header + N x 16B {start_lba, start_perf, end_lba, end_perf} kB/s.
+- **Rotation classifier** (library, shared by `speed` and `features`):
+  1 desc flat => CLV; 1 desc rising => CAV; >=2 rising-then-flat => P-CAV;
+  >=2 all-flat stepping => Z-CLV; command rejected => UNKNOWN.
+- **`speed [X] [--exact] [--start L --count N]`** — the lone subcommand.
+  Must report: the **honoured** value (page 2A `current_x` readback), the
+  governor ceiling, the nominal curve + classification, page 2A max/current,
+  and profile. `--exact` sets Exact=0x02 (true fixed rate = CLV); a refusal
+  (Illegal Request) IS the CLV-capability answer — report it, don't retry.
+  **`--speed 16` silently yields 8x today and nothing says so** — that is the
+  bug this fixes.
+- **Drop `speed-report`** (no in-repo consumer; only cli dispatch/usage + a
+  pasted transcript below). Breakage accepted; note it prominently in the
+  commit so the cdda2img agent adapts.
+- **Split `features` by flag:**
+  - `--c2` -> keep today's contract exactly: exit 0 = usable, 1 = not, 2 = error
+  - `--stream` -> accurate_stream / positional determinism (informational)
+  - `--rotation` -> classification only, disc-free. **Do NOT print the current
+    speed** (that is `speed`'s job). Label it *nominal, RPM-derived*; the curve
+    is medium-class-specific and tracks SpeedRead, so an empty tray yields a
+    **CD default**.
+  - `--all` / bare -> everything, informational, exit 0 (2 on error).
+  - Rule: **`--c2` is the only flag that sets a non-informational exit code.**
+- **FIX A REAL BUG:** `features` with an empty tray prints `verdict
+  C2_UNSUPPORTED` and exits 1 — a confident false negative (the smoke tests
+  cannot run without media; the drive supports C2 fine). It already prints the
+  tell it ignores: `cd_read_feature present current=0`. No medium =>
+  `ACCUDISC_C2_UNVERIFIED` (the enum value already exists), not UNSUPPORTED.
+- **Push/pop policy** (matches `--uncap`, which already does this):
+  page 2A `current_x` is a working readback, so **restore-prior**, not RDD-to-
+  default. Standalone `speed X` persists (user's request). `read --speed X`
+  pops to the prior value at end-of-read (not mid-ladder; the engine already
+  restores pass speed between chunks). `speeds` probe must now pop too — its
+  header currently promises the opposite ("speed is never auto-restored").
+  Note an eject IS a restore: the governor re-evaluates per medium.
+- **Do NOT touch `need_rdwr`.** Measured: RO+cap works, RDWR+cap works,
+  RDWR+no-cap fails => **CAP_SYS_RAWIO is required regardless of open mode**.
+  (An earlier claim that the setcap was an artifact of the read-only open was
+  wrong and is retracted.)
+- **Re-run the Q-vs-speed sweep** — today's numbers used the CDROM_SELECT_SPEED
+  *fallback* (setcap had evaporated on rebuild); commanded speeds unverified.
+
+### PHASE 2 — media identification (independent of 0/1/3)
+Two layers; the profile is physical, the logical type is not:
+- **Layer 1 — profile:** GET CONFIGURATION current profile (bytes 6-7).
+  `adsc_mmc_get_configuration` **already exists** (features.c uses it for
+  CD_READ 0x001E). Add a profile->name table (codes are facts => MIT, same
+  precedent as the ATIP DB): 0x08 CD-ROM, 0x09 CD-R, 0x0A CD-RW, 0x10 DVD-ROM,
+  0x11 DVD-R seq, 0x12 DVD-RAM, 0x13/0x14 DVD-RW, 0x15/0x16 DVD-R DL, 0x1A
+  DVD+RW, 0x1B DVD+R, 0x2A/0x2B +DL, 0x40 BD-ROM, 0x41/0x42 BD-R, 0x43 BD-RE,
+  0x50-0x52 HD DVD, 0x0000 no disc/unrecognised, 0xFFFF non-conforming.
+- **Layer 2 — CD logical type:** from data we already read — track CTRL bit 2
+  + full-TOC session disc-type byte (0x00 CD-DA/CD-ROM, 0x10 CD-I, 0x20 XA) +
+  READ DISC INFO (0x51, already implemented). All audio => CD-DA; all data =>
+  CD-ROM; mixed => Mixed Mode; multi-session w/ data session 2 => CD-Extra.
+  **MUST be gated on a CD profile (0x08/09/0A)** — `tools/mediaprobe.c`
+  demonstrates the bug it prevents: it calls a DVD-R "CD-ROM (data)" by running
+  the CD classifier on a DVD's synthetic single-track TOC.
+- **Filesystem = a lookup table, and that is where we stop.** Volume
+  Recognition Sequence at fixed sectors 16+: 5-byte magic `CD001` (ISO9660),
+  `BEA01`/`NSR02`/`NSR03`/`TEA01` (UDF). Read 2 sectors, memcmp constants =>
+  ISO9660 / UDF / UDF-Bridge. **Needs a READ(10)** (2048B data sectors) —
+  confirmed absent from the codebase; our read path is READ CD (0xBE, 2352B).
+  **DVD-Video vs DVD-Audio vs DVD-ROM is NOT done** — all are profile 0x0010
+  and only a root-directory walk (VIDEO_TS/AUDIO_TS) separates them, which is
+  filesystem parsing, not a lookup. Report physical type only. Revisit if/when
+  enhanced/mixed-mode work needs it (user decision 2026-07-16).
+- **SA-CD: deferred** (user decision). A hybrid SACD's CD layer is a *genuine*
+  Red Book CD — the drive reports CD-DA and is **correct** about the layer it
+  can see; the HD layer is invisible to every generic command, so there is no
+  "unrecognised" signal to trust. Only a single-layer SACD trips 0x0000/0xFFFF.
+  Reporting CD-DA for a hybrid SACD is not a bug: we read the CD layer.
+- **Restructure `media`:** profile primary, ATIP supplement. Today it keys on
+  ATIP, which only exists on CD-R/RW — a pressed CD-DA or any DVD gets nothing.
+- Optional, no scope breach: READ DISC STRUCTURE (0xAD) fmt 0x00 -> DVD/BD
+  Physical Format Info incl. Book Type, layers, disc size.
+
+### PHASE 3 — scope the streaming contract to a damaged span
+Plumbing exists: `adsc_mmc_set_streaming(dev, speed_x, start_lba, end_lba)`
+already takes the range; only `accudisc_set_speed` hardcodes `0, 0xFFFFFFFF`.
+- Add public `accudisc_set_speed_range(dev, speed_x, start, end)` (+ Exact).
+- **Test whether a ranged contract binds locally**: set 4x over [L, L+N), time
+  reads inside vs outside. Unknowns to measure, not assume: some drives may
+  apply it globally or reject partial ranges; whether SET STREAMING accepts
+  >1 descriptor for read is unconfirmed (our param_len 0x1C = one descriptor,
+  while GET PERFORMANCE returns many — that asymmetry may be real).
+- **Payoff hypothesis:** the contract throttle collapsed engine throughput to
+  ~5x *when it covered the whole disc* (measured again today: 100 sectors took
+  11.0s / 9.1 sec/s under SET STREAMING vs 2.1s / 47.8 sec/s via the fallback).
+  Scoped to just the damaged span, the streaming pass outside it may stay
+  free-run — killing our biggest performance wart AND giving the recovery
+  engine the "slow only where it's damaged" primitive it wants.
+- Then wire into the engine and use in production (ABBA + others).
+
+### Carried over — Q recovery (Task 2, was mid-flight)
+- **Resolve the lone UNKNOWN boundary (t16)** by model reconstruction: frames
+  below the dead L-1 are t15 index-1 counting up in abs-MSF, the frame above is
+  t16 index-1. If abs-MSF is continuous across the gap and no rel countdown
+  appears, the dead frame was prev-body => upgrade UNKNOWN->NONE. Pure inference
+  from surviving CRC-good neighbours; **no re-read needed**. Capture for offline
+  work without the disc: `tests/data/abba_t16_unknown_boundary.sub`
+  (LBA 281333..281762, decode with `tools/pregap.py`).
+- **Unified re-read predicate:** a sector fails if C2-dirty OR Q-CRC-bad, both
+  from one READ CD; status map gains a second dimension (audio | Q). Harvests
+  the transient Q population (proven: ~half the failures clear on re-read).
+- Needs a **more damaged disc** to exercise the lost-anchor-at-boundary regime.
+
+### Known bugs to fix along the way
+- `features` no-disc false negative (C2_UNSUPPORTED/exit 1) -> UNVERIFIED. [P1]
+- `--speed 16` silently honoured as 8x, unreported. [P1]
+- Logical type must be gated on a CD profile. [P2]
+- `accudisc_eject`/`accudisc_load` header comments describe START STOP UNIT
+  (LoEj), but the implementation uses block-layer CDROMEJECT/CDROMCLOSETRAY
+  (device.c explains why). One-line comment fix; contract vs implementation.
+
+### Meta — a caution for next session
+Four confident spec-derived claims were overturned by hardware today: "setcap is
+an artifact of the RO open", "page 2A is a placebo", "MMC has no rotation
+lever", and "SpeedRead defeats the governor". **Measure first; the drive wins.**
+
+---
+
+## (superseded) NEXT SESSION — real read-speed control, then Q-channel preservation
 
 Agreed order (2026-07-15). Speed control gates everything: until we can hold a
 commanded speed mid-disc and prove it, all Q-vs-speed testing is moot.
@@ -79,10 +245,74 @@ MCN frames masquerade as index-0 boundaries and manufacture phantom pregaps).
   fix), ~6 LBAs bad in only 1-2 passes (transient — recovered by re-read+consensus,
   exactly the PCM strategy). Neither lever alone suffices: consensus for transient,
   deterministic-model interpolation for static.
-- **Speed barely affects Q error rate:** 4x->9 bad, 8x->7 bad, free-run(~2.4x)->7-9
-  bad on the same window. Defect-driven, not RPM-driven (matches clean baseline).
-  The old "40% @ max / 98% @ 24x" was almost certainly the SpeedRead subchannel-
-  destruction artifact, NOT honest speed. **Lever = re-reads + model, NOT slow reads.**
+- **Speed barely affects Q error rate — but ONLY inside the drive's governor
+  envelope (corrected 2026-07-16, see below).** 4x->9 bad, 8x->7 bad,
+  free-run(~2.4x)->7-9 bad on the same window. Every one of those ran at or
+  below the 32x ceiling the drive itself pinned for this disc, so the drive was
+  silently protecting the measurement. Within that envelope: defect-driven, not
+  RPM-driven. OUTSIDE it (SpeedRead/uncap, which defeats the governor) speed
+  matters enormously — that is what the old "40% @ max / 98% @ 24x" measured.
+  Both datasets are correct; they sample different regimes.
+  **Lever = re-reads + model. Never defeat the governor on a damaged disc.**
+  NOTE: these runs used the CDROM_SELECT_SPEED *fallback*, not SET STREAMING —
+  the setcap had evaporated on rebuild and set_speed silently fell back. The
+  commanded speeds are therefore unverified; only the shape is trustworthy.
+
+#### The PX-716A disc-init governor — SOLVED (2026-07-16)
+The long-standing "drive stuck at 32x, but 40x when I eject" mystery (see the
+"Investigate how Plextor drives handle speeds" section below) is **not** a mode
+we armed. **The drive profiles the disc at init and pins a quality-appropriate
+ceiling.** Measured, repeatable across eject/load cycles:
+  - ZZ Top (pristine, leadout 204143) -> inits at **40x** (= page 2A max)
+  - ABBA  (scratched, leadout 347208) -> inits at **32x**
+The disc is the only variable; the drive re-evaluates on every media change.
+Consequences:
+- **page 2A was never a placebo.** `current_x` is real, readable state: it
+  tracks SET STREAMING exactly (4x->706, 8x->1411, 24x->4234 kB/s) and reports
+  the governor's init ceiling before we set anything. Earlier "always 40x"
+  readings were because no set had ever *succeeded* (silent fallback).
+- **Free damage triage:** at init, `current_x < max_x` is the DRIVE's own
+  quality verdict on the medium — an absolute, vendor-authored signal costing
+  zero reads. Surface it in `speed` (and consider `media`).
+- **SpeedRead does NOT defeat the governor** (measured both discs, incl. full
+  eject/load re-init with SpeedRead on):
+
+      disc     condition   governor ceiling   SR max   ceiling after SR+re-init
+      ZZ Top   pristine    40x (CD-DA spec)   48x      40x  (holds)
+      ABBA     scratched   32x (quality)      48x      32x  (holds)
+
+  The governor enforces the CD-DA spec limit (40x, per the PX-716 manual) on
+  clean media and throttles BELOW it only when it judges the disc degraded.
+  SpeedRead's raised 48x max is ignored by it. The two act on ORTHOGONAL axes:
+  governor caps DATA RATE; SpeedRead raises RPM (nominal curve scales x1.2,
+  17-40x -> 20-48x, on both discs).
+  **Why Q dies:** at the inner radius under SpeedRead the natural rate (20x) is
+  BELOW the cap, so the cap never binds, the drive spins at full SpeedRead RPM,
+  and Q (no CIRC) fails. At the outer, natural 48x > cap, so RPM is throttled
+  and Q survives. The governor guards the wrong axis; it never protects the
+  inner tracks. Predicts the old dead zone: curve crosses 32x at LBA ~154,300
+  = ~44% into ABBA; measured dead zone was inner 10-60%, outer 70-100% clean.
+  **SpeedRead is a pure liability for CD-DA:** it cannot raise the rate ceiling,
+  so its only headroom is the inner radius (17->20x) — exactly where its RPM
+  kills Q. The recorded whole-disc A/B showed NO throughput gain (both 24.2x)
+  while Q fell 99.2% -> 40.6%. Consider escalating the --uncap+--sub guard to
+  "never for CD-DA reads at all".
+- **Triage caveat:** "current_x < max_x => degraded" only holds with SpeedRead
+  OFF. With it on, a pristine disc reads 40 < 48 and would be falsely flagged.
+  Compare current_x against the CD-DA nominal (40x), or check SpeedRead first.
+- **GET PERFORMANCE nominal is RPM-derived, not medium-measured:** identical
+  across no-disc / ABBA (leadout 347208) / ZZ Top (leadout 204143) — end_lba is
+  always 359999, never the real leadout — but it DOES track SpeedRead. Constant
+  across discs, not across drive state. DVD test still pending (medium class?).
+- **Honoured speed ladder is discrete: {4, 8, 24, 32}.** 1-3 -> 4; 6 -> 4;
+  9..23 -> 8; 28 -> 24; 40/48 -> 32. Two disjoint regimes, explained by the
+  nominal CAV curve starting at 17.00x: {4,8} are CLV (a ceiling below 17x
+  binds at every radius => flat), {24,32} are CAV (clamp only the outer region).
+  The 9-23 dead zone is the gap between the top CLV rung and the CAV floor.
+  **Confirms CAV-at-high / CLV-at-low.** 40x is NOT settable — it is only
+  reached by free-running at the outer edge.
+- `speed X` must report what the drive HONOURED, not what we asked: today
+  `--speed 16` silently yields 8x and nothing says so.
 
 #### Whole-disc pregap census (2026-07-16) — resolves "9 of 19" definitively
 Probed all 19 boundaries (read [i1-400, i1+30] each) + a radius damage sweep.
