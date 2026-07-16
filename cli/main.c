@@ -1033,6 +1033,13 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         fprintf(stderr, "  flagged span     : LBA %lld .. %lld\n",
                 (long long)st.first_flagged_lba,
                 (long long)st.last_flagged_lba);
+    if (st.subq_total)
+        fprintf(stderr, "  subchannel Q     : %llu/%llu CRC-ok (%.2f%%), "
+                        "%llu bad\n",
+                (unsigned long long)st.subq_ok,
+                (unsigned long long)st.subq_total,
+                100.0 * (double)st.subq_ok / (double)st.subq_total,
+                (unsigned long long)(st.subq_total - st.subq_ok));
     if (req.c2_retries || req.verify_passes >= 2 || req.overlap_sectors)
         fprintf(stderr, "  accuracy         : %llu recovered, %llu suspect, "
                         "%llu extra reads, %llu slips\n",
@@ -1047,13 +1054,17 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     if (ctx.prog_fd >= 0)
         dprintf(ctx.prog_fd,
                 "summary hard=%llu c2=%llu recovered=%llu suspect=%llu "
-                "rereads=%llu slips=%llu\n",
+                "rereads=%llu slips=%llu subq_total=%llu subq_ok=%llu "
+                "subq_bad=%llu\n",
                 (unsigned long long)st.hard_errors,
                 (unsigned long long)st.sectors_flagged,
                 (unsigned long long)st.sectors_recovered,
                 (unsigned long long)st.sectors_suspect,
                 (unsigned long long)st.rereads,
-                (unsigned long long)st.slips);
+                (unsigned long long)st.slips,
+                (unsigned long long)st.subq_total,
+                (unsigned long long)st.subq_ok,
+                (unsigned long long)(st.subq_total - st.subq_ok));
     /* Exit 3 = delivered but degraded: the caller should gate before
      * trusting the image (relative signals only — see the header). */
     ret = (st.hard_errors || st.sectors_suspect || st.sectors_flagged) ? 3

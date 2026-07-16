@@ -504,6 +504,13 @@ typedef struct accudisc_read_stats {
                                * shift (reads identical modulo offset) — the
                                * C2-invisible slip class; a nonzero count on
                                * a drive says: use overlap checking */
+    /* Q-subchannel health, counted only for --sub raw reads over the sector
+     * data actually delivered. The subchannel has no CIRC (C1/C2) protection —
+     * a per-frame CRC-16 is its only integrity check, and it fails
+     * independently of the audio C2 stats above. subq_bad = subq_total -
+     * subq_ok is the pregap/index/MSF metadata lost on this pass. */
+    uint64_t subq_total;      /* Q frames examined (delivered sectors w/ raw sub) */
+    uint64_t subq_ok;         /* frames whose CRC-16 verified */
 } accudisc_read_stats;
 
 /* Blocking. Streams req->count sectors from req->lba into sink (which may be

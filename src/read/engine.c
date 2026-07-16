@@ -495,6 +495,24 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             }
             r.st.sectors_read++;
             r.st.c2_bits += bits[s];
+
+            /* Q-subchannel CRC health of the delivered sector. Raw P-W only;
+             * the drive-formatted Q path (SUB_Q) is already CRC-gated in the
+             * drive. This is independent of the C2 audio stats — a clean-audio
+             * sector can still carry a corrupt Q frame (lost pregap/index). */
+            if (r.sub_len == ACCUDISC_BYTES_SUB_RAW) {
+                const uint8_t *sub =
+                    buf + (size_t)s * r.sector_len + r.audio_len + r.c2_len;
+                uint8_t q[12];
+                accudisc_q qd;
+
+                accudisc_sub_extract_q(sub, q);
+                accudisc_q_parse(q, &qd);
+                r.st.subq_total++;
+                if (qd.crc_ok)
+                    r.st.subq_ok++;
+            }
+
             if (bits[s]) {
                 r.st.sectors_flagged++;
                 if (bits[s] > r.st.max_bits_sector)
