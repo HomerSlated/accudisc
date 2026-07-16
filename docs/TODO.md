@@ -112,14 +112,33 @@ scratchpad/pregap.py does the per-boundary analysis.
   Q recovery to get pregaps right — the recovery machinery is for a WORSE disc
   that loses a boundary anchor entirely.
 
-#### Next build (unblocked by the above) — unified re-read predicate + Q consensus
-A sector fails if C2-dirty OR Q-CRC-bad; both come from ONE READ CD. Re-read
-Q-failures cache-defeated across passes, keep any CRC-good Q (harvests the
-transient population). Record bad-Q-frame LBAs (status-map second dimension:
-audio | Q). Residual static-bad frames -> deterministic Q reconstruction from
-surviving anchors (abs MSF +1/sector; rel countdown in pregap; track/index
-piecewise-constant), targeting index 0->1 boundaries. Reconstruction is the
-larger follow-on piece.
+#### Index/pregap decoder — DONE (2026-07-16)
+`accudisc_index_map_decode` (src/cdda/index_map.c) + `accudisc pregaps` CLI +
+test_index_map. Consumes a raw-sub scan, CRC-gates every frame, and classifies
+each TOC boundary PRESENT / NONE (gapless) / UNKNOWN / NO_DATA. Key rule: a
+pregap ABUTS index-1, so gaplessness is decided by the boundary-abutting frame
+(walk down from L-1, skip MCN/ISRC), NOT by any bad frame in a wide window —
+that over-flags. Live on ABBA: 9 pregaps (t2-t7,t9,t14,t18, 47-50f), 9 gapless,
+**exactly 1 UNKNOWN (t16)** — the sole boundary whose L-1 frame (281732) is
+physically dead. Correctly separates t16 from t19 (t19's boundary frame
+survived -> gapless), which the manual pass had lumped together.
+`pregaps` exits 3 if any boundary is UNKNOWN.
+
+#### Next build — resolve UNKNOWN boundaries (model reconstruction) + re-read
+The decoder isolates the ONLY thing needing recovery: UNKNOWN boundaries (t16).
+Two levers, in order:
+1. **Model reconstruction across the dead abutting frame.** t16: frames below
+   the bad L-1 are prev-track (t15) index-1 counting up in abs-MSF; the frame
+   above is t16 index-1. If abs-MSF is continuous across the gap (X, [bad], X+2)
+   and no rel-countdown appears, the dead frame was prev-body -> upgrade
+   UNKNOWN->NONE. A rel countdown on either side -> PRESENT. This is pure
+   inference from surviving CRC-good neighbours; no re-read needed.
+2. **Targeted re-read + consensus** for UNKNOWN boundaries whose neighbours are
+   ALSO damaged (not t16's case, but the general one): re-read the boundary
+   window cache-defeated across passes, harvest the transient Q population
+   (proven to exist: ~half the failures cleared on re-read). Unify with C2:
+   a sector fails if C2-dirty OR Q-CRC-bad, both from one READ CD; status map
+   gains a second dimension (audio | Q).
 
 ### Task 2 — Preserve the Q subchannel (recover pregaps) — after speed is real
 Why it matters: a damaged disc loses metadata (pregap/index/MSF), not just PCM.

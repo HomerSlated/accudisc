@@ -566,6 +566,48 @@ ACCUDISC_API int accudisc_scan_mcn(accudisc_device *dev, uint32_t lba,
 ACCUDISC_API int accudisc_scan_isrc(accudisc_device *dev, uint32_t lba,
                                     char isrc[13]);
 
+/* ---- index / pregap map ----------------------------------------------------
+ * The TOC gives only index-1 (track start). Pregaps (index 0) and intra-track
+ * indices live ONLY in the Q subchannel, which carries no CIRC — a per-frame
+ * CRC-16 is its sole integrity check. This decodes a raw-subchannel scan into
+ * a per-track index/pregap map, cross-referenced against the TOC's
+ * authoritative index-1 boundaries, gating on CRC so damage cannot inject a
+ * false index. It is purely observational: where the boundary approach is
+ * damaged it reports UNKNOWN rather than guessing — model-based reconstruction
+ * across the gap is a separate step. */
+
+typedef enum {
+    ACCUDISC_PREGAP_NO_DATA = 0, /* scan did not cover this boundary */
+    ACCUDISC_PREGAP_NONE,        /* gapless: clean approach, no index-0 frames */
+    ACCUDISC_PREGAP_PRESENT,     /* pregap observed; start/length reconstructed */
+    ACCUDISC_PREGAP_UNKNOWN,     /* boundary damaged; presence indeterminate */
+} accudisc_pregap_state;
+
+typedef struct accudisc_index_map {
+    uint8_t  track;         /* 1..99 */
+    uint8_t  pregap_state;  /* accudisc_pregap_state */
+    uint8_t  max_index;     /* highest CRC-good index seen for this track */
+    int32_t  index1_lba;    /* authoritative track start (from the TOC) */
+    int32_t  q_index1_lba;  /* index-1 start as seen in Q, or -1 (cross-check) */
+    int32_t  index0_lba;    /* reconstructed pregap start, or -1 */
+    uint32_t pregap_frames; /* index1_lba - index0_lba when PRESENT, else 0.
+                             * A lower bound if the transition frame itself was
+                             * CRC-bad (recovered exactly only by the model). */
+    uint32_t crc_ok;        /* CRC-good position frames in the boundary window */
+    uint32_t crc_bad;       /* CRC-bad frames in the boundary window */
+} accudisc_index_map;
+
+/* Decode a per-sector raw subchannel scan (count*96 bytes for sectors
+ * [base_lba, base_lba+count)) into a per-track index/pregap map. Writes up to
+ * max_out entries (one per track in toc), returns the number written. The scan
+ * need not be whole-disc: only the neighbourhood of each track boundary must be
+ * covered, else that track is reported ACCUDISC_PREGAP_NO_DATA. */
+ACCUDISC_API uint32_t accudisc_index_map_decode(const uint8_t *raw,
+                                                int32_t base_lba, uint32_t count,
+                                                const accudisc_toc *toc,
+                                                accudisc_index_map *out,
+                                                uint32_t max_out);
+
 /* ---- full TOC (session structure) ------------------------------------------
  * Parses the blob from accudisc_read_full_toc (READ TOC format 2): raw
  * lead-in entries per session. Points 0x01-0x63 are track starts (address in
