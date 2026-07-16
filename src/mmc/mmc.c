@@ -211,6 +211,22 @@ int adsc_mmc_send_opc(struct accudisc_device *dev)
     return adsc_dev_exec(dev, &cmd);
 }
 
+int adsc_mmc_set_streaming(struct accudisc_device *dev, unsigned speed_x,
+                           uint32_t start_lba, uint32_t end_lba)
+{
+    uint8_t desc[28];
+    adsc_cmd cmd = {0};
+
+    adsc_cdb_set_streaming_desc(desc, speed_x, start_lba, end_lba);
+    adsc_cdb_set_streaming(cmd.cdb, (uint16_t)sizeof(desc));
+    cmd.cdb_len = 12;
+    cmd.dir = ADSC_XFER_OUT;
+    cmd.buf = desc;
+    cmd.buf_len = sizeof(desc);
+    cmd.timeout_ms = ADSC_TIMEOUT_CTRL_MS;
+    return adsc_dev_exec(dev, &cmd);
+}
+
 int adsc_mmc_read_disc_info(struct accudisc_device *dev, uint8_t *buf,
                             uint32_t cap, uint32_t *len)
 {

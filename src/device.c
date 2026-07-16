@@ -170,6 +170,29 @@ int accudisc_set_speed(accudisc_device *dev, unsigned speed_x)
 {
     if (!dev)
         return ACCUDISC_ERR_INVAL;
+
+    /* Prefer SET STREAMING (0xB6): a performance-descriptor ceiling the drive
+     * actually enforces. SET CD SPEED / CDROM_SELECT_SPEED is advisory on
+     * CAV Plextors — kept as the fallback. Once streaming proves unusable on
+     * this handle (unsupported opcode, or blocked because we lack
+     * CAP_SYS_RAWIO), stop retrying it and use the block-layer path. */
+    if (dev->streaming >= 0) {
+        int rc = adsc_mmc_set_streaming(dev, speed_x, 0, 0xFFFFFFFFu);
+        if (rc == ACCUDISC_OK) {
+            dev->streaming = 1;
+            return ACCUDISC_OK;
+        }
+        /* Illegal request (bad opcode/param) or any hard IO/permission
+         * failure means streaming will not work this run — latch it off.
+         * A transient medium/not-ready sense should not, so fall through
+         * to the block layer for this call without latching. */
+        if (rc == ACCUDISC_ERR_IO ||
+            (dev->last_sense.valid && dev->last_sense.key == 0x05)) {
+            dev->streaming = -1;
+            adsc_dev_log(dev, "set-speed: SET STREAMING unusable, "
+                              "falling back to CDROM_SELECT_SPEED");
+        }
+    }
     return adsc_transport_select_speed(&dev->t, speed_x);
 }
 

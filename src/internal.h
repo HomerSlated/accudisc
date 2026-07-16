@@ -16,6 +16,10 @@ struct accudisc_device {
     accudisc_drive_id id;
     int id_valid;
 
+    /* SET STREAMING speed control: 0 = untried, 1 = works, -1 = unusable
+     * (unsupported/illegal/unprivileged) — fall back to CDROM_SELECT_SPEED. */
+    int streaming;
+
     /* attached vendor driver (NULL = generic MMC/SG) */
     void *drv_handle; /* dlopen handle */
     const accudisc_driver *drv;

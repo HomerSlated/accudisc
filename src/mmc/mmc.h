@@ -70,4 +70,14 @@ int adsc_mmc_send_cue_sheet(struct accudisc_device *dev, const uint8_t *cue,
 /* SEND OPC INFORMATION (DoOPC) — power calibration before a real burn. */
 int adsc_mmc_send_opc(struct accudisc_device *dev);
 
+/* SET STREAMING (0xB6): command the drive's read-speed *ceiling* over an LBA
+ * range via a performance descriptor {Start, End, Read Size, Read Time}. This
+ * is the path the PX-716A honours (SET CD SPEED / CDROM_SELECT_SPEED is
+ * advisory on it). speed_x is Nx (1x = 176.4 kB/s); with the Exact bit clear
+ * the drive runs CAV under this ceiling. speed_x == 0 restores drive defaults
+ * (RDD). start/end are absolute LBAs; end == 0xFFFFFFFF means "to end of disc".
+ * Data-OUT; may require CAP_SYS_RAWIO (see the setcap build target). */
+int adsc_mmc_set_streaming(struct accudisc_device *dev, unsigned speed_x,
+                           uint32_t start_lba, uint32_t end_lba);
+
 #endif /* ADSC_MMC_H */

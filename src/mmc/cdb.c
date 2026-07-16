@@ -73,6 +73,54 @@ void adsc_cdb_send_opc(uint8_t cdb[10])
     cdb[1] = 0x01; /* DoOPC: perform optimum power calibration */
 }
 
+void adsc_cdb_set_streaming(uint8_t cdb[12], uint16_t param_len)
+{
+    memset(cdb, 0, 12);
+    cdb[0] = ADSC_OP_SET_STREAMING;
+    /* Parameter List Length at bytes 8-9 (MSB first); the whole payload is a
+     * single performance descriptor built by the caller. */
+    cdb[8] = (uint8_t)(param_len >> 8);
+    cdb[9] = (uint8_t)(param_len & 0xff);
+}
+
+static void put_be32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v >> 24);
+    p[1] = (uint8_t)(v >> 16);
+    p[2] = (uint8_t)(v >> 8);
+    p[3] = (uint8_t)(v);
+}
+
+void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
+                                 uint32_t start_lba, uint32_t end_lba)
+{
+    /* Descriptor layout:
+     *   [0]      flags       [4..7]   Start LBA   [8..11]  End LBA
+     *   [12..15] Read Size   [16..19] Read Time   [20..23] Write Size
+     *   [24..27] Write Time
+     * Rate = Read Size / Read Time; with Read Time = 1000 ms, Read Size is the
+     * ceiling in kB/s. 1x CD-DA = 176.4 kB/s (7056 at 40x, matching the drive's
+     * mode-page-2A max), so kB/s = speed_x * 1764 / 10.
+     *
+     * flags 0x40 is the value PlexTools writes and the PX-716A honours (traced,
+     * drivers/plextor/PROTOCOL.md); the Exact bit stays clear so the drive runs
+     * CAV under this ceiling. speed_x == 0 restores defaults via RDD (0x20). */
+    uint32_t read_size = (uint32_t)speed_x * 1764u / 10u;
+
+    memset(desc, 0, 28);
+    if (speed_x == 0) {
+        desc[0] = 0x20; /* RDD: restore drive defaults */
+    } else {
+        desc[0] = 0x40;
+        put_be32(desc + 12, read_size); /* Read Size (kB) */
+        put_be32(desc + 16, 1000);      /* Read Time (ms) */
+        put_be32(desc + 20, read_size); /* Write Size (mirror; unused for read) */
+        put_be32(desc + 24, 1000);      /* Write Time (ms) */
+    }
+    put_be32(desc + 4, start_lba);
+    put_be32(desc + 8, end_lba);
+}
+
 void adsc_cdb_get_configuration(uint8_t cdb[10], unsigned rt,
                                 uint16_t feature, uint16_t alloc)
 {

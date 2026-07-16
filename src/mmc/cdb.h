@@ -21,6 +21,7 @@
 #define ADSC_OP_CLOSE_TRK_SES 0x5B
 #define ADSC_OP_SEND_CUE      0x5D
 #define ADSC_OP_MODE_SENSE10  0x5A
+#define ADSC_OP_SET_STREAMING 0xB6
 #define ADSC_OP_READ_CD       0xBE
 
 /* MODE SENSE/SELECT pages */
@@ -80,6 +81,17 @@ void adsc_cdb_send_cue(uint8_t cdb[10], uint32_t len);
 
 /* SEND OPC INFORMATION with DoOPC set: run power calibration. */
 void adsc_cdb_send_opc(uint8_t cdb[10]);
+
+/* SET STREAMING (0xB6): param_len is the performance-descriptor length (28).
+ * Data-OUT command; build the descriptor with adsc_cdb_set_streaming_desc. */
+void adsc_cdb_set_streaming(uint8_t cdb[12], uint16_t param_len);
+
+/* SET STREAMING performance descriptor (28 bytes): a read-speed ceiling of
+ * speed_x (Nx, 1x = 176.4 kB/s) over LBAs [start, end]; end 0xFFFFFFFF = whole
+ * disc. speed_x == 0 restores drive defaults (RDD). Exact bit stays clear so
+ * the drive runs CAV under the ceiling. Pure layout (unit-testable). */
+void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
+                                 uint32_t start_lba, uint32_t end_lba);
 
 /* Always sets include-user-data (byte 9 bit 4); c2 = ADSC_C2_*,
  * sub = ADSC_SUB_*, sector_type = ADSC_SECTOR_*. */

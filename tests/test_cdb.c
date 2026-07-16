@@ -95,11 +95,60 @@ static void test_misc(void)
     assert(cdb10[7] == 0x00 && cdb10[8] == 0x30);
 }
 
+static void test_set_streaming(void)
+{
+    uint8_t cdb[12];
+    uint8_t desc[28];
+
+    /* CDB: opcode + param list length 28 (0x001C) at bytes 8-9. */
+    adsc_cdb_set_streaming(cdb, 28);
+    assert(cdb[0] == 0xB6);
+    assert(cdb[8] == 0x00 && cdb[9] == 0x1C);
+    for (int i = 1; i <= 7; i++)
+        assert(cdb[i] == 0x00);
+    assert(cdb[10] == 0x00 && cdb[11] == 0x00);
+
+    /* 40x whole-disc ceiling: flags 0x40, start 0, end all-FF, Read Size
+     * 7056 kB/s (= 40 * 176.4, the drive's page-2A max), Read Time 1000 ms. */
+    adsc_cdb_set_streaming_desc(desc, 40, 0, 0xFFFFFFFFu);
+    const uint8_t want40[28] = {
+        0x40, 0x00, 0x00, 0x00,             /* flags */
+        0x00, 0x00, 0x00, 0x00,             /* start LBA 0 */
+        0xFF, 0xFF, 0xFF, 0xFF,             /* end LBA = whole disc */
+        0x00, 0x00, 0x1B, 0x90,             /* read size 7056 */
+        0x00, 0x00, 0x03, 0xE8,             /* read time 1000 */
+        0x00, 0x00, 0x1B, 0x90,             /* write size 7056 */
+        0x00, 0x00, 0x03, 0xE8,             /* write time 1000 */
+    };
+    assert(memcmp(desc, want40, 28) == 0);
+
+    /* 48x (SpeedRead rung) => 8467 kB/s = 0x2113. */
+    adsc_cdb_set_streaming_desc(desc, 48, 0, 0xFFFFFFFFu);
+    assert(desc[12] == 0x00 && desc[13] == 0x00 &&
+           desc[14] == 0x21 && desc[15] == 0x13);
+
+    /* LBA-scoped: a slow 8x pass over a damaged span [1000, 2000). */
+    adsc_cdb_set_streaming_desc(desc, 8, 1000, 2000);
+    assert(desc[0] == 0x40);
+    assert(desc[4] == 0x00 && desc[5] == 0x00 &&
+           desc[6] == 0x03 && desc[7] == 0xE8);   /* start 1000 */
+    assert(desc[8] == 0x00 && desc[9] == 0x00 &&
+           desc[10] == 0x07 && desc[11] == 0xD0); /* end 2000 */
+    assert(desc[14] == 0x05 && desc[15] == 0x83); /* 8 * 1764 / 10 = 1411 = 0x0583 */
+
+    /* speed 0 => restore defaults: RDD flag, zero rate. */
+    adsc_cdb_set_streaming_desc(desc, 0, 0, 0xFFFFFFFFu);
+    assert(desc[0] == 0x20);
+    for (int i = 12; i < 28; i++)
+        assert(desc[i] == 0x00);
+}
+
 int main(void)
 {
     test_read_cd();
     test_sector_len();
     test_read_toc();
     test_misc();
+    test_set_streaming();
     return 0;
 }

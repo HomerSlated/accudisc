@@ -242,6 +242,72 @@ and the get/set helper structure; QPxTool supplied exact pages and CDB framing;
 the live drive was the final arbiter. `FEATURES.md` is the consumer-facing
 progress table.
 
+## Read-speed control — SET STREAMING, not a vendor opcode (session 4)
+
+**Finding: PlexTools sets CD read speed with standard MMC `SET STREAMING`
+(0xB6), not a proprietary opcode.** This explains why other rippers "can't set
+the speed" on later Plextors: they issue `SET CD SPEED` (0xBB) / the Linux
+`CDROM_SELECT_SPEED` ioctl (which our own `accudisc_set_speed` uses), and the
+PX-716A honours the *streaming* path instead. The control is therefore **core
+MMC, not a driver feature** — it belongs next to `accudisc_set_speed`, gated on
+GET CONFIGURATION feature 0x0107 (Real-Time Streaming).
+
+Trace (static, PTPXL.exe):
+
+- **Builder fn 0x489740** — `ret 0xc` thiscall; assembles a CDB with
+  `CDB[0]=0xB6` (at `489795`) and calls the verified issue helper `0x47b240`.
+  The sibling builders 0x489f.. issue `GET PERFORMANCE` (0xAC) — the read-back
+  of the same performance state.
+- **Sole caller 0x49c95e** passes a **28-byte (`push 0x1c`) parameter list** —
+  exactly one MMC *performance descriptor* — pointer `lea edx,[esp+0x10]`.
+- Descriptor population in the caller:
+  - an **End-LBA / capacity** value from a get-capacity call (`0x496770`),
+    written big-endian, with `0xFFFFFFFF → all-0xFF` = "to end of disc"
+    (`49c81e–49c848`);
+  - a **rate** value computed by divide-by-constant then `imul …,0x546`
+    (×1350) and split big-endian into a 4-byte field = **Read Size**
+    (`49c8b2–49c8ef`);
+  - constant **`0x03E8` (1000)** written into two 16-bit fields = the
+    **1000 ms** time base (Read Time / Write Time) — i.e. "Read Size bytes per
+    1 second" (`49c8f3–49c90c`);
+  - a flags/`0x40` write (`49c91c–49c92b`) into the head of the descriptor.
+
+**Why this gives a CAV *range* (the 17–40X cells).** A performance descriptor
+is `{Start LBA, End LBA, Read Size, Read Time}`: "sustain Read Size ÷ Read Time
+over [Start, End]." The rate is a *ceiling*. With the descriptor's Exact bit
+clear the drive is free to run **constant angular velocity** — constant RPM, so
+the linear transfer rate climbs with radius: ~17× at the hub to the 40× ceiling
+at the rim (PlexTools' own note: "max speed for CAV is achieved at address
+68:00:00"). SpeedRead (0xE9/0xBB) raises that ceiling to the 48× rung; the two
+are complementary — ceiling vs. rung. To command a *fixed* CLV speed instead,
+set the Exact bit and a single rate.
+
+**Implication for AccuDisc.** Implement `SET STREAMING` in the core `mmc/`
+layer as the real speed control (start/end-LBA scoped, so a first pass can be
+pinned to the fast outer region, or a damaged span slowed in place). Keep the
+`CDROM_SELECT_SPEED` path as the fallback for drives without feature 0x0107.
+
+**Built (2026-07-15).** `adsc_cdb_set_streaming` + `adsc_cdb_set_streaming_desc`
+(src/mmc/cdb.c), `adsc_mmc_set_streaming` (src/mmc/mmc.c), and `accudisc_set_speed`
+routes through it with a `CDROM_SELECT_SPEED` fallback that latches on once the
+0xB6 path proves unusable (unsupported opcode, or blocked for want of
+CAP_SYS_RAWIO — SET STREAMING is data-OUT and does not pass the kernel's
+unprivileged SG filter). Descriptor: flags `0x40`, Read Time 1000 ms, Read Size
+= speed_x*1764/10 kB (1x = 176.4 kB/s → 7056 at 40x, 8467 at 48x). Layout
+unit-tested (tests/test_cdb.c).
+
+**Live-confirmed 2026-07-15** on the PX-716A (ZZ Top disc, setcap
+cap_sys_rawio+ep). `accudisc speeds` with the streaming path active: commanded
+4x and 8x rungs measured at the *outer* windows (where CAV alone would give
+~30x) delivered **exactly 4.01x and 8.01x** — a binding, enforced ceiling the
+old CDROM_SELECT_SPEED path could never produce. Where the ceiling sits above
+the radius-limited CAV speed (inner windows, high commands) it correctly does
+not bind (req=40 measured 11.83x at the hub). The Exact bit (fixed CLV vs CAV
+ceiling) is still not pinned to a descriptor bit, so only the CAV-ceiling form
+(flags 0x40, Exact clear) is implemented — which is the useful form for a
+speed-scoped recovery pass. One quirk: a 16x request quantized to the drive's
+8x rung (page2a reported 8); the 4x/8x rungs are exact.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
