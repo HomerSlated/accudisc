@@ -62,51 +62,37 @@ Follow-ups for Phase 1 (not Phase 0):
 - libcdio's `mmc_set_speed` uses **0xBB (SET CD SPEED)**, not 0xB6 — 0xBB stays
   the portable read-speed lever; 0xB6 adds the LBA-ranged ceiling for Phase 3.
 
-### PHASE 1 — speed + rotation
-- **GET PERFORMANCE (0xAC)** in `src/mmc/` -> public `accudisc_get_performance`.
-  CDB (12B): [0]=0xAC, [1]=Except/Write/Tolerance, [2..5]=Start LBA,
-  [8..9]=max descriptors, [10]=Type (0x00 = performance data), [11]=Control.
-  Response: 8B header + N x 16B {start_lba, start_perf, end_lba, end_perf} kB/s.
-- **Rotation classifier** (library, shared by `speed` and `features`):
-  1 desc flat => CLV; 1 desc rising => CAV; >=2 rising-then-flat => P-CAV;
-  >=2 all-flat stepping => Z-CLV; command rejected => UNKNOWN.
-- **`speed [X] [--exact] [--start L --count N]`** — the lone subcommand.
-  Must report: the **honoured** value (page 2A `current_x` readback), the
-  governor ceiling, the nominal curve + classification, page 2A max/current,
-  and profile. `--exact` sets Exact=0x02 (true fixed rate = CLV); a refusal
-  (Illegal Request) IS the CLV-capability answer — report it, don't retry.
-  **`--speed 16` silently yields 8x today and nothing says so** — that is the
-  bug this fixes.
-- **Drop `speed-report`** (no in-repo consumer; only cli dispatch/usage + a
-  pasted transcript below). Breakage accepted; note it prominently in the
-  commit so the cdda2img agent adapts.
-- **Split `features` by flag:**
-  - `--c2` -> keep today's contract exactly: exit 0 = usable, 1 = not, 2 = error
-  - `--stream` -> accurate_stream / positional determinism (informational)
-  - `--rotation` -> classification only, disc-free. **Do NOT print the current
-    speed** (that is `speed`'s job). Label it *nominal, RPM-derived*; the curve
-    is medium-class-specific and tracks SpeedRead, so an empty tray yields a
-    **CD default**.
-  - `--all` / bare -> everything, informational, exit 0 (2 on error).
-  - Rule: **`--c2` is the only flag that sets a non-informational exit code.**
-- **FIX A REAL BUG:** `features` with an empty tray prints `verdict
-  C2_UNSUPPORTED` and exits 1 — a confident false negative (the smoke tests
-  cannot run without media; the drive supports C2 fine). It already prints the
-  tell it ignores: `cd_read_feature present current=0`. No medium =>
-  `ACCUDISC_C2_UNVERIFIED` (the enum value already exists), not UNSUPPORTED.
-- **Push/pop policy** (matches `--uncap`, which already does this):
-  page 2A `current_x` is a working readback, so **restore-prior**, not RDD-to-
-  default. Standalone `speed X` persists (user's request). `read --speed X`
-  pops to the prior value at end-of-read (not mid-ladder; the engine already
-  restores pass speed between chunks). `speeds` probe must now pop too — its
-  header currently promises the opposite ("speed is never auto-restored").
-  Note an eject IS a restore: the governor re-evaluates per medium.
-- **Do NOT touch `need_rdwr`.** Measured: RO+cap works, RDWR+cap works,
-  RDWR+no-cap fails => **CAP_SYS_RAWIO is required regardless of open mode**.
-  (An earlier claim that the setcap was an artifact of the read-only open was
-  wrong and is retracted.)
-- **Re-run the Q-vs-speed sweep** — today's numbers used the CDROM_SELECT_SPEED
-  *fallback* (setcap had evaporated on rebuild); commanded speeds unverified.
+### PHASE 1 — speed + rotation — DONE 2026-07-17 (commits 4269142, 633829b)
+All hardware-verified on the PX-716A (ZZ Top / empty tray):
+- **GET PERFORMANCE (0xAC)** -> `accudisc_get_performance` + a pure
+  `accudisc_classify_rotation` (CLV/CAV/P-CAV/Z-CLV/UNKNOWN). Discriminator is
+  intra-segment slope, so a Z-CLV step-up is not mistaken for CAV. PX-716A CD
+  curve = 1 rising segment (17x..40x) -> CAV. Unit-tested per shape.
+- **`speed [X] [--exact] [--start L --count N]`** — reports page 2A max/current
+  + nominal curve + rotation; with X sets an Nx ceiling. Whole-disc via
+  accudisc_set_speed (0xB6 else 0xBB fallback); ranged/exact via the new
+  accudisc_set_speed_range (0xB6 ONLY, no downgrade). Standalone set persists.
+  VERIFIED: cap'd `speed 8` uses 0xB6 (no fallback line); `speed 8 --exact`
+  ACCEPTED (drive honours Exact — no Illegal Request); **`speed 24 --start
+  100000 --count 20000` ACCEPTED and page 2A shows 24x = the LBA-ranged ceiling
+  works -> Phase 3 is viable on this drive.** (profile in the output is deferred
+  to Phase 2, which owns the profile->name table.)
+- **`features` split**: --c2 (only flag that gates exit: 0/1/2), --stream,
+  --rotation (disc-free CAV/CLV, no current speed), --all/bare. VERIFIED.
+- **False-negative fixed**: empty-tray `features --c2` now C2_UNVERIFIED (was
+  UNSUPPORTED) — medium-not-present (key 0x02 asc 0x3a) is detected. VERIFIED
+  round-trip (empty=UNVERIFIED, loaded=SUPPORTED).
+- `speed-report` removed. `need_rdwr` untouched (CAP_SYS_RAWIO is the variable).
+
+Still open (small, deferred from Phase 1):
+- **--exact discrimination**: it was accepted at 8x, where the drive runs CLV
+  anyway. Test `--exact` at 24-32x to see if it forces CLV where the drive
+  prefers CAV, or refuses. Not needed for correctness; a characterization nicety.
+- **Push/pop for `read --speed X`**: standalone `speed X` persists (done). The
+  read engine's per-read restore-to-prior and the `speeds` probe's stale "never
+  auto-restored" header were NOT touched this pass — revisit with the engine.
+- **Re-run the Q-vs-speed sweep** now that cap'd 0xB6 actually commands speed
+  (last session's numbers were the 0xBB fallback).
 
 ### PHASE 2 — media identification (independent of 0/1/3)
 Two layers; the profile is physical, the logical type is not:
