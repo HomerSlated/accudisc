@@ -95,6 +95,26 @@ static void test_misc(void)
     assert(cdb10[7] == 0x00 && cdb10[8] == 0x30);
 }
 
+static void test_get_performance(void)
+{
+    uint8_t cdb[12];
+
+    /* Nominal curve from LBA 0, up to 16 descriptors. Max-descriptor count at
+     * bytes 8-9 (normal Group-5 slot, unlike SET STREAMING), type at byte 10. */
+    adsc_cdb_get_performance(cdb, 0, 16, ADSC_PERF_TYPE_NOMINAL);
+    assert(cdb[0] == 0xAC);
+    assert(cdb[1] == 0x00);                    /* data type: nominal read */
+    assert(cdb[2] == 0 && cdb[3] == 0 && cdb[4] == 0 && cdb[5] == 0);
+    assert(cdb[8] == 0x00 && cdb[9] == 0x10);  /* 16 descriptors */
+    assert(cdb[10] == 0x00);                   /* type 0 = performance data */
+    assert(cdb[11] == 0x00);
+
+    /* Start LBA is big-endian at bytes 2-5. */
+    adsc_cdb_get_performance(cdb, 0x00123456, 1, ADSC_PERF_TYPE_NOMINAL);
+    assert(cdb[2] == 0x00 && cdb[3] == 0x12 && cdb[4] == 0x34 && cdb[5] == 0x56);
+    assert(cdb[8] == 0x00 && cdb[9] == 0x01);
+}
+
 static void test_set_streaming(void)
 {
     uint8_t cdb[12];
@@ -152,6 +172,7 @@ int main(void)
     test_sector_len();
     test_read_toc();
     test_misc();
+    test_get_performance();
     test_set_streaming();
     return 0;
 }

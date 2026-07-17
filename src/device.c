@@ -220,6 +220,87 @@ int accudisc_get_speed(accudisc_device *dev, unsigned *max_kbps,
     return ACCUDISC_OK;
 }
 
+int accudisc_get_performance(accudisc_device *dev, accudisc_perf_desc *out,
+                             uint32_t max_out, uint32_t *count)
+{
+    /* One descriptor per medium zone; 16 covers any real CD/DVD curve (the
+     * PX-716A reports 1, a zoned drive a handful). */
+    enum { MAX_DESC = 16 };
+    uint8_t buf[8 + MAX_DESC * 16];
+    uint32_t len = 0, n;
+    int rc;
+
+    if (!dev || !out || !count)
+        return ACCUDISC_ERR_INVAL;
+    *count = 0;
+
+    uint16_t want = max_out < MAX_DESC ? (uint16_t)max_out : MAX_DESC;
+    rc = adsc_mmc_get_performance(dev, 0, want, buf, sizeof(buf), &len);
+    if (rc != ACCUDISC_OK)
+        return rc;
+    if (len < 8)
+        return ACCUDISC_ERR_SHORT;
+
+    n = (len - 8) / 16;
+    if (n > max_out)
+        n = max_out;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *d = buf + 8 + i * 16;
+        out[i].start_lba  = (uint32_t)d[0]  << 24 | (uint32_t)d[1]  << 16 |
+                            (uint32_t)d[2]  << 8  | d[3];
+        out[i].start_kbps = (uint32_t)d[4]  << 24 | (uint32_t)d[5]  << 16 |
+                            (uint32_t)d[6]  << 8  | d[7];
+        out[i].end_lba    = (uint32_t)d[8]  << 24 | (uint32_t)d[9]  << 16 |
+                            (uint32_t)d[10] << 8  | d[11];
+        out[i].end_kbps   = (uint32_t)d[12] << 24 | (uint32_t)d[13] << 16 |
+                            (uint32_t)d[14] << 8  | d[15];
+    }
+    *count = n;
+    return ACCUDISC_OK;
+}
+
+accudisc_rotation accudisc_classify_rotation(const accudisc_perf_desc *desc,
+                                             uint32_t count)
+{
+    /* Below one CD-1x (176 kB/s), treat a rate difference as flat — drives
+     * report tiny non-monotonic jitter that is not a real slope. */
+    const uint32_t EPS = 176;
+
+    if (!desc || count == 0)
+        return ACCUDISC_ROTATION_UNKNOWN;
+
+    /* The discriminator is the slope WITHIN a segment. CAV rises inside a zone
+     * (start < end of the same descriptor); zoned CLV is flat inside each zone
+     * but steps to a new flat level at the next one. A step-up between segments
+     * is therefore NOT a "rise" — it is exactly what makes a curve Z-CLV. */
+    int any_rise = 0;
+    uint32_t vmin = UINT32_MAX, vmax = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t s = desc[i].start_kbps, e = desc[i].end_kbps;
+        if (e > s + EPS)
+            any_rise = 1;
+        for (int k = 0; k < 2; k++) {
+            uint32_t v = k ? e : s;
+            if (v < vmin) vmin = v;
+            if (v > vmax) vmax = v;
+        }
+    }
+
+    if (count == 1)
+        return any_rise ? ACCUDISC_ROTATION_CAV : ACCUDISC_ROTATION_CLV;
+
+    if (any_rise) {
+        /* Rising somewhere. If the outermost segment has flattened, the drive
+         * hit its speed cap and holds CLV past it: partial CAV. Still rising at
+         * the rim: plain CAV. */
+        uint32_t s = desc[count - 1].start_kbps, e = desc[count - 1].end_kbps;
+        return (e > s + EPS) ? ACCUDISC_ROTATION_CAV : ACCUDISC_ROTATION_PCAV;
+    }
+    /* Every segment flat: differing levels across zones = zoned CLV; a single
+     * level = plain CLV. */
+    return (vmax - vmin > EPS) ? ACCUDISC_ROTATION_ZCLV : ACCUDISC_ROTATION_CLV;
+}
+
 int accudisc_spindle_stop(accudisc_device *dev)
 {
     if (!dev)

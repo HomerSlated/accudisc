@@ -73,6 +73,22 @@ void adsc_cdb_send_opc(uint8_t cdb[10])
     cdb[1] = 0x01; /* DoOPC: perform optimum power calibration */
 }
 
+void adsc_cdb_get_performance(uint8_t cdb[12], uint32_t start_lba,
+                              uint16_t max_desc, unsigned type)
+{
+    memset(cdb, 0, 12);
+    cdb[0] = ADSC_OP_GET_PERFORMANCE;
+    /* byte 1 (data type) left 0: nominal, read, tolerance don't-care — the
+     * value schily passes and the PX-716A returns its read curve for. */
+    cdb[2] = (uint8_t)(start_lba >> 24);
+    cdb[3] = (uint8_t)(start_lba >> 16);
+    cdb[4] = (uint8_t)(start_lba >> 8);
+    cdb[5] = (uint8_t)start_lba;
+    cdb[8] = (uint8_t)(max_desc >> 8);   /* Maximum Number of Descriptors */
+    cdb[9] = (uint8_t)(max_desc & 0xff);
+    cdb[10] = (uint8_t)type;
+}
+
 void adsc_cdb_set_streaming(uint8_t cdb[12], uint16_t param_len)
 {
     memset(cdb, 0, 12);

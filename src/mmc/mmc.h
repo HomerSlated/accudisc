@@ -80,4 +80,11 @@ int adsc_mmc_send_opc(struct accudisc_device *dev);
 int adsc_mmc_set_streaming(struct accudisc_device *dev, unsigned speed_x,
                            uint32_t start_lba, uint32_t end_lba);
 
+/* GET PERFORMANCE (0xAC), nominal-performance curve. Fills buf with the raw
+ * response (8-byte header + N x 16-byte descriptors), sets *len to bytes
+ * returned. max_desc bounds the request; caller sizes buf as 8 + max_desc*16. */
+int adsc_mmc_get_performance(struct accudisc_device *dev, uint32_t start_lba,
+                             uint16_t max_desc, uint8_t *buf, uint32_t cap,
+                             uint32_t *len);
+
 #endif /* ADSC_MMC_H */

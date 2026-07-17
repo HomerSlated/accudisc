@@ -219,13 +219,48 @@ ACCUDISC_API int accudisc_counter_scan_end(accudisc_device *dev);
 ACCUDISC_API int accudisc_speed_uncap_get(accudisc_device *dev, int *on);
 ACCUDISC_API int accudisc_speed_uncap_set(accudisc_device *dev, int on);
 
-/* Best-effort drive read-speed control, in Nx CD speed (176 kB/s units);
- * uses the unprivileged CDROM_SELECT_SPEED path. */
+/* Best-effort drive read-speed control, in Nx CD speed (176 kB/s units).
+ * Prefers SET STREAMING (0xB6, a ceiling the drive enforces; needs
+ * CAP_SYS_RAWIO), falling back to the unprivileged CDROM_SELECT_SPEED path. */
 ACCUDISC_API int accudisc_set_speed(accudisc_device *dev, unsigned speed_x);
 
 /* Mode page 2A max/current read speed in kB/s (divide by 176 for Nx). */
 ACCUDISC_API int accudisc_get_speed(accudisc_device *dev,
                                     unsigned *max_kbps, unsigned *cur_kbps);
+
+/* ---- drive rotation / nominal performance curve (GET PERFORMANCE 0xAC) -----
+ * The read-speed curve the drive reports for the loaded medium, as a list of
+ * {start_lba, start_kbps, end_lba, end_kbps} segments, and a classification of
+ * its shape. Pure MMC and disc-independent on the drives tested (the curve is
+ * RPM-derived); a drive that rejects the command yields count 0, which
+ * classifies as ACCUDISC_ROTATION_UNKNOWN — the shape is never inferred. */
+typedef enum {
+    ACCUDISC_ROTATION_UNKNOWN = 0, /* command rejected / no descriptors */
+    ACCUDISC_ROTATION_CLV,         /* constant linear velocity: one flat level */
+    ACCUDISC_ROTATION_CAV,         /* constant angular velocity: rising rate */
+    ACCUDISC_ROTATION_PCAV,        /* partial CAV: rises then caps flat */
+    ACCUDISC_ROTATION_ZCLV,        /* zoned CLV: stepped flat levels */
+} accudisc_rotation;
+
+typedef struct accudisc_perf_desc {
+    uint32_t start_lba;
+    uint32_t start_kbps;
+    uint32_t end_lba;
+    uint32_t end_kbps;
+} accudisc_perf_desc;
+
+/* Fetch the nominal-performance curve. Writes up to max_out descriptors into
+ * out and sets *count to the number returned (0 if the drive rejects GET
+ * PERFORMANCE). Returns the command status; a rejection is not fatal — treat
+ * it as "curve unknown". */
+ACCUDISC_API int accudisc_get_performance(accudisc_device *dev,
+                                          accudisc_perf_desc *out,
+                                          uint32_t max_out, uint32_t *count);
+
+/* Classify a performance curve's rotation strategy. Pure function over
+ * drive-supplied descriptors (count 0 => UNKNOWN); no hardware access. */
+ACCUDISC_API accudisc_rotation
+accudisc_classify_rotation(const accudisc_perf_desc *desc, uint32_t count);
 
 /* Spin the spindle down without ejecting (START STOP UNIT, straight to the
  * drive rather than through block-layer quirks). */

@@ -227,6 +227,37 @@ int adsc_mmc_set_streaming(struct accudisc_device *dev, unsigned speed_x,
     return adsc_dev_exec(dev, &cmd);
 }
 
+int adsc_mmc_get_performance(struct accudisc_device *dev, uint32_t start_lba,
+                             uint16_t max_desc, uint8_t *buf, uint32_t cap,
+                             uint32_t *len)
+{
+    adsc_cmd cmd = {0};
+    int rc;
+
+    if (cap < 8)
+        return ACCUDISC_ERR_INVAL;
+
+    adsc_cdb_get_performance(cmd.cdb, start_lba, max_desc,
+                             ADSC_PERF_TYPE_NOMINAL);
+    cmd.cdb_len = 12;
+    cmd.dir = ADSC_XFER_IN;
+    cmd.buf = buf;
+    cmd.buf_len = cap;
+    cmd.timeout_ms = ADSC_TIMEOUT_CTRL_MS;
+
+    rc = adsc_dev_exec(dev, &cmd);
+    if (rc != ACCUDISC_OK)
+        return rc;
+
+    /* Bytes 0-3 = Performance Data Length: the count of bytes that FOLLOW the
+     * length field, so the whole response is that + 4. Clamp to what we asked
+     * for (the drive may report more than the buffer holds). */
+    uint32_t total = ((uint32_t)buf[0] << 24 | (uint32_t)buf[1] << 16 |
+                      (uint32_t)buf[2] << 8 | buf[3]) + 4;
+    *len = total < cap ? total : cap;
+    return ACCUDISC_OK;
+}
+
 int adsc_mmc_read_disc_info(struct accudisc_device *dev, uint8_t *buf,
                             uint32_t cap, uint32_t *len)
 {

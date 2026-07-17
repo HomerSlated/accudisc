@@ -21,8 +21,12 @@
 #define ADSC_OP_CLOSE_TRK_SES 0x5B
 #define ADSC_OP_SEND_CUE      0x5D
 #define ADSC_OP_MODE_SENSE10  0x5A
+#define ADSC_OP_GET_PERFORMANCE 0xAC
 #define ADSC_OP_SET_STREAMING 0xB6
 #define ADSC_OP_READ_CD       0xBE
+
+/* GET PERFORMANCE data types (CDB byte 10) */
+#define ADSC_PERF_TYPE_NOMINAL 0x00 /* nominal read/write performance curve */
 
 /* MODE SENSE/SELECT pages */
 #define ADSC_MODE_WRITE_PARAMS 0x05 /* CD/DVD write-parameters page */
@@ -81,6 +85,13 @@ void adsc_cdb_send_cue(uint8_t cdb[10], uint32_t len);
 
 /* SEND OPC INFORMATION with DoOPC set: run power calibration. */
 void adsc_cdb_send_opc(uint8_t cdb[10]);
+
+/* GET PERFORMANCE (0xAC): request up to max_desc nominal-performance
+ * descriptors starting at start_lba. type = ADSC_PERF_TYPE_*. Data-IN. The
+ * response is an 8-byte header + N x 16-byte {start_lba, start_kbps, end_lba,
+ * end_kbps}. Data-type byte (1) is left 0 (schily uses datatype 0). */
+void adsc_cdb_get_performance(uint8_t cdb[12], uint32_t start_lba,
+                              uint16_t max_desc, unsigned type);
 
 /* SET STREAMING (0xB6): param_len is the performance-descriptor length (28).
  * Data-OUT command; build the descriptor with adsc_cdb_set_streaming_desc. */
