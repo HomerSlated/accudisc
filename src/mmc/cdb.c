@@ -113,7 +113,8 @@ static void put_be32(uint8_t *p, uint32_t v)
 }
 
 void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
-                                 uint32_t start_lba, uint32_t end_lba)
+                                 uint32_t start_lba, uint32_t end_lba,
+                                 unsigned exact)
 {
     /* Descriptor layout:
      *   [0]      flags       [4..7]   Start LBA   [8..11]  End LBA
@@ -125,8 +126,9 @@ void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
      *
      * flags byte (MMC-5 SET STREAMING performance descriptor, header 0):
      *   bit0 RA (0x01), bit1 Exact (0x02), bit2 RDD (0x04), bits3-4 WRC, 5-7 rsvd.
-     * Normal ceiling: all flags clear (0x00). Exact stays 0 so the drive is free
-     * to run CAV under the ceiling rather than pinning the exact rate (CLV).
+     * Normal ceiling: all flags clear (0x00) so the drive may run CAV under the
+     * ceiling. exact != 0 sets Exact (0x02): pin the rate for the whole range,
+     * i.e. force CLV — a drive that cannot may refuse with Illegal Request.
      * speed_x == 0 restores defaults via the real RDD bit (0x04).
      * (An earlier version wrote 0x40/0x20 — both reserved bits: the ceiling path
      * worked only because the drive ignored 0x40, and RDD never fired at all.) */
@@ -136,7 +138,7 @@ void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
     if (speed_x == 0) {
         desc[0] = 0x04; /* RDD: restore drive defaults */
     } else {
-        desc[0] = 0x00; /* ceiling, Exact clear -> drive may run CAV underneath */
+        desc[0] = exact ? 0x02 : 0x00; /* Exact -> CLV; clear -> CAV allowed */
         put_be32(desc + 12, read_size); /* Read Size (kB) */
         put_be32(desc + 16, 1000);      /* Read Time (ms) */
         put_be32(desc + 20, read_size); /* Write Size (mirror; unused for read) */

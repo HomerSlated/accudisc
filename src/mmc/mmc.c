@@ -212,12 +212,12 @@ int adsc_mmc_send_opc(struct accudisc_device *dev)
 }
 
 int adsc_mmc_set_streaming(struct accudisc_device *dev, unsigned speed_x,
-                           uint32_t start_lba, uint32_t end_lba)
+                           uint32_t start_lba, uint32_t end_lba, unsigned exact)
 {
     uint8_t desc[28];
     adsc_cmd cmd = {0};
 
-    adsc_cdb_set_streaming_desc(desc, speed_x, start_lba, end_lba);
+    adsc_cdb_set_streaming_desc(desc, speed_x, start_lba, end_lba, exact);
     adsc_cdb_set_streaming(cmd.cdb, (uint16_t)sizeof(desc));
     cmd.cdb_len = 12;
     cmd.dir = ADSC_XFER_OUT;

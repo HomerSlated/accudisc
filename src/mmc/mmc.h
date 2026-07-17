@@ -76,9 +76,10 @@ int adsc_mmc_send_opc(struct accudisc_device *dev);
  * advisory on it). speed_x is Nx (1x = 176.4 kB/s); with the Exact bit clear
  * the drive runs CAV under this ceiling. speed_x == 0 restores drive defaults
  * (RDD). start/end are absolute LBAs; end == 0xFFFFFFFF means "to end of disc".
- * Data-OUT; may require CAP_SYS_RAWIO (see the setcap build target). */
+ * exact != 0 sets the Exact bit (pin the rate = CLV). Data-OUT; may require
+ * CAP_SYS_RAWIO (see the setcap build target). */
 int adsc_mmc_set_streaming(struct accudisc_device *dev, unsigned speed_x,
-                           uint32_t start_lba, uint32_t end_lba);
+                           uint32_t start_lba, uint32_t end_lba, unsigned exact);
 
 /* GET PERFORMANCE (0xAC), nominal-performance curve. Fills buf with the raw
  * response (8-byte header + N x 16-byte descriptors), sets *len to bytes

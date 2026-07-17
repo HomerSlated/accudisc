@@ -133,7 +133,7 @@ static void test_set_streaming(void)
     /* 40x whole-disc ceiling: flags 0x00 (all clear: RA/Exact/RDD=0), start 0,
      * end all-FF, Read Size 7056 kB/s (= 40 * 176.4, the drive's page-2A max),
      * Read Time 1000 ms. */
-    adsc_cdb_set_streaming_desc(desc, 40, 0, 0xFFFFFFFFu);
+    adsc_cdb_set_streaming_desc(desc, 40, 0, 0xFFFFFFFFu, 0);
     const uint8_t want40[28] = {
         0x00, 0x00, 0x00, 0x00,             /* flags (Exact clear -> CAV ok) */
         0x00, 0x00, 0x00, 0x00,             /* start LBA 0 */
@@ -146,12 +146,16 @@ static void test_set_streaming(void)
     assert(memcmp(desc, want40, 28) == 0);
 
     /* 48x (SpeedRead rung) => 8467 kB/s = 0x2113. */
-    adsc_cdb_set_streaming_desc(desc, 48, 0, 0xFFFFFFFFu);
+    adsc_cdb_set_streaming_desc(desc, 48, 0, 0xFFFFFFFFu, 0);
     assert(desc[12] == 0x00 && desc[13] == 0x00 &&
            desc[14] == 0x21 && desc[15] == 0x13);
 
+    /* exact != 0 sets the Exact bit (0x02) = pin the rate / force CLV. */
+    adsc_cdb_set_streaming_desc(desc, 8, 0, 0xFFFFFFFFu, 1);
+    assert(desc[0] == 0x02);
+
     /* LBA-scoped: a slow 8x pass over a damaged span [1000, 2000). */
-    adsc_cdb_set_streaming_desc(desc, 8, 1000, 2000);
+    adsc_cdb_set_streaming_desc(desc, 8, 1000, 2000, 0);
     assert(desc[0] == 0x00);
     assert(desc[4] == 0x00 && desc[5] == 0x00 &&
            desc[6] == 0x03 && desc[7] == 0xE8);   /* start 1000 */
@@ -159,8 +163,9 @@ static void test_set_streaming(void)
            desc[10] == 0x07 && desc[11] == 0xD0); /* end 2000 */
     assert(desc[14] == 0x05 && desc[15] == 0x83); /* 8 * 1764 / 10 = 1411 = 0x0583 */
 
-    /* speed 0 => restore defaults: real RDD flag (0x04, bit2), zero rate. */
-    adsc_cdb_set_streaming_desc(desc, 0, 0, 0xFFFFFFFFu);
+    /* speed 0 => restore defaults: real RDD flag (0x04, bit2), zero rate.
+     * RDD wins even if exact is requested. */
+    adsc_cdb_set_streaming_desc(desc, 0, 0, 0xFFFFFFFFu, 1);
     assert(desc[0] == 0x04);
     for (int i = 12; i < 28; i++)
         assert(desc[i] == 0x00);

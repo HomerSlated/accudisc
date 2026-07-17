@@ -224,6 +224,17 @@ ACCUDISC_API int accudisc_speed_uncap_set(accudisc_device *dev, int on);
  * CAP_SYS_RAWIO), falling back to the unprivileged CDROM_SELECT_SPEED path. */
 ACCUDISC_API int accudisc_set_speed(accudisc_device *dev, unsigned speed_x);
 
+/* Read-speed ceiling scoped to an LBA range and/or pinned exact. This is SET
+ * STREAMING only (0xB6) — SET CD SPEED cannot express a range or Exact — so
+ * there is NO block-layer fallback: a drive/handle that cannot honour it
+ * returns an error rather than silently applying a whole-disc speed. flags:
+ * ACCUDISC_SPEED_EXACT pins the rate (forces CLV; a CAV-only drive may refuse
+ * with Illegal Request, which is itself the answer). */
+#define ACCUDISC_SPEED_EXACT 0x01u
+ACCUDISC_API int accudisc_set_speed_range(accudisc_device *dev, unsigned speed_x,
+                                          int32_t start_lba, int32_t end_lba,
+                                          unsigned flags);
+
 /* Mode page 2A max/current read speed in kB/s (divide by 176 for Nx). */
 ACCUDISC_API int accudisc_get_speed(accudisc_device *dev,
                                     unsigned *max_kbps, unsigned *cur_kbps);

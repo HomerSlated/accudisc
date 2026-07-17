@@ -22,9 +22,15 @@ static void usage(FILE *to)
         "  scan           MCN and per-track ISRCs from the Q subchannel\n"
         "  pregaps        per-track index/pregap map from Q (CRC-gated);\n"
         "                 reports pregap Nf / gapless / UNKNOWN per boundary\n"
-        "  features       probe C2/subchannel capability (claim + smoke);\n"
-        "                 exits 0 iff C2 is clearly usable\n"
-        "  speed-report   print max/current read speed (mode page 2A)\n"
+        "  features [FLAG] probe drive capability. --c2: C2 boolean (exit 0\n"
+        "                 iff clearly usable) — the only flag that gates exit.\n"
+        "                 --stream: Accurate Stream. --rotation: CAV/CLV drive\n"
+        "                 type (disc-free). --all / bare: everything, exit 0\n"
+        "  speed [X]      report read speed + rotation (CAV/CLV/...); with X,\n"
+        "                 set an Nx ceiling first (SET STREAMING, else SET CD\n"
+        "                 SPEED). [--exact] pins the rate (CLV; may be refused)\n"
+        "                 [--start L --count N] scopes it to an LBA range.\n"
+        "                 A standalone set persists (not restored)\n"
         "  speed-uncap [on|off]\n"
         "                 report or set the vendor read-speed uncap\n"
         "                 (Plextor: SpeedRead) — needs --driver; persistent\n"
@@ -478,42 +484,95 @@ static int cmd_pregaps(accudisc_device *dev)
     return ret;
 }
 
-static int cmd_features(accudisc_device *dev)
+static const char *rotation_str(accudisc_rotation r)
 {
+    switch (r) {
+    case ACCUDISC_ROTATION_CLV:  return "CLV (constant linear velocity)";
+    case ACCUDISC_ROTATION_CAV:  return "CAV (constant angular velocity)";
+    case ACCUDISC_ROTATION_PCAV: return "P-CAV (CAV then capped flat)";
+    case ACCUDISC_ROTATION_ZCLV: return "Z-CLV (zoned CLV)";
+    default:                     return "unknown";
+    }
+}
+
+/* Probe drive capabilities. Split by flag:
+ *   --c2        the C2 boolean question — the ONLY flag that gates the exit
+ *               code (0 = clearly usable, 1 = not/unverified, 2 = probe error)
+ *   --stream    Accurate Stream / positional determinism (informational)
+ *   --rotation  CAV/CLV/... drive type from the nominal curve, disc-free
+ *               (informational). Answers "is this a CAV drive", not "what will
+ *               it do with this disc" — so it does NOT print the current speed.
+ *   --all / bare  everything, informational, exit 0 (2 on probe error)
+ */
+static int cmd_features(accudisc_device *dev, int argc, char **argv)
+{
+    int c2 = 0, stream = 0, rotation = 0, all = 0;
+
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--c2")) c2 = 1;
+        else if (!strcmp(argv[i], "--stream")) stream = 1;
+        else if (!strcmp(argv[i], "--rotation")) rotation = 1;
+        else if (!strcmp(argv[i], "--all")) all = 1;
+        else { usage(stderr); return 1; }
+    }
+    if (!c2 && !stream && !rotation && !all)
+        all = 1; /* bare features = show everything */
+
     accudisc_features f;
-    int err = accudisc_probe_features(dev, &f);
+    int have_f = 0;
+    if (c2 || all) {
+        int err = accudisc_probe_features(dev, &f);
+        if (err != ACCUDISC_OK)
+            return fail_dev(dev, "probe", err);
+        have_f = 1;
+        if (f.feature_present)
+            printf("cd_read_feature present current=%u dap=%u c2_flags=%u "
+                   "cd_text=%u\n", f.current, f.dap, f.c2_claimed,
+                   f.cdtext_claimed);
+        else
+            printf("cd_read_feature absent\n");
+        printf("combo c2 %s\n", f.ok_c2 ? "ok" : "failed");
+        printf("combo sub_raw %s\n", f.ok_sub_raw ? "ok" : "failed");
+        printf("combo sub_q %s\n", f.ok_sub_q ? "ok" : "failed");
+        printf("combo c2+sub_raw %s\n", f.ok_c2_sub_raw ? "ok" : "failed");
+        printf("combo c2+sub_q %s\n", f.ok_c2_sub_q ? "ok" : "failed");
+        printf("verdict %s\n",
+               f.c2_verdict == ACCUDISC_C2_SUPPORTED     ? "C2_SUPPORTED"
+               : f.c2_verdict == ACCUDISC_C2_UNVERIFIED  ? "C2_UNVERIFIED"
+                                                         : "C2_UNSUPPORTED");
+    }
 
-    if (err != ACCUDISC_OK)
-        return fail_dev(dev, "probe", err);
-    if (f.feature_present)
-        printf("cd_read_feature present current=%u dap=%u c2_flags=%u "
-               "cd_text=%u\n", f.current, f.dap, f.c2_claimed,
-               f.cdtext_claimed);
-    else
-        printf("cd_read_feature absent\n");
-    printf("combo c2 %s\n", f.ok_c2 ? "ok" : "failed");
-    printf("combo sub_raw %s\n", f.ok_sub_raw ? "ok" : "failed");
-    printf("combo sub_q %s\n", f.ok_sub_q ? "ok" : "failed");
-    printf("combo c2+sub_raw %s\n", f.ok_c2_sub_raw ? "ok" : "failed");
-    printf("combo c2+sub_q %s\n", f.ok_c2_sub_q ? "ok" : "failed");
-    printf("verdict %s\n",
-           f.c2_verdict == ACCUDISC_C2_SUPPORTED     ? "C2_SUPPORTED"
-           : f.c2_verdict == ACCUDISC_C2_UNVERIFIED  ? "C2_UNVERIFIED"
-                                                     : "C2_UNSUPPORTED");
+    if (stream || all) {
+        /* Positional determinism, probed mid-disc where damage is least likely
+         * to masquerade as jitter. */
+        accudisc_toc toc;
+        uint8_t accurate = 0;
+        uint32_t probe_lba = accudisc_read_toc(dev, &toc) == ACCUDISC_OK
+                                 ? toc.leadout_lba / 2 : 3000;
+        if (accudisc_probe_accurate_stream(dev, probe_lba, &accurate)
+            == ACCUDISC_OK)
+            printf("accurate_stream %s\n", accurate ? "yes" : "no");
+        else
+            printf("accurate_stream unknown\n");
+    }
 
-    /* Positional determinism, probed mid-disc where damage is least likely
-     * to masquerade as jitter. */
-    accudisc_toc toc;
-    uint8_t accurate = 0;
-    uint32_t probe_lba = accudisc_read_toc(dev, &toc) == ACCUDISC_OK
-                             ? toc.leadout_lba / 2 : 3000;
-    if (accudisc_probe_accurate_stream(dev, probe_lba, &accurate)
-        == ACCUDISC_OK)
-        printf("accurate_stream %s\n", accurate ? "yes" : "no");
-    else
-        printf("accurate_stream unknown\n");
+    if (rotation || all) {
+        /* Nominal curve is disc-independent (RPM-derived), so this classifies
+         * the DRIVE, not the loaded disc — a CAV drive reports CAV with an empty
+         * tray. No current speed here; that is `speed`'s job. */
+        accudisc_perf_desc pd[16];
+        uint32_t n = 0;
+        if (accudisc_get_performance(dev, pd, 16, &n) == ACCUDISC_OK && n > 0)
+            printf("rotation %s (nominal, RPM-derived)\n",
+                   rotation_str(accudisc_classify_rotation(pd, n)));
+        else
+            printf("rotation unknown (GET PERFORMANCE rejected)\n");
+    }
 
-    return f.c2_verdict == ACCUDISC_C2_SUPPORTED ? 0 : 1;
+    /* Only --c2 carries a pass/fail meaning; everything else is informational. */
+    if (c2)
+        return have_f && f.c2_verdict == ACCUDISC_C2_SUPPORTED ? 0 : 1;
+    return 0;
 }
 
 /* Achievable-speed probe: which --speed / --ladder values are real on
@@ -642,15 +701,85 @@ static int cmd_c2lag(accudisc_device *dev, int argc, char **argv)
     return 0;
 }
 
-static int cmd_speed_report(accudisc_device *dev)
+/* Report the drive's read-speed state, optionally setting it first. A bare
+ * speed X is the user's request for that end state, so it PERSISTS — the SOP is
+ * "honour the instruction, don't pop what you didn't push." --exact / --start /
+ * --count route through SET STREAMING only (no SET CD SPEED fallback). */
+static int cmd_speed(accudisc_device *dev, int argc, char **argv)
 {
-    unsigned max_kbps = 0, cur_kbps = 0;
-    int err = accudisc_get_speed(dev, &max_kbps, &cur_kbps);
+    long want_x = -1, start = -1, count = -1;
+    int exact = 0;
 
-    if (err != ACCUDISC_OK)
-        return fail_dev(dev, "mode page 2A", err);
-    printf("speed max_kbps %u current_kbps %u max_x %u current_x %u\n",
-           max_kbps, cur_kbps, max_kbps / 176, cur_kbps / 176);
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--exact"))
+            exact = 1;
+        else if (!strcmp(argv[i], "--start") && i + 1 < argc)
+            start = strtol(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--count") && i + 1 < argc)
+            count = strtol(argv[++i], NULL, 0);
+        else if (argv[i][0] != '-' && want_x < 0)
+            want_x = strtol(argv[i], NULL, 0);
+        else {
+            usage(stderr);
+            return 1;
+        }
+    }
+
+    int ranged = (start >= 0 || count >= 0 || exact);
+    if (ranged && want_x < 0) {
+        fprintf(stderr, "accudisc: --exact/--start/--count require a speed\n");
+        return 1;
+    }
+    if (count >= 0 && start < 0) {
+        fprintf(stderr, "accudisc: --count requires --start\n");
+        return 1;
+    }
+
+    if (want_x >= 0) {
+        int rc;
+        if (ranged) {
+            int32_t s = start >= 0 ? (int32_t)start : 0;
+            int32_t e = count >= 0 ? (int32_t)(start + count)
+                                   : (int32_t)0xFFFFFFFFu; /* whole disc */
+            rc = accudisc_set_speed_range(dev, (unsigned)want_x, s, e,
+                                          exact ? ACCUDISC_SPEED_EXACT : 0);
+        } else {
+            rc = accudisc_set_speed(dev, (unsigned)want_x);
+        }
+        if (rc != ACCUDISC_OK) {
+            /* An Illegal Request to --exact IS the answer: the drive will not
+             * pin the exact rate at this speed (no CLV here). Report it, then
+             * still surface the error status. */
+            accudisc_sense sn;
+            accudisc_last_sense(dev, &sn);
+            if (exact && sn.valid && sn.key == 0x05)
+                printf("exact %ldx refused (Illegal Request) — drive will not "
+                       "force CLV here\n", want_x);
+            return fail_dev(dev, "set speed", rc);
+        }
+    }
+
+    /* Honoured value: page 2A current is what the drive actually adopted. */
+    unsigned max_kbps = 0, cur_kbps = 0;
+    if (accudisc_get_speed(dev, &max_kbps, &cur_kbps) == ACCUDISC_OK)
+        printf("page2A     max %ux (%u kB/s)  current %ux (%u kB/s)\n",
+               max_kbps / 176, max_kbps, cur_kbps / 176, cur_kbps);
+    else
+        printf("page2A     unavailable\n");
+
+    /* Nominal curve + rotation classification (disc-independent, RPM-derived;
+     * a drive that rejects GET PERFORMANCE reports unknown, never inferred). */
+    accudisc_perf_desc pd[16];
+    uint32_t n = 0;
+    if (accudisc_get_performance(dev, pd, 16, &n) == ACCUDISC_OK && n > 0) {
+        printf("rotation   %s\n", rotation_str(accudisc_classify_rotation(pd, n)));
+        for (uint32_t i = 0; i < n; i++)
+            printf("  curve[%u] lba %u..%u  %.1fx..%.1fx (nominal)\n", i,
+                   pd[i].start_lba, pd[i].end_lba,
+                   pd[i].start_kbps / 176.4, pd[i].end_kbps / 176.4);
+    } else {
+        printf("rotation   unknown (GET PERFORMANCE rejected)\n");
+    }
     return 0;
 }
 
@@ -1277,9 +1406,9 @@ int main(int argc, char **argv)
     else if (!strcmp(command, "scan"))
         rc = cmd_scan(dev);
     else if (!strcmp(command, "features"))
-        rc = cmd_features(dev);
-    else if (!strcmp(command, "speed-report"))
-        rc = cmd_speed_report(dev);
+        rc = cmd_features(dev, nrest, rest);
+    else if (!strcmp(command, "speed"))
+        rc = cmd_speed(dev, nrest, rest);
     else if (!strcmp(command, "speed-uncap"))
         rc = cmd_speed_uncap(dev, nrest, rest);
     else if (!strcmp(command, "media"))

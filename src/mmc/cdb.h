@@ -99,10 +99,12 @@ void adsc_cdb_set_streaming(uint8_t cdb[12], uint16_t param_len);
 
 /* SET STREAMING performance descriptor (28 bytes): a read-speed ceiling of
  * speed_x (Nx, 1x = 176.4 kB/s) over LBAs [start, end]; end 0xFFFFFFFF = whole
- * disc. speed_x == 0 restores drive defaults (RDD). Exact bit stays clear so
- * the drive runs CAV under the ceiling. Pure layout (unit-testable). */
+ * disc. speed_x == 0 restores drive defaults (RDD). exact != 0 sets the Exact
+ * bit (pin the exact rate = CLV); clear leaves the drive free to run CAV under
+ * the ceiling. Pure layout (unit-testable). */
 void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
-                                 uint32_t start_lba, uint32_t end_lba);
+                                 uint32_t start_lba, uint32_t end_lba,
+                                 unsigned exact);
 
 /* Always sets include-user-data (byte 9 bit 4); c2 = ADSC_C2_*,
  * sub = ADSC_SUB_*, sector_type = ADSC_SECTOR_*. */

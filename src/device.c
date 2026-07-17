@@ -177,7 +177,7 @@ int accudisc_set_speed(accudisc_device *dev, unsigned speed_x)
      * this handle (unsupported opcode, or blocked because we lack
      * CAP_SYS_RAWIO), stop retrying it and use the block-layer path. */
     if (dev->streaming >= 0) {
-        int rc = adsc_mmc_set_streaming(dev, speed_x, 0, 0xFFFFFFFFu);
+        int rc = adsc_mmc_set_streaming(dev, speed_x, 0, 0xFFFFFFFFu, 0);
         if (rc == ACCUDISC_OK) {
             dev->streaming = 1;
             return ACCUDISC_OK;
@@ -185,7 +185,9 @@ int accudisc_set_speed(accudisc_device *dev, unsigned speed_x)
         /* Illegal request (bad opcode/param) or any hard IO/permission
          * failure means streaming will not work this run — latch it off.
          * A transient medium/not-ready sense should not, so fall through
-         * to the block layer for this call without latching. */
+         * to the block layer for this call without latching. (No CAP_SYS_RAWIO
+         * surfaces as ERR_IO here: the kernel's SG filter blocks the data-OUT
+         * before it reaches the drive.) */
         if (rc == ACCUDISC_ERR_IO ||
             (dev->last_sense.valid && dev->last_sense.key == 0x05)) {
             dev->streaming = -1;
@@ -194,6 +196,22 @@ int accudisc_set_speed(accudisc_device *dev, unsigned speed_x)
         }
     }
     return adsc_transport_select_speed(&dev->t, speed_x);
+}
+
+int accudisc_set_speed_range(accudisc_device *dev, unsigned speed_x,
+                             int32_t start_lba, int32_t end_lba, unsigned flags)
+{
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+
+    /* Ranged and Exact ceilings are SET STREAMING's alone — SET CD SPEED does
+     * whole-disc CAV only — so there is no block-layer fallback here. A drive
+     * that lacks SET STREAMING (or the handle that lacks CAP_SYS_RAWIO) gets
+     * the command's error back for the caller to report, not a silent downgrade
+     * that would ignore the requested range. */
+    unsigned exact = (flags & ACCUDISC_SPEED_EXACT) ? 1u : 0u;
+    return adsc_mmc_set_streaming(dev, speed_x, (uint32_t)start_lba,
+                                  (uint32_t)end_lba, exact);
 }
 
 /* Page 2A read speeds, the fields cdrdao drive-info reports (max at page

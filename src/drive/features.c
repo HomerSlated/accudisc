@@ -109,12 +109,26 @@ int accudisc_probe_features(accudisc_device *dev, accudisc_features *out)
     int have_feat = cd_read_feature(dev, out);
 
     out->ok_c2 = (uint8_t)combo_smoke(dev, ADSC_C2_294, ADSC_SUB_NONE);
+
+    /* A failed C2 smoke read only means "C2 unsupported" if the drive could
+     * actually have read. With no disc the read fails for lack of medium, which
+     * says nothing about C2 — capture that so the verdict is UNVERIFIED, not a
+     * confident false-negative UNSUPPORTED. */
+    int no_medium = 0;
+    if (!out->ok_c2) {
+        accudisc_sense s;
+        accudisc_last_sense(dev, &s);
+        no_medium = s.valid && s.key == 0x02 && s.asc == 0x3a;
+    }
+
     out->ok_sub_raw = (uint8_t)combo_smoke(dev, ADSC_C2_NONE, ADSC_SUB_RAW);
     out->ok_sub_q = (uint8_t)combo_smoke(dev, ADSC_C2_NONE, ADSC_SUB_Q);
     out->ok_c2_sub_raw = (uint8_t)combo_smoke(dev, ADSC_C2_294, ADSC_SUB_RAW);
     out->ok_c2_sub_q = (uint8_t)combo_smoke(dev, ADSC_C2_294, ADSC_SUB_Q);
 
-    if (!out->ok_c2)
+    if (no_medium)
+        out->c2_verdict = ACCUDISC_C2_UNVERIFIED; /* can't smoke-test empty */
+    else if (!out->ok_c2)
         out->c2_verdict = ACCUDISC_C2_UNSUPPORTED;
     else if (have_feat == 0 && out->c2_claimed)
         out->c2_verdict = ACCUDISC_C2_SUPPORTED;
