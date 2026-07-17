@@ -168,22 +168,30 @@ Two layers; the profile is physical, the logical type is not:
 - Optional, no scope breach: READ DISC STRUCTURE (0xAD) fmt 0x00 -> DVD/BD
   Physical Format Info incl. Book Type, layers, disc size.
 
-### PHASE 3 — scope the streaming contract to a damaged span
-Plumbing exists: `adsc_mmc_set_streaming(dev, speed_x, start_lba, end_lba)`
-already takes the range; only `accudisc_set_speed` hardcodes `0, 0xFFFFFFFF`.
-- Add public `accudisc_set_speed_range(dev, speed_x, start, end)` (+ Exact).
-- **Test whether a ranged contract binds locally**: set 4x over [L, L+N), time
-  reads inside vs outside. Unknowns to measure, not assume: some drives may
-  apply it globally or reject partial ranges; whether SET STREAMING accepts
-  >1 descriptor for read is unconfirmed (our param_len 0x1C = one descriptor,
-  while GET PERFORMANCE returns many — that asymmetry may be real).
-- **Payoff hypothesis:** the contract throttle collapsed engine throughput to
-  ~5x *when it covered the whole disc* (measured again today: 100 sectors took
-  11.0s / 9.1 sec/s under SET STREAMING vs 2.1s / 47.8 sec/s via the fallback).
-  Scoped to just the damaged span, the streaming pass outside it may stay
-  free-run — killing our biggest performance wart AND giving the recovery
-  engine the "slow only where it's damaged" primitive it wants.
-- Then wire into the engine and use in production (ABBA + others).
+### PHASE 3 — scope the streaming contract to a damaged span — DEFERRED 2026-07-17
+`accudisc_set_speed_range(dev, speed_x, start, end, flags)` was built and the
+ranged contract was tested on hardware. **Result: on the PX-716A the range is
+applied whole-disc, not locally** (measured with `tools/rangeprobe.c`: a 4x
+contract over a mid-disc span slowed reads everywhere; a 3-descriptor payload
+honoured only the first descriptor, globally).
+
+**Ranged sub-disc throttling is a REAL, documented MMC-5 feature** (§6.39.1, full
+text + field defs in git-ignored `reference/MMC/SET_STREAMING_findings.md`). We
+were simply UNSUCCESSFUL enabling it on the one drive tested. Cause undetermined
+(single whole-disc GET PERFORMANCE extent? still-wrong CDB framing? firmware?).
+No open-source tool uses ranged reads (redumper/cdrdao/libcdio use whole-disc
+SET CD SPEED 0xBB; schily uses 0xB6 with start_lba=0), so there is no precedent
+to copy. **Status: UNKNOWN — investigate further later (more drives,
+GET-PERFORMANCE-derived extents), NOT "impossible".** (See memory
+`dont-conclude-impossible`.)
+
+**Interim (agreed 2026-07-17):** the CALLER (cdda2img) owns the "repeat reads
+across an LBA range on a speed ladder" loop, invoking AccuDisc per iteration with
+a WHOLE-DISC speed. AccuDisc already supports this: `read --start L --count N
+--speed X` sets whole-disc speed, reads the span, and does NOT auto-restore
+between invocations (a cdda2img hard requirement). Nothing new to build for the
+interim; `accudisc_set_speed_range` stays (spec-legitimate, whole-disc-effective
+on single-extent drives). Revisit the ranged feature in a future session.
 
 ### Carried over — Q recovery (Task 2, was mid-flight)
 - **Resolve the lone UNKNOWN boundary (t16)** by model reconstruction: frames
