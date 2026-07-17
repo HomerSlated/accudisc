@@ -77,10 +77,15 @@ void adsc_cdb_set_streaming(uint8_t cdb[12], uint16_t param_len)
 {
     memset(cdb, 0, 12);
     cdb[0] = ADSC_OP_SET_STREAMING;
-    /* Parameter List Length at bytes 8-9 (MSB first); the whole payload is a
-     * single performance descriptor built by the caller. */
-    cdb[8] = (uint8_t)(param_len >> 8);
-    cdb[9] = (uint8_t)(param_len & 0xff);
+    /* Parameter List Length at bytes 9-10 (MSB first), NOT the usual Group-5
+     * position (bytes 8-9). SET STREAMING is the one MMC command that shifts its
+     * length field by a byte; schily cdrecord flags this "Sz not G5 alike"
+     * (cdrecord/scsi_mmc.c:991). Hardware-verified on a PX-716A: length at 8-9
+     * fails with 4/1b (SYNCHRONOUS DATA TRANSFER ERROR — the drive reads byte 9
+     * as the length MSB, expects 0x1C00 = 7168 bytes, receives 28); moving it to
+     * 9-10 makes the command succeed and the ceiling appears in mode page 2A. */
+    cdb[9]  = (uint8_t)(param_len >> 8);
+    cdb[10] = (uint8_t)(param_len & 0xff);
 }
 
 static void put_be32(uint8_t *p, uint32_t v)
@@ -102,16 +107,20 @@ void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
      * ceiling in kB/s. 1x CD-DA = 176.4 kB/s (7056 at 40x, matching the drive's
      * mode-page-2A max), so kB/s = speed_x * 1764 / 10.
      *
-     * flags 0x40 is the value PlexTools writes and the PX-716A honours (traced,
-     * drivers/plextor/PROTOCOL.md); the Exact bit stays clear so the drive runs
-     * CAV under this ceiling. speed_x == 0 restores defaults via RDD (0x20). */
+     * flags byte (MMC-5 SET STREAMING performance descriptor, header 0):
+     *   bit0 RA (0x01), bit1 Exact (0x02), bit2 RDD (0x04), bits3-4 WRC, 5-7 rsvd.
+     * Normal ceiling: all flags clear (0x00). Exact stays 0 so the drive is free
+     * to run CAV under the ceiling rather than pinning the exact rate (CLV).
+     * speed_x == 0 restores defaults via the real RDD bit (0x04).
+     * (An earlier version wrote 0x40/0x20 — both reserved bits: the ceiling path
+     * worked only because the drive ignored 0x40, and RDD never fired at all.) */
     uint32_t read_size = (uint32_t)speed_x * 1764u / 10u;
 
     memset(desc, 0, 28);
     if (speed_x == 0) {
-        desc[0] = 0x20; /* RDD: restore drive defaults */
+        desc[0] = 0x04; /* RDD: restore drive defaults */
     } else {
-        desc[0] = 0x40;
+        desc[0] = 0x00; /* ceiling, Exact clear -> drive may run CAV underneath */
         put_be32(desc + 12, read_size); /* Read Size (kB) */
         put_be32(desc + 16, 1000);      /* Read Time (ms) */
         put_be32(desc + 20, read_size); /* Write Size (mirror; unused for read) */

@@ -32,17 +32,35 @@ values, let the calling app decide.
 (virtual; advertises Real-Time Streaming then rejects GET PERFORMANCE — free
 negative control for anything that trusts a feature bit over a smoke test).
 
-### PHASE 0 — fix the SET STREAMING descriptor flag bits (small; gates 1 and 3)
-Authoritative layout (schily `mmc_streaming`, both bit-order branches agree):
-bit0 RA, bit1 **Exact**, bit2 **RDD**, bits3-4 WRC (write rotation), 5-7 reserved.
-`src/mmc/cdb.c` currently writes `0x40` (normal) and `0x20` (RDD) — **both are
-reserved bits**. Consequences: the normal path works only by accident (all flags
-effectively clear => Exact=0 => ceiling), and **speed_x==0 never restores
-defaults** (real RDD is 0x04; we send a reserved bit + Read Size/Time = 0).
-- Fix to RA=0x01 / Exact=0x02 / RDD=0x04; correct the comment crediting `0x40`
-  as "the value PlexTools writes" (it is a no-op reserved bit).
-- Extend tests/test_cdb.c for the bit values.
-- Verify on hardware with `tools/speedprobe.c` (needs CAP_SYS_RAWIO).
+### PHASE 0 — fix SET STREAMING so the drive actually accepts it — DONE 2026-07-17
+Two independent bugs, both fixed and hardware-verified on the PX-716A:
+
+1. **THE showstopper (found this session): CDB Parameter List Length offset.**
+   We wrote the 2-byte length at CDB bytes **8-9** (what I misremembered as the
+   MMC-5 position). It belongs at bytes **9-10** — SET STREAMING is the one MMC
+   command that shifts its length field a byte off the normal Group-5 slot.
+   schily flags it `/* Sz not G5 alike */` (cdrecord/scsi_mmc.c:991). With 8-9
+   the drive reads byte 9 (0x1C) as the length MSB, expects 0x1C00 = 7168 bytes,
+   gets 28, and rejects the whole command with **4/1b (SYNCHRONOUS DATA TRANSFER
+   ERROR)** — which I had mis-diagnosed as "drive doesn't implement 0xB6."
+   `tools/ss_variants.c` proved it: len@8-9 fails, len@9-10 succeeds and drops
+   page 2A 40x -> 8x. This is a portable correctness fix (schily uses 9-10 for
+   ALL drives), NOT a Plextor quirk.
+2. **Descriptor flag bits.** Old code wrote `0x40` (normal) / `0x20` (RDD) —
+   both reserved. Fixed to RA=0x01 / Exact=0x02 / RDD=0x04. Normal ceiling uses
+   0x00 (hardware-verified). NOTE: this PX-716A **rejects RDD 0x04** with
+   5/26/00 (INVALID FIELD IN PARAMETER LIST) — it has no "restore defaults", so
+   Phase 1 restore must set an explicit prior-speed descriptor, never RDD. This
+   also happens to be exactly what the push/pop "restore-to-prior" SOP wants.
+
+Follow-ups for Phase 1 (not Phase 0):
+- **device.c latch bug**: `accudisc_set_speed` only latches streaming off on
+  ERR_IO or sense key 0x05; a HARDWARE ERROR (key 0x04) never latches. Moot now
+  that 0xB6 works, but fix for robustness on drives that genuinely lack it.
+- The lever the "4x/8x verified" numbers came from last session was the 0xBB
+  fallback (SET CD SPEED). Both work now; re-confirm which device.c prefers.
+- libcdio's `mmc_set_speed` uses **0xBB (SET CD SPEED)**, not 0xB6 — 0xBB stays
+  the portable read-speed lever; 0xB6 adds the LBA-ranged ceiling for Phase 3.
 
 ### PHASE 1 — speed + rotation
 - **GET PERFORMANCE (0xAC)** in `src/mmc/` -> public `accudisc_get_performance`.

@@ -27,7 +27,19 @@ gcc -o /tmp/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudis
   PERFORMANCE reflect a set ceiling; does Exact (0x02) work; does real RDD
   (0x04) restore. **Needs `CAP_SYS_RAWIO`** (data-OUT does not pass the
   kernel's SG filter without it, regardless of open mode — measured):
-  `sudo setcap cap_sys_rawio+ep /tmp/speedprobe`. Changes drive state.
+  `doas setcap cap_sys_rawio+ep build/speedprobe`. Changes drive state.
+  *Build onto the real filesystem (`build/`), NOT `/tmp` — that is tmpfs and
+  won't hold the `security.capability` xattr, so the cap silently won't bind.*
+
+- **`ss_variants.c`** — the probe that cracked the SET STREAMING mystery.
+  Isolates the CDB Parameter List Length offset: len@8-9 (spec position we
+  wrongly used) fails 4/1b; len@9-10 (schily "Sz not G5 alike") succeeds and
+  drops page 2A to the commanded ceiling. Also shows this drive rejects RDD
+  (0x04) with 5/26/00. Needs `CAP_SYS_RAWIO`; restores to full speed.
+
+- **`speedcheck.c`** — end-to-end check of the *library's* SET STREAMING path
+  (`adsc_mmc_set_streaming`) across a speed ladder, reading back page 2A. Needs
+  `CAP_SYS_RAWIO`. Companion after the 9-10 offset fix.
 
 ## Offline Q analysis (Python)
 
