@@ -94,6 +94,45 @@ Still open (small, deferred from Phase 1):
 - **Re-run the Q-vs-speed sweep** now that cap'd 0xB6 actually commands speed
   (last session's numbers were the 0xBB fallback).
 
+### DISC-KIND GUARD — burn-vs-rip sanity check (PLANNED; deferred execution)
+The real objective behind deferring Phase 2 (Keith, 2026-07-17). A pre-flight
+guard that answers "which of the two possible operations is legal for the disc
+in the drive", so nothing attempts the impossible:
+  1. **BLANK** — recordable CD-R/RW, no sessions open OR closed -> the BURN path.
+  2. **AUDIO** — CD-DA with audio content present -> the RIP path.
+  3. **NEITHER** — everything else (data CD-ROM, already-recorded/appendable CD-R,
+     DVD/BD, empty tray, unreadable) -> refuse, say why.
+
+**Dependencies: NONE external, NO new opcodes.** Composes three commands the
+library already issues. This is why it's cheap and why it does not carry Phase
+2's "may need additional deps" risk (that risk is Phase 2's filesystem/VRS work,
+which needs a READ(10) path we don't have yet — unrelated to this guard).
+
+Mechanism:
+- **GET CONFIGURATION current profile** (`adsc_mmc_get_configuration`, bytes 6-7):
+  0x08 CD-ROM / 0x09 CD-R / 0x0A CD-RW = a CD; anything else -> NEITHER (not a CD).
+- **READ DISC INFORMATION** (`adsc_mmc_read_disc_info`, already decoded in
+  mediaprobe): disc status (byte 2 bits 1-0) 0=empty, 1=incomplete (open
+  session), 2=complete (closed); erasable bit (byte 2 bit 4) = CD-RW vs CD-R.
+- **READ TOC** (`accudisc_read_toc`): per-track CTRL bit 2 -> audio vs data census.
+
+Verdict logic:
+- BLANK  = profile 0x09/0x0A AND disc status 0 (empty). (Status 1 = open session,
+  status 2 = closed -> NOT blank; both are "has sessions".)
+- AUDIO  = disc has >=1 audio track (CTRL bit 2 clear). Pure CD-DA = all audio;
+  mixed-mode has audio too and is still rippable-audio for our scope.
+- NEITHER otherwise (all-data, empty pressed [impossible], non-CD profile, no TOC).
+
+Deliverable:
+- Public: `accudisc_disc_kind` enum + `accudisc_disc_probe` struct (profile,
+  erasable, disc_status, audio_tracks, data_tracks, kind) + `accudisc_probe_disc`.
+- CLI subcommand (name TBD — `disc-kind`? `classify`?) with a machine-readable
+  verdict line and DISTINCT exit codes so cdda2img can branch burn-vs-rip without
+  scraping text. **Coordinate the token + exit-code shape with cdda2img first**
+  (it is directly their "which path is legal" question — see private/AccuDisc.md).
+- Unit-test the verdict logic as a pure function over synthetic
+  (profile, status, track-CTRL) inputs, like the rotation classifier.
+
 ### PHASE 2 — media identification (independent of 0/1/3)
 Two layers; the profile is physical, the logical type is not:
 - **Layer 1 — profile:** GET CONFIGURATION current profile (bytes 6-7).
