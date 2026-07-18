@@ -41,6 +41,17 @@ gcc -o /tmp/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudis
   (`adsc_mmc_set_streaming`) across a speed ladder, reading back page 2A. Needs
   `CAP_SYS_RAWIO`. Companion after the 9-10 offset fix.
 
+- **`rangeprobe.c`** — the Phase 3 question: is a ranged SET STREAMING contract
+  *local* (throttle only inside `[L,L+N)`, free-run outside) or *global* on this
+  drive? One run sets several contracts (whole-disc control, single-desc ranged,
+  3-desc middle-slow, 3-desc first-slow) and times a read INSIDE vs OUTSIDE the
+  nominal slow zone, classifying each against a free-run baseline (`SLOW = >2x`).
+  On the PX-716A every contract went SLOW everywhere — the ceiling is applied
+  **whole-disc**, the ranged extent ignored. That is one drive, not a proof about
+  all drives: Phase 3 is deferred, not closed (see
+  `reference/MMC/SET_STREAMING_findings.md`). Needs `CAP_SYS_RAWIO`; restores full
+  speed on exit.
+
 ## Offline Q analysis (Python)
 
 Operate on a raw subchannel capture (`accudisc read --sub raw --subf FILE`),
