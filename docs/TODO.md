@@ -116,20 +116,36 @@ Mechanism:
   session), 2=complete (closed); erasable bit (byte 2 bit 4) = CD-RW vs CD-R.
 - **READ TOC** (`accudisc_read_toc`): per-track CTRL bit 2 -> audio vs data census.
 
-Verdict logic:
-- BLANK  = profile 0x09/0x0A AND disc status 0 (empty). (Status 1 = open session,
-  status 2 = closed -> NOT blank; both are "has sessions".)
-- AUDIO  = disc has >=1 audio track (CTRL bit 2 clear). Pure CD-DA = all audio;
-  mixed-mode has audio too and is still rippable-audio for our scope.
-- NEITHER otherwise (all-data, empty pressed [impossible], non-CD profile, no TOC).
+Verdict logic (evaluate in THIS precedence order — settled with cdda2img
+2026-07-18, §17.2):
+- **AUDIO first** = disc has >=1 audio track (CTRL bit 2 clear). Pure CD-DA = all
+  audio; mixed-mode has audio too and is still rippable-audio for our scope.
+  AUDIO wins over BLANK so a burned audio CD-R classifies AUDIO/rippable, not
+  BLANK.
+- **BLANK** = profile 0x09/0x0A AND disc status 0 (empty). (Status 1 = open
+  session, status 2 = closed -> NOT blank; both are "has sessions".)
+- **NEITHER** otherwise (all-data, non-CD profile, no medium, no TOC, unreadable).
 
-Deliverable:
+Deliverable — INTERFACE SETTLED with cdda2img (2026-07-18, private/AccuDisc.md
+§17.2); build to this exact shape:
 - Public: `accudisc_disc_kind` enum + `accudisc_disc_probe` struct (profile,
   erasable, disc_status, audio_tracks, data_tracks, kind) + `accudisc_probe_disc`.
-- CLI subcommand (name TBD — `disc-kind`? `classify`?) with a machine-readable
-  verdict line and DISTINCT exit codes so cdda2img can branch burn-vs-rip without
-  scraping text. **Coordinate the token + exit-code shape with cdda2img first**
-  (it is directly their "which path is legal" question — see private/AccuDisc.md).
+- CLI subcommand **`disc`** (CONFIRMED with cdda2img 2026-07-18; name == first
+  output token, sibling to `media`/`c2lag`). Machine line — canonical field order
+  matches cdda2img's plan D2 byte-for-byte (token-primary, parse tokens not
+  positions):
+  ```
+  disc kind=<BLANK|AUDIO|NEITHER> profile=0x<nn> disc_status=<0|1|2> erasable=<0|1> \
+       audio_tracks=<n> data_tracks=<n> reason=<slug>
+  ```
+  `erasable` added per §17.2 (burn path cares: BLANK CD-RW reusable vs CD-R
+  one-shot). `reason=` on every line (`audio`/`blank` on the actionable branch;
+  NEITHER slugs: `data_cd`, `closed_data`, `appendable`, `no_medium`,
+  `not_cd_profile`, `unreadable`).
+- Exit codes: **0 = actionable** (BLANK or AUDIO — caller reads `kind=` to branch);
+  **3 = classified-but-not-actionable** (NEITHER; reuses "completed-with-caveats");
+  **2 = could not classify** (transport failure). Token is authoritative; exit is
+  the coarse branch.
 - Unit-test the verdict logic as a pure function over synthetic
   (profile, status, track-CTRL) inputs, like the rotation classifier.
 
