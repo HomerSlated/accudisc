@@ -2,7 +2,7 @@
  *
  * The catalog is factual public data: ATIP codes (97:SS:FF) are pressed into
  * every CD-R pregroove. It is informed by PlexTools and cross-validated
- * against cdrecord's diskid.c and Nero 2026 (see docs/ATTRIBUTION.md).
+ * against cdrecord's diskid.c and Nero 2026 (see docs/reference/ATTRIBUTION.md).
  * Regenerate with tools/gen_media_db.py.
  *
  * Matching: on (sec, frame-decade). A manufacturer owns a whole 97:SS:Fx

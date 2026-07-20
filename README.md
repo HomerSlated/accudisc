@@ -33,7 +33,7 @@ The core (library, CLI, headers, bindings) is **MIT** — usable in any
 software, free or proprietary. Vendor drivers under `drivers/` are
 standalone dlopen'd modules licensed individually; the Plextor driver is
 non-free (see `drivers/plextor/LICENSE.md`). Data and technique sources are
-credited in `docs/ATTRIBUTION.md`, notably the drive read-offset table from
+credited in `docs/reference/ATTRIBUTION.md`, notably the drive read-offset table from
 the REDUMP Disc Preservation Project (https://redump.org).
 
 ## Status

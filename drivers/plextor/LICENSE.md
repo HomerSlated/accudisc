@@ -16,7 +16,7 @@ No third-party source code is copied. The command set is documented in several
 places we used as *references* — **QPxTool** (GPL-2.0), cdrtools, and cdrdao —
 and every command here was independently verified by raw SG_IO against the
 owner's own PX-716A. Citing those references is courtesy (see
-`../../docs/ATTRIBUTION.md`); it is not a derivation, so no copyleft attaches.
+`../../docs/reference/ATTRIBUTION.md`); it is not a derivation, so no copyleft attaches.
 
 The accompanying `PROTOCOL.md` / `FEATURES.md` and the RE notes record how the
 command set was confirmed on real hardware.

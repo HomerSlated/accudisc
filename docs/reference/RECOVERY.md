@@ -11,7 +11,7 @@ The single source of record for read-recovery across the two-project system:
   network I/O, ever.
 
 This file is **hardlinked** at `cdda2img/docs/reference/RECOVERY.md` and
-`accudisc/docs/RECOVERY.md`: one document, both repos. It supersedes and
+`accudisc/docs/reference/RECOVERY.md`: one document, both repos. It supersedes and
 replaces the former three (`cdda2img/docs/reference/RECOVERY.md`,
 `accudisc/reference/RECOVERY_STRATEGY.md`, `accudisc/docs/ACCUDISC_RECOVERY.md`).
 
@@ -952,7 +952,7 @@ The MMC command semantics behind the speed/streaming behaviour (SET STREAMING
 in **T10 MMC-5**, a proprietary, licensed document that must never be
 redistributed. The *summaries and empirical findings* here are transformative and
 fact-based (field offsets and observed drive behaviour are not copyrightable) and
-are freely shareable. AccuDisc's `reference/*` git-ignore rule enforces the
+are freely shareable. AccuDisc's `private/` git-ignore rule enforces the
 non-redistribution of the source document by construction.
 
 ---

@@ -2,8 +2,8 @@
  *
  * Produces the 8-byte-per-entry cue sheet the drive expects (MMC SEND CUE
  * SHEET, 0x5D), from the DAO layout model. Entry layout and construction
- * mirror cdrdao's GenericMMC::createCueSheet (reference/cdrdao); credited in
- * docs/ATTRIBUTION.md. Audio-only for now (data tracks add a CTL 0x40 path).
+ * mirror cdrdao's GenericMMC::createCueSheet (private/code/cdrdao); credited in
+ * docs/reference/ATTRIBUTION.md. Audio-only for now (data tracks add a CTL 0x40 path).
  *
  * Entry := { ctlAdr, trackNr, indexNr, dataForm, scms, min, sec, frame }.
  * Absolute MSF = image LBA + 150 (LBA 0 sits at 00:02:00).

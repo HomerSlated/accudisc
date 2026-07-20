@@ -50,9 +50,46 @@ of Mixed Mode discs. No ISO9660/CD-ROM data processing, no DVD/BD.
   - `meta/` — CD-Text, ISRC, MCN
 - `cli/` — the `accudisc` command-line tool (thin layer over the library)
 - `bindings/python/`, `bindings/rust/`
-- `reference/` — third-party sources and imported code for analysis
-  (**git-ignored**; local-only). Includes the original `c2read` once imported.
-- `docs/`, `tests/`, `tools/` (dev scripts), `cmake/`
+- `tests/`, `tools/` (dev scripts), `cmake/`
+
+### Public vs internal (the docs/ ÷ private/ split)
+
+Two parallel trees, mirroring cdda2img's layout:
+
+- `docs/` — **PUBLIC** (tracked, pushed). Anything here ships with the repo.
+  - `reference/` — docs that must track the code: `TODO.md`,
+    `cli-machine-interface.md`, `RECOVERY.md`, `RECORDING_PLAN.md`,
+    `ATTRIBUTION.md`
+  - `research/` — shareable research findings
+  - `flow/` — language-agnostic Mermaid flow docs (agent-generated)
+  - `man/` — man page
+- `private/` — **INTERNAL** (git-ignored, never pushed). Nothing here is
+  redistributable; several items must not be.
+  - `code/` — third-party source snapshots, mostly *symlinks* into
+    `cdda2img/private/code/`; `code/MMC/` is the **licensed T10 MMC-5 spec —
+    never redistribute** (summaries of it are fine, the source never leaves);
+    `code/c2read/` is the retired prototype AccuDisc replaced
+  - `drives/` — vendor/firmware material (Plextor, drive firmware)
+  - `docs/` — internal-only notes (cross-agent correspondence, assessments)
+  - `bench/`, `research/incoming/` — measurement data, raw research
+  - `bugs/`, `optimiser/`, `tracer/` — agent report output
+  - `guardian/` — Guardian agent keyring; holds a **private signing key**
+  - `setup/` — agent role-descriptions and provisioning material
+
+`private/` is git-ignored *by rule, deliberately ahead of being populated* —
+it holds a licensed document and a signing key, and this repo is public.
+Never `git add -f` anything under it.
+
+`docs/reference/RECOVERY.md` is **hardlinked** to
+`cdda2img/docs/reference/RECOVERY.md` — one document, both repos. Git does not
+enforce the link: edit once, but commit on both sides.
+
+> **Editing it is fragile.** Any editor that saves atomically (write temp +
+> rename — most of them, including agent Edit tools) replaces the directory
+> entry with a *new inode* and silently severs the link, leaving the two repos
+> diverged. Either edit in place (`cat new > file`, `sed -i`) or re-link
+> afterwards (`rm A && ln B A`). **Always verify after editing:**
+> `stat -c '%i %h' docs/reference/RECOVERY.md` — link count must be 2.
 
 ## Build
 
@@ -70,14 +107,14 @@ opaque handles, no libc types leaking into the ABI where avoidable.
   `include/accudisc/*.h` only, never against `src/` internals.
 - Anything learned by reverse engineering (opcodes, quirk behavior) gets
   documented in `docs/` as it lands, with the drive/firmware it applies to.
-- Reference sources in `reference/` are read-only inputs for analysis; code is
+- Third-party sources in `private/code/` are read-only inputs for analysis; code is
   rewritten for this codebase, not copy-pasted (mind licenses: GPL sources
   present).
-- `reference/RECOVERY_STRATEGY.md` is the source of record for recovery
-  design: roles (triage/gate/locate/repair/re-acquire), the rejected
-  approaches (R1-R7) not to rebuild, and the invariant that relative checks
-  (C2, consensus, overlap) never outrank absolute gates (AccurateRip/CTDB,
-  which live in the calling application).
+- `docs/reference/RECOVERY.md` is the source of record for recovery design:
+  roles (triage/gate/locate/repair/re-acquire), the rejected approaches
+  (R1-R7) not to rebuild, and the invariant that relative checks (C2,
+  consensus, overlap) never outrank absolute gates (AccurateRip/CTDB, which
+  live in the calling application).
 - **Licensing**: whole package is MIT (LICENSE), including drivers/plextor —
   its vendor opcodes are functional hardware identifiers (facts, not
   copyrightable; documented in QPxTool/cdrtools, verified on hardware). The
@@ -85,4 +122,4 @@ opaque handles, no libc types leaking into the ABI where avoidable.
   (core = pure MMC/SG), not licensing. Factual data tables likewise: offsets
   (REDUMP data) and the ATIP media catalog (public ATIP codes informed by
   PlexTools — src/drive/media_atip_db.inc). Credit reference sources in
-  docs/ATTRIBUTION.md and the future man page.
+  docs/reference/ATTRIBUTION.md and the future man page.

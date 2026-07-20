@@ -22,10 +22,6 @@ private/
 /*.toc
 /*.wav
 
-# Third-party / imported reference sources (local-only, see CLAUDE.md)
-reference/*
-!reference/README.md
-
 # Editors / tooling
 .cache/
 compile_commands.json

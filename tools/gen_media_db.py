@@ -76,7 +76,7 @@ def main() -> int:
             " * ATIP code (97:SS:FF) -> disc manufacturer. The codes are public\n"
             " * facts pressed into every CD-R pregroove; this compilation is\n"
             " * informed by PlexTools Professional XL and cross-validated against\n"
-            " * cdrecord's diskid.c (schily) and Nero 2026. See docs/ATTRIBUTION.md.\n"
+            " * cdrecord's diskid.c (schily) and Nero 2026. See docs/reference/ATTRIBUTION.md.\n"
             f" * Manufacturers: {len(set(r[0] for r in rows))},"
             f" codes: {len(rows) + len(CROSSREF_EXTRA)}"
             f" ({len(CROSSREF_EXTRA)} cross-referenced from cdrecord).\n"

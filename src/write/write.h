@@ -2,7 +2,7 @@
  *
  * Phase 1 (in progress): write-parameters setup + simulate scaffolding.
  * The public accudisc_write_* API will land once the engine is complete
- * (see docs/RECORDING_PLAN.md). Nothing here is part of the stable ABI yet.
+ * (see docs/reference/RECORDING_PLAN.md). Nothing here is part of the stable ABI yet.
  */
 #ifndef ADSC_WRITE_H
 #define ADSC_WRITE_H

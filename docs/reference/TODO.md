@@ -192,7 +192,7 @@ contract over a mid-disc span slowed reads everywhere; a 3-descriptor payload
 honoured only the first descriptor, globally).
 
 **Ranged sub-disc throttling is a REAL, documented MMC-5 feature** (§6.39.1, full
-text + field defs in git-ignored `reference/MMC/SET_STREAMING_findings.md`). We
+text + field defs in git-ignored `private/code/MMC/SET_STREAMING_findings.md`). We
 were simply UNSUCCESSFUL enabling it on the one drive tested. Cause undetermined
 (single whole-disc GET PERFORMANCE extent? still-wrong CDB framing? firmware?).
 No open-source tool uses ranged reads (redumper/cdrdao/libcdio use whole-disc

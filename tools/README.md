@@ -49,7 +49,7 @@ gcc -o /tmp/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudis
   On the PX-716A every contract went SLOW everywhere — the ceiling is applied
   **whole-disc**, the ranged extent ignored. That is one drive, not a proof about
   all drives: Phase 3 is deferred, not closed (see
-  `reference/MMC/SET_STREAMING_findings.md`). Needs `CAP_SYS_RAWIO`; restores full
+  `private/code/MMC/SET_STREAMING_findings.md`). Needs `CAP_SYS_RAWIO`; restores full
   speed on exit.
 
 ## Offline Q analysis (Python)
@@ -77,7 +77,7 @@ UNKNOWN rule.
 
 ## Test targets
 
-`/dev/sr1` on the dev box is **CDEmu** (virtual, backend in `reference/libmirage`).
+`/dev/sr1` on the dev box is **CDEmu** (virtual, backend in `private/code/libmirage`).
 It is a free negative control: it *advertises* the Real-Time Streaming feature
 and then **rejects GET PERFORMANCE** (Illegal Request). Anything that trusts a
 feature bit instead of smoke-testing it will assert nonsense there — a virtual

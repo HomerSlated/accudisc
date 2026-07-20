@@ -3,8 +3,8 @@
 Status: **plan only.** The write/burn path has been paused; this document is
 the design to execute when it resumes. Scope is Red Book CD-DA Disc-At-Once,
 matching the read path's philosophy: a raw, machine-driven engine that only
-moves bits. Primary reference is **cdrdao** (`reference/cdrdao/dao/`), with
-**cdrecord/schily** (`reference/schily-2024-03-21/`) as a cross-check for
+moves bits. Primary reference is **cdrdao** (`private/code/cdrdao/dao/`), with
+**cdrecord/schily** (`private/code/schily-2024-03-21/`) as a cross-check for
 command details and drive quirks. Both are credited in `docs/ATTRIBUTION.md`.
 
 ## 1. Scope and non-goals

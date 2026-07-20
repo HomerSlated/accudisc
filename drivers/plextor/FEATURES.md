@@ -99,5 +99,5 @@ CDB:  E9  DIR  PAGE  VAL  ..  ..  ..  ..  ..  L9  L10  ..
   (this is the byte session-2 misread as "page 6"), `resp[2..]` = state/values.
 
 Provenance: opcode/page constants and CDB framing cross-referenced against
-QPxTool (GPL) — see `../../docs/ATTRIBUTION.md` — and independently
+QPxTool (GPL) — see `../../docs/reference/ATTRIBUTION.md` — and independently
 live-verified on the user's own PX-716A. See `PROTOCOL.md` for the full trace.

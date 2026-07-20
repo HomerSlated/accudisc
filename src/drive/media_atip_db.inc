@@ -3,7 +3,7 @@
  * ATIP code (97:SS:FF) -> disc manufacturer. The codes are public
  * facts pressed into every CD-R pregroove; this compilation is
  * informed by PlexTools Professional XL and cross-validated against
- * cdrecord's diskid.c (schily) and Nero 2026. See docs/ATTRIBUTION.md.
+ * cdrecord's diskid.c (schily) and Nero 2026. See docs/reference/ATTRIBUTION.md.
  * Manufacturers: 78, codes: 134 (3 cross-referenced from cdrecord).
  */
 

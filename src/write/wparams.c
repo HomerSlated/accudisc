@@ -5,7 +5,7 @@
  * the drive's write registers — it does NOT touch the disc, so it is safe and
  * fully reversible (the drive resets the page on eject/power). Field layout
  * and the variant handling follow cdrdao's GenericMMC::setWriteParameters
- * (reference/cdrdao/dao/GenericMMC.cc); credited in docs/ATTRIBUTION.md.
+ * (private/code/cdrdao/dao/GenericMMC.cc); credited in docs/reference/ATTRIBUTION.md.
  */
 
 #include <string.h>

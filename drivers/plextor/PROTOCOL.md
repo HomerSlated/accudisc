@@ -12,19 +12,19 @@ opcode inventory harvested and validated. Session 3 (2026-07-12): the whole
 consumer-feature map was pinned and **live-verified on the PX-716A** — see
 `FEATURES.md` for the per-feature table. Opcode/page constants and CDB framing
 were cross-referenced against QPxTool (GPL; credited in
-`../../docs/ATTRIBUTION.md`) after the user authorised it as a factual
+`../../docs/reference/ATTRIBUTION.md`) after the user authorised it as a factual
 cross-reference, then independently confirmed by raw SG_IO against the user's
 own drive. **Correction to session 2: GigaRec is 0xE9 page `0x04`, not `0x06`
 (see below).**
 
 ## Sources analysed
 
-- `reference/Plextor/PTPXL/PTPXL.exe` — PlexTools Professional XL 3.x
+- `private/drives/Plextor/PTPXL/PTPXL.exe` — PlexTools Professional XL 3.x
   (PE32 x86, 8.6 MB, C++/RTTI). The application that builds and issues the
   vendor CDBs. Primary source.
-- `reference/firmware/plextor/716A_111/rome_111.bin` — PX-716A firmware
+- `private/drives/firmware/plextor/716A_111/rome_111.bin` — PX-716A firmware
   v1.11 (960 KiB). Not yet analysed (CPU/entry not yet identified).
-- `reference/Plextor/Plextor-716.pdf` — end-user install manual only; no
+- `private/drives/Plextor/Plextor-716.pdf` — end-user install manual only; no
   SCSI content. Useful for feature naming, nothing else.
 
 Tooling: `objdump -d -M intel` (cached full `.text` disassembly), `radare2`,
