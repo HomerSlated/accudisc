@@ -62,7 +62,7 @@ Follow-ups for Phase 1 (not Phase 0):
 - libcdio's `mmc_set_speed` uses **0xBB (SET CD SPEED)**, not 0xB6 — 0xBB stays
   the portable read-speed lever; 0xB6 adds the LBA-ranged ceiling for Phase 3.
 
-### PHASE 1 — speed + rotation — DONE 2026-07-17 (commits 4269142, 633829b)
+### PHASE 1 — speed + rotation — DONE 2026-07-17 (commits 7e4aced, 702b5ac)
 All hardware-verified on the PX-716A (ZZ Top / empty tray):
 - **GET PERFORMANCE (0xAC)** -> `accudisc_get_performance` + a pure
   `accudisc_classify_rotation` (CLV/CAV/P-CAV/Z-CLV/UNKNOWN). Discriminator is
