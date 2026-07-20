@@ -5,6 +5,23 @@ build/
 *.so.*
 *.a
 
+# Internal-only tree (git-ignored, never pushed). Holds third-party code
+# snapshots, the licensed MMC spec, agent reports, raw research, and the
+# Guardian signing keyring. MUST stay ignored — see CLAUDE.md.
+private/
+
+# Disc-capture artifacts written at the repo root (real audio data, never
+# committable). Root-anchored so the same extensions stay legal as fixtures
+# under tests/.
+/*.pcm
+/*.c2
+/*.sub
+/*.cdtext
+/*.fulltoc
+/*.bin
+/*.toc
+/*.wav
+
 # Third-party / imported reference sources (local-only, see CLAUDE.md)
 reference/*
 !reference/README.md
