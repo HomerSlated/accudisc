@@ -1,4 +1,4 @@
-/* sgsend — scratch RE instrument (non-free driver zone; not built or shipped).
+/* sgsend — scratch RE instrument (vendor-driver zone; not built or shipped).
  * Sends an arbitrary 12-byte CDB via SG_IO to a /dev/sg* node for vendor-opcode
  * probing. READ (data-in) by default; --out / --pl <hex...> for data-out SET.
  * Open O_RDWR on the sg char node grants full command access (vendor opcodes).

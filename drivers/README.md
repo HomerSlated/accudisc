@@ -37,6 +37,9 @@ The AccuDisc core is MIT and must stay cleanly separable from every driver:
 ## Drivers
 
 - `plextor/` — Plextor 0xEA extensions: C1/C2/CU error-counter scan
-  (Q-Check). Validated on PX-716A fw 1.11. **Non-free**: see
-  `plextor/LICENSE.md` (unlicensed vendor protocol, clean-room provenance);
-  intended to reach full parity with PlexTools-class access methods.
+  (Q-Check). Validated on PX-716A fw 1.11. **MIT**, like the core — the vendor
+  opcodes are functional hardware identifiers (facts, not copyrightable
+  expression), independently verified on hardware with no third-party source
+  copied; it is a separate module for vendor isolation, not licensing. See
+  `plextor/LICENSE.md`. Intended to reach full parity with PlexTools-class
+  access methods.

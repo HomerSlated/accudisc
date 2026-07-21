@@ -36,6 +36,8 @@ bindings/python/dist/
 bindings/python/*.egg-info/
 __pycache__/
 
-# Session history + remember system (nested git repo, personal config)
+# Session history, agent definitions, remember system. Local tooling and
+# personal config — never pushed. .claude/agents/ is backed up via
+# scripts/backup.manifest instead, since git cannot restore it.
 .remember/
-.claude/remember/
+.claude/
