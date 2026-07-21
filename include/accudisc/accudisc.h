@@ -312,6 +312,67 @@ ACCUDISC_API int accudisc_read_toc(accudisc_device *dev, accudisc_toc *out);
 ACCUDISC_API int accudisc_read_full_toc(accudisc_device *dev,
                                         uint8_t **out, uint32_t *len);
 
+/* ---- TOC acquisition path --------------------------------------------------
+ * READ TOC format 2 ("full TOC") and format 0 ("TOC") are different physical
+ * operations, not two views of one thing: format 2 replays the raw Q-channel
+ * of the LEAD-IN, while format 0 returns the drive's already-decoded track
+ * descriptors. A marginal lead-in can therefore fail format 2 outright while
+ * format 0 still answers perfectly — observed on a PX-716A with an MPO CD-R,
+ * 2026-07-21, where the program area read clean.
+ *
+ * accudisc_read_toc_src() prefers format 2 and degrades to format 0, reporting
+ * which path answered and why it degraded. The degrade is a DISC-HEALTH signal,
+ * not plumbing: a lead-in that has become unreadable while the program area is
+ * still perfect predicts what fails next, so it is surfaced rather than hidden.
+ *
+ * What format 2 adds over format 0 is SESSION STRUCTURE (session numbering,
+ * disc type, multi-session pointers) — NOT pregaps. INDEX 00 exists only in the
+ * program-area Q subchannel, never in the lead-in, so pregap data requires a
+ * program-area read (accudisc_index_map_decode) regardless of which path
+ * answered here. Callers wanting pregaps must ask for them separately; a
+ * successful format 2 does not supply them. */
+
+typedef enum {
+    ACCUDISC_TOC_SRC_FULLTOC = 0, /* READ TOC format 2: + session structure */
+    ACCUDISC_TOC_SRC_TOC     = 1  /* READ TOC format 0: boundaries + lead-out */
+} accudisc_toc_source;
+
+typedef enum {
+    ACCUDISC_TOC_DEGRADE_NONE = 0,       /* format 2 answered; no degrade */
+    ACCUDISC_TOC_DEGRADE_LEADIN_UNREADABLE = 1, /* format 2 failed (transport
+                                          * or CHECK CONDITION) — the lead-in
+                                          * could not be read */
+    ACCUDISC_TOC_DEGRADE_LEADIN_ABSENT = 2,     /* format 2 answered "no data"
+                                          * (header only) — nothing there */
+    ACCUDISC_TOC_DEGRADE_LEADIN_MALFORMED = 3   /* format 2 answered but the
+                                          * response did not parse into a
+                                          * usable TOC */
+} accudisc_toc_degrade;
+
+typedef struct accudisc_toc_info {
+    uint8_t source;        /* accudisc_toc_source */
+    uint8_t degrade;       /* accudisc_toc_degrade */
+    int32_t degrade_err;   /* the ACCUDISC_ERR_* that forced the degrade, or 0.
+                            * ERR_IO/ERR_SENSE distinguish a transport failure
+                            * from a drive rejection. */
+    uint8_t first_session; /* valid when source == FULLTOC, else 0 */
+    uint8_t last_session;
+    uint8_t disc_type;     /* A0 psec: 0x00 CD-DA/CD-ROM, 0x10 CD-i,
+                            * 0x20 CD-ROM XA. Valid when source == FULLTOC. */
+} accudisc_toc_info;
+
+/* TOC with the acquisition path reported. Prefers format 2, degrades to
+ * format 0. info may be NULL. Returns ACCUDISC_OK if EITHER path produced a
+ * usable TOC; only a failure of BOTH is an error (and then the format-0 error
+ * is returned, since that is the one that left the caller with nothing). */
+ACCUDISC_API int accudisc_read_toc_src(accudisc_device *dev, accudisc_toc *out,
+                                       accudisc_toc_info *info);
+
+/* Stable lowercase tokens for the machine interface ("fulltoc"/"toc";
+ * "none"/"leadin_unreadable"/"leadin_absent"/"leadin_malformed"). Never NULL. */
+ACCUDISC_API const char *accudisc_toc_source_str(unsigned source);
+ACCUDISC_API const char *accudisc_toc_degrade_str(unsigned degrade);
+
 /* Raw CD-Text packs from the lead-in (READ TOC format 5, undecoded).
  * Returns ACCUDISC_ERR_NOTFOUND when the drive answers but the disc carries
  * no CD-Text; a drive that rejects format 5 outright still surfaces as

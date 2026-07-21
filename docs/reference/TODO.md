@@ -557,24 +557,51 @@ external absolute gate — so recovery = blind re-reads + cross-read consensus.
 
 ## TOC reading
 
-- **Full-TOC → TOC automatic fallback, with path reporting.** `accudisc fulltoc`
-  (READ TOC format 0x02) reads the *raw lead-in Q-channel*; on a marginal CD-R
-  lead-in the drive can fail that command (transport error, exit 2) while the
-  cooked TOC (format 0x00) reads perfectly — observed on the PX-716A CD-R,
-  2026-07-21 (cdda2img `read_geometry()`). The CDB is correct (session 1, MSF
-  bit, per redumper); this is a drive+media quirk, not a bug. Right now every
-  caller that wants geometry has to try 0x02, catch exit 2, and drop to 0x00
-  itself (cdda2img now does). Move that fallback into AccuDisc: `toc` attempts
-  0x02 for full session/index detail and degrades to 0x00 for boundaries +
-  lead-out when 0x02 fails, **reporting which path served the answer** (a
-  machine token + `accudisc_access_method`-style query), so callers stop
-  reimplementing it. Note in the contract that the 0x00 path omits pregap/INDEX
-  detail — which never enters an AR/CTDB checksum, so it's lossless for offset
-  rescue, but matters for index-accurate cuesheets. Coordinate the new
-  machine-interface token with cdda2img (flagged in `private/` correspondence).
-  Keep exit 2 (transport failure) vs exit 3 (`ERR_NOTFOUND`, full TOC legitimately
-  absent) distinct — they mean different things and the fallback logic depends on
-  it. [P2]
+### Full-TOC → TOC automatic fallback — PHASE A DONE 2026-07-21, HARDWARE UNVERIFIED
+
+`accudisc fulltoc` (READ TOC format 0x02) reads the *raw lead-in Q-channel*; on
+a marginal CD-R lead-in the drive can fail that command (transport error, exit
+2) while the cooked TOC (format 0x00) reads perfectly — observed on the PX-716A
+with an MPO CD-R, 2026-07-21, and *not* on a Ritek CD-R in the same session, so
+it is that disc, not CD-R as a class. The CDB is correct (session 1, MSF bit,
+per redumper); a drive+media quirk, not a defect.
+
+**Shipped (Phase A):** `accudisc_read_toc_src()` prefers 0x02 and degrades to
+0x00, reporting `source=` and `degrade=` (`none` / `leadin_unreadable` /
+`leadin_absent` / `leadin_malformed`). `toc` emits a token line and exits **0**
+on a degrade — the command promises geometry and still delivers it; failing
+would regress the very discs the fallback serves. Frozen in
+`cli-machine-interface.md`. Pure conversion `adsc_toc_from_fulltoc()` unit-tested
+(`tests/test_tocsrc.c`, 13/13).
+
+> **Correction worth keeping.** Format 0x02 does **not** carry INDEX 00/pregap
+> data — the lead-in TOC holds track *starts* (INDEX 01), A0/A1/A2 and session
+> structure only. Pregaps exist solely in the program-area Q subchannel. So a
+> successful 0x02 supplies no more pregap data than a degraded 0x00, and the
+> degrade costs only session structure. Both an earlier note of ours and
+> cdda2img's §26.2 assumed otherwise.
+
+- **[P1] Hardware-verify on the MPO disc** (drive was in use by cdda2img when
+  this landed). Wanted: `source=toc degrade=leadin_unreadable` on the MPO CD-R,
+  `source=fulltoc degrade=none` on the Ritek, and geometry identical to what
+  plain format 0x00 returned before the change.
+- **[P2] Phase B — the `pregaps=` middle rung.** cdda2img §26.2 asks for
+  Q-derived pregaps folded into `toc`. Because pregaps are orthogonal to the
+  lead-in (see correction above), this is not a fallback rung but an opt-in
+  enrichment: `toc --pregaps` runs the CRC-gated boundary scan
+  (`accudisc_index_map_decode`, already shipped as `pregaps`) and emits
+  `pregaps=q`. Must stay opt-in — it turns a lead-in-only command into a
+  program-area read, a large cost change. Needs the drive.
+- **[P3] Phase C — cdda2img §26.5, "signal a lead-in that *nearly* failed".**
+  Premise checked and it does **not** hold: there is **no retry logic anywhere**
+  in `src/mmc/` or `src/transport/`, so there is no retry count to surface. A
+  degradation-warning signal would require *adding* retries to the 0x02 path
+  first — a behaviour change that costs real time on exactly the discs that are
+  already failing. Decide deliberately; do not bolt a counter onto a loop that
+  does not exist.
+- **[P3]** Bindings (`bindings/python`, `bindings/rust`) do not yet expose
+  `accudisc_read_toc_src`; they are generated against the public header, so this
+  is additive whenever they are next regenerated.
 
 ## Deferred (explicitly, by user decision)
 

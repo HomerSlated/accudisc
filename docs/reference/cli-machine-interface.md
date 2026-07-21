@@ -159,6 +159,61 @@ entry. A disc with no ATIP (pressed CD, or no recordable media) prints
 `atip absent` and exits **3** (data absent, not an error). All fields are the
 raw ATIP as the disc encodes them; AccuDisc reports, it does not judge.
 
+## `toc` output (stdout)
+
+One line per track, then lead-out, then one acquisition-path line:
+
+```
+track <n> lba <lba> sectors <n> audio|data
+leadout lba <lba>
+source=<fulltoc|toc> degrade=<reason> pregaps=none [sessions=<a>..<b>] [disc_type=0x<hh>]
+```
+
+The `track`/`leadout` lines are frozen in this form. `lba` and `sectors` are
+decimal; `sectors` runs to the next track's start, and for the last track to
+lead-out. The final line is `key=value` tokens — **parse it as tokens, not
+positionally**; new keys may be appended.
+
+### `source=` — which READ TOC format answered
+
+`fulltoc` (format 0x02) or `toc` (format 0x00). These are different physical
+operations, not two views of one thing: format 0x02 replays the raw Q-channel
+of the **lead-in**, while format 0x00 returns the drive's already-decoded track
+descriptors. A marginal lead-in can therefore fail 0x02 outright while 0x00
+answers perfectly. `toc` prefers 0x02 (for session structure) and degrades to
+0x00 automatically; `sessions=` and `disc_type=` appear only under
+`source=fulltoc`, since format 0x00 does not carry them.
+
+### `degrade=` — why it fell back (a disc-health signal)
+
+| value | meaning |
+|---|---|
+| `none` | format 0x02 answered; no degrade |
+| `leadin_unreadable` | 0x02 failed — transport error or CHECK CONDITION |
+| `leadin_absent` | 0x02 answered "no data of this format" |
+| `leadin_malformed` | 0x02 answered but the response did not parse |
+
+`leadin_unreadable` on a disc whose program area still reads clean is a
+**degradation warning about the disc**, not plumbing noise: the lead-in is
+failing first. Callers archiving provenance should record it.
+
+**A degrade does not change the exit code — `toc` exits 0.** The command
+promises track geometry and a degrade still delivers it in full; only the
+session structure that format 0x00 never carried is missing. (Contrast
+`fulltoc`, where the caller asked for the lead-in itself, so absence is exit 3.)
+Making a marginal lead-in fail `toc` would regress exactly the discs this
+fallback exists to serve. The health signal rides on `degrade=`, which is
+strictly more informative than an exit code.
+
+### `pregaps=` — always `none` from this subcommand
+
+**INDEX 00 exists only in the program-area Q subchannel, never in the lead-in.**
+Neither READ TOC format carries pregap data, so a successful `source=fulltoc`
+supplies no more of it than a degraded `source=toc` does. The key is present so
+that callers branch on the token rather than on `source=`, and so a future
+program-area-derived value is additive. Pregaps come from the `pregaps`
+subcommand (CRC-gated Q decode) or from a raw subchannel capture.
+
 ## `read` inline lead-in capture
 
 `read --fulltoc FILE --cdtext FILE` dumps the raw READ TOC format-2 /

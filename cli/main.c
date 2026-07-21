@@ -15,7 +15,8 @@ static void usage(FILE *to)
         "\n"
         "commands:\n"
         "  info           identify the drive (INQUIRY)\n"
-        "  toc            list tracks (READ TOC, LBA)\n"
+        "  toc            list tracks (LBA); prefers the full TOC and degrades\n"
+        "                 to format 0 on an unreadable lead-in, reporting which\n"
         "  fulltoc [FILE] parsed session structure, or raw dump to FILE\n"
         "  cdtext FILE    dump raw CD-Text packs to FILE (no file if absent)\n"
         "  text           decode and print CD-Text (block 0)\n"
@@ -216,7 +217,8 @@ static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
 static int cmd_toc(accudisc_device *dev)
 {
     accudisc_toc toc;
-    int err = accudisc_read_toc(dev, &toc);
+    accudisc_toc_info info;
+    int err = accudisc_read_toc_src(dev, &toc, &info);
 
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "read toc", err);
@@ -226,6 +228,33 @@ static int cmd_toc(accudisc_device *dev)
                t->sectors, ACCUDISC_TRACK_IS_AUDIO(t) ? "audio" : "data");
     }
     printf("leadout lba %u\n", toc.leadout_lba);
+
+    /* Acquisition path. Pregaps are deliberately reported as absent here: they
+     * live in the program-area Q subchannel, never in the lead-in, so neither
+     * READ TOC format supplies them (see `pregaps`). */
+    printf("source=%s degrade=%s pregaps=none",
+           accudisc_toc_source_str(info.source),
+           accudisc_toc_degrade_str(info.degrade));
+    if (info.source == ACCUDISC_TOC_SRC_FULLTOC)
+        printf(" sessions=%u..%u disc_type=0x%02x", info.first_session,
+               info.last_session, info.disc_type);
+    putchar('\n');
+
+    if (info.degrade != ACCUDISC_TOC_DEGRADE_NONE)
+        fprintf(stderr,
+                "accudisc: full TOC unavailable (%s: %s) — geometry from "
+                "READ TOC format 0; session structure unavailable\n",
+                accudisc_toc_degrade_str(info.degrade),
+                accudisc_strerror(info.degrade_err));
+
+    /* Deliberately exit 0 on a degrade. `toc` promises track geometry, and a
+     * degrade still delivers it in full — nothing the caller asked for is
+     * missing, only the session structure that format 0 never carried anyway.
+     * (Contrast `fulltoc`, where the caller asked for the lead-in itself and
+     * exit 3 means they did not get it.) Making a marginal lead-in fail
+     * `toc` would regress exactly the discs this fallback exists to serve.
+     * The health signal rides on degrade=, which is strictly more informative
+     * than an exit code: it separates unreadable from absent from malformed. */
     return 0;
 }
 
