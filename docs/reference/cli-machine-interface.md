@@ -198,6 +198,11 @@ Evaluated in this order; the order is load-bearing:
 appendable is rippable, not blank; the reverse ordering would offer to burn
 over a disc that has music on it.
 
+**The profile gate precedes the census for the same reason.** Non-CD media do
+answer READ TOC — a DVD-R measured here returns one data track — so without the
+gate a DVD would be classified from its track census, and one whose CTRL bits
+read as audio could reach the CD-DA rip path.
+
 ### `reason=` slugs
 
 | slug | `kind` | meaning |

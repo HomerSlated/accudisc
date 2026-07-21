@@ -45,8 +45,13 @@ void adsc_disc_classify(accudisc_disc_probe *p)
     }
 
     /* 2. Not a CD. DVD/BD/unrecognised are out of scope: we cannot rip them as
-     *    CD-DA and must not burn them as Red Book. Checked before the track
-     *    census because a track count from a non-CD profile means nothing. */
+     *    CD-DA and must not burn them as Red Book.
+     *
+     *    Checked BEFORE the track census, and that ordering is load-bearing:
+     *    non-CD media really do answer READ TOC. A DVD-R measured on the
+     *    PX-716A (2026-07-22) returned one data track. Censusing first would
+     *    classify such a disc from meaningless counts, and a medium whose CTRL
+     *    bits happened to read as audio would reach the rip path. */
     if (!profile_is_cd(p->profile)) {
         p->kind = ACCUDISC_DISC_NEITHER;
         p->reason = ACCUDISC_DISC_WHY_NOT_CD_PROFILE;

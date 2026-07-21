@@ -114,15 +114,30 @@ Two additions beyond the original locked shape, both additive:
 - `disc_status`/`erasable` emit **-1 when not obtainable** rather than 0, since
   0 means "empty" and would otherwise read as blank.
 
-**Hardware status:**
-- ✅ AUDIO — Ritek audio CD-R: `kind=AUDIO profile=0x0009 disc_status=2
-  erasable=0 audio_tracks=10 data_tracks=0 reason=audio`, exit 0. Confirms
-  AUDIO-first precedence on real media: a CD-R carrying CDDA is rippable, not
-  blank.
-- ⬜ **no_medium** (tray open, and tray closed empty) — the sense-extraction
-  path is unit-tested only. Needs an empty drive.
-- ⬜ **BLANK** — needs a blank CD-R or CD-RW.
-- ⬜ **not_cd_profile / data_cd** — needs a data CD or a DVD.
+**Hardware status (PX-716A, 2026-07-22):**
+
+- ✅ **AUDIO** — Ritek audio CD-R: `kind=AUDIO profile=0x0009 disc_status=2
+  erasable=0 audio_tracks=10 data_tracks=0 reason=audio`, exit 0. Confirms the
+  AUDIO-over-BLANK rule on real media: a CD-R carrying CDDA is rippable.
+- ✅ **no_medium, tray open** — `kind=NEITHER profile=0x0000 disc_status=-1
+  erasable=-1 audio_tracks=0 data_tracks=0 reason=no_medium tray=open`. This is
+  the only path that depends on **sense extraction** (ASC 0x3A + qualifier)
+  rather than command output, and both halves work: the ASCQ resolved to
+  `tray=open`, and `disc_status`/`erasable` correctly reported **-1** rather
+  than a false 0 that would have read as blank.
+- ✅ **not_cd_profile** — DVD-R: `kind=NEITHER profile=0x0011 disc_status=2
+  erasable=0 audio_tracks=0 data_tracks=1 reason=not_cd_profile`.
+- ⬜ **BLANK** — needs a blank CD-R or CD-RW. Unit-tested only.
+- ⬜ **no_medium, tray closed** — tray shut with no disc (expect
+  `tray=closed`, ASCQ 0x01). Unit-tested only.
+
+> **The DVD result validates the precedence order empirically.** Note
+> `data_tracks=1`: the DVD-R **did** answer READ TOC, reporting one data track.
+> So the profile gate is not defensive theatre — without it this disc would have
+> reached the census and classified `data_cd`, and a medium whose CTRL bits
+> happened to read as audio could have classified **AUDIO**, offering a DVD to
+> the CD-DA rip path. Checking the profile *before* the census is what stops
+> that. Keep the order.
 
 ### The locked interface (as built)
 The real objective behind deferring Phase 2 (Keith, 2026-07-17). A pre-flight
