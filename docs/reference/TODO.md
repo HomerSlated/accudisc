@@ -603,9 +603,24 @@ says. A natural experiment we could not have staged deliberately. It also
 demonstrates the degradation pattern the `degrade=` signal exists to catch: the
 lead-in has died while the program area is still healthy.
 
-- **[P2] Verify `source=fulltoc degrade=none` on a healthy disc** (the Ritek
-  CD-R, or any pressed disc). The degrade path is proven; the success path is
-  still only unit-tested.
+**Success path verified — Ritek CD-R (10 tracks), same drive, 2026-07-22.**
+`fulltoc` reads clean; `toc` reports
+`source=fulltoc degrade=none pregaps=none sessions=1..1 disc_type=0x00`, exit 0.
+
+**The conversion is cross-validated against an independent decode.** This disc
+provided the test the MPO one could not: there, both binaries used format 0x00,
+so identical output proved little. Here the new binary derives geometry from the
+lead-in through `adsc_toc_from_fulltoc()` while 847b10a uses the drive's own
+cooked format-0x00 answer — two independent decodes of the same disc. Output is
+**byte-identical** across all 10 tracks and lead-out (253937), so the MSF→LBA
+arithmetic (including the −150 offset), the track slotting and the extent
+computation all agree with the drive's firmware.
+
+**Preferring 0x02 is free when it succeeds:** ~5 ms before and after on this
+disc (3 runs each). The ~166 ms penalty is paid only on a degrade. Both figures
+are in `cli-machine-interface.md`.
+
+Both paths are now hardware-proven. No open verification items.
 - **[P2] Phase B — the `pregaps=` middle rung.** cdda2img §26.2 asks for
   Q-derived pregaps folded into `toc`. Because pregaps are orthogonal to the
   lead-in (see correction above), this is not a fallback rung but an opt-in
