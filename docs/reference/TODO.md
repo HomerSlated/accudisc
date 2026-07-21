@@ -621,20 +621,24 @@ disc (3 runs each). The ~166 ms penalty is paid only on a degrade. Both figures
 are in `cli-machine-interface.md`.
 
 Both paths are now hardware-proven. No open verification items.
-- **[P2] Phase B — the `pregaps=` middle rung.** cdda2img §26.2 asks for
-  Q-derived pregaps folded into `toc`. Because pregaps are orthogonal to the
-  lead-in (see correction above), this is not a fallback rung but an opt-in
-  enrichment: `toc --pregaps` runs the CRC-gated boundary scan
-  (`accudisc_index_map_decode`, already shipped as `pregaps`) and emits
-  `pregaps=q`. Must stay opt-in — it turns a lead-in-only command into a
-  program-area read, a large cost change. Needs the drive.
-- **[P3] Phase C — cdda2img §26.5, "signal a lead-in that *nearly* failed".**
-  Premise checked and it does **not** hold: there is **no retry logic anywhere**
-  in `src/mmc/` or `src/transport/`, so there is no retry count to surface. A
-  degradation-warning signal would require *adding* retries to the 0x02 path
-  first — a behaviour change that costs real time on exactly the discs that are
-  already failing. Decide deliberately; do not bolt a counter onto a loop that
-  does not exist.
+- **Phase B (`toc --pregaps`) — DROPPED 2026-07-22, at the requester's request.**
+  cdda2img §26.2 originally asked for Q-derived pregaps folded into `toc`; their
+  §27 audit withdrew it. Their pregaps come from the Q stream and never from a
+  TOC (`subq_toc.build_rip_info` → `_derive_layout` → `derive_track_layout`,
+  Q-only; `track_starts` supplies boundaries only), and their rip path always
+  captures `--sub raw`, so `toc --pregaps` would be a second program-area pass
+  over data they already hold. No other consumer wants it. `pregaps` stays the
+  standalone diagnostic — which is what proved the point on Stanley Road. The
+  `pregaps=` token still ships (always `none`) so a future value is additive.
+  **Do not build this without a new requester.**
+- **Phase C (retry counter) — WITHDRAWN 2026-07-22 by the requester.** cdda2img
+  §26.5 assumed a retry loop existed in the 0x02 path. It does not — there is no
+  retry logic anywhere in `src/mmc/` or `src/transport/`. On being told, they
+  withdrew the ask and argued the current behaviour is *better*: a single-attempt
+  failure means one specific thing, whereas "failed after N tries" blurs it, and
+  retries would cost time on exactly the discs already failing. **Do not add
+  retries to make a counter possible.** If retry *behaviour* is ever wanted, that
+  is a separate, deliberate decision.
 - **[P3]** Bindings (`bindings/python`, `bindings/rust`) do not yet expose
   `accudisc_read_toc_src`; they are generated against the public header, so this
   is additive whenever they are next regenerated.
