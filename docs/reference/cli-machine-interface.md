@@ -197,6 +197,12 @@ answers perfectly. `toc` prefers 0x02 (for session structure) and degrades to
 **degradation warning about the disc**, not plumbing noise: the lead-in is
 failing first. Callers archiving provenance should record it.
 
+**Cost of a degrade.** The failed format-0x02 attempt is not free: measured on a
+PX-716A with an MPO CD-R, `toc` went from ~5 ms (format 0x00 alone) to ~172 ms,
+the extra ~166 ms being the drive giving up on the lead-in. Still trivial for a
+one-shot invocation, but a caller polling `toc` in a loop on a degraded disc
+pays it every time. `degrade=none` discs are unaffected.
+
 **A degrade does not change the exit code — `toc` exits 0.** The command
 promises track geometry and a degrade still delivers it in full; only the
 session structure that format 0x00 never carried is missing. (Contrast

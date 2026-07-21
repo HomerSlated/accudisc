@@ -557,7 +557,7 @@ external absolute gate — so recovery = blind re-reads + cross-read consensus.
 
 ## TOC reading
 
-### Full-TOC → TOC automatic fallback — PHASE A DONE 2026-07-21, HARDWARE UNVERIFIED
+### Full-TOC → TOC automatic fallback — PHASE A DONE + HARDWARE-VERIFIED 2026-07-21
 
 `accudisc fulltoc` (READ TOC format 0x02) reads the *raw lead-in Q-channel*; on
 a marginal CD-R lead-in the drive can fail that command (transport error, exit
@@ -581,10 +581,31 @@ would regress the very discs the fallback serves. Frozen in
 > degrade costs only session structure. Both an earlier note of ours and
 > cdda2img's §26.2 assumed otherwise.
 
-- **[P1] Hardware-verify on the MPO disc** (drive was in use by cdda2img when
-  this landed). Wanted: `source=toc degrade=leadin_unreadable` on the MPO CD-R,
-  `source=fulltoc degrade=none` on the Ritek, and geometry identical to what
-  plain format 0x00 returned before the change.
+**Hardware verification — MPO CD-R (Paul Weller, *Stanley Road*), PX-716A fw
+1.11, 2026-07-21.** All three wanted results confirmed:
+
+- `fulltoc` reproduces the original failure exactly: `transport I/O failure`,
+  exit 2.
+- `toc` emits `source=toc degrade=leadin_unreadable pregaps=none`, exit **0**,
+  with all 12 tracks and lead-out 236435.
+- Geometry is **byte-identical** to the pre-change binary (847b10a built in a
+  scratch worktree and diffed): no regression.
+- Measured cost of the degrade: ~5 ms → ~172 ms (3 runs each, tight spread).
+  The ~166 ms is the drive giving up on the lead-in. Recorded in
+  `cli-machine-interface.md`.
+
+**The correction is now empirically proven, not just read off the spec.** On
+this disc the lead-in is *completely unreadable*, yet `pregaps` recovers all 11
+pregaps (tracks 2–12, every one 149f) with near-perfect Q CRC — mostly
+`[150 ok, 0 bad]`, worst `[147 ok, 3 bad]`. Pregap data therefore cannot be
+coming from the lead-in; it is program-area Q, exactly as the descriptor layout
+says. A natural experiment we could not have staged deliberately. It also
+demonstrates the degradation pattern the `degrade=` signal exists to catch: the
+lead-in has died while the program area is still healthy.
+
+- **[P2] Verify `source=fulltoc degrade=none` on a healthy disc** (the Ritek
+  CD-R, or any pressed disc). The degrade path is proven; the success path is
+  still only unit-tested.
 - **[P2] Phase B — the `pregaps=` middle rung.** cdda2img §26.2 asks for
   Q-derived pregaps folded into `toc`. Because pregaps are orthogonal to the
   lead-in (see correction above), this is not a fallback rung but an opt-in
