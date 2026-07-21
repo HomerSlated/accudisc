@@ -380,6 +380,71 @@ ACCUDISC_API const char *accudisc_toc_degrade_str(unsigned degrade);
 ACCUDISC_API int accudisc_read_cdtext(accudisc_device *dev,
                                       uint8_t **out, uint32_t *len);
 
+/* ---- disc-kind guard -------------------------------------------------------
+ * Pre-flight answer to "which operation is legal for the disc in the drive",
+ * so nothing attempts the impossible. Composes three commands the library
+ * already issues — GET CONFIGURATION (current profile), READ DISC INFORMATION
+ * (status + erasable) and READ TOC (audio/data track census). No new opcodes,
+ * no filesystem inspection: this deliberately does not distinguish CD-ROM
+ * layouts, DVD or BD beyond "not a CD-DA we can rip, not a blank we can burn".
+ *
+ * Non-destructive: every command is a read. */
+
+typedef enum {
+    ACCUDISC_DISC_NEITHER = 0, /* refuse — neither path is legal */
+    ACCUDISC_DISC_BLANK   = 1, /* recordable, no sessions -> the BURN path */
+    ACCUDISC_DISC_AUDIO   = 2  /* has audio tracks -> the RIP path */
+} accudisc_disc_kind;
+
+/* Why that verdict. Stable lowercase slugs on the machine line. */
+typedef enum {
+    ACCUDISC_DISC_WHY_AUDIO = 0,       /* >= 1 audio track */
+    ACCUDISC_DISC_WHY_BLANK,           /* CD-R/RW, disc status empty */
+    ACCUDISC_DISC_WHY_DATA_CD,         /* CD, tracks present, none audio */
+    ACCUDISC_DISC_WHY_CLOSED_DATA,     /* as above and the disc is closed */
+    ACCUDISC_DISC_WHY_APPENDABLE,      /* open session, nothing rippable yet */
+    ACCUDISC_DISC_WHY_NO_MEDIUM,       /* no disc loaded (see tray) */
+    ACCUDISC_DISC_WHY_NOT_CD_PROFILE,  /* DVD/BD/unknown — not a CD at all */
+    ACCUDISC_DISC_WHY_UNREADABLE       /* a CD, but nothing could be read */
+} accudisc_disc_reason;
+
+/* Only meaningful when reason == NO_MEDIUM; from sense ASC 0x3A qualifiers. */
+typedef enum {
+    ACCUDISC_TRAY_UNKNOWN = 0,
+    ACCUDISC_TRAY_CLOSED  = 1, /* tray shut, no disc */
+    ACCUDISC_TRAY_OPEN    = 2
+} accudisc_tray_state;
+
+#define ACCUDISC_DISC_STATUS_UNKNOWN 0xff /* also used for erasable */
+
+typedef struct accudisc_disc_probe {
+    uint16_t profile;      /* GET CONFIGURATION current profile: 0x08 CD-ROM,
+                            * 0x09 CD-R, 0x0A CD-RW, 0 = none/unrecognised */
+    uint8_t erasable;      /* 1 = CD-RW, 0 = CD-R/pressed,
+                            * ACCUDISC_DISC_STATUS_UNKNOWN if not obtained */
+    uint8_t disc_status;   /* 0 empty, 1 incomplete (open), 2 complete (closed),
+                            * ACCUDISC_DISC_STATUS_UNKNOWN if not obtained */
+    uint8_t audio_tracks;  /* CTRL bit 2 clear */
+    uint8_t data_tracks;   /* CTRL bit 2 set */
+    uint8_t kind;          /* accudisc_disc_kind */
+    uint8_t reason;        /* accudisc_disc_reason */
+    uint8_t tray;          /* accudisc_tray_state */
+} accudisc_disc_probe;
+
+/* Classify the loaded disc. Returns ACCUDISC_OK whenever a verdict was
+ * reached — including ACCUDISC_DISC_NEITHER, which is a successful
+ * classification, not an error. Only a failure to talk to the drive at all
+ * returns an error code. */
+ACCUDISC_API int accudisc_probe_disc(accudisc_device *dev,
+                                     accudisc_disc_probe *out);
+
+/* Stable machine tokens ("BLANK"/"AUDIO"/"NEITHER"; "audio"/"blank"/"data_cd"/
+ * "closed_data"/"appendable"/"no_medium"/"not_cd_profile"/"unreadable";
+ * "unknown"/"closed"/"open"). Never NULL. */
+ACCUDISC_API const char *accudisc_disc_kind_str(unsigned kind);
+ACCUDISC_API const char *accudisc_disc_reason_str(unsigned reason);
+ACCUDISC_API const char *accudisc_tray_state_str(unsigned tray);
+
 /* ---- feature probe ---------------------------------------------------------
  * What the drive CLAIMS (GET CONFIGURATION, CD Read feature 0x1E) versus what
  * it DOES (functional smoke reads at LBA 0, so a disc must be loaded).

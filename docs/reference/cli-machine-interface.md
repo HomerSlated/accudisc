@@ -159,6 +159,71 @@ entry. A disc with no ATIP (pressed CD, or no recordable media) prints
 `atip absent` and exits **3** (data absent, not an error). All fields are the
 raw ATIP as the disc encodes them; AccuDisc reports, it does not judge.
 
+## `disc` output (stdout)
+
+Pre-flight guard: which of burn / rip is legal for the loaded disc. One line:
+
+```
+disc kind=<BLANK|AUDIO|NEITHER> profile=0x<nnnn> disc_status=<0|1|2|-1> \
+     erasable=<0|1|-1> audio_tracks=<n> data_tracks=<n> reason=<slug> [tray=<state>]
+```
+
+Token-primary — **parse tokens, not positions**; new keys may be appended.
+`disc_status` is 0 empty / 1 incomplete (open session) / 2 complete (closed);
+`erasable` is 1 for CD-RW. Both are **`-1` when not obtainable** (no medium, or
+the command failed) — never silently 0, since 0 is itself a meaningful status.
+
+| exit | meaning |
+|---|---|
+| 0 | actionable — `kind=` is `AUDIO` or `BLANK`; branch on the token |
+| 3 | classified, but neither path is legal (`kind=NEITHER`) |
+| 2 | could not classify (transport failure) |
+
+Refusing is a *successful* classification, hence exit 3 rather than 2.
+
+### `kind=` and its precedence
+
+Evaluated in this order; the order is load-bearing:
+
+1. **no medium** → `NEITHER`, `reason=no_medium`. Short-circuits everything.
+2. **not a CD profile** (not 0x08/0x09/0x0A) → `NEITHER`,
+   `reason=not_cd_profile`. Checked before the track census, so a nonsense
+   count cannot promote a DVD.
+3. **AUDIO** — at least one audio track (CTRL bit 2 clear). Pure CD-DA and the
+   audio half of Mixed Mode alike.
+4. **BLANK** — profile 0x09/0x0A *and* `disc_status=0`.
+5. otherwise **NEITHER**, with a slug naming which refusal.
+
+**AUDIO outranks BLANK deliberately.** An audio CD-R written but left
+appendable is rippable, not blank; the reverse ordering would offer to burn
+over a disc that has music on it.
+
+### `reason=` slugs
+
+| slug | `kind` | meaning |
+|---|---|---|
+| `audio` | AUDIO | at least one audio track |
+| `blank` | BLANK | recordable, no session started |
+| `data_cd` | NEITHER | CD with tracks, none of them audio |
+| `closed_data` | NEITHER | as above, and the disc is closed |
+| `appendable` | NEITHER | open session, nothing rippable yet |
+| `no_medium` | NEITHER | no disc loaded — see `tray=` |
+| `not_cd_profile` | NEITHER | DVD, BD, or unrecognised medium |
+| `unreadable` | NEITHER | profile says CD, but nothing could be read |
+
+### `tray=`
+
+Emitted **only** with `reason=no_medium`, from the sense qualifier on ASC 0x3A:
+`open` (tray out), `closed` (tray shut, no disc), or `unknown` (the drive did
+not say). It distinguishes "insert a disc" from "close the tray".
+
+### Scope
+
+Deliberately no filesystem inspection. This answers "rippable CD-DA / blank to
+burn / neither" and nothing finer: it does not distinguish CD-ROM layouts,
+recognise DVD or BD beyond `not_cd_profile`, or identify data-CD contents.
+Non-destructive — every command is a read.
+
 ## `toc` output (stdout)
 
 One line per track, then lead-out, then one acquisition-path line:

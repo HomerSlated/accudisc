@@ -15,6 +15,8 @@ static void usage(FILE *to)
         "\n"
         "commands:\n"
         "  info           identify the drive (INQUIRY)\n"
+        "  disc           pre-flight guard: is the loaded disc rippable audio,\n"
+        "                 a blank to burn, or neither (exit 3)\n"
         "  toc            list tracks (LBA); prefers the full TOC and degrades\n"
         "                 to format 0 on an unreadable lead-in, reporting which\n"
         "  fulltoc [FILE] parsed session structure, or raw dump to FILE\n"
@@ -212,6 +214,40 @@ static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
             (unsigned long long)tc1, peak_c1, (unsigned long long)tc2,
             peak_c2, (unsigned long long)tcu, peak_cu);
     return ret;
+}
+
+/* Pre-flight guard: which of burn / rip is legal for the loaded disc. The
+ * token is authoritative; the exit code is the coarse branch. */
+static int cmd_disc(accudisc_device *dev)
+{
+    accudisc_disc_probe p;
+    int err = accudisc_probe_disc(dev, &p);
+
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "probe disc", err);
+
+    printf("disc kind=%s profile=0x%04x", accudisc_disc_kind_str(p.kind),
+           p.profile);
+    if (p.disc_status == ACCUDISC_DISC_STATUS_UNKNOWN)
+        printf(" disc_status=-1");
+    else
+        printf(" disc_status=%u", p.disc_status);
+    if (p.erasable == ACCUDISC_DISC_STATUS_UNKNOWN)
+        printf(" erasable=-1");
+    else
+        printf(" erasable=%u", p.erasable);
+    printf(" audio_tracks=%u data_tracks=%u reason=%s", p.audio_tracks,
+           p.data_tracks, accudisc_disc_reason_str(p.reason));
+    /* Only meaningful without a disc, so it is emitted only there. */
+    if (p.reason == ACCUDISC_DISC_WHY_NO_MEDIUM)
+        printf(" tray=%s", accudisc_tray_state_str(p.tray));
+    putchar('\n');
+
+    /* 0 = actionable (the caller reads kind= to pick the path), 3 =
+     * classified but neither path is legal. Refusing is a successful
+     * classification, not a failure — exit 2 is reserved for not being able
+     * to classify at all, which accudisc_probe_disc reports as an error. */
+    return p.kind == ACCUDISC_DISC_NEITHER ? 3 : 0;
 }
 
 static int cmd_toc(accudisc_device *dev)
@@ -1421,6 +1457,8 @@ int main(int argc, char **argv)
     int rc;
     if (!strcmp(command, "info"))
         rc = cmd_info(dev);
+    else if (!strcmp(command, "disc"))
+        rc = cmd_disc(dev);
     else if (!strcmp(command, "toc"))
         rc = cmd_toc(dev);
     else if (!strcmp(command, "fulltoc"))

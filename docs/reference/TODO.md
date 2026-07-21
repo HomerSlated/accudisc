@@ -94,7 +94,37 @@ Still open (small, deferred from Phase 1):
 - **Re-run the Q-vs-speed sweep** now that cap'd 0xB6 actually commands speed
   (last session's numbers were the 0xBB fallback).
 
-### DISC-KIND GUARD — burn-vs-rip sanity check (PLANNED; deferred execution)
+### DISC-KIND GUARD — BUILT 2026-07-22, partially hardware-verified
+
+Shipped to the locked interface below: `accudisc_probe_disc()` +
+`accudisc_disc_probe` + the `disc` subcommand, verdict logic isolated as the
+pure `adsc_disc_classify()` and unit-tested over synthetic combinations
+(`tests/test_disc.c`, 14/14). Frozen in `cli-machine-interface.md`.
+
+Scope confirmed with Keith 2026-07-22 — recognise exactly: no medium (tray
+open/closed), CDDA including CD-R/RW CDDA, blank CD-R/RW, and unknown media
+type. Nothing finer. Other media (CD-ROM layouts, Mixed Mode data half, DVD/BD)
+need filesystem support and are deliberately out of scope for now; they all
+land in `NEITHER` with a slug saying which.
+
+Two additions beyond the original locked shape, both additive:
+- `tray=open|closed|unknown` on the `no_medium` branch (sense ASC 0x3A
+  qualifier) — distinguishes "insert a disc" from "close the tray", which
+  cdda2img §26.4 specifically wanted.
+- `disc_status`/`erasable` emit **-1 when not obtainable** rather than 0, since
+  0 means "empty" and would otherwise read as blank.
+
+**Hardware status:**
+- ✅ AUDIO — Ritek audio CD-R: `kind=AUDIO profile=0x0009 disc_status=2
+  erasable=0 audio_tracks=10 data_tracks=0 reason=audio`, exit 0. Confirms
+  AUDIO-first precedence on real media: a CD-R carrying CDDA is rippable, not
+  blank.
+- ⬜ **no_medium** (tray open, and tray closed empty) — the sense-extraction
+  path is unit-tested only. Needs an empty drive.
+- ⬜ **BLANK** — needs a blank CD-R or CD-RW.
+- ⬜ **not_cd_profile / data_cd** — needs a data CD or a DVD.
+
+### The locked interface (as built)
 The real objective behind deferring Phase 2 (Keith, 2026-07-17). A pre-flight
 guard that answers "which of the two possible operations is legal for the disc
 in the drive", so nothing attempts the impossible:
