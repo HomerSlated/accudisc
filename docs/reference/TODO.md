@@ -740,6 +740,39 @@ Both paths are now hardware-proven. No open verification items.
   leadout 236435`), and `read` resolved `session 1, lba 0 count 236435`. A disc
   with a dead lead-in is now fully rippable through the validated path rather
   than a flat fallback.
+
+- **[P1] Mixed Mode: session selection is too coarse** — a gap opened by
+  35ba94c and **CLOSED 2026-07-22**. On a Mixed Mode CD one session holds a data
+  track (first, where a filesystem is expected) followed by audio tracks. Every
+  step was individually right — the default audio session *is* session 1, its
+  whole-session range *does* start at LBA 0, and the guard *does* correctly
+  refuse a range containing a data track — and the outcome was that
+  `accudisc read` with no arguments failed on the format.
+
+  Fix: `accudisc_toc_session_audio_range()` narrows the default to the session's
+  **audio tracks**, plus `accudisc_toc_track_range()` and `--track N` /
+  `--tracks A-B` for explicit selection. The guard was **not** relaxed.
+
+  **VERIFIED on hardware 2026-07-22** (PX-716A, Taiyo Yuden CD-R: data track 1
+  of 138230 sectors, audio tracks 2-11, one session, lead-out 342197).
+
+    - Before: `refusing lba 0 count 342197: data_track at lba 0 (track 1)`.
+    - After: `session 1, lba 138230 count 203967`, and 138230+203967 = 342197,
+      exactly the lead-out.
+    - `--tracks 2-11` resolves to the *identical* range — independent
+      confirmation the default picks the right thing rather than one code path
+      agreeing with itself.
+    - Full rip of that range: **479,730,384 bytes = 203967 × 2352 exactly**,
+      0 C2-flagged sectors, exit 0.
+    - Still refused, correctly: `--track 1` and `--tracks 1-11` (`data_track`),
+      and `--tracks 13-14` on the Enhanced CD (different sessions — a span
+      across the seam would swallow 11,400 dead sectors).
+
+  One case is **refused rather than solved**: audio tracks either side of a data
+  track within one session cannot be expressed as a single range, so
+  `ACCUDISC_ERR_UNSUPPORTED` is returned and the caller must name tracks. Legal
+  on the wire, unit-tested, **never observed on real media**.
+
 - **[P3]** Bindings (`bindings/python`, `bindings/rust`) do not yet expose
   `accudisc_read_toc_src` or `accudisc_probe_disc`; they are generated against
   the public header, so both are additive whenever next regenerated.
@@ -747,18 +780,39 @@ Both paths are now hardware-proven. No open verification items.
 ## Formats and specs
 
 - **[P2] CD+G capture and pack extraction** (AccuDisc's half; cdda2img renders).
-  The graphics ride in the **R–W** subchannel, 6 bits x 96 symbols = 72 bytes
-  per sector, packed as 4 x 24-byte packets. `--sub raw` **already captures all
-  96 subchannel bytes**, so the transport work is done; what is missing is the
-  R–W deinterleave out of P–W, pack-boundary alignment, and emitting the packet
-  stream (which *is* the `.cdg` file format, 300 packets/s).
+  **Rescoped 2026-07-22** against the normative spec (Philips/Sony *Subcode/
+  Control and Display System — Channels R–W*, Nov 1991, `private/research/`),
+  which corrected two errors in the earlier entry. Structure, per §5.1:
 
-  **Scope line, agreed with cdda2img:** we deinterleave and emit packets;
-  they render packets to images/video. Rendering is presentation, and belongs
-  on their side of the "AccuDisc only moves bits" rule. Note the subchannel has
-  no C1/C2 protection — only a per-frame CRC-16 — so CD+G capture inherits the
-  Q-failure populations already characterised in RECOVERY.md, and packet loss
-  must be *reported*, never interpolated.
+      6 bits (one frame's R..W) = 1 SYMBOL
+      24 SYMBOLS                = 1 PACK
+      4 PACKS                   = 1 PACKET
+
+  A sector's 98 frames less S0/S1 leave 96 symbols = 4 packs = **one packet per
+  sector**, so 75 packets/s and **300 packs/s**. The `.cdg` format is the
+  24-byte **pack** stream at 300/s (7200 B/s), one byte per symbol.
+
+  - *Correction 1:* the old entry said "4 x 24-byte packets" and "300
+    packets/s". The nesting was inverted (4 packs **per** packet) and 300 is the
+    **pack** rate. Emitting packets would have produced a file at ¼ rate.
+  - *Correction 2:* the old entry said the subchannel has "no C1/C2 protection —
+    only a per-frame CRC-16". True of **Q**, false of **R–W**, which carries a
+    **(24,20) Reed-Solomon** code over GF(2⁶) (`P(X)=X⁶+X+1`) with **8×
+    interleaving**, plus a **(4,2) RS** on the first two symbols (MODE/ITEM).
+
+  `--sub raw` **already captures all 96 subchannel bytes**, so the transport
+  work is done. Missing: R–W deinterleave out of P–W, undoing the 8× interleave,
+  **RS decode**, pack-boundary alignment (the pack after S0/S1 is pack 0), and
+  emitting the pack stream. The RS decode is new scope — this is bigger than the
+  earlier "transport is the hard part" framing implied.
+
+  **Scope line, agreed with cdda2img:** we deinterleave, RS-correct and emit
+  packs; they render to images/video. Rendering is presentation and belongs on
+  their side of the "AccuDisc only moves bits" rule; RS correction stays ours,
+  as it recovers recorded bits rather than interpreting them. Where correction
+  genuinely fails, loss is *reported*, never interpolated. The Q-failure
+  populations in RECOVERY.md apply to **Q** and do not transfer to R–W
+  unexamined — that was the error.
 
 - **HDCD: nothing for us to build.** It is a watermark in the LSBs of ordinary
   16-bit PCM; a bit-exact rip preserves it with zero special handling, and both
@@ -767,16 +821,38 @@ Both paths are now hardware-proven. No open verification items.
   of scope per CLAUDE.md, and communicated to cdda2img as wholly theirs.
   Recorded here so the question is not reopened.
 
-- **[P3] Obtain the Orange Book** (CD-R/CD-RW, Recordable, incl. multi-session
-  structure). We have the Red Book in a cdda2img private sub-dir; Orange Book
-  is the normative source for the session-overhead constants we currently
-  assert from measurement — session 1 lead-out 6750, subsequent lead-in 4500,
-  subsequent lead-out 2250, pregap 150. Our Enhanced CD reproduced
-  6750+4500+150 = 11400 exactly, so the numbers are right, but a *measurement*
-  is not a *specification*. Also wanted for the session-count ceiling: 99 is
-  widely quoted and I have not verified it is a spec number rather than
-  folklore. Licensed document — same handling as the MMC spec: `private/code/`,
-  never redistributed, summaries only.
+- ~~**[P3] Obtain the Orange Book**~~ — **DONE 2026-07-22.** Orange Book Part II
+  (CD-R) Vols 1–2 and Part III (CD-RW) Vol 1 are in `private/research/`, along
+  with the Multisession CD spec, Enhanced Music CD spec, R–W subcode spec, CD
+  Text Mode, CD-ROM XA, MMC-3, SCSI-2, the SACD specs and *The CD Family*.
+  **Public** ECMA-130 / ECMA-394 / ECMA-395 are cited but deliberately **not
+  committed** (`docs/research/.gitignore` excludes `*.pdf`) — ECMA publishes
+  them for free download, so a citation beats megabytes of permanent history.
+
+  All four session-overhead constants are now confirmed:
+
+  | constant | sectors | source |
+  |---|---|---|
+  | first session lead-out | 6750 | ECMA-394 §5.7.1 — **public, citable** |
+  | later session lead-out | 2250 | ECMA-394 §5.7.1 — **public, citable** |
+  | second+ session lead-in | 4500 | Multisession CD spec — licensed |
+  | pregap | 150 | Multisession CD spec — licensed |
+
+  The measurement (6750+4500+150 = 11400) was right. ECMA-394 being *public* is
+  the useful part: those two figures may now be quoted and cited in `docs/`.
+
+  **The 99-session ceiling was searched for and not found** in the Multisession
+  spec — the document that would define it. Not proof of absence, but it looks
+  like folklore borrowed from the real 99-*track* limit. `docs/research/
+  disc-formats.md` §4 now records it as actively doubted. Any firmware ceiling
+  is measurement work on our hardware, not a spec question.
+
+- **[P3] Read *CD Cracking Uncovered* (Kaspersky)** — now in `private/research/`,
+  unread. It is the reference for the copy-protection schemes in
+  disc-formats.md §8 (Cactus Data Shield, key2audio), which work by deliberately
+  malforming the TOC and session structure. Wanted before the defensive pass
+  over `adsc_toc_from_fulltoc()`, so that pass is informed by the actual
+  mechanisms rather than by guesses about them.
 
 - **[P4] Vanity project: a backwards-compatible hi-res audio disc.** Replicate
   SACD's *audio quality only* in a format readable by drives >= DVD, using a

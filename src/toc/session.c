@@ -82,6 +82,72 @@ int accudisc_toc_session_range(const accudisc_toc *toc, uint8_t session,
     return ACCUDISC_OK;
 }
 
+int accudisc_toc_session_audio_range(const accudisc_toc *toc, uint8_t session,
+                                     uint32_t *lba, uint32_t *count)
+{
+    const accudisc_track *first = NULL, *last = NULL;
+
+    if (!toc || !lba || !count)
+        return ACCUDISC_ERR_INVAL;
+    if (!find_session(toc, session))
+        return ACCUDISC_ERR_NOTFOUND;
+
+    for (uint8_t i = 0; i < toc->track_count; i++) {
+        const accudisc_track *t = &toc->tracks[i];
+
+        if (t->session != session)
+            continue;
+        if (!ACCUDISC_TRACK_IS_AUDIO(t)) {
+            /* A data track AFTER audio has already begun means the audio is
+             * split. Mixed Mode puts its data track first, so this does not
+             * fire there — but the wire permits it and a silently truncated
+             * rip would be worse than a refusal. */
+            if (first)
+                return ACCUDISC_ERR_UNSUPPORTED;
+            continue;
+        }
+        if (!first)
+            first = t;
+        last = t;
+    }
+    if (!first)
+        return ACCUDISC_ERR_NOTFOUND;
+    if (!last->sectors)
+        return ACCUDISC_ERR_SHORT;
+
+    *lba = first->lba;
+    *count = last->lba + last->sectors - first->lba;
+    return ACCUDISC_OK;
+}
+
+int accudisc_toc_track_range(const accudisc_toc *toc, uint8_t first,
+                             uint8_t last, uint32_t *lba, uint32_t *count)
+{
+    const accudisc_track *a = NULL, *b = NULL;
+
+    if (!toc || !lba || !count || last < first)
+        return ACCUDISC_ERR_INVAL;
+
+    for (uint8_t i = 0; i < toc->track_count; i++) {
+        if (toc->tracks[i].number == first)
+            a = &toc->tracks[i];
+        if (toc->tracks[i].number == last)
+            b = &toc->tracks[i];
+    }
+    if (!a || !b)
+        return ACCUDISC_ERR_NOTFOUND;
+    /* Extents are session-bounded, so a span crossing a session seam would
+     * silently include the lead-out/lead-in gap between them. */
+    if (a->session != b->session)
+        return ACCUDISC_ERR_UNSUPPORTED;
+    if (!b->sectors || b->lba + b->sectors <= a->lba)
+        return ACCUDISC_ERR_SHORT;
+
+    *lba = a->lba;
+    *count = b->lba + b->sectors - a->lba;
+    return ACCUDISC_OK;
+}
+
 const char *accudisc_range_reason_str(unsigned reason)
 {
     switch (reason) {

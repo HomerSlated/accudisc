@@ -57,8 +57,129 @@ static void enhanced_cd(accudisc_toc *t)
     add_session(t, 2, 14, 14, 0, 1, 211185);
 }
 
+/* The measured Mixed Mode CD (Taiyo Yuden CD-R, PX-716A, 2026-07-22): ONE
+ * session holding data track 1 followed by audio tracks 2-11. Session-level
+ * selection is too coarse here — the whole session includes the data track —
+ * which is what accudisc_toc_session_audio_range() exists to narrow. */
+static void mixed_mode(accudisc_toc *t)
+{
+    memset(t, 0, sizeof(*t));
+    t->first_track = 1;
+    t->last_track = 11;
+    t->leadout_lba = 342197;
+    add(t, 1, 0x14, 1, 0, 138230);        /* data */
+    add(t, 2, 0x10, 1, 138230, 25497);
+    /* Tracks 3-10 collapsed; the span must stay contiguous. */
+    add(t, 3, 0x10, 1, 163727, 159471);
+    add(t, 11, 0x10, 1, 323198, 18999);
+    add_session(t, 1, 1, 11, 3, 1, 342197);
+}
+
 int main(void)
 {
+    /* --- Mixed Mode: the audio range excludes the data track --------------- */
+    {
+        accudisc_toc t;
+        uint32_t lba = 0, count = 0;
+        accudisc_range_check c;
+
+        mixed_mode(&t);
+        /* The session genuinely IS the default audio session... */
+        assert(accudisc_toc_default_audio_session(&t) == 1);
+        /* ...but its whole-session range starts on the data track, and the
+         * guard must refuse it. This is the bug 35ba94c opened. */
+        assert(accudisc_toc_session_range(&t, 1, &lba, &count) == ACCUDISC_OK);
+        assert(lba == 0 && count == 342197);
+        assert(accudisc_check_audio_range(&t, lba, count, &c) != ACCUDISC_OK);
+        assert(c.reason == ACCUDISC_RANGE_DATA_TRACK && c.track == 1);
+
+        /* Narrowing to the audio is what makes the disc rippable. */
+        assert(accudisc_toc_session_audio_range(&t, 1, &lba, &count) ==
+               ACCUDISC_OK);
+        assert(lba == 138230);        /* track 2, not track 1 */
+        assert(count == 203967);      /* through the lead-out at 342197 */
+        assert(lba + count == 342197);
+        assert(accudisc_check_audio_range(&t, lba, count, &c) == ACCUDISC_OK);
+
+        /* Explicit track selection must agree with the default exactly. */
+        {
+            uint32_t tlba = 0, tcount = 0;
+
+            assert(accudisc_toc_track_range(&t, 2, 11, &tlba, &tcount) ==
+                   ACCUDISC_OK);
+            assert(tlba == lba && tcount == count);
+        }
+
+        /* A span that reaches back over the data track is still refused. */
+        {
+            uint32_t tlba = 0, tcount = 0;
+
+            assert(accudisc_toc_track_range(&t, 1, 11, &tlba, &tcount) ==
+                   ACCUDISC_OK);
+            assert(accudisc_check_audio_range(&t, tlba, tcount, &c) !=
+                   ACCUDISC_OK);
+            assert(c.reason == ACCUDISC_RANGE_DATA_TRACK);
+        }
+
+        /* Absent tracks, and a backwards span. */
+        {
+            uint32_t x = 0, y = 0;
+
+            assert(accudisc_toc_track_range(&t, 1, 99, &x, &y) ==
+                   ACCUDISC_ERR_NOTFOUND);
+            assert(accudisc_toc_track_range(&t, 5, 2, &x, &y) ==
+                   ACCUDISC_ERR_INVAL);
+        }
+    }
+
+    /* --- a span across a session seam is refused, not silently widened ----- */
+    {
+        accudisc_toc t;
+        uint32_t lba = 0, count = 0;
+
+        enhanced_cd(&t);
+        /* Tracks 13 and 14 are adjacent by number but sit either side of the
+         * 11,400-sector seam. Spanning them would include the lead-out, the
+         * lead-in and a pregap. */
+        assert(accudisc_toc_track_range(&t, 13, 14, &lba, &count) ==
+               ACCUDISC_ERR_UNSUPPORTED);
+        /* Within one session it is fine. */
+        assert(accudisc_toc_track_range(&t, 1, 13, &lba, &count) ==
+               ACCUDISC_OK);
+        assert(lba == 0 && count == 195656);
+    }
+
+    /* --- audio split by a data track: no single range can express it ------- */
+    {
+        accudisc_toc t;
+        uint32_t lba = 0, count = 0;
+
+        memset(&t, 0, sizeof(t));
+        t.first_track = 1;
+        t.last_track = 3;
+        t.leadout_lba = 30000;
+        add(&t, 1, 0x10, 1, 0, 10000);     /* audio */
+        add(&t, 2, 0x14, 1, 10000, 10000); /* data, BETWEEN the audio */
+        add(&t, 3, 0x10, 1, 20000, 10000); /* audio */
+        add_session(&t, 1, 1, 3, 2, 1, 30000);
+
+        /* Refusing beats returning a range that quietly spans the data track. */
+        assert(accudisc_toc_session_audio_range(&t, 1, &lba, &count) ==
+               ACCUDISC_ERR_UNSUPPORTED);
+    }
+
+    /* --- a session with no audio at all ------------------------------------ */
+    {
+        accudisc_toc t;
+        uint32_t lba = 0, count = 0;
+
+        enhanced_cd(&t);
+        assert(accudisc_toc_session_audio_range(&t, 2, &lba, &count) ==
+               ACCUDISC_ERR_NOTFOUND);
+        assert(accudisc_toc_session_audio_range(&t, 9, &lba, &count) ==
+               ACCUDISC_ERR_NOTFOUND); /* absent session */
+    }
+
     /* --- default session: exactly one session has audio -------------------- */
     {
         accudisc_toc t;

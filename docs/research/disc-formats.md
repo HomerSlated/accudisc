@@ -97,9 +97,22 @@ session 1 lead-out starts     195656
 **11,400 sectors** carrying no track payload and readable as CD-DA by nothing.
 The arithmetic closing to the sector is good evidence the constants are right
 and that this gap is *structural* — it will be present on every Enhanced CD,
-not a quirk of this disc. (The constants themselves are **spec**, but sourced
-from recall until the Orange Book is in hand; the measurement is what currently
-backs them.)
+not a quirk of this disc.
+
+**All four constants are now confirmed against normative sources** (2026-07-22),
+so this section is **spec** as well as **measured**:
+
+| Constant | Sectors | Source |
+|---|---|---|
+| first session lead-out | 6750 (1 min 30 s) | ECMA-394 §5.7.1 — **public**, citable |
+| later session lead-out | 2250 (30 s) | ECMA-394 §5.7.1 — **public**, citable |
+| second+ session lead-in | 4500 (1 min 00 s) | Multisession CD spec §"length of the Lead-In Area of the second and higher Session(s) on a disc is 01:00:00" — licensed, summary only |
+| pregap | 150 (2 s) | Multisession CD spec, "Pre-Gap for Data Tracks … length of 00:02:00" — licensed, summary only |
+
+Note ECMA-394 is a **public** standard, so the two lead-out figures can be
+quoted and cited in this repo. The Philips/Sony Multisession spec is licensed:
+its numbers may be stated as fact, but the document itself never leaves
+`private/`.
 
 ### Implications table
 
@@ -111,7 +124,7 @@ backs them.)
 | inter-track gap | none | ~11,400 sectors |
 | needs multi-session drive | no | yes |
 | our track extents | always were right | **wrong until 35ba94c** |
-| our `read` default | ⚠️ refuses — see §6 | works |
+| our `read` default | works (fixed 2026-07-22) | works |
 
 ---
 
@@ -120,9 +133,15 @@ backs them.)
 **Tracks: 99 per disc**, hard. TNO is 1–99 in the Q channel. This is per
 *disc*, not per session. **spec**
 
-**Sessions:** commonly quoted ceiling is 99 — **unverified**, and exactly the
-kind of number that circulates as folklore. Capacity binds long before it in
-any case. Each session after the first costs, in the program area:
+**Sessions:** the commonly quoted ceiling is 99. On 2026-07-22 I searched the
+Multisession Compact Disc specification — the normative document that would
+define such a limit — and **found no stated maximum number of sessions**. That
+is not proof none exists, but the absence of it in the one spec that ought to
+carry it is a strong hint the "99" is folklore, borrowed from the (real,
+spec-stated) 99-track limit. Treat as **unverified, and now actively doubted**.
+
+Capacity binds long before any such ceiling in any case. Each session after the
+first costs, in the program area:
 
 ```
 4500 (lead-in) + 150 (pregap) + 300 (minimum 4-second track) + 2250 (lead-out)
@@ -169,12 +188,12 @@ lead-in is in the program area and is.
 | **SACD** | impossible | impossible | §2. Dropped from scope. |
 | **HDCD** | already works | already works | Bit-exact rip preserves it. Detection and decode are analysis of delivered audio — out of scope per CLAUDE.md, and cdda2img's entirely. |
 | **XRCD** | already works | n/a | A mastering process. Nothing on the disc to support. |
-| **CD+G** | ~80% there | plausible | **Best value on the list.** `--sub raw` already captures all 96 subchannel bytes; graphics live in R–W. Needs R–W deinterleave, pack alignment, packet emission. See §7. |
+| **CD+G** | transport done, decode larger than thought | plausible | Still the best value on the list. `--sub raw` already captures all 96 subchannel bytes; graphics live in R–W. Needs R–W deinterleave, 8× de-interleave, **Reed-Solomon decode**, pack alignment, pack emission. See §7 — the spec is now in hand and revised the estimate upward. |
 | **Enhanced CD / CD-Extra / CD-Plus** | done (35ba94c) | substantial | Reading works. Writing needs multi-session DAO: a second lead-in/lead-out and the drive's session reservation — considerably more than the single-session DAO we have. |
-| **Mixed Mode** | ⚠️ needs track selection | mostly easy | See §6.1. Writing is easy *if* the caller supplies the data track's bits; we would write it as an opaque track with no filesystem knowledge. |
+| **Mixed Mode** | done (2026-07-22) | mostly easy | See §6.1. Writing is easy *if* the caller supplies the data track's bits; we would write it as an opaque track with no filesystem knowledge. |
 | **CD-i** | mostly N/A | no | Green Book, Mode 2 throughout, no audio tracks in a pure CD-i disc — nothing for a CD-DA tool. **Exception: CD-i Ready**, which hides data in an enormous *track 1 pregap* (index 0, sometimes minutes long) so audio players skip it. Interesting to us only because reading track 1's pregap is a capability question we face anyway. Mechanism **unverified**. |
 
-### 6.1 A gap the session guard opened
+### 6.1 A gap the session guard opened — CLOSED 2026-07-22
 
 On a Mixed Mode CD, session 1 contains *both* the data track and the audio
 tracks. So `accudisc_toc_default_audio_session()` correctly returns session 1,
@@ -186,33 +205,98 @@ no arguments fails on a Mixed Mode CD** as of 35ba94c. The guard is not wrong �
 that range genuinely contains unreadable sectors — but *session*-level
 selection is too coarse for a format that mixes types *within* a session.
 
-Fix: track-level selection (`--track N` / `--tracks A-B`), and a default that
-selects the audio *tracks* of the chosen session rather than the whole session
-span. Roughly 60 lines. **Untested — no Mixed Mode disc has been in the drive.**
+**Fixed and hardware-verified 2026-07-22** on a Taiyo Yuden CD-R carrying data
+track 1 (138230 sectors) plus audio tracks 2-11, one session, lead-out 342197.
+
+The fix is `accudisc_toc_session_audio_range()` — the default now resolves to
+the audio *tracks* of the chosen session rather than the whole session span —
+plus `--track N` / `--tracks A-B` for explicit selection.
+
+Before: `refusing lba 0 count 342197: data_track at lba 0 (track 1)`
+After: `session 1, lba 138230 count 203967`, and `138230 + 203967 = 342197`
+lands exactly on the lead-out. `--tracks 2-11` resolves to the identical range,
+which is independent confirmation the default picks the right thing. A full rip
+of that range produced 479,730,384 bytes = 203967 × 2352 exactly, 0 C2-flagged
+sectors.
+
+The guard itself was **not** relaxed. `--track 1` and `--tracks 1-11` are still
+refused as `data_track`, and a span across a session seam (`--tracks 13-14` on
+the Enhanced CD) is refused rather than silently widened to include the 11,400
+dead sectors.
+
+One case is refused rather than solved: audio tracks sitting *either side* of a
+data track within one session cannot be expressed as a single range, so
+`accudisc_toc_session_audio_range()` returns `ACCUDISC_ERR_UNSUPPORTED` and the
+caller must select tracks explicitly. Not known to occur in any shipped format,
+but legal on the wire, and a silently truncated rip would be worse than a
+refusal. Unit-tested; **never observed on real media**.
 
 ---
 
 ## 7. CD+G, in a little more detail
 
-Graphics ride in the **R–W** subchannel: 6 bits x 96 symbols = 72 bytes per
-sector, packed as 4 packets of 24 bytes, giving 300 packets/second. That packet
-stream *is* the `.cdg` file format. **unverified** in its packing details —
-worth confirming before implementing.
+Graphics ride in the **R–W** subchannel. The normative source (Philips/Sony,
+*Subcode/Control and Display System — Channels R–W*, November 1991, now in
+`private/research/`) is in hand as of 2026-07-22, and it **corrected two errors
+in the previous draft of this section**. Both are recorded rather than quietly
+overwritten, because both would have produced wrong code.
+
+**The structure, correctly** (§5.1, **spec**):
+
+```
+6 bits (R,S,T,U,V,W of one frame)  = 1 SYMBOL
+24 SYMBOLS                         = 1 PACK
+4 PACKS                            = 1 PACKET
+```
+
+A sector is 98 frames; the first two (S0, S1) are the subcode sync, leaving
+**96 symbols = 4 packs = exactly one PACKET per sector**. At 75 sectors/s that
+is **75 packets/s and 300 packs/s**.
+
+> **Error 1 — inverted nesting.** The previous draft said "4 packets of 24
+> bytes". It is 4 **packs** *per* packet, and a pack is 24 **symbols** of 6 bits,
+> not 24 bytes. The old text also gave "300 packets/second"; 300 is the
+> **pack** rate. This matters because the `.cdg` file format is a stream of
+> 24-byte **packs** at 300/s (7200 bytes/s) — one byte per symbol, 6 bits
+> significant. Emitting "packets" would have produced a file at ¼ the rate.
+
+**Error 2 — R–W *is* error-protected.** The previous draft said the subchannel
+"has no C1/C2 protection — a per-frame CRC-16 is its only check". That is true
+of the **Q** channel and false of R–W. §5.1 specifies:
+
+- a **(24,20) Reed-Solomon code over GF(2⁶)**, polynomial `P(X) = X⁶ + X + 1`,
+  correcting across all 24 symbols of a pack (parity P);
+- **8× interleaving** over that code, for burst-error tolerance;
+- an additional **(4,2) Reed-Solomon** code protecting the first two symbols
+  (parity Q) — the ones carrying MODE and ITEM, i.e. the fields that tell you
+  how to interpret the rest.
+
+So CD+G capture is **materially more robust** than the earlier text claimed, and
+the design consequence is a real one: we should implement the RS decode rather
+than merely reporting loss. The `.cdg` files in circulation are almost all
+*post*-correction; a capture that skipped RS would be needlessly worse than the
+existing corpus.
+
+The Q-failure populations characterised in RECOVERY.md still apply to the **Q**
+channel. They do not transfer to R–W unexamined — that was the error. Where RS
+correction genuinely fails, loss must still be **reported, never interpolated**.
 
 What we already have: `--sub raw` captures all 96 subchannel bytes per sector,
 so the transport half is done.
 
-What is missing: deinterleaving R–W out of P–W, pack-boundary alignment, and
-emitting the packet stream.
+What is missing: deinterleaving R–W out of P–W, undoing the 8× interleave,
+**RS decode (24,20) and (4,2)**, pack-boundary alignment (the pack after S0/S1
+is pack 0 of a packet), and emitting the 24-byte pack stream.
 
-**Scope line agreed with cdda2img:** AccuDisc deinterleaves and emits packets;
-cdda2img renders packets to images/video. Rendering is presentation and belongs
-on their side of the "AccuDisc only moves bits" rule.
+The RS decode is new scope relative to the earlier estimate — the "~80% there"
+figure in §6 predates it and is now optimistic. The transport half genuinely is
+done; the decode half is larger than one line of that table implied.
 
-**Integrity caveat.** The subchannel has no C1/C2 protection — a per-frame
-CRC-16 is its only check — so CD+G capture inherits the Q-failure populations
-already characterised in RECOVERY.md. Packet loss must be **reported**, never
-interpolated.
+**Scope line agreed with cdda2img:** AccuDisc deinterleaves, RS-corrects and
+emits packs; cdda2img renders them to images/video. Rendering is presentation
+and belongs on their side of the "AccuDisc only moves bits" rule. RS correction
+stays on our side: it is recovering the bits that were recorded, not
+interpreting them.
 
 ---
 
@@ -237,12 +321,13 @@ interpolated.
 
 ## 9. Recommended order
 
-1. **Close the Mixed Mode gap** (`--tracks`). Opened by 35ba94c; should not sit.
+1. ~~**Close the Mixed Mode gap** (`--tracks`).~~ **Done 2026-07-22** (§6.1).
 2. **CD+G packet extraction.** Highest value per line on the list, already in
-   CLAUDE.md's scope, and the capture half is done.
+   CLAUDE.md's scope, and the capture half is done. The normative source is now
+   in hand — see §7.
 3. **Defensive pass for malformed/protected TOCs.** Cheap, and the session
    model is new enough that its failure modes are untested against hostile
-   input.
+   input. A reference on the specific schemes is now in `private/research/`.
 
 Deliberately *not* recommended: SACD (impossible), HDCD (nothing to do), XRCD
 (nothing to do), CD-i (no audio), multi-session *writing* (large, and no
@@ -252,8 +337,41 @@ demand yet).
 
 ## 10. What would retire the unverified marks
 
-Most of §4 and parts of §3 and §7 rest on recall. The **Orange Book**
-(CD-R/CD-RW, Recordable) is the normative source for session structure and the
-overhead constants, and is filed as [P3] in TODO. Red Book is already held in
-a cdda2img private sub-dir. Both are licensed documents: `private/code/`
-handling, never redistributed, summaries only.
+**Largely done, 2026-07-22.** A substantial set of specifications arrived and
+retired most of the marks:
+
+**Public** — quotable and citable here. These are **not committed**: ECMA
+publishes them for free download at <https://ecma-international.org/publications-and-standards/standards/>,
+so a citation serves the reader as well as several MB of git history would.
+`docs/research/.gitignore` excludes `*.pdf` for that reason.
+
+| Standard | Edition | Covers |
+|---|---|---|
+| **ECMA-130** | 2nd, June 1996 | CD-ROM data interchange — the public counterpart to much of Red and Yellow Book |
+| **ECMA-394** | 1st, Dec 2010 | CD-R Multi-Speed. **Source for the lead-out constants in §3** (§5.7.1) |
+| **ECMA-395** | 1st, Dec 2010 | CD-RW Ultra-Speed |
+
+**Licensed**, in `private/research/` — facts may be stated, documents never
+leave, summaries only: Orange Book Part II (CD-R) Vols 1–2 and Part III
+(CD-RW) Vol 1; the **Multisession CD** specification (§3, §4); **Subcode
+Channels R–W** (§7 — corrected two errors); CD Text Mode; CD-ROM XA; the
+Enhanced Music CD specification (§3); the original 1990 Recordable CD Systems
+description; MMC-3; SCSI-2; the SACD specifications (Parts 1–3); *The CD
+Family*; and *CD Cracking Uncovered* (Kaspersky) for §8's protection schemes.
+
+What this changed:
+
+| Was | Now |
+|---|---|
+| §3 overhead constants: measured + recall | **confirmed**, two from a public spec (ECMA-394) |
+| §7 CD+G packing | **corrected** — nesting was inverted, and R–W *is* RS-protected |
+| §4 "99 sessions" | **actively doubted** — absent from the spec that would define it |
+
+Still open: the CD-i Ready mechanism (§6), the specific protection mechanisms
+(§8 — the Kaspersky text is now available and unread), and any firmware-imposed
+session ceiling, which is measurement work on our own hardware, not a spec
+question.
+
+Note the SACD specifications are now held too. They do not change §2 in the
+slightest — the conclusion there is about *physics and optics*, not about a
+missing document — but they make the reasoning checkable rather than asserted.

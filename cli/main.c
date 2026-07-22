@@ -68,6 +68,8 @@ static void usage(FILE *to)
         "  --count N      sectors to read (default: to that session's lead-out)\n"
         "  --session N    which session to read; default is the single audio\n"
         "                 session, and is required when more than one has audio\n"
+        "  --tracks A-B   read tracks A through B (or --track N for one); both\n"
+        "                 must be in the same session. Overrides --session\n"
         "  --no-c2        do not request C2 pointers (default: requested)\n"
         "  --c2beb        request C2 + block-error bits (296 B) variant\n"
         "  --sub raw|q    also capture subchannel (raw P-W or formatted Q)\n"
@@ -1101,6 +1103,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     const char *map_path = NULL, *fulltoc_path = NULL, *cdtext_path = NULL;
     long start = 0, count = -1;
     int have_start = 0, want_session = -1, force = 0;
+    int want_first_track = 0, want_last_track = 0;
     int want_map = 0;
     int uncap = 0, uncap_prior = -1; /* -1 = never touched, nothing to restore */
     uint16_t ladder[8];
@@ -1115,7 +1118,26 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             have_start = 1;
         } else if (!strcmp(a, "--session") && i + 1 < argc)
             want_session = (int)strtol(argv[++i], NULL, 0);
-        else if (!strcmp(a, "--count") && i + 1 < argc)
+        else if ((!strcmp(a, "--track") || !strcmp(a, "--tracks")) &&
+                 i + 1 < argc) {
+            /* "N" or "A-B". One spelling accepts both so --track 3 and
+             * --tracks 2-11 both read naturally. */
+            const char *v = argv[++i];
+            char *end = NULL;
+            long f = strtol(v, &end, 10);
+
+            want_first_track = (int)f;
+            if (end && *end == '-' && end[1])
+                want_last_track = (int)strtol(end + 1, &end, 10);
+            else
+                want_last_track = (int)f;
+            if (!end || *end || f < 1 || want_last_track < want_first_track ||
+                want_last_track > 99) {
+                fprintf(stderr, "accudisc: bad --tracks '%s' (want N or A-B)\n",
+                        v);
+                return 1;
+            }
+        } else if (!strcmp(a, "--count") && i + 1 < argc)
             count = strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--no-c2"))
             req.c2 = ACCUDISC_C2_NONE;
@@ -1210,7 +1232,41 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         if (err != ACCUDISC_OK)
             return fail_dev(dev, "read toc", err);
 
-        if (want_session < 0 && !have_start && count < 0) {
+        if (want_first_track) {
+            uint32_t tlba = 0, tcount = 0;
+
+            err = accudisc_toc_track_range(&toc, (uint8_t)want_first_track,
+                                           (uint8_t)want_last_track, &tlba,
+                                           &tcount);
+            if (err == ACCUDISC_ERR_NOTFOUND) {
+                fprintf(stderr,
+                        "accudisc: tracks %d-%d: not on this disc (has 1-%u)\n",
+                        want_first_track, want_last_track,
+                        toc.track_count ? toc.tracks[toc.track_count - 1].number
+                                        : 0);
+                return 1;
+            }
+            if (err == ACCUDISC_ERR_UNSUPPORTED) {
+                fprintf(stderr,
+                        "accudisc: tracks %d and %d are in different sessions; "
+                        "a span across a session seam includes the lead-out "
+                        "and lead-in between them\n",
+                        want_first_track, want_last_track);
+                return 1;
+            }
+            if (err != ACCUDISC_OK) {
+                fprintf(stderr, "accudisc: tracks %d-%d: no usable extent\n",
+                        want_first_track, want_last_track);
+                return 1;
+            }
+            if (!have_start)
+                start = (long)tlba;
+            if (count < 0)
+                count = (long)(tlba + tcount) - start;
+            if (!ctx.quiet)
+                fprintf(stderr, "accudisc: tracks %d-%d, lba %ld count %ld\n",
+                        want_first_track, want_last_track, start, count);
+        } else if (want_session < 0 && !have_start && count < 0) {
             /* Neither a range nor a session named: pick the audio session, if
              * there is exactly one. */
             int s = accudisc_toc_default_audio_session(&toc);
@@ -1241,11 +1297,24 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         if (want_session > 0) {
             uint32_t slba = 0, scount = 0;
 
-            err = accudisc_toc_session_range(&toc, (uint8_t)want_session,
-                                             &slba, &scount);
-            if (err != ACCUDISC_OK) {
-                fprintf(stderr, "accudisc: session %d not on this disc\n",
+            /* The AUDIO span, not the whole session. On a Mixed Mode CD the
+             * session also holds a data track; the whole-session range would
+             * include it and the guard below would (correctly) refuse the lot. */
+            err = accudisc_toc_session_audio_range(&toc, (uint8_t)want_session,
+                                                   &slba, &scount);
+            if (err == ACCUDISC_ERR_UNSUPPORTED) {
+                fprintf(stderr,
+                        "accudisc: session %d has audio tracks either side of "
+                        "a data track; no single range covers them\n",
                         want_session);
+                fprintf(stderr,
+                        "accudisc: select explicitly, e.g. --tracks A-B\n");
+                return 1;
+            }
+            if (err != ACCUDISC_OK) {
+                fprintf(stderr,
+                        "accudisc: session %d not on this disc, or has no "
+                        "audio tracks\n", want_session);
                 return 1;
             }
             if (!have_start)

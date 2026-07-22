@@ -455,6 +455,38 @@ ACCUDISC_API int accudisc_toc_session_range(const accudisc_toc *toc,
                                             uint8_t session, uint32_t *lba,
                                             uint32_t *count);
 
+/* Sector range of one session's AUDIO tracks: the first audio track's start
+ * through the end of the last audio track in that session.
+ *
+ * Session-level selection is too coarse for a Mixed Mode CD, where one session
+ * holds a data track (first, where a filesystem is expected) followed by audio
+ * tracks. accudisc_toc_session_range() returns the whole session there, which
+ * the range guard then correctly refuses. This narrows to the audio.
+ *
+ *   ACCUDISC_ERR_NOTFOUND    session absent, or it holds no audio tracks
+ *   ACCUDISC_ERR_UNSUPPORTED the session's audio tracks are NOT contiguous — a
+ *                            data track sits between them, so no single range
+ *                            can express the audio and the caller must select
+ *                            tracks explicitly. Not known to occur in any
+ *                            shipped format, but legal on the wire. */
+ACCUDISC_API int accudisc_toc_session_audio_range(const accudisc_toc *toc,
+                                                  uint8_t session,
+                                                  uint32_t *lba,
+                                                  uint32_t *count);
+
+/* Sector range spanning tracks first..last inclusive (track NUMBERS, not
+ * indices). Both must exist and lie in the same session, and last >= first.
+ *
+ *   ACCUDISC_ERR_NOTFOUND    either track number is not on the disc
+ *   ACCUDISC_ERR_INVAL       last < first, or bad arguments
+ *   ACCUDISC_ERR_UNSUPPORTED the two tracks are in different sessions
+ *
+ * Track type is NOT checked here — that stays with accudisc_check_audio_range()
+ * so there is exactly one place that decides what is rippable. */
+ACCUDISC_API int accudisc_toc_track_range(const accudisc_toc *toc,
+                                          uint8_t first, uint8_t last,
+                                          uint32_t *lba, uint32_t *count);
+
 typedef enum {
     ACCUDISC_RANGE_OK = 0,
     ACCUDISC_RANGE_DATA_TRACK,    /* overlaps a track whose CTRL says data —

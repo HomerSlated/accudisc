@@ -358,9 +358,11 @@ subcommand (CRC-gated Q decode) or from a raw subchannel capture.
 
 ## `read` session selection and the audio-range guard
 
-`read` reads **one session**, not the whole disc.
+`read` reads the **audio tracks of one session**, not the whole disc and not
+the whole session.
 
-With no `--start`, `--count` or `--session`, it resolves the session to read:
+With no `--start`, `--count`, `--session` or `--tracks`, it resolves the session
+to read:
 
 | situation | behaviour |
 |---|---|
@@ -369,10 +371,38 @@ With no `--start`, `--count` or `--session`, it resolves the session to read:
 | no session has audio | exit 1 |
 | session structure unknown (`source=toc`) | falls back to the flat whole-disc range, still vetted by the guard |
 
-The resolved range is echoed to stderr (suppressed by `-q`):
+Having chosen a session, the range covers that session's **audio tracks only**,
+from the first audio track's start to the end of the last. On a Mixed Mode CD —
+one session holding a data track first, then audio — this is what makes the
+disc rippable at all; the whole-session range would begin on the data track and
+the guard would (correctly) refuse it. Verified 2026-07-22 on a Mixed Mode CD-R:
+data track 1 of 138230 sectors, audio tracks 2-11, lead-out 342197, resolving to
+`lba 138230 count 203967`.
+
+If a session's audio tracks are **not contiguous** — a data track between two
+runs of audio — no single range can express them, and `read` exits 1 asking for
+explicit `--tracks`. Legal on the wire; not known to occur in any shipped
+format; never observed on real media.
+
+### `--track N` / `--tracks A-B`
+
+Selects tracks by **number** (not index), inclusive, overriding `--session`.
+Both spellings accept both forms, so `--track 3` and `--tracks 2-11` each read
+naturally. Track *type* is not checked here — that stays with the guard below,
+so there is exactly one place that decides what is rippable.
+
+| condition | behaviour |
+|---|---|
+| either number absent from the disc | exit 1, reporting the range the disc does have |
+| the two tracks are in different sessions | exit 1 — a span across a seam would include the lead-out and lead-in between them |
+| `B < A`, or a malformed argument | exit 1 |
+
+The resolved range is echoed to stderr (suppressed by `-q`), in one of two
+forms:
 
 ```
 accudisc: session <n>, lba <lba> count <n>
+accudisc: tracks <a>-<b>, lba <lba> count <n>
 ```
 
 Before any sector is requested, the range is checked against the TOC. A range

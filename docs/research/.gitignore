@@ -1,0 +1,7 @@
+# Specification PDFs are referenced, not redistributed.
+#
+# ECMA standards are freely downloadable from ecma-international.org, so a
+# citation serves the reader as well as the file would, without carrying
+# several MB in git history permanently. disc-formats.md cites them by number,
+# edition and clause.
+*.pdf
