@@ -127,9 +127,13 @@ Two additions beyond the original locked shape, both additive:
   than a false 0 that would have read as blank.
 - ✅ **not_cd_profile** — DVD-R: `kind=NEITHER profile=0x0011 disc_status=2
   erasable=0 audio_tracks=0 data_tracks=1 reason=not_cd_profile`.
-- ⬜ **BLANK** — needs a blank CD-R or CD-RW. Unit-tested only.
-- ⬜ **no_medium, tray closed** — tray shut with no disc (expect
-  `tray=closed`, ASCQ 0x01). Unit-tested only.
+- ✅ **no_medium, tray closed** — `... reason=no_medium tray=closed`. Both ASC
+  0x3A qualifiers now confirmed distinct on real hardware (0x02 open / 0x01
+  closed).
+- ✅ **BLANK** — blank CD-R: `kind=BLANK profile=0x0009 disc_status=0
+  erasable=0 audio_tracks=0 data_tracks=0 reason=blank`, exit 0.
+
+**All five paths hardware-verified. No open verification items.**
 
 > **The DVD result validates the precedence order empirically.** Note
 > `data_tracks=1`: the DVD-R **did** answer READ TOC, reporting one data track.
@@ -684,9 +688,27 @@ Both paths are now hardware-proven. No open verification items.
   retries would cost time on exactly the discs already failing. **Do not add
   retries to make a counter possible.** If retry *behaviour* is ever wanted, that
   is a separate, deliberate decision.
+- **[P1] Emit a session COUNT on the degrade path** (cdda2img §28). Their
+  archival policy is session-1-only, and `sessions=1..1` is necessarily absent
+  when 0x02 fails. Their mitigation is to refuse a degrade carrying any data
+  track — sound for Enhanced CD, whose session 2 is always data — but it leaves
+  one hole: a **multi-session all-audio** disc passes their "all audio ⇒ safe"
+  test while format 0x00 hands back the *last* session's lead-out, not session
+  1's. Wrong lead-out, wrong disc ID, silently.
+
+  Fix is cheap and needs no new opcode: **READ DISC INFORMATION carries the
+  session count independently of the lead-in TOC** — already decoded at
+  `src/write/discinfo.c:32` (`buf[4]`), and the `disc` guard already issues the
+  command. Emit `sessions=<n>` (a count, distinct from the fulltoc line's
+  `sessions=<a>..<b>` range) on the degrade path so a caller can refuse
+  multi-session degrades outright rather than inferring session structure from
+  a track census that cannot see it. Confirm on hardware that the count is
+  still valid when the lead-in is unreadable — plausible, since the drive
+  answers this from its own disc model, but the Stanley Road disc exists to
+  test it.
 - **[P3]** Bindings (`bindings/python`, `bindings/rust`) do not yet expose
-  `accudisc_read_toc_src`; they are generated against the public header, so this
-  is additive whenever they are next regenerated.
+  `accudisc_read_toc_src` or `accudisc_probe_disc`; they are generated against
+  the public header, so both are additive whenever next regenerated.
 
 ## Deferred (explicitly, by user decision)
 
