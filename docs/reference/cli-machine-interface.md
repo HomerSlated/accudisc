@@ -337,11 +337,15 @@ The `>1` case matters because a **multi-session all-audio** disc is otherwise
 undetectable: nothing in a flat format-0 track list distinguishes it, and a
 track census provably cannot see session boundaries.
 
-**Verification status:** the count was confirmed *accurate* on hardware
-(PX-716A, 2026-07-22 — READ DISC INFORMATION independently reported 2 on an
-Enhanced CD, matching the lead-in's `sessions=1..2`). It has **not** yet been
-confirmed to survive an unreadable lead-in, which is the premise for the `1`
-row. Treat a degrade-path count as plausible-but-unproven until that test runs.
+**Verification status: confirmed on hardware** (PX-716A, 2026-07-22), both
+halves. *Accuracy* — READ DISC INFORMATION independently reported 2 on an
+Enhanced CD, matching the lead-in's `sessions=1..2`. *Survival of an
+unreadable lead-in*, which is the premise for the `1` row — an MPO CD-R whose
+lead-in does not read returned `degrade=leadin_unreadable session_count=1`,
+cross-checked against READ DISC INFORMATION's first-track-in-last-session field
+(1) and against libcdio's independent `Last CD Session LSN: 0`. The
+reconstruction was then exercised end to end: session table synthesised on a
+`source=toc` line, and `read` resolved session 1 across the whole disc.
 
 ### `pregaps=` — always `none` from this subcommand
 

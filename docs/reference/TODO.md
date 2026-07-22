@@ -720,13 +720,26 @@ Both paths are now hardware-proven. No open verification items.
   known to exist and their positions are not; a count of **0** falls back to
   the conservative all-audio walk.
 
-  **Half-verified.** READ DISC INFORMATION independently reported 2 on the
-  Enhanced CD, matching the lead-in's `sessions=1..2` exactly, which proves the
-  count is *accurate*. It does NOT prove it *survives an unreadable lead-in* —
-  the premise that the drive answers from its own disc model rather than the
-  groove. **Still to do: run `accudisc toc` on the MPO/Stanley Road disc** and
-  confirm a sane count alongside `degrade=leadin_unreadable`. Until then treat
-  the degrade-path count as plausible-but-unproven.
+  **VERIFIED on hardware 2026-07-22** (PX-716A, MPO CD-R — the disc whose
+  lead-in does not read). `accudisc toc` returned
+  `source=toc degrade=leadin_unreadable ... session_count=1`: the count came
+  through while the lead-in was failing, which is exactly the premise — the
+  drive answers from its own disc model, not the groove.
+
+  That the count is *correct* is confirmed three ways, independently:
+    - READ DISC INFORMATION byte 4 (number of sessions) = 1 — the field we ship.
+    - READ DISC INFORMATION byte 5 (first track in the LAST session) = 1. A
+      different field in the same response: if the last session starts at track
+      1, there is only one. Byte 6 = 12, matching the 12 tracks.
+    - libcdio `cd-info` reports `Last CD Session LSN: 0` — a different tool
+      issuing a different command, agreeing the last session starts at LBA 0.
+      Its lead-out (236435) matches ours exactly.
+
+  The count==1 reconstruction then fired end to end: a session table was
+  synthesised on a `source=toc` line (`session 1 tracks 1-12 audio 12 data 0
+  leadout 236435`), and `read` resolved `session 1, lba 0 count 236435`. A disc
+  with a dead lead-in is now fully rippable through the validated path rather
+  than a flat fallback.
 - **[P3]** Bindings (`bindings/python`, `bindings/rust`) do not yet expose
   `accudisc_read_toc_src` or `accudisc_probe_disc`; they are generated against
   the public header, so both are additive whenever next regenerated.
