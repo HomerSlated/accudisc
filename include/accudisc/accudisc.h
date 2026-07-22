@@ -348,7 +348,71 @@ typedef struct accudisc_toc {
      * we know the seams exist but not where they fall, which is strictly more
      * dangerous than knowing nothing, and must not be silently flattened. */
     uint8_t sessions_total;
+
+    /* Structural anomalies found while parsing the lead-in — a bitmask of
+     * ACCUDISC_TOC_ANOM_*. Zero on every well-formed disc.
+     *
+     * These exist because copy-protection schemes work by DELIBERATELY
+     * malforming the TOC (Kaspersky, "CD Cracking Uncovered", ch. 6-7: bogus
+     * track addresses, tracks placed in the lead-out, lead-out pointers aimed
+     * back into the program area). Such a disc must fail INFORMATIVELY. The
+     * failure mode to avoid is not a crash — it is silently "helpfully"
+     * normalising a malformed geometry into a plausible-looking one, because
+     * the audio-range guard then vets a map that does not describe the disc. */
+    uint16_t anomalies;
 } accudisc_toc;
+
+/* Bit values for accudisc_toc.anomalies.
+ *
+ * Split by CONSEQUENCE, not by cause: the _UNTRUSTED_GEOMETRY group means the
+ * track map cannot be relied on to say which sectors are audio, so
+ * accudisc_check_audio_range() refuses outright. The rest are reported and
+ * otherwise harmless — the map still describes the disc. */
+typedef enum {
+    /* --- geometry cannot be trusted (guard refuses) --------------------- */
+
+    /* Track numbers ascend but their addresses do not. Kaspersky ch. 6,
+     * "Incorrect Starting Address for the Track". Extents are computed in
+     * ADDRESS order so the map stays correct, but a TOC that lies about this
+     * is malformed by intent and nothing else it says is trustworthy. */
+    ACCUDISC_TOC_ANOM_LBA_ORDER       = 1u << 0,
+    /* Two tracks claim the same sector. Kaspersky ch. 6, "Fictitious Track
+     * Coinciding with the Genuine Track" / "Audio Overlapped by Data". No
+     * ordering makes this consistent, so it is never guessed at. */
+    ACCUDISC_TOC_ANOM_OVERLAP         = 1u << 1,
+    /* The lead-out points at or before a track start — Kaspersky ch. 7,
+     * "Castrated Lead-Out". Every extent derived from it is suspect. */
+    ACCUDISC_TOC_ANOM_LEADOUT_BEFORE  = 1u << 2,
+
+    /* --- reported only (map still describes the disc) -------------------- */
+
+    /* A track starts at or beyond the lead-out: Kaspersky ch. 6, "Fictitious
+     * Track in the Lead-Out Area". It gets a zero extent and owns no sector. */
+    ACCUDISC_TOC_ANOM_PAST_LEADOUT    = 1u << 3,
+    /* A track with a zero-length extent. Red Book's minimum is 4 s (300
+     * sectors), so this is always malformed; it owns no sector either way. */
+    ACCUDISC_TOC_ANOM_EMPTY_TRACK     = 1u << 4,
+    /* A track point addressed before LBA 0 — Kaspersky ch. 7, "Negative
+     * Starting Address of the First Audio Track". The point is dropped. */
+    ACCUDISC_TOC_ANOM_NEGATIVE_LBA    = 1u << 5,
+    /* An A0/A1 point naming a first/last track outside 1..99. Reported, and
+     * the observed track list is used instead. */
+    ACCUDISC_TOC_ANOM_BAD_TRACK_NUM   = 1u << 6,
+    /* A0/A1 disagree with the tracks actually present — Kaspersky ch. 6,
+     * "Invalidating Track Numbering" and the gap/duplicate family. */
+    ACCUDISC_TOC_ANOM_RANGE_MISMATCH  = 1u << 7,
+    /* An entry claiming a session number outside 1..99. Dropped. */
+    ACCUDISC_TOC_ANOM_BAD_SESSION     = 1u << 8
+} accudisc_toc_anomaly;
+
+/* The anomalies that make the track map untrustworthy. */
+#define ACCUDISC_TOC_ANOM_UNTRUSTED_GEOMETRY                                   \
+    (ACCUDISC_TOC_ANOM_LBA_ORDER | ACCUDISC_TOC_ANOM_OVERLAP |                 \
+     ACCUDISC_TOC_ANOM_LEADOUT_BEFORE)
+
+/* Short stable slug for one anomaly BIT (not a mask), e.g. "lba_order".
+ * Returns "unknown" for an unrecognised or composite value. */
+ACCUDISC_API const char *accudisc_toc_anomaly_str(unsigned bit);
 
 /* READ TOC format 0, parsed. Requires a disc. */
 ACCUDISC_API int accudisc_read_toc(accudisc_device *dev, accudisc_toc *out);
@@ -507,7 +571,13 @@ typedef enum {
                                    * hands back the LAST session's lead-out, so
                                    * the final track's extent is wrong and the
                                    * seams are invisible. */
-    ACCUDISC_RANGE_EMPTY          /* count == 0 */
+    ACCUDISC_RANGE_EMPTY,         /* count == 0 */
+    ACCUDISC_RANGE_TOC_UNTRUSTED  /* the lead-in is malformed in a way that
+                                   * makes the track map unreliable — see
+                                   * ACCUDISC_TOC_ANOM_UNTRUSTED_GEOMETRY.
+                                   * Typically a copy-protection scheme. The
+                                   * map may claim a span is audio when it is
+                                   * not, so it is not vetted, it is refused. */
 } accudisc_range_reason;
 
 typedef struct accudisc_range_check {

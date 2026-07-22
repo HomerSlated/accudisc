@@ -159,7 +159,24 @@ const char *accudisc_range_reason_str(unsigned reason)
     case ACCUDISC_RANGE_NO_SESSION_INFO: return "no_session_info";
     case ACCUDISC_RANGE_SESSION_UNMAPPED: return "session_unmapped";
     case ACCUDISC_RANGE_EMPTY:           return "empty";
+    case ACCUDISC_RANGE_TOC_UNTRUSTED:   return "toc_untrusted";
     default:                             return "unknown";
+    }
+}
+
+const char *accudisc_toc_anomaly_str(unsigned bit)
+{
+    switch (bit) {
+    case ACCUDISC_TOC_ANOM_LBA_ORDER:      return "lba_order";
+    case ACCUDISC_TOC_ANOM_OVERLAP:        return "overlap";
+    case ACCUDISC_TOC_ANOM_LEADOUT_BEFORE: return "leadout_before";
+    case ACCUDISC_TOC_ANOM_PAST_LEADOUT:   return "past_leadout";
+    case ACCUDISC_TOC_ANOM_EMPTY_TRACK:    return "empty_track";
+    case ACCUDISC_TOC_ANOM_NEGATIVE_LBA:   return "negative_lba";
+    case ACCUDISC_TOC_ANOM_BAD_TRACK_NUM:  return "bad_track_num";
+    case ACCUDISC_TOC_ANOM_RANGE_MISMATCH: return "range_mismatch";
+    case ACCUDISC_TOC_ANOM_BAD_SESSION:    return "bad_session";
+    default:                               return "unknown";
     }
 }
 
@@ -206,6 +223,19 @@ int accudisc_check_audio_range(const accudisc_toc *toc, uint32_t lba,
 
     if (!count)
         return reject(out, ACCUDISC_RANGE_EMPTY, 0, 0, lba);
+
+    /* Before anything is checked AGAINST the map, ask whether the map can be
+     * believed. Copy protection works by malforming the lead-in (Kaspersky,
+     * "CD Cracking Uncovered", ch. 6-7), and a track map derived from a TOC
+     * that contradicts itself may report a span as audio when it is not —
+     * verified on a synthetic TOC: with tracks numbered in ascending order but
+     * addressed out of order, a data track's extent collapsed to zero, hiding
+     * it, while its neighbour's extent stretched across the region it left.
+     * Vetting a range against such a map is worse than not vetting it, because
+     * the answer looks authoritative. So it is refused, and --force remains the
+     * caller's deliberate way past. */
+    if (toc->anomalies & ACCUDISC_TOC_ANOM_UNTRUSTED_GEOMETRY)
+        return reject(out, ACCUDISC_RANGE_TOC_UNTRUSTED, 0, 0, lba);
     if (lba >= toc->leadout_lba || count > toc->leadout_lba - lba)
         return reject(out, ACCUDISC_RANGE_BEYOND_LEADOUT, 0, 0,
                       lba < toc->leadout_lba ? toc->leadout_lba : lba);

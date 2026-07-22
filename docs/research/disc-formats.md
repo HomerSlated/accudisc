@@ -7,8 +7,11 @@ these formats is worth supporting, and what would each actually cost?*
 **Confidence marking.** Statements are marked where they rest on measurement
 (**measured**), on the specification (**spec**), or on my own recall that has
 not been checked against a normative source (**unverified**). The last category
-is not decoration — act on it accordingly. See [TODO §Formats and specs] for
-the Orange Book acquisition that would retire most of the unverified marks.
+is not decoration — act on it accordingly. **Most of the unverified marks were
+retired on 2026-07-22** when the specifications arrived; see §10 for what
+changed and §11 for the copy-protection pass. Two of them turned out to be
+wrong rather than merely unconfirmed (§7), which is the argument for the
+marking scheme.
 
 ---
 
@@ -304,13 +307,8 @@ interpreting them.
 
 - **DTS-CD** — a DTS bitstream in place of PCM. Rips as ordinary CD-DA;
   nothing to do. (Another legacy-player noise hazard when played undecoded.)
-- **Copy-protection schemes** (Cactus Data Shield, key2audio, SafeDisc) —
-  **this one matters to us.** They work by *deliberately malforming* the TOC
-  and session structure: bogus second sessions, lead-outs pointing into the
-  program area, illegal track types. Our new session model will meet these in
-  the wild. The design goal is to **fail informatively** rather than either
-  crash or "helpfully" normalise. A defensive pass over
-  `adsc_toc_from_fulltoc()` is warranted. Specific mechanisms **unverified**.
+- **Copy-protection schemes** — **this one matters to us**, and the defensive
+  pass is **done, 2026-07-22**. See §11 for the taxonomy and what it found.
 - **CD-TEXT** — supported already.
 - **Video CD / Super Video CD** (White Book), **Photo CD** — Mode 2 Form 2. No
   CD-DA content to rip. Photo CD is genuinely multi-session and would exercise
@@ -375,3 +373,113 @@ question.
 Note the SACD specifications are now held too. They do not change §2 in the
 slightest — the conclusion there is about *physics and optics*, not about a
 missing document — but they make the reasoning checkable rather than asserted.
+
+---
+
+## 11. Deliberately malformed TOCs, and what defending against them found
+
+Source: Kris Kaspersky, *CD Cracking Uncovered: Protection Against Unsanctioned
+CD Copying*, ch. 6 ("Anti-Copying Mechanisms") and ch. 7 ("Protection
+Mechanisms for Preventing Playback in PC CD-ROM"). Held in `private/research/`;
+licensed, summaries only. Read 2026-07-22, and it retired the **unverified**
+mark that stood on §8.
+
+The schemes do not corrupt discs by accident. They malform the lead-in *on
+purpose*, exploiting the fact that a low-end audio player ignores most of the
+TOC while a PC drive believes it.
+
+### 11.1 The taxonomy
+
+| Attack (Kaspersky's naming) | What it does |
+|---|---|
+| Incorrect Starting Address for the Track | track numbers ascend, addresses do not |
+| Fictitious Track in the Lead-Out Area | a track parked past the lead-out |
+| Fictitious Track Coinciding with the Genuine Track | two tracks claiming one region |
+| Invalidating Track Numbering | gaps, duplicates, a last-track pointer naming a track that is not there |
+| Incorrect Starting Number for the First Track | first track is not 1 |
+| Track with Non-Standard Number | a point outside 1–99 |
+| Data Track Disguised as Audio | CTRL lies about the track type |
+| Castrated Lead-Out (ch. 7) | lead-out pointer aimed back toward the disc start |
+| Negative Starting Address of the First Audio Track (ch. 7) | an address below LBA 0 |
+
+Two of his observations are worth carrying beyond the immediate fix:
+
+- **A drive may remap non-standard point numbers into the legal range.** He
+  cites an NEC unit reporting point `0xAB` as `0x6F`. So a track number *being*
+  in 1–99 is not proof it was recorded that way — worth remembering before any
+  future check treats an in-range number as trustworthy.
+- **Non-standard points are invisible to READ TOC entirely**, including format
+  2; reaching them needs subchannel reads of a later session's lead-in. That
+  bounds what our parser can ever see, and is why detection here is about
+  *self-consistency* rather than about spotting every trick.
+
+### 11.2 What the audit found: one real hole, not a crash
+
+The parser's memory safety held up — every array index was already bounds
+checked, and the whole suite now runs clean under ASan + UBSan with
+`-fno-sanitize-recover=all` on a hostile-input test file.
+
+The real defect was **the third failure mode**, the one the design rule names:
+not crashing, not refusing, but *silently normalising* a contradictory TOC into
+a plausible-looking one.
+
+`toc_fill_extents()` walked tracks in **track-number** order and treated that as
+**address** order. On every honest disc the two coincide. "Incorrect Starting
+Address" exists to break that coincidence, and when it did:
+
+```
+track 1 lba      0 sectors   1000 -> [0,1000)   audio
+track 2 lba   1000 sectors      0 -> [1000,1000) DATA   <- extent collapsed
+track 3 lba    500 sectors  29500 -> [500,30000) audio  <- swallowed track 2
+
+accudisc_check_audio_range(500, 29500) -> ok
+```
+
+The data track's extent collapsed to zero because its "next" track had a
+*lower* address, so it owned no sector and became **invisible** to the map.
+Track 3's extent then stretched across the region it vacated. The guard walked
+a span containing a data track and reported it rippable — an authoritative
+wrong answer, which is worse than no answer.
+
+**Measured, on a synthetic TOC, before and after.** This was a real hole, not a
+theoretical one.
+
+### 11.3 The fix: correct geometry, then refuse anyway
+
+Two independent defences, deliberately:
+
+1. **Extents are computed in address order** (`next_by_address()`). This is not
+   a hardening measure but the *correct* definition — a track runs to whatever
+   comes next on the disc, which is a fact about addresses. Same result on
+   honest media; on the attack above it now yields track 2 = DATA owning
+   `[1000,30000)`, visible and correctly typed.
+2. **A self-contradicting TOC is refused outright.** `accudisc_toc.anomalies`
+   records what was found; three of the flags (`lba_order`, `overlap`,
+   `leadout_before`) mean the map cannot be believed, and
+   `accudisc_check_audio_range()` returns `toc_untrusted` without consulting it.
+
+Either defence alone would stop the demonstrated attack. Keeping both is
+deliberate: the first is only as good as our imagination about *which*
+orderings can be violated, while the second does not depend on having predicted
+the specific trick.
+
+The remaining flags (`past_leadout`, `empty_track`, `negative_lba`,
+`bad_track_num`, `range_mismatch`, `bad_session`) are **reported only**. Their
+discs are still described correctly by the map, and over-refusing would break
+media that reads perfectly well.
+
+### 11.4 What is deliberately NOT defended against
+
+**"Data Track Disguised as Audio" cannot be caught here, and we should not
+pretend otherwise.** CTRL is the only statement the TOC makes about track type;
+if it lies, no amount of TOC self-consistency checking detects it. It surfaces
+at read time as the drive's categorical refusal (sense key 5 / ASC 0x64), which
+the read engine already recognises and stops on rather than retrying. Recorded
+so nobody later "fixes" this by adding a heuristic that guesses track type from
+content — that would be analysis, which CLAUDE.md puts out of scope, and it
+would be guessing besides.
+
+Also untouched: schemes based on physical characteristics rather than the TOC —
+deliberate defects, timing/angle measurement, weak sectors (his ch. 9). Those
+are binding-to-media mechanisms, not TOC malformations, and nothing in this
+pass addresses them.

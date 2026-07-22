@@ -28,19 +28,126 @@ static uint32_t session_leadout(const accudisc_toc *t, uint8_t session)
  * paths so the two sources cannot disagree on geometry; with no session table
  * (session_count 0) every track is session 0 and this reduces exactly to the
  * old next-track-start behaviour. */
+/* A track's extent runs to whatever comes NEXT ON THE DISC, which is a fact
+ * about addresses, not about track numbers. On an honest disc the two orders
+ * coincide and this distinction is invisible; a TOC that breaks the coincidence
+ * is the point of Kaspersky ch. 6's "Incorrect Starting Address for the Track".
+ *
+ * Taking the numerically-next track as the address-next one there produces a
+ * map that is not merely wrong but DANGEROUS: the out-of-order track's extent
+ * collapses to zero, so it owns no sector and becomes invisible to the guard,
+ * while its predecessor's extent stretches over the region it vacated. A data
+ * track hidden that way would be handed to the CD-DA read path as audio.
+ * Measured on a synthetic TOC before this was fixed — the guard returned "ok"
+ * for a span covering a data track.
+ *
+ * So: walk in address order. Returns the index of the address-wise successor
+ * within the same session, or -1 if this track is the session's last. O(n^2)
+ * over at most 99 entries, once per TOC read. */
+static int next_by_address(const accudisc_toc *out, uint8_t i)
+{
+    const accudisc_track *t = &out->tracks[i];
+    int best = -1;
+
+    for (uint8_t j = 0; j < out->track_count; j++) {
+        if (j == i || out->tracks[j].session != t->session)
+            continue;
+        if (out->tracks[j].lba <= t->lba)
+            continue;
+        if (best < 0 || out->tracks[j].lba < out->tracks[best].lba)
+            best = (int)j;
+    }
+    return best;
+}
+
+/* Track extents: to the next track in the SAME session, and the session's last
+ * track to that session's lead-out. Bounding by the session rather than by the
+ * next track on the disc is load-bearing — across a session seam the next
+ * track start is ~11,400 sectors further out than the payload actually runs,
+ * with a lead-out, a lead-in and a pregap in between. Shared by both parse
+ * paths so the two sources cannot disagree on geometry; with no session table
+ * (session_count 0) every track is session 0 and this reduces to a plain
+ * next-track-on-the-disc walk.
+ *
+ * Also records structural anomalies in out->anomalies rather than smoothing
+ * them away: a malformed TOC must be visible to the caller, not tidied up. */
 static void toc_fill_extents(accudisc_toc *out)
 {
     for (uint8_t i = 0; i < out->track_count; i++) {
         accudisc_track *t = &out->tracks[i];
+        int nx = next_by_address(out, i);
         uint32_t next;
 
+        /* Numbers ascend (tracks[] is built in track-number order) but
+         * addresses do not: the two orders disagree. */
         if (i + 1 < out->track_count &&
-            out->tracks[i + 1].session == t->session)
-            next = out->tracks[i + 1].lba;
+            out->tracks[i + 1].session == t->session &&
+            out->tracks[i + 1].lba <= t->lba)
+            out->anomalies |= ACCUDISC_TOC_ANOM_LBA_ORDER;
+
+        if (nx >= 0)
+            next = out->tracks[nx].lba;
         else
             next = session_leadout(out, t->session);
 
+        /* A track starting at or beyond its own session's lead-out owns no
+         * sector: Kaspersky ch. 6, "Fictitious Track in the Lead-Out Area". */
+        if (session_leadout(out, t->session) <= t->lba)
+            out->anomalies |= ACCUDISC_TOC_ANOM_PAST_LEADOUT;
+
         t->sectors = next > t->lba ? next - t->lba : 0;
+        if (!t->sectors)
+            out->anomalies |= ACCUDISC_TOC_ANOM_EMPTY_TRACK;
+    }
+
+    /* "Castrated lead-out" (Kaspersky ch. 7): the lead-out pointer aimed back
+     * toward the start of the disc, so it precedes payload it should bound.
+     * Distinct from the per-track case above — there a stray track sits out
+     * past a sound lead-out; here the LEAD-OUT is the lie, which invalidates
+     * every extent derived from it rather than just one track's. Detected as a
+     * lead-out at or before the LOWEST track start in its session. */
+    for (uint8_t s = 0; s < out->session_count; s++) {
+        const accudisc_session *ss = &out->sessions[s];
+        uint32_t lowest = 0;
+        int seen = 0;
+
+        for (uint8_t i = 0; i < out->track_count; i++) {
+            if (out->tracks[i].session != ss->number)
+                continue;
+            if (!seen || out->tracks[i].lba < lowest) {
+                lowest = out->tracks[i].lba;
+                seen = 1;
+            }
+        }
+        if (seen && ss->leadout_lba <= lowest)
+            out->anomalies |= ACCUDISC_TOC_ANOM_LEADOUT_BEFORE;
+    }
+    /* Same check for the disc lead-out when there is no session table. */
+    if (!out->session_count && out->track_count) {
+        uint32_t lowest = out->tracks[0].lba;
+
+        for (uint8_t i = 1; i < out->track_count; i++)
+            if (out->tracks[i].lba < lowest)
+                lowest = out->tracks[i].lba;
+        if (out->leadout_lba <= lowest)
+            out->anomalies |= ACCUDISC_TOC_ANOM_LEADOUT_BEFORE;
+    }
+
+    /* Overlap: no ordering reconciles two tracks claiming one sector, so it is
+     * flagged rather than resolved. Extents above are half-open [lba, lba+n). */
+    for (uint8_t i = 0; i < out->track_count; i++) {
+        const accudisc_track *a = &out->tracks[i];
+
+        if (!a->sectors)
+            continue;
+        for (uint8_t j = (uint8_t)(i + 1); j < out->track_count; j++) {
+            const accudisc_track *b = &out->tracks[j];
+
+            if (!b->sectors)
+                continue;
+            if (a->lba < b->lba + b->sectors && b->lba < a->lba + a->sectors)
+                out->anomalies |= ACCUDISC_TOC_ANOM_OVERLAP;
+        }
     }
 }
 
@@ -92,6 +199,7 @@ int adsc_toc_from_fulltoc(const accudisc_fulltoc *ft, accudisc_toc *out,
     uint8_t first_track = 0, last_track = 0, disc_type = 0;
     uint8_t first_session = 0, last_session = 0;
     int have_leadout = 0;
+    uint16_t anomalies = 0;
 
     if (!ft || !out)
         return ACCUDISC_ERR_INVAL;
@@ -112,14 +220,20 @@ int adsc_toc_from_fulltoc(const accudisc_fulltoc *ft, accudisc_toc *out,
         if (e->session >= 1 && e->session <= 99 && !sess_seen[e->session]) {
             sess_seen[e->session] = 1;
             sess[e->session].number = e->session;
-        }
+        } else if (e->session < 1 || e->session > 99)
+            anomalies |= ACCUDISC_TOC_ANOM_BAD_SESSION;
 
         if (e->point >= 0x01 && e->point <= 0x63) {
             /* A track start before LBA 0 is not a legal address; the lead-in's
              * own running time (min/sec/frame) is a different field and must
-             * not be confused with the payload address. */
-            if (lba < 0)
+             * not be confused with the payload address. Kaspersky ch. 7,
+             * "Negative Starting Address of the First Audio Track", makes this
+             * an attack rather than a curiosity — and the field is unsigned
+             * downstream, so a wrap here would produce a colossal bogus LBA. */
+            if (lba < 0) {
+                anomalies |= ACCUDISC_TOC_ANOM_NEGATIVE_LBA;
                 continue;
+            }
             if (!have[e->point]) {
                 have[e->point] = 1;
                 slot[e->point].number = e->point;
@@ -132,7 +246,17 @@ int adsc_toc_from_fulltoc(const accudisc_fulltoc *ft, accudisc_toc *out,
              * lowest session's A0 and the disc-wide last track the highest
              * session's A1 — taking whichever entry happened to come last
              * would report session 2's first track as the disc's. */
-            if (e->session >= 1 && e->session <= 99) {
+            /* pmin here NAMES a track. Outside 1..99 it is not a track number,
+             * so it is recorded as an anomaly and the observed track list is
+             * used instead — Kaspersky ch. 6 covers a family of attacks on the
+             * numbering itself ("Incorrect Starting Number for the First
+             * Track", "Track with Non-Standard Number"). Note also that some
+             * drives REMAP non-standard points into the legal range (he cites
+             * an NEC unit reporting 0xAB as 0x6F), so a number being in range
+             * is not by itself proof it was recorded that way. */
+            if (e->pmin < 1 || e->pmin > 99)
+                anomalies |= ACCUDISC_TOC_ANOM_BAD_TRACK_NUM;
+            else if (e->session >= 1 && e->session <= 99) {
                 sess[e->session].first_track = e->pmin;
                 if (!first_track || e->session <= first_session)
                     first_track = e->pmin;
@@ -140,7 +264,9 @@ int adsc_toc_from_fulltoc(const accudisc_fulltoc *ft, accudisc_toc *out,
                     disc_type = e->psec;
             }
         } else if (e->point == 0xA1) {
-            if (e->session >= 1 && e->session <= 99) {
+            if (e->pmin < 1 || e->pmin > 99)
+                anomalies |= ACCUDISC_TOC_ANOM_BAD_TRACK_NUM;
+            else if (e->session >= 1 && e->session <= 99) {
                 sess[e->session].last_track = e->pmin;
                 if (!last_track || e->session >= last_session)
                     last_track = e->pmin;
@@ -171,6 +297,18 @@ int adsc_toc_from_fulltoc(const accudisc_fulltoc *ft, accudisc_toc *out,
     out->first_track = first_track ? first_track : out->tracks[0].number;
     out->last_track =
         last_track ? last_track : out->tracks[out->track_count - 1].number;
+
+    /* A0/A1 claim a track range; the points actually present are the other
+     * account of it. Kaspersky ch. 6 attacks the numbering directly — gaps,
+     * duplicates, a first track that is not 1, a last-track pointer naming a
+     * track that is not there. Disagreement is reported, not reconciled: we
+     * cannot know which account is the honest one. */
+    if ((first_track && first_track != out->tracks[0].number) ||
+        (last_track && last_track != out->tracks[out->track_count - 1].number))
+        anomalies |= ACCUDISC_TOC_ANOM_RANGE_MISMATCH;
+    else if (last_track && first_track && last_track >= first_track &&
+             out->track_count != last_track - first_track + 1)
+        anomalies |= ACCUDISC_TOC_ANOM_RANGE_MISMATCH; /* a gap in numbering */
 
     /* Session table, ascending. A session is only usable if we know where it
      * ends, so one without an A2 is dropped rather than published with a
@@ -203,6 +341,9 @@ int adsc_toc_from_fulltoc(const accudisc_fulltoc *ft, accudisc_toc *out,
         out->sessions[out->session_count++] = sess[n];
     }
 
+    /* Seed before filling extents: toc_fill_extents() ORs in the geometric
+     * anomalies on top of the structural ones gathered above. */
+    out->anomalies = anomalies;
     toc_fill_extents(out);
 
     if (info) {

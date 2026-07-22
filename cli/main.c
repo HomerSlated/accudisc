@@ -295,6 +295,24 @@ static int cmd_toc(accudisc_device *dev)
      * only session structure still reachable, and it comes from a different
      * opcode (READ DISC INFORMATION) than the TOC. 0 = nobody could say. */
     printf(" session_count=%u", info.session_count);
+    /* Structural defects in the lead-in, as a comma-separated slug list.
+     * Absent entirely on a well-formed disc, so nothing changes for the
+     * overwhelmingly common case; present it means the TOC contradicts itself
+     * and is most likely copy-protected. */
+    if (toc.anomalies) {
+        int first = 1;
+
+        printf(" anomalies=");
+        for (unsigned b = 0; b < 16; b++) {
+            if (!(toc.anomalies & (1u << b)))
+                continue;
+            printf("%s%s", first ? "" : ",",
+                   accudisc_toc_anomaly_str(1u << b));
+            first = 0;
+        }
+        if (toc.anomalies & ACCUDISC_TOC_ANOM_UNTRUSTED_GEOMETRY)
+            printf(" toc_trusted=0");
+    }
     putchar('\n');
 
     if (info.degrade != ACCUDISC_TOC_DEGRADE_NONE)

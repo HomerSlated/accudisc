@@ -238,7 +238,7 @@ acquisition-path line:
 track <n> lba <lba> sectors <n> audio|data [session <n>]
 session <n> tracks <first>-<last> audio <n> data <n> leadout <lba>
 leadout lba <lba>
-source=<fulltoc|toc> degrade=<reason> pregaps=none [sessions=<a>..<b>] [disc_type=0x<hh>] session_count=<n>
+source=<fulltoc|toc> degrade=<reason> pregaps=none [sessions=<a>..<b>] [disc_type=0x<hh>] session_count=<n> [anomalies=<slug>[,<slug>...] [toc_trusted=0]]
 ```
 
 The first five fields of `track`, and the `leadout` line, are frozen in this
@@ -248,6 +248,39 @@ known (`source=fulltoc`). The `session` summary lines likewise appear only
 then; a parser that ignores unknown leading keywords is unaffected by their
 absence. The final line is `key=value` tokens — **parse it as tokens, not
 positionally**; new keys may be appended.
+
+### `anomalies=` — the lead-in contradicts itself
+
+**Absent entirely on a well-formed disc**, so parsers may treat its presence as
+the signal. When present it is a comma-separated list of stable slugs naming
+structural defects found while parsing the lead-in.
+
+These exist because copy-protection schemes work by *deliberately* malforming
+the TOC (Kaspersky, *CD Cracking Uncovered*, ch. 6–7). The design rule is that
+such a disc fails **informatively**: the failure to avoid is not a crash but a
+silent "helpful" normalisation, because the audio-range guard would then vet a
+map that does not describe the disc and hand back an authoritative-looking
+wrong answer.
+
+| slug | meaning |
+|---|---|
+| `lba_order` | track numbers ascend but their addresses do not |
+| `overlap` | two tracks claim the same sector |
+| `leadout_before` | the lead-out points at or before the first track start ("castrated lead-out") |
+| `past_leadout` | a track starts at or beyond the lead-out; it owns no sector |
+| `empty_track` | a track with a zero-length extent (Red Book's minimum is 300 sectors) |
+| `negative_lba` | a track point addressed before LBA 0; the point is dropped |
+| `bad_track_num` | an A0/A1 pointer naming a track outside 1–99 |
+| `range_mismatch` | A0/A1 disagree with the track points actually present |
+| `bad_session` | an entry claiming a session outside 1–99; dropped |
+
+`toc_trusted=0` is appended when any of `lba_order`, `overlap` or
+`leadout_before` is set. Those three mean the track map cannot be relied on to
+say which sectors are audio, so `accudisc_check_audio_range()` refuses any
+range outright with reason `toc_untrusted` rather than vetting against it.
+The remaining slugs are reported only — the map still describes the disc.
+
+`--force` remains the caller's deliberate way past.
 
 ### `sectors` is bounded by the session, not by the next track
 
@@ -425,6 +458,7 @@ accudisc: these sectors are not readable as CD-DA; --force overrides
 | `no_session_info` | session structure is unknown *and* the disc carries a data track, so the extents cannot be trusted |
 | `session_unmapped` | the disc is **known** to have more than one session (`session_count>1`) but the degraded lead-in did not say which tracks belong to which |
 | `empty` | `count` is 0 |
+| `toc_untrusted` | the lead-in is malformed such that the track map cannot be believed — see the `anomalies=` field below. Usually copy protection |
 
 `--force` bypasses the guard. It is deliberately **separate** from `--any`,
 which only selects the READ CD expected sector type: conflating them would

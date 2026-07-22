@@ -847,12 +847,61 @@ Both paths are now hardware-proven. No open verification items.
   disc-formats.md` §4 now records it as actively doubted. Any firmware ceiling
   is measurement work on our hardware, not a spec question.
 
-- **[P3] Read *CD Cracking Uncovered* (Kaspersky)** — now in `private/research/`,
-  unread. It is the reference for the copy-protection schemes in
-  disc-formats.md §8 (Cactus Data Shield, key2audio), which work by deliberately
-  malforming the TOC and session structure. Wanted before the defensive pass
-  over `adsc_toc_from_fulltoc()`, so that pass is informed by the actual
-  mechanisms rather than by guesses about them.
+- ~~**[P3] Read *CD Cracking Uncovered* (Kaspersky)**~~ and ~~**the defensive
+  pass over `adsc_toc_from_fulltoc()`**~~ — **BOTH DONE 2026-07-22.** Taxonomy
+  and findings in `docs/research/disc-formats.md` §11.
+
+  The audit found **one real hole, and it was not a crash.** Memory safety was
+  already sound (every index bounds-checked; the suite now runs clean under
+  ASan + UBSan with `-fno-sanitize-recover=all` against a hostile-input test
+  file, `tests/test_toc_hostile.c`). The defect was the third failure mode —
+  silently normalising a contradictory TOC into a plausible-looking one.
+
+  `toc_fill_extents()` walked tracks in **track-number** order and treated that
+  as **address** order. Kaspersky ch. 6's "Incorrect Starting Address for the
+  Track" exists to break that coincidence. When it did, the out-of-order data
+  track's extent collapsed to zero — so it owned no sector and became
+  **invisible** to the map — while its neighbour's extent stretched over the
+  region it vacated. `accudisc_check_audio_range()` then returned **ok** for a
+  span covering a data track. Measured before and after on a synthetic TOC.
+
+  Fixed two ways, deliberately keeping both:
+    - extents are computed in **address** order (`next_by_address()`) — not a
+      hardening measure but the correct definition, and identical on honest
+      media;
+    - `accudisc_toc.anomalies` records structural defects, and the three that
+      mean the map cannot be believed (`lba_order`, `overlap`,
+      `leadout_before`) make the guard refuse outright with `toc_untrusted`.
+
+  The first defence is only as good as our imagination about which orderings
+  can be violated; the second does not depend on having predicted the trick.
+
+  Six further flags (`past_leadout`, `empty_track`, `negative_lba`,
+  `bad_track_num`, `range_mismatch`, `bad_session`) are **reported only** —
+  their discs are still described correctly, and over-refusing would break media
+  that reads fine. Surfaced as `anomalies=` on the `toc` line, absent entirely
+  on a well-formed disc.
+
+  **Deliberately not defended against:** "Data Track Disguised as Audio". CTRL
+  is the TOC's only statement about track type; if it lies, no self-consistency
+  check catches it. It surfaces at read time as sense key 5 / ASC 0x64, which
+  the read engine already stops on. Recorded so nobody later "fixes" this with a
+  heuristic that guesses track type from content — that is analysis (out of
+  scope per CLAUDE.md) and it would be guessing besides.
+
+  Two of his observations worth carrying forward: a drive may **remap
+  non-standard point numbers into the legal range** (he cites an NEC unit
+  reporting `0xAB` as `0x6F`), so an in-range track number is not proof it was
+  recorded that way; and non-standard points are **invisible to READ TOC
+  entirely**, including format 2 — reaching them needs subchannel reads of a
+  later session's lead-in, which bounds what our parser can ever see.
+
+- **[P3] Physical-characteristic protection is untouched** (Kaspersky ch. 9):
+  deliberate defects, read-timing and inter-sector angle measurement, weak
+  sectors. These bind to the medium rather than malforming the TOC, so nothing
+  in the §11 pass addresses them. Listed for completeness, not planned — no
+  demand, and the recovery engine's existing C2/reread machinery is the part
+  that would meet them.
 
 - **[P4] Vanity project: a backwards-compatible hi-res audio disc.** Replicate
   SACD's *audio quality only* in a format readable by drives >= DVD, using a
