@@ -479,6 +479,82 @@ so nobody later "fixes" this by adding a heuristic that guesses track type from
 content — that would be analysis, which CLAUDE.md puts out of scope, and it
 would be guessing besides.
 
+### 11.5 Checked against real schemes, 2026-07-22
+
+A research pass surveyed the commercial schemes (Cactus Data Shield, key2audio,
+MediaCloQ, MediaMax, XCP, SafeAudio, Alpha-Audio, LabelGate, DocLock) and
+mapped each against §11.1's taxonomy. Full findings and the acquisition
+shortlist are in `private/research/incoming/`. Three results matter here.
+
+**Two suspected gaps were closed in code, without needing a disc.** Both are now
+permanent tests in `tests/test_toc_hostile.c`:
+
+- *Cactus Data Shield 200* is reported to duplicate session 1's track addresses
+  onto a second session. That is a different shape from same-session overlap,
+  and it was unclear whether our check crossed session boundaries. **It does** —
+  the overlap loop compares every pair of tracks without filtering by session,
+  and session-bounded extents mean a legitimate multi-session disc never
+  overlaps, so the broader check costs nothing in false positives. A synthetic
+  CDS-200 shape raises `overlap` and is refused as `toc_untrusted`.
+- *key2audio* is reported to present **three** sessions, two small data ones
+  bracketing the audio. Nothing there is malformed — the lead-in does not
+  contradict itself, there is simply more of it — so no anomaly should fire, and
+  none does. The question that mattered was whether anything assumes the last
+  session is the interesting one. It does not:
+  `accudisc_toc_default_audio_session()` selects the session *containing audio*,
+  correctly returning the **middle** session on a synthetic three-session disc.
+
+**MediaCloQ: the first account of it was wrong, and the correction matters.**
+An initial pass, working from cdmediaworld, described MediaCloQ purely as a
+multi-radius trick — a TOC arranged so a drive's outer-to-inner search for the
+newest session hangs — and concluded it was outside anything we could address.
+The comp.publish.cdrom FAQ gives the *observed* behaviour instead, and it is
+much more concrete:
+
+> a PC drive reports **two sessions and 16 data tracks**, where a standard CD
+> player sees **15 audio tracks**.
+
+So whatever the search-order mechanics, the effect visible to a computer is
+**track-type inversion**: the audio is presented as DATA. That is squarely
+inside our model, not outside it. Modelled synthetically
+(`tests/test_toc_hostile.c`), our behaviour is:
+
+- the TOC parses cleanly and **raises no anomaly — correctly**. It is entirely
+  self-consistent. It is not malformed, it is *lying*, and those are different
+  things. CTRL is the only statement a TOC makes about track type, so no
+  consistency check can ever catch this;
+- `accudisc_toc_default_audio_session()` returns `ACCUDISC_ERR_NOTFOUND`, and
+  the range guard refuses with `data_track`.
+
+Refusing is the right answer — we report what the disc claims rather than
+overriding it on a hunch. But this is the **calibration case** flagged in TODO:
+a disc that plays perfectly in a hi-fi and that we decline by default. So the
+message now names the situation specifically (*"N tracks, all marked data"*),
+says that CTRL may be misreporting and that some schemes do this deliberately,
+and points at `--force`. Failing informatively is the whole design rule; a bare
+"no session contains audio tracks" satisfied the letter of it and not the
+spirit.
+
+The residual multi-radius concern still stands, narrowly: if a drive resolves
+its own session search differently than another drive, we see only the answer
+it returns. That remains a drive-firmware and physical-mastering interaction we
+cannot address in parsing — but it is a smaller and better-defined gap than the
+first account suggested.
+
+**Method note.** The correction came from a second, better source on a claim
+already written down, not from new analysis. The first account was plausible,
+cited, and wrong in the part that mattered — which is the same failure mode as
+§7's CD+G errors. Prefer the source that reports *observed drive behaviour*
+over the one that explains a mechanism.
+
+**Several schemes do not touch the TOC at all**, which is worth stating so
+acquisition effort is not wasted: *MediaMax* and *XCP* are Windows kernel-driver
+attacks on an ordinary, well-formed Enhanced-CD-shaped disc (a Linux SG_IO tool
+is unaffected, and their discs serve only as negative controls); *SafeAudio /
+MusicGuard* deliberately corrupts audio samples and their ECC, which is a
+read-integrity problem for the C2 path and never a TOC anomaly. "Second session
+present" is not evidence of malformation.
+
 Also untouched: schemes based on physical characteristics rather than the TOC —
 deliberate defects, timing/angle measurement, weak sectors (his ch. 9). Those
 are binding-to-media mechanisms, not TOC malformations, and nothing in this

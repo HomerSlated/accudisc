@@ -257,6 +257,122 @@ int main(void)
         assert(t.anomalies & ACCUDISC_TOC_ANOM_BAD_SESSION);
     }
 
+    /* --- real-scheme shapes, from the 2026-07-22 protection survey ---------
+     * Two shapes reported for commercial schemes were flagged as possible gaps
+     * in this taxonomy. Both turn out to be covered; these pin that down so a
+     * later change cannot quietly reopen either, and so neither has to wait on
+     * acquiring a physical disc to be answered. */
+
+    /* Cactus Data Shield 200, as reported: a second (data) session whose track
+     * duplicates an address already claimed in session 1. Distinct in shape
+     * from same-session overlap — and caught, because the overlap check
+     * compares every pair of tracks without filtering by session. Session-
+     * bounded extents mean a legitimate multi-session disc never overlaps, so
+     * the broader check costs no false positives. */
+    {
+        accudisc_fulltoc f;
+        accudisc_toc t;
+        accudisc_range_check c;
+
+        memset(&f, 0, sizeof(f));
+        f.first_session = 1;
+        f.last_session = 2;
+        ptr(&f, 1, 0xA0, 1);
+        ptr(&f, 1, 0xA1, 2);
+        ent(&f, 1, 0x10, 0xA2, 50000);
+        ent(&f, 1, 0x10, 1, 0);
+        ent(&f, 1, 0x10, 2, 25000);
+        ptr(&f, 2, 0xA0, 3);
+        ptr(&f, 2, 0xA1, 3);
+        ent(&f, 2, 0x14, 0xA2, 90000);
+        ent(&f, 2, 0x14, 3, 25000); /* claims session 1's address */
+
+        assert(adsc_toc_from_fulltoc(&f, &t, NULL) == ACCUDISC_OK);
+        assert(t.anomalies & ACCUDISC_TOC_ANOM_OVERLAP);
+        assert(accudisc_check_audio_range(&t, 0, 50000, &c) != ACCUDISC_OK);
+        assert(c.reason == ACCUDISC_RANGE_TOC_UNTRUSTED);
+    }
+
+    /* Sony key2audio, as reported: THREE sessions, two small data sessions
+     * bracketing the audio. Nothing here is malformed — the lead-in does not
+     * contradict itself, there is simply more of it than a typical disc — so
+     * no anomaly should fire. What must hold is that the model picks the
+     * session CONTAINING AUDIO rather than assuming the last (or first)
+     * session is the interesting one. */
+    {
+        accudisc_fulltoc f;
+        accudisc_toc t;
+        accudisc_range_check c;
+        uint32_t lba = 0, count = 0;
+
+        memset(&f, 0, sizeof(f));
+        f.first_session = 1;
+        f.last_session = 3;
+        ptr(&f, 1, 0xA0, 1);
+        ptr(&f, 1, 0xA1, 1);
+        ent(&f, 1, 0x14, 0xA2, 5000);
+        ent(&f, 1, 0x14, 1, 0); /* small data session */
+        ptr(&f, 2, 0xA0, 2);
+        ptr(&f, 2, 0xA1, 3);
+        ent(&f, 2, 0x10, 0xA2, 200000);
+        ent(&f, 2, 0x10, 2, 20000); /* the audio, in the MIDDLE session */
+        ent(&f, 2, 0x10, 3, 100000);
+        ptr(&f, 3, 0xA0, 4);
+        ptr(&f, 3, 0xA1, 4);
+        ent(&f, 3, 0x14, 0xA2, 260000);
+        ent(&f, 3, 0x14, 4, 220000); /* small data session */
+
+        assert(adsc_toc_from_fulltoc(&f, &t, NULL) == ACCUDISC_OK);
+        assert(t.anomalies == 0); /* three valid sessions is not malformation */
+        assert(t.session_count == 3);
+        assert(accudisc_toc_default_audio_session(&t) == 2); /* not 1, not 3 */
+        assert(accudisc_toc_session_audio_range(&t, 2, &lba, &count) ==
+               ACCUDISC_OK);
+        assert(lba == 20000 && count == 180000); /* to session 2's lead-out */
+        assert(accudisc_check_audio_range(&t, lba, count, &c) == ACCUDISC_OK);
+    }
+
+    /* SunnComm MediaCloQ, as observed in the comp.publish.cdrom FAQ: a PC
+     * drive reports "two sessions and 16 data tracks" where a CD player sees
+     * 15 AUDIO tracks. So the audio is presented to a computer as DATA.
+     *
+     * Note what does NOT happen: no anomaly fires, and correctly so — this TOC
+     * is entirely self-consistent. It is not malformed, it is LYING, and those
+     * are different things. CTRL is the only statement the TOC makes about
+     * track type, so nothing in a consistency check can catch it.
+     *
+     * The guard refuses, which is right — we report what the disc claims — and
+     * the CLI is expected to say specifically that every track is marked data
+     * and that --force exists. This is the calibration case: a disc that plays
+     * in a hi-fi and that we nonetheless decline by default. */
+    {
+        accudisc_fulltoc f;
+        accudisc_toc t;
+        accudisc_range_check c;
+
+        memset(&f, 0, sizeof(f));
+        f.first_session = 1;
+        f.last_session = 2;
+        ptr(&f, 1, 0xA0, 1);
+        ptr(&f, 1, 0xA1, 15);
+        ent(&f, 1, 0x14, 0xA2, 270000);
+        for (uint8_t i = 0; i < 15; i++) /* 0x14: CTRL bit 2 set = data */
+            ent(&f, 1, 0x14, (uint8_t)(i + 1), (int32_t)i * 18000);
+        ptr(&f, 2, 0xA0, 16);
+        ptr(&f, 2, 0xA1, 16);
+        ent(&f, 2, 0x14, 0xA2, 300000);
+        ent(&f, 2, 0x14, 16, 280000);
+
+        assert(adsc_toc_from_fulltoc(&f, &t, NULL) == ACCUDISC_OK);
+        assert(t.track_count == 16);
+        assert(t.anomalies == 0); /* consistent, just untruthful */
+        assert(t.sessions[0].audio_tracks == 0);
+        assert(t.sessions[0].data_tracks == 15);
+        assert(accudisc_toc_default_audio_session(&t) == ACCUDISC_ERR_NOTFOUND);
+        assert(accudisc_check_audio_range(&t, 0, 270000, &c) != ACCUDISC_OK);
+        assert(c.reason == ACCUDISC_RANGE_DATA_TRACK);
+    }
+
     /* --- degenerate input: must not crash ---------------------------------
      * No tracks, no lead-out, and a lead-in whose entries are all control
      * points. Short-circuits rather than indexing an empty track list. */

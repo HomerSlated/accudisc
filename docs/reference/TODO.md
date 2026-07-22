@@ -925,6 +925,31 @@ Both paths are now hardware-proven. No open verification items.
   nicety. A research pass to build the acquisition shortlist was launched
   2026-07-22; output lands in `private/research/incoming/`.
 
+  **Survey done 2026-07-22** — `private/research/incoming/` holds the scheme
+  taxonomy, a ~35-row title catalogue with catalogue numbers, and a ranked
+  shortlist. Three flagged shapes were then modelled synthetically and are
+  permanent tests in `tests/test_toc_hostile.c`; **none needed a disc to
+  answer**: CDS-200 cross-session duplicate addresses (already covered — the
+  overlap check does not filter by session), key2audio's three sessions
+  (already handled — the audio session is chosen by content, not position),
+  and MediaCloQ track-type inversion (inside the model; see below).
+
+  Top of the shortlist: Natalie Imbruglia *White Lilies Island* (BMG 74321
+  891212) and Right Said Fred *Fredhead* (BMG 74321 87262 2), both CDS-200; and
+  a genuine **A/B pair** — Handel *Deidamia*, Virgin Classics 5455502 (Copy
+  Control) versus 5456692 (Red Book reissue of the identical recording), plus
+  Virgin Veritas 5457112 *Serse* as an explicitly-unprotected control from the
+  same imprint and era. That triplet is the cleanest possible check that
+  `anomalies=` keys on something real rather than on label/era artifacts.
+  Charley Pride *A Tribute to Jim Reeves* is the only named MediaCloQ title and
+  is worth promoting — it would confirm the FAQ's report on real media.
+
+  Not worth buying for TOC work, stated so effort is not wasted: XCP and
+  MediaMax discs are Windows kernel-driver attacks on ordinary, well-formed
+  Enhanced-CD-shaped discs (useful only as negative controls), and
+  SafeAudio/MusicGuard corrupts audio and its ECC, which tests the C2 read path
+  and never the TOC parser. No SafeAudio title could be identified at all.
+
   What each disc would actually buy us, in order of value:
     1. a scheme that does something our taxonomy does **not** cover — the only
        way to find out is to meet one;

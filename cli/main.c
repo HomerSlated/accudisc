@@ -1328,7 +1328,21 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                 return 1;
             }
             if (s == ACCUDISC_ERR_NOTFOUND) {
-                fprintf(stderr, "accudisc: no session contains audio tracks\n");
+                fprintf(stderr, "accudisc: no session contains audio tracks "
+                                "(%u track%s, all marked data)\n",
+                        toc.track_count, toc.track_count == 1 ? "" : "s");
+                /* CTRL is the TOC's only statement about track type, and it
+                 * can be a deliberate lie: SunnComm MediaCloQ presents a disc
+                 * whose audio a CD player happily plays as DATA tracks to a
+                 * computer drive, which is the whole protection. Refusing is
+                 * correct — we report what the disc claims — but a user whose
+                 * disc plays fine in a hi-fi deserves to know why we disagree
+                 * and what the way past is. */
+                fprintf(stderr,
+                        "accudisc: if this disc plays in an audio CD player, "
+                        "its CTRL bits may be misreporting track type — some\n"
+                        "accudisc: copy-protection schemes do this "
+                        "deliberately. --force reads it anyway.\n");
                 return 1;
             }
             if (s > 0)
