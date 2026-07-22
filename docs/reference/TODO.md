@@ -896,6 +896,28 @@ Both paths are now hardware-proven. No open verification items.
   entirely**, including format 2 — reaching them needs subchannel reads of a
   later session's lead-in, which bounds what our parser can ever see.
 
+- **[P2] Acquire copy-protected test discs.** Also on cdda2img's TODO; recorded
+  here because the need is ours first — the §11 hardening is verified only
+  against **synthetic** TOCs built from Kaspersky's descriptions. That proves we
+  survive the taxonomy as documented; it does not prove we survive what the
+  schemes actually pressed. Real media is the only thing that closes that gap.
+
+  Wanted: at least one disc per scheme, second-hand, cheap. **Regional pressing
+  matters** — the same album is frequently protected in the EU and unprotected
+  in the US, so a catalogue or matrix number is part of the requirement, not a
+  nicety. A research pass to build the acquisition shortlist was launched
+  2026-07-22; output lands in `private/research/incoming/`.
+
+  What each disc would actually buy us, in order of value:
+    1. a scheme that does something our taxonomy does **not** cover — the only
+       way to find out is to meet one;
+    2. confirmation that `anomalies=` fires on real protected media and stays
+       silent on the unprotected pressing of the same title (the ideal test
+       pair, and the reason pressing identity matters);
+    3. evidence about whether the `UNTRUSTED_GEOMETRY` refusal is correctly
+       calibrated — if a real protected disc rips fine everywhere else and we
+       alone refuse it, we are over-refusing and should demote a flag.
+
 - **[P3] Physical-characteristic protection is untouched** (Kaspersky ch. 9):
   deliberate defects, read-timing and inter-sector angle measurement, weak
   sectors. These bind to the medium rather than malforming the TOC, so nothing
