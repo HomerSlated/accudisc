@@ -541,11 +541,41 @@ it returns. That remains a drive-firmware and physical-mastering interaction we
 cannot address in parsing — but it is a smaller and better-defined gap than the
 first account suggested.
 
+The track-type-inversion account was subsequently **confirmed by a third
+independent source**: BinaryObjectScanner, the preservation community's
+protection scanner, describes MediaCloQ as "a multisession CD, and all the audio
+tracks are erroneously marked as data tracks."
+
 **Method note.** The correction came from a second, better source on a claim
 already written down, not from new analysis. The first account was plausible,
 cited, and wrong in the part that mattered — which is the same failure mode as
 §7's CD+G errors. Prefer the source that reports *observed drive behaviour*
 over the one that explains a mechanism.
+
+### 11.6 Why a structural view is worth having at all
+
+BinaryObjectScanner detects copy protection by scanning **files** — every
+interface it exposes (`IContentCheck`, `IExecutableCheck`, `IPathCheck`,
+`IDiskImageCheck`) reads file contents or paths, and no detector reads a TOC,
+session table or subchannel.
+
+The consequence is visible in its own source: the schemes that are **purely
+structural** are all unimplemented stubs — DocLoc, SafeAudio, Alpha-Audio, and
+the original key2audio. That is not an oversight. A scheme that leaves no file
+signature is invisible to a file scanner by construction, and its MediaCloQ
+detector says so plainly about one disc: "currently undetected, due to there
+seeming to be no reference to MediaCloQ in the disc's contents."
+
+So `anomalies=` covers something a mature, well-maintained tool in this space
+structurally cannot — not through any cleverness on our part, but because we
+happen to look at the layer where these schemes actually operate. The two
+compose: a file scanner answers *which scheme*, a structural reader answers
+*what it did to the disc*. Worth stating because it is the clearest argument
+that §11's work has value beyond our own rips.
+
+It also cuts the other way, and the honest version includes this: for the
+schemes that hide in an autorun payload, a file scanner will identify the disc
+and we never will, because nothing about its structure is unusual.
 
 **Several schemes do not touch the TOC at all**, which is worth stating so
 acquisition effort is not wasted. *MediaMax* and *XCP* are Windows kernel-driver

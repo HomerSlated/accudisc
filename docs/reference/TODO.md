@@ -941,8 +941,34 @@ Both paths are now hardware-proven. No open verification items.
   Virgin Veritas 5457112 *Serse* as an explicitly-unprotected control from the
   same imprint and era. That triplet is the cleanest possible check that
   `anomalies=` keys on something real rather than on label/era artifacts.
-  Charley Pride *A Tribute to Jim Reeves* is the only named MediaCloQ title and
-  is worth promoting — it would confirm the FAQ's report on real media.
+  Charley Pride *A Tribute to Jim Reeves* is worth promoting — it would confirm
+  the track-type-inversion report on real media. **Barcode 7 816190222-2 4**
+  (from BinaryObjectScanner), which beats a catalogue number for secondhand
+  buying.
+
+  **Highest-value single lead, if it holds: "Karaoke Spotlight Series — Pop
+  Hits Vol. 132", Sound Choice SC8732.** BinaryObjectScanner names it as a
+  MediaCloQ disc. Sound Choice's karaoke line is typically **CD+G**, so this one
+  disc could exercise the new R-W decoder end-to-end — the verification
+  `tests/test_rw.c` explicitly cannot provide — *and* the track-type-inversion
+  path, in a single purchase. **The CD+G part is my inference, not sourced**:
+  BinaryObjectScanner says nothing about graphics and this volume's CD+G status
+  is unverified. Confirm before buying.
+
+  Also gained from BinaryObjectScanner, closing survey gaps: **DocLoc** is by
+  **DocData** (not Optimal Media as the survey had it), works via a
+  "non-standard second session", and has three titles — *Yorin FM Hitzone 21*
+  (Discogs 790336), *Helium Vola* (Discogs 188439), *Wolfsheim — Casting
+  Shadows*. **LabelGate CD2**: Redump entry 95010 / product ID SVWC-7185. And
+  key2audio's three-session structure is independently corroborated, with an
+  unspecific further claim of a "partially invalid TOC" — **uncertain, do not
+  act on it**, but a real disc would settle whether key2audio also trips an
+  anomaly slug.
+
+  Next research source, unexamined: **DRML** (the DRM Library,
+  github.com/TheRogueArchivist/DRML), cited as BinaryObjectScanner's authority
+  for MediaCloQ. Likely the best lead for the schemes still thin here —
+  Alpha-Audio, DocLoc's mechanism, and SafeAudio's unidentified US titles.
 
   Not worth buying for TOC work, stated so effort is not wasted: XCP and
   MediaMax discs are Windows kernel-driver attacks on ordinary, well-formed

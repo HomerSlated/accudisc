@@ -25,6 +25,15 @@ behaviors, command layouts, and hardware quirks we relied on:
   (write path, upcoming).
 - **libcdio-paranoia / cd-paranoia** — verification and reread strategy
   background.
+- **BinaryObjectScanner** by Matt Nadareski (MIT) — a preservation-community
+  copy-protection scanner. Consulted for *facts* about commercial CD-DA
+  protection schemes: which schemes exist, their mechanisms as documented by
+  the preservation community, and the specific releases and barcodes carrying
+  them. No code was taken; the two tools look at different things — it
+  identifies schemes from installer payloads on the data session, while
+  AccuDisc reports what a disc's TOC and session structure actually say. Its
+  MediaCloQ description independently confirmed our finding that the scheme
+  marks audio tracks as data.
 
 ## Vendor drivers
 
