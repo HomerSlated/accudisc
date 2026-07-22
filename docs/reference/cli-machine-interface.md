@@ -231,18 +231,41 @@ Non-destructive — every command is a read.
 
 ## `toc` output (stdout)
 
-One line per track, then lead-out, then one acquisition-path line:
+One line per track, then one line per session, then lead-out, then one
+acquisition-path line:
 
 ```
-track <n> lba <lba> sectors <n> audio|data
+track <n> lba <lba> sectors <n> audio|data [session <n>]
+session <n> tracks <first>-<last> audio <n> data <n> leadout <lba>
 leadout lba <lba>
 source=<fulltoc|toc> degrade=<reason> pregaps=none [sessions=<a>..<b>] [disc_type=0x<hh>]
 ```
 
-The `track`/`leadout` lines are frozen in this form. `lba` and `sectors` are
-decimal; `sectors` runs to the next track's start, and for the last track to
-lead-out. The final line is `key=value` tokens — **parse it as tokens, not
+The first five fields of `track`, and the `leadout` line, are frozen in this
+form. `lba` and `sectors` are decimal. `session <n>` is **appended** to the
+track line, never inserted, and is present only when session structure is
+known (`source=fulltoc`). The `session` summary lines likewise appear only
+then; a parser that ignores unknown leading keywords is unaffected by their
+absence. The final line is `key=value` tokens — **parse it as tokens, not
 positionally**; new keys may be appended.
+
+### `sectors` is bounded by the session, not by the next track
+
+`sectors` runs to the next track **in the same session**, and for a session's
+last track to **that session's lead-out** — never across a session boundary.
+
+This matters on any multi-session disc. Between one session's last track and
+the next session's first track sit that session's lead-out, the next session's
+lead-in, and a pregap: no payload, and unreadable as CD-DA. Measured on a
+PX-716A (2026-07-22, Enhanced CD): session 1 ends with track 13 at LBA 184300
+and a lead-out at 195656, while session 2's track 14 starts at 207056. Track 13
+is therefore **11356** sectors, not the 22756 that "distance to the next track
+start" would give — 11,400 sectors of difference, all of it unreadable.
+
+On the `source=toc` degrade path there is no session structure, so every track
+reports no `session` field and `sectors` reduces to the next track's start.
+Callers must treat that geometry as untrustworthy on any disc carrying a data
+track; `accudisc read` refuses such ranges (see `no_session_info` below).
 
 ### `source=` — which READ TOC format answered
 
@@ -295,6 +318,59 @@ supplies no more of it than a degraded `source=toc` does. The key is present so
 that callers branch on the token rather than on `source=`, and so a future
 program-area-derived value is additive. Pregaps come from the `pregaps`
 subcommand (CRC-gated Q decode) or from a raw subchannel capture.
+
+## `read` session selection and the audio-range guard
+
+`read` reads **one session**, not the whole disc.
+
+With no `--start`, `--count` or `--session`, it resolves the session to read:
+
+| situation | behaviour |
+|---|---|
+| exactly one session has audio tracks | that session, no argument needed |
+| more than one session has audio | **exit 1**; the sessions are listed on stderr and `--session N` is required |
+| no session has audio | exit 1 |
+| session structure unknown (`source=toc`) | falls back to the flat whole-disc range, still vetted by the guard |
+
+The resolved range is echoed to stderr (suppressed by `-q`):
+
+```
+accudisc: session <n>, lba <lba> count <n>
+```
+
+Before any sector is requested, the range is checked against the TOC. A range
+that is not entirely audio payload within one session is **refused with exit
+1**, before the drive is touched:
+
+```
+accudisc: refusing lba <l> count <n>: <reason> at lba <lba> [(track <n>)]
+accudisc: these sectors are not readable as CD-DA; --force overrides
+```
+
+`<reason>` slugs:
+
+| slug | meaning |
+|---|---|
+| `data_track` | overlaps a track whose CTRL bit 2 is set — the drive rejects every sector of it as CD-DA |
+| `not_in_track` | overlaps sectors owned by no track: a session's lead-out, the next lead-in, or the seam between them |
+| `crosses_session` | spans two sessions — readable on both sides, a wasteland between |
+| `beyond_leadout` | runs past the disc |
+| `no_session_info` | session structure is unknown *and* the disc carries a data track, so the extents cannot be trusted |
+| `empty` | `count` is 0 |
+
+`--force` bypasses the guard. It is deliberately **separate** from `--any`,
+which only selects the READ CD expected sector type: conflating them would
+make it impossible to ask for a CD-DA read of a data track in order to observe
+how the drive rejects it.
+
+### Why this is a guard and not a warning
+
+A drive's refusal to read a data track as CD-DA is *categorical* — sense key 5,
+ASC 0x64 ILLEGAL MODE FOR THIS TRACK — and identical on every attempt. The read
+engine treats such a sense as terminal for that sector rather than retrying it
+with a cache-defeat seek. Measured on a PX-716A (2026-07-22) over the 4129-sector
+data track of an Enhanced CD: **62.9 s before, 4.9 s after**. The guard exists
+so that time is not spent at all.
 
 ## `read` inline lead-in capture
 

@@ -17,6 +17,7 @@ set(ACCUDISC_SOURCES
     drive/disc.c
     toc/toc.c
     toc/fulltoc.c
+    toc/session.c
     read/engine.c
     cdda/crc16.c
     cdda/subq.c

@@ -706,6 +706,14 @@ Both paths are now hardware-proven. No open verification items.
   still valid when the lead-in is unreadable — plausible, since the drive
   answers this from its own disc model, but the Stanley Road disc exists to
   test it.
+
+  **Partly addressed 2026-07-22** by the session model (`accudisc_session`,
+  `accudisc_check_audio_range`). On the degrade path the guard now refuses any
+  range on a disc carrying a data track (`no_session_info`), which closes the
+  Enhanced CD case without needing the count. The **multi-session all-audio**
+  hole remains exactly as described: nothing in a flat format-0 track list
+  distinguishes it, and only READ DISC INFORMATION's count can. Still [P1],
+  still needs the hardware confirmation above.
 - **[P3]** Bindings (`bindings/python`, `bindings/rust`) do not yet expose
   `accudisc_read_toc_src` or `accudisc_probe_disc`; they are generated against
   the public header, so both are additive whenever next regenerated.

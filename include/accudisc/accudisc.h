@@ -290,18 +290,54 @@ ACCUDISC_API int accudisc_load(accudisc_device *dev);
 typedef struct accudisc_track {
     uint8_t number;    /* 1..99 */
     uint8_t adr_ctrl;  /* raw ADR (high nibble) / CTRL (low nibble) */
+    uint8_t session;   /* 1..99; 0 = unknown (format-0 degrade, see below) */
     uint32_t lba;      /* first sector */
-    uint32_t sectors;  /* to next track start (last track: to lead-out) */
+    uint32_t sectors;  /* to the next track in the SAME session; the session's
+                        * last track runs to that session's lead-out — never
+                        * across a session boundary (see accudisc_session) */
 } accudisc_track;
 
 #define ACCUDISC_TRACK_IS_AUDIO(t) (((t)->adr_ctrl & 0x04) == 0)
+
+/* ---- sessions --------------------------------------------------------------
+ * A multi-session disc is not one contiguous program area. Between one
+ * session's last track and the next session's first track sit that session's
+ * LEAD-OUT, the next session's LEAD-IN, and the next track's pregap — on a
+ * typical Enhanced CD roughly 11,400 sectors that hold no track payload and
+ * cannot be read as CD-DA. Measured on a PX-716A, 2026-07-22: an Enhanced CD
+ * whose session 1 ends at track 13 (LBA 184300) reports session 1 lead-out
+ * 195656, while session 2's track 14 starts at 207056.
+ *
+ * Track extents are therefore bounded by the OWNING SESSION's lead-out, not by
+ * the next track start on the disc. A caller that walks "track n start to
+ * track n+1 start" across that seam drives 11,400 sectors into unreadable
+ * territory; that is a real defect this model exists to prevent.
+ *
+ * Only READ TOC format 2 carries session structure. On the format-0 degrade
+ * path (accudisc_read_toc_src) the drive returns a flat track list with no
+ * session tags and only the LAST session's lead-out, so session_count is 0 and
+ * every track's session is 0 — "unknown", not "one". See
+ * accudisc_check_audio_range(), which refuses rather than guesses. */
+
+typedef struct accudisc_session {
+    uint8_t number;       /* 1..99 */
+    uint8_t first_track;  /* from this session's A0 point, else observed */
+    uint8_t last_track;   /* from this session's A1 point, else observed */
+    uint8_t audio_tracks; /* census over the tracks this session owns */
+    uint8_t data_tracks;
+    uint32_t leadout_lba; /* this session's A2 point */
+} accudisc_session;
 
 typedef struct accudisc_toc {
     uint8_t first_track;
     uint8_t last_track;
     uint8_t track_count;
-    uint32_t leadout_lba;
+    uint32_t leadout_lba; /* the LAST session's lead-out = end of the disc */
     accudisc_track tracks[99];
+    /* Session table, ascending by number. session_count == 0 means the source
+     * could not report session structure — NOT that the disc has none. */
+    uint8_t session_count;
+    accudisc_session sessions[99];
 } accudisc_toc;
 
 /* READ TOC format 0, parsed. Requires a disc. */
@@ -372,6 +408,67 @@ ACCUDISC_API int accudisc_read_toc_src(accudisc_device *dev, accudisc_toc *out,
  * "none"/"leadin_unreadable"/"leadin_absent"/"leadin_malformed"). Never NULL. */
 ACCUDISC_API const char *accudisc_toc_source_str(unsigned source);
 ACCUDISC_API const char *accudisc_toc_degrade_str(unsigned degrade);
+
+/* ---- session selection and the audio-range guard ---------------------------
+ * Two pure functions over a parsed TOC. No hardware access, no hidden reads:
+ * the library still only moves the bits the caller asks for, but it will no
+ * longer let the caller ask for bits that cannot exist.
+ *
+ * Policy, as specified: when exactly ONE session contains audio tracks, that
+ * session is the default and needs no argument. When more than one does, there
+ * is no defensible default and the caller must name the session it wants —
+ * iterating over sessions is the calling application's business, not ours. */
+
+/* Resolve the session to rip. Returns the session number (>= 1), or:
+ *   ACCUDISC_ERR_NOTFOUND    no session contains an audio track
+ *   ACCUDISC_ERR_INVAL       toc is NULL, or session structure is unknown
+ *                            (session_count == 0 — the format-0 degrade path)
+ *   ACCUDISC_ERR_UNSUPPORTED more than one session contains audio: ambiguous
+ *                            by construction, so the caller must choose. */
+ACCUDISC_API int accudisc_toc_default_audio_session(const accudisc_toc *toc);
+
+/* Sector range of one session's tracks: first track's start through that
+ * session's lead-out. Excludes the lead-out itself. ACCUDISC_ERR_NOTFOUND if
+ * the session is not in the table. */
+ACCUDISC_API int accudisc_toc_session_range(const accudisc_toc *toc,
+                                            uint8_t session, uint32_t *lba,
+                                            uint32_t *count);
+
+typedef enum {
+    ACCUDISC_RANGE_OK = 0,
+    ACCUDISC_RANGE_DATA_TRACK,    /* overlaps a track whose CTRL says data —
+                                   * unreadable as CD-DA; the drive rejects
+                                   * every sector of it */
+    ACCUDISC_RANGE_NOT_IN_TRACK,  /* overlaps sectors owned by no track: a
+                                   * session's lead-out, the next lead-in, or
+                                   * the gap between sessions */
+    ACCUDISC_RANGE_CROSSES_SESSION, /* spans two sessions — legal sectors on
+                                   * both sides, a wasteland between */
+    ACCUDISC_RANGE_BEYOND_LEADOUT,
+    ACCUDISC_RANGE_NO_SESSION_INFO, /* session structure unknown AND the disc
+                                   * carries a data track, so the geometry
+                                   * cannot be trusted. Refuse, do not guess. */
+    ACCUDISC_RANGE_EMPTY          /* count == 0 */
+} accudisc_range_reason;
+
+typedef struct accudisc_range_check {
+    uint8_t ok;             /* 1 = every sector is audio payload, one session */
+    uint8_t reason;         /* accudisc_range_reason */
+    uint8_t session;        /* the session the range starts in; 0 if unknown */
+    uint8_t track;          /* the offending track number, 0 if not a track */
+    uint32_t first_bad_lba; /* first sector that is not readable audio */
+} accudisc_range_check;
+
+/* Verify that [lba, lba+count) is entirely audio payload within one session.
+ * Returns ACCUDISC_OK when it is, ACCUDISC_ERR_INVAL on bad arguments, and
+ * ACCUDISC_ERR_UNSUPPORTED when the range is not rippable — *out always
+ * carries the reason and the first offending sector either way. Pure. */
+ACCUDISC_API int accudisc_check_audio_range(const accudisc_toc *toc,
+                                            uint32_t lba, uint32_t count,
+                                            accudisc_range_check *out);
+
+/* Stable lowercase token for the machine interface. Never NULL. */
+ACCUDISC_API const char *accudisc_range_reason_str(unsigned reason);
 
 /* Raw CD-Text packs from the lead-in (READ TOC format 5, undecoded).
  * Returns ACCUDISC_ERR_NOTFOUND when the drive answers but the disc carries

@@ -207,6 +207,19 @@ static int read_sector(struct rd *r, uint32_t lba, uint8_t *dst)
                             r->req->sub, dst, r->sector_len);
 }
 
+/* Is the last failure a statement about the REQUEST rather than about this
+ * copy of the disc? ILLEGAL REQUEST / ILLEGAL MODE FOR THIS TRACK (ASC 0x64)
+ * is the drive saying the sector is not the type we asked for — a data track
+ * read as CD-DA. That answer is identical on every attempt, so retrying it
+ * buys nothing and costs a cache-defeat seek per sector: the 4,129-sector data
+ * track that prompted this guard turned a read into an hours-long seek storm
+ * with no possible result. Give up on the sector immediately. */
+static int sense_is_categorical(struct rd *r)
+{
+    return r->dev->last_sense.valid && r->dev->last_sense.key == 0x5 &&
+           r->dev->last_sense.asc == 0x64;
+}
+
 /* One span of total sectors with per-sector fallback. Sectors below
  * primary_n are deliverable: on unrecoverable failure they are zero-filled
  * and accounted as hard errors. Sectors at/above primary_n (overlap
@@ -231,6 +244,8 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
             src = read_sector(r, cur, sec);
             if (src == ACCUDISC_OK)
                 break;
+            if (sense_is_categorical(r))
+                break; /* the answer will not change; stop burning seeks */
         }
         if (src == ACCUDISC_OK)
             continue;

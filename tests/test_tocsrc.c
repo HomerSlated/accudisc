@@ -121,6 +121,74 @@ int main(void)
         assert(toc.tracks[1].sectors == 70000); /* 150000 - 80000 */
         assert(info.first_session == 1 && info.last_session == 2);
         assert(info.disc_type == 0x20);
+
+        /* Session 1's last track is bounded by SESSION 1's lead-out, not by
+         * the next track on the disc. Track 2 starts at 80000, but 60000
+         * onward is lead-out, lead-in and pregap — 20000 sectors of nothing.
+         * Reporting 80000 here is what walks a ripper off the end. */
+        assert(toc.tracks[0].sectors == 60000);
+        assert(toc.tracks[0].session == 1);
+        assert(toc.tracks[1].session == 2);
+
+        assert(toc.session_count == 2);
+        assert(toc.sessions[0].number == 1);
+        assert(toc.sessions[0].leadout_lba == 60000);
+        assert(toc.sessions[0].first_track == 1);
+        assert(toc.sessions[0].last_track == 1);
+        assert(toc.sessions[0].audio_tracks == 1);
+        assert(toc.sessions[0].data_tracks == 0);
+        assert(toc.sessions[1].number == 2);
+        assert(toc.sessions[1].leadout_lba == 150000);
+
+        /* The disc-wide pointers come from the right sessions: first track
+         * from the LOWEST session's A0, last from the HIGHEST session's A1. */
+        assert(toc.first_track == 1);
+        assert(toc.last_track == 2);
+    }
+
+    /* --- session structure with a data second session (Enhanced CD shape) -- */
+    {
+        accudisc_fulltoc ft = {0};
+        accudisc_toc toc;
+
+        /* Sessions deliberately listed highest-first: the disc-wide first
+         * track must still come from session 1, not from whichever A0 the
+         * drive happened to report first. */
+        entry(&ft, 2, 0x14, 0xA0, 14, 0x00, 0);
+        entry(&ft, 2, 0x14, 0xA1, 14, 0, 0);
+        add_track(&ft, 2, 0x14, 0xA2, 211185);
+        add_track(&ft, 2, 0x14, 14, 207056);
+        entry(&ft, 1, 0x10, 0xA0, 1, 0x00, 0);
+        entry(&ft, 1, 0x10, 0xA1, 13, 0, 0);
+        add_track(&ft, 1, 0x10, 0xA2, 195656);
+        add_track(&ft, 1, 0x10, 13, 184300);
+
+        assert(adsc_toc_from_fulltoc(&ft, &toc, NULL) == ACCUDISC_OK);
+        assert(toc.first_track == 1);
+        assert(toc.last_track == 14);
+        assert(toc.tracks[0].number == 13);
+        assert(toc.tracks[0].sectors == 11356); /* 195656 - 184300 */
+        assert(toc.tracks[1].number == 14);
+        assert(toc.tracks[1].sectors == 4129);
+        assert(toc.sessions[0].audio_tracks == 1);
+        assert(toc.sessions[1].data_tracks == 1);
+    }
+
+    /* --- a session with no A2 is dropped, not published with lead-out 0 ---- */
+    {
+        accudisc_fulltoc ft = {0};
+        accudisc_toc toc;
+
+        add_track(&ft, 1, 0x10, 1, 0); /* session 1: tracks but no A2 */
+        add_track(&ft, 2, 0x10, 2, 80000);
+        add_track(&ft, 2, 0x10, 0xA2, 150000);
+
+        assert(adsc_toc_from_fulltoc(&ft, &toc, NULL) == ACCUDISC_OK);
+        assert(toc.session_count == 1); /* only session 2 is usable */
+        assert(toc.sessions[0].number == 2);
+        /* Session 1's track falls back to the disc lead-out, the same guess
+         * the format-0 path makes — never to a bogus 0-length extent. */
+        assert(toc.tracks[0].sectors == 150000);
     }
 
     /* --- A0/A1 absent: fall back to the observed track points ------------- */

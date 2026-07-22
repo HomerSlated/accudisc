@@ -10,15 +10,37 @@ static uint32_t be32(const uint8_t *p)
            ((uint32_t)p[2] << 8) | p[3];
 }
 
-/* Track extents: to the next track's start; last track to lead-out. Shared by
- * both parse paths so the two sources cannot disagree on geometry. */
+/* This session's lead-out, falling back to the disc lead-out when session
+ * structure is unknown (format-0 path: every track carries session 0). */
+static uint32_t session_leadout(const accudisc_toc *t, uint8_t session)
+{
+    for (uint8_t i = 0; i < t->session_count; i++)
+        if (t->sessions[i].number == session)
+            return t->sessions[i].leadout_lba;
+    return t->leadout_lba;
+}
+
+/* Track extents: to the next track in the SAME session, and the session's last
+ * track to that session's lead-out. Bounding by the session rather than by the
+ * next track on the disc is load-bearing — across a session seam the next
+ * track start is ~11,400 sectors further out than the payload actually runs,
+ * with a lead-out, a lead-in and a pregap in between. Shared by both parse
+ * paths so the two sources cannot disagree on geometry; with no session table
+ * (session_count 0) every track is session 0 and this reduces exactly to the
+ * old next-track-start behaviour. */
 static void toc_fill_extents(accudisc_toc *out)
 {
     for (uint8_t i = 0; i < out->track_count; i++) {
-        uint32_t next = (i + 1 < out->track_count) ? out->tracks[i + 1].lba
-                                                   : out->leadout_lba;
-        out->tracks[i].sectors = next > out->tracks[i].lba
-                                     ? next - out->tracks[i].lba : 0;
+        accudisc_track *t = &out->tracks[i];
+        uint32_t next;
+
+        if (i + 1 < out->track_count &&
+            out->tracks[i + 1].session == t->session)
+            next = out->tracks[i + 1].lba;
+        else
+            next = session_leadout(out, t->session);
+
+        t->sectors = next > t->lba ? next - t->lba : 0;
     }
 }
 
@@ -64,6 +86,9 @@ int adsc_toc_from_fulltoc(const accudisc_fulltoc *ft, accudisc_toc *out,
      * appending would duplicate and mis-order tracks. */
     accudisc_track slot[100];
     uint8_t have[100];
+    /* Session accumulators indexed by session number (1..99). */
+    accudisc_session sess[100];
+    uint8_t sess_seen[100];
     uint8_t first_track = 0, last_track = 0, disc_type = 0;
     uint8_t first_session = 0, last_session = 0;
     int have_leadout = 0;
@@ -73,6 +98,8 @@ int adsc_toc_from_fulltoc(const accudisc_fulltoc *ft, accudisc_toc *out,
     memset(out, 0, sizeof(*out));
     memset(slot, 0, sizeof(slot));
     memset(have, 0, sizeof(have));
+    memset(sess, 0, sizeof(sess));
+    memset(sess_seen, 0, sizeof(sess_seen));
 
     for (uint16_t i = 0; i < ft->entry_count; i++) {
         const accudisc_fulltoc_entry *e = &ft->entries[i];
@@ -82,6 +109,10 @@ int adsc_toc_from_fulltoc(const accudisc_fulltoc *ft, accudisc_toc *out,
             first_session = e->session;
         if (e->session > last_session)
             last_session = e->session;
+        if (e->session >= 1 && e->session <= 99 && !sess_seen[e->session]) {
+            sess_seen[e->session] = 1;
+            sess[e->session].number = e->session;
+        }
 
         if (e->point >= 0x01 && e->point <= 0x63) {
             /* A track start before LBA 0 is not a legal address; the lead-in's
@@ -93,17 +124,34 @@ int adsc_toc_from_fulltoc(const accudisc_fulltoc *ft, accudisc_toc *out,
                 have[e->point] = 1;
                 slot[e->point].number = e->point;
                 slot[e->point].adr_ctrl = e->adr_ctrl;
+                slot[e->point].session = e->session;
                 slot[e->point].lba = (uint32_t)lba;
             }
         } else if (e->point == 0xA0) {
-            first_track = e->pmin;
-            disc_type = e->psec;
+            /* A0/A1/A2 are PER SESSION. The disc-wide first track is the
+             * lowest session's A0 and the disc-wide last track the highest
+             * session's A1 — taking whichever entry happened to come last
+             * would report session 2's first track as the disc's. */
+            if (e->session >= 1 && e->session <= 99) {
+                sess[e->session].first_track = e->pmin;
+                if (!first_track || e->session <= first_session)
+                    first_track = e->pmin;
+                if (!disc_type || e->session <= first_session)
+                    disc_type = e->psec;
+            }
         } else if (e->point == 0xA1) {
-            last_track = e->pmin;
-        } else if (e->point == 0xA2) {
-            /* Highest session's lead-out wins: on a multi-session disc that is
-             * the one bounding the last track. */
-            if (lba >= 0 && (!have_leadout || e->session >= last_session)) {
+            if (e->session >= 1 && e->session <= 99) {
+                sess[e->session].last_track = e->pmin;
+                if (!last_track || e->session >= last_session)
+                    last_track = e->pmin;
+            }
+        } else if (e->point == 0xA2 && lba >= 0) {
+            if (e->session >= 1 && e->session <= 99)
+                sess[e->session].leadout_lba = (uint32_t)lba;
+            /* The disc lead-out is the HIGHEST session's: it bounds the last
+             * track. Per-session lead-outs live in the session table, which is
+             * what bounds each session's last track. */
+            if (!have_leadout || e->session >= last_session) {
                 out->leadout_lba = (uint32_t)lba;
                 have_leadout = 1;
             }
@@ -123,6 +171,37 @@ int adsc_toc_from_fulltoc(const accudisc_fulltoc *ft, accudisc_toc *out,
     out->first_track = first_track ? first_track : out->tracks[0].number;
     out->last_track =
         last_track ? last_track : out->tracks[out->track_count - 1].number;
+
+    /* Session table, ascending. A session is only usable if we know where it
+     * ends, so one without an A2 is dropped rather than published with a
+     * lead-out of 0 — a caller trusting that would compute a zero-length or
+     * wildly wrong extent. Its tracks then fall back to the disc lead-out via
+     * session_leadout(), which is the same guess the format-0 path makes. */
+    for (unsigned n = 1; n <= 99; n++) {
+        if (!sess_seen[n] || !sess[n].leadout_lba)
+            continue;
+        uint8_t obs_first = 0, obs_last = 0;
+
+        for (uint8_t i = 0; i < out->track_count; i++) {
+            if (out->tracks[i].session != n)
+                continue;
+            if (!obs_first)
+                obs_first = out->tracks[i].number;
+            obs_last = out->tracks[i].number;
+            if (ACCUDISC_TRACK_IS_AUDIO(&out->tracks[i]))
+                sess[n].audio_tracks++;
+            else
+                sess[n].data_tracks++;
+        }
+        /* Prefer A0/A1; fall back to what we actually placed, so a session
+         * whose pointers are missing is still usable. */
+        if (!sess[n].first_track)
+            sess[n].first_track = obs_first;
+        if (!sess[n].last_track)
+            sess[n].last_track = obs_last;
+
+        out->sessions[out->session_count++] = sess[n];
+    }
 
     toc_fill_extents(out);
 

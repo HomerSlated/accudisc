@@ -64,12 +64,16 @@ static void usage(FILE *to)
         "                      or the installed directory)\n"
         "\n"
         "read options:\n"
-        "  --start LBA    first sector (default 0)\n"
-        "  --count N      sectors to read (default: through lead-out)\n"
+        "  --start LBA    first sector (default: start of the audio session)\n"
+        "  --count N      sectors to read (default: to that session's lead-out)\n"
+        "  --session N    which session to read; default is the single audio\n"
+        "                 session, and is required when more than one has audio\n"
         "  --no-c2        do not request C2 pointers (default: requested)\n"
         "  --c2beb        request C2 + block-error bits (296 B) variant\n"
         "  --sub raw|q    also capture subchannel (raw P-W or formatted Q)\n"
         "  --any          expected sector type ANY (default CD-DA)\n"
+        "  --force        bypass the audio-range guard (data tracks, session\n"
+        "                 seams) — the drive will reject what it cannot read\n"
         "  --fulltoc FILE also dump the raw full TOC (single-spin capture)\n"
         "  --cdtext FILE  also dump raw CD-Text packs; absence is noted\n"
         "                 but does not affect the read's exit code\n"
@@ -260,8 +264,19 @@ static int cmd_toc(accudisc_device *dev)
         return fail_dev(dev, "read toc", err);
     for (uint8_t i = 0; i < toc.track_count; i++) {
         const accudisc_track *t = &toc.tracks[i];
-        printf("track %u lba %u sectors %u %s\n", t->number, t->lba,
+        /* session is appended, never inserted: the first five fields are the
+         * frozen contract and stay where existing parsers expect them. */
+        printf("track %u lba %u sectors %u %s", t->number, t->lba,
                t->sectors, ACCUDISC_TRACK_IS_AUDIO(t) ? "audio" : "data");
+        if (t->session)
+            printf(" session %u", t->session);
+        putchar('\n');
+    }
+    for (uint8_t i = 0; i < toc.session_count; i++) {
+        const accudisc_session *s = &toc.sessions[i];
+        printf("session %u tracks %u-%u audio %u data %u leadout %u\n",
+               s->number, s->first_track, s->last_track, s->audio_tracks,
+               s->data_tracks, s->leadout_lba);
     }
     printf("leadout lba %u\n", toc.leadout_lba);
 
@@ -1081,6 +1096,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     const char *pcm_path = NULL, *c2_path = NULL, *sub_path = NULL;
     const char *map_path = NULL, *fulltoc_path = NULL, *cdtext_path = NULL;
     long start = 0, count = -1;
+    int have_start = 0, want_session = -1, force = 0;
     int want_map = 0;
     int uncap = 0, uncap_prior = -1; /* -1 = never touched, nothing to restore */
     uint16_t ladder[8];
@@ -1090,8 +1106,11 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     for (int i = 0; i < argc; i++) {
         const char *a = argv[i];
 
-        if (!strcmp(a, "--start") && i + 1 < argc)
+        if (!strcmp(a, "--start") && i + 1 < argc) {
             start = strtol(argv[++i], NULL, 0);
+            have_start = 1;
+        } else if (!strcmp(a, "--session") && i + 1 < argc)
+            want_session = (int)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--count") && i + 1 < argc)
             count = strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--no-c2"))
@@ -1110,6 +1129,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             }
         } else if (!strcmp(a, "--any"))
             req.any_type = 1;
+        else if (!strcmp(a, "--force"))
+            force = 1;
         else if (!strcmp(a, "--fulltoc") && i + 1 < argc)
             fulltoc_path = argv[++i];
         else if (!strcmp(a, "--cdtext") && i + 1 < argc)
@@ -1167,17 +1188,98 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         return 1;
     }
 
-    if (count < 0) { /* default: through lead-out */
+    /* Resolve the range against the TOC, then refuse ranges that cannot be
+     * read as CD-DA. --force is the deliberate escape hatch; it is kept
+     * separate from --any, which only selects the READ CD expected sector
+     * type. Conflating them would mean you could not ask for a CD-DA read of
+     * a data track even to observe how the drive rejects it.
+     *
+     * The default is ONE SESSION, not the whole disc. "Whole disc" is wrong on
+     * anything multi-session: between session 1's last track and session 2's
+     * first sit a lead-out, a lead-in and a pregap that hold no payload. */
+    if (!force || count < 0) {
         accudisc_toc toc;
-        int err = accudisc_read_toc(dev, &toc);
+        accudisc_range_check chk;
+        accudisc_toc_info info = {0};
+        int err = accudisc_read_toc_src(dev, &toc, &info);
+
         if (err != ACCUDISC_OK)
             return fail_dev(dev, "read toc", err);
-        if ((uint32_t)start >= toc.leadout_lba) {
-            fprintf(stderr, "accudisc: start %ld >= lead-out %u\n", start,
-                    toc.leadout_lba);
+
+        if (want_session < 0 && !have_start && count < 0) {
+            /* Neither a range nor a session named: pick the audio session, if
+             * there is exactly one. */
+            int s = accudisc_toc_default_audio_session(&toc);
+
+            if (s == ACCUDISC_ERR_UNSUPPORTED) {
+                fprintf(stderr,
+                        "accudisc: more than one session contains audio; "
+                        "choose one with --session N\n");
+                for (uint8_t i = 0; i < toc.session_count; i++)
+                    fprintf(stderr, "  session %u tracks %u-%u audio %u data %u\n",
+                            toc.sessions[i].number, toc.sessions[i].first_track,
+                            toc.sessions[i].last_track,
+                            toc.sessions[i].audio_tracks,
+                            toc.sessions[i].data_tracks);
+                return 1;
+            }
+            if (s == ACCUDISC_ERR_NOTFOUND) {
+                fprintf(stderr, "accudisc: no session contains audio tracks\n");
+                return 1;
+            }
+            if (s > 0)
+                want_session = s;
+            /* ERR_INVAL = no session structure (degraded lead-in): fall
+             * through to the flat whole-disc default, which the range guard
+             * still vets. */
+        }
+
+        if (want_session > 0) {
+            uint32_t slba = 0, scount = 0;
+
+            err = accudisc_toc_session_range(&toc, (uint8_t)want_session,
+                                             &slba, &scount);
+            if (err != ACCUDISC_OK) {
+                fprintf(stderr, "accudisc: session %d not on this disc\n",
+                        want_session);
+                return 1;
+            }
+            if (!have_start)
+                start = (long)slba;
+            if (count < 0)
+                count = (long)(slba + scount) - start;
+            if (!ctx.quiet)
+                fprintf(stderr, "accudisc: session %d, lba %ld count %ld\n",
+                        want_session, start, count);
+        } else if (count < 0) { /* no session structure: through lead-out */
+            if ((uint32_t)start >= toc.leadout_lba) {
+                fprintf(stderr, "accudisc: start %ld >= lead-out %u\n", start,
+                        toc.leadout_lba);
+                return 1;
+            }
+            count = (long)toc.leadout_lba - start;
+        }
+
+        if (count <= 0) {
+            fprintf(stderr, "accudisc: empty range (count %ld)\n", count);
             return 1;
         }
-        count = (long)toc.leadout_lba - start;
+
+        if (!force &&
+            accudisc_check_audio_range(&toc, (uint32_t)start, (uint32_t)count,
+                                       &chk) != ACCUDISC_OK) {
+            fprintf(stderr,
+                    "accudisc: refusing lba %ld count %ld: %s at lba %u",
+                    start, count, accudisc_range_reason_str(chk.reason),
+                    chk.first_bad_lba);
+            if (chk.track)
+                fprintf(stderr, " (track %u)", chk.track);
+            fprintf(stderr, "\n");
+            fprintf(stderr,
+                    "accudisc: these sectors are not readable as CD-DA; "
+                    "--force overrides\n");
+            return 1;
+        }
     }
 
     req.lba = (uint32_t)start;
