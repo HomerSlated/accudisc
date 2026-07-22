@@ -541,10 +541,28 @@ it returns. That remains a drive-firmware and physical-mastering interaction we
 cannot address in parsing — but it is a smaller and better-defined gap than the
 first account suggested.
 
-The track-type-inversion account was subsequently **confirmed by a third
-independent source**: BinaryObjectScanner, the preservation community's
-protection scanner, describes MediaCloQ as "a multisession CD, and all the audio
-tracks are erroneously marked as data tracks."
+The track-type-inversion account now rests on **four independent sources**:
+cdrfaq, the comp.publish.cdrom FAQ, BinaryObjectScanner ("a multisession CD, and
+all the audio tracks are erroneously marked as data tracks"), and the DRM
+Library. The original multi-radius account is withdrawn, not merely amended.
+
+**A confirmed test article exists, and it covers two subsystems at once.**
+Sound Choice *Karaoke Spotlight Series — Pop Hits Vol. 132* (SC8732) is a
+confirmed MediaCloQ Version 1 disc — the protection is printed on the label —
+**and** a confirmed CD+G disc. So one purchase would give the R-W decoder its
+end-to-end verification (which `tests/test_rw.c` cannot, being a round trip
+against our own encoder) *and* exercise the track-type-inversion path. Sound
+Choice reportedly shipped ~35 CD+G discs with MediaCloQ across their 8700
+series, so the family is wide rather than a single scarce item.
+
+**On safety, since the scheme's reputation invites caution**: MediaCloQ installs
+no driver and no kernel component — that was XCP (`Aries.sys`) and MediaMax
+(`sbcphid.sys`), different schemes entirely. The privacy allegations against
+MediaCloQ in *DeLise v. Fahrenheit Entertainment* concern **web-side** tracking:
+cookies, web bugs and personal data collected after a user followed the disc's
+download offer to SunnComm's site and typed their details in. There is no
+executable payload an SG_IO tool would ever consult, and those servers have been
+gone for two decades. Reading such a disc is ordinary.
 
 **Method note.** The correction came from a second, better source on a claim
 already written down, not from new analysis. The first account was plausible,

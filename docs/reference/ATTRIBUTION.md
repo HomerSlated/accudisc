@@ -34,6 +34,10 @@ behaviors, command layouts, and hardware quirks we relied on:
   AccuDisc reports what a disc's TOC and session structure actually say. Its
   MediaCloQ description independently confirmed our finding that the scheme
   marks audio tracks as data.
+- **DRML — the DRM Library** (https://github.com/TheRogueArchivist/DRML), by
+  the same author. A per-scheme documentation project, consulted for the same
+  kind of facts: mechanisms, versions, and the specific pressings carrying
+  them, each with primary-source citations.
 
 ## Vendor drivers
 

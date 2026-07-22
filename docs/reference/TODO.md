@@ -946,14 +946,29 @@ Both paths are now hardware-proven. No open verification items.
   (from BinaryObjectScanner), which beats a catalogue number for secondhand
   buying.
 
-  **Highest-value single lead, if it holds: "Karaoke Spotlight Series — Pop
-  Hits Vol. 132", Sound Choice SC8732.** BinaryObjectScanner names it as a
-  MediaCloQ disc. Sound Choice's karaoke line is typically **CD+G**, so this one
-  disc could exercise the new R-W decoder end-to-end — the verification
-  `tests/test_rw.c` explicitly cannot provide — *and* the track-type-inversion
-  path, in a single purchase. **The CD+G part is my inference, not sourced**:
-  BinaryObjectScanner says nothing about graphics and this volume's CD+G status
-  is unverified. Confirm before buying.
+  **BUY THIS FIRST — "Karaoke Spotlight Series — Pop Hits Vol. 132", Sound
+  Choice SC8732.** Both halves now confirmed, so the earlier inference is
+  retired: DRML lists it as a **confirmed MediaCloQ V1 sample**, with the
+  protection printed on the disc label ("This disc is copy protected by -
+  MediaClōQ - By SunnComm, Inc. - V1"), and an eBay listing's item specifics
+  give `File Format: CD+G` / `Media Type: Standard CD+G`.
+
+  One disc, two subsystems: the **R-W/CD+G decoder end-to-end** — the
+  verification `tests/test_rw.c` structurally cannot provide, being a round trip
+  against our own encoder — **and** the track-type-inversion path. That puts it
+  ahead of the CDS-200 pair.
+
+  **The family is wide**: Sound Choice shipped ~35 CD+G discs with MediaCloQ
+  across their **8700 series** (discontinued 2003-04-14). So if one listing is
+  awkward — the one seen says *"May not ship to United Kingdom"* — any
+  8700-series Spotlight disc is a candidate, and the label text is checkable
+  from a photo before buying.
+
+  **Safe to read.** MediaCloQ installs no driver and no kernel component; that
+  was XCP and MediaMax. The privacy allegations in *DeLise v. Fahrenheit
+  Entertainment* concern web-side tracking after a user followed the disc's
+  download offer to SunnComm's site — not an on-disc payload. Nothing an SG_IO
+  tool touches, and those servers are long dead.
 
   Also gained from BinaryObjectScanner, closing survey gaps: **DocLoc** is by
   **DocData** (not Optimal Media as the survey had it), works via a
