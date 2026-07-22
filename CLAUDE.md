@@ -9,7 +9,12 @@ of Mixed Mode discs. No ISO9660/CD-ROM data processing, no DVD/BD.
 
 - **Read** CD-DA with full data/metadata: TOC, subchannel (P–W), C2 error
   pointers, CD-Text, ISRC, MCN, pregaps/indices, lead-in/lead-out where the
-  drive allows. Eventually SA-CD and CD+G (R–W subchannel graphics).
+  drive allows. Eventually CD+G (R–W subchannel graphics).
+- **SA-CD is out of scope** — not deferred, not possible. The DSD layer is
+  DVD-density, read at 650 nm, and encrypted; a CD/DVD drive cannot address
+  it at all. (The known rips came from specific Blu-ray players, never a PC
+  drive.) A *hybrid* SACD's CD layer is ordinary Red Book and already reads
+  as CD-DA — that is the whole of our SACD story.
 - **Write** Red Book CD-R/RW (DAO).
 - **No post-processing, no lookups** — no CDDB/MusicBrainz, no analysis;
   AccuDisc only moves bits. Reads (whole disc / track / TOC / subchannel /

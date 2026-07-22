@@ -233,6 +233,23 @@ const char *accudisc_toc_degrade_str(unsigned degrade)
     }
 }
 
+/* Session COUNT via READ DISC INFORMATION. Deliberately a separate opcode from
+ * READ TOC: the drive answers it from the disc model it built at load time, so
+ * it can still report structure when the lead-in itself will not read. Byte 4
+ * is the LSB, which is the whole story on CD (99 sessions max, and capacity
+ * binds around 45). Returns 0 when unobtainable — never a guess. */
+static uint8_t disc_session_count(accudisc_device *dev)
+{
+    uint8_t buf[34];
+    uint32_t len = 0;
+
+    if (adsc_mmc_read_disc_info(dev, buf, sizeof(buf), &len) != ACCUDISC_OK)
+        return 0;
+    if (len < 5)
+        return 0;
+    return buf[4];
+}
+
 int accudisc_read_toc_src(accudisc_device *dev, accudisc_toc *out,
                           accudisc_toc_info *info)
 {
@@ -257,6 +274,12 @@ int accudisc_read_toc_src(accudisc_device *dev, accudisc_toc *out,
             local.source = ACCUDISC_TOC_SRC_FULLTOC;
             local.degrade = ACCUDISC_TOC_DEGRADE_NONE;
             local.degrade_err = 0;
+            /* The lead-in already told us; no need to spend another command.
+             * Sessions are numbered from 1 and contiguously, so the highest
+             * number seen IS the count — more robust than the session table's
+             * length, which drops any session lacking an A2. */
+            local.session_count = local.last_session;
+            out->sessions_total = local.last_session;
             if (info)
                 *info = local;
             return ACCUDISC_OK;
@@ -284,6 +307,38 @@ int accudisc_read_toc_src(accudisc_device *dev, accudisc_toc *out,
     local.source = ACCUDISC_TOC_SRC_TOC;
     local.first_session = local.last_session = 0;
     local.disc_type = 0;
+    /* The one piece of session structure still reachable with a dead lead-in.
+     * Without it a multi-session all-audio disc is indistinguishable from a
+     * single-session one in a flat track list, while format 0 quietly hands
+     * back the LAST session's lead-out. */
+    local.session_count = disc_session_count(dev);
+    out->sessions_total = local.session_count;
+
+    /* A count of exactly 1 is not merely reassuring, it is complete: with one
+     * session, every track belongs to it and format 0's lead-out IS that
+     * session's lead-out. So the model can be reconstructed in full, and a
+     * disc whose lead-in has died stays fully rippable — session selection,
+     * extents and the range guard all work as if the lead-in had answered.
+     *
+     * A count > 1 gets no synthesis. We would be inventing the one thing we
+     * do not know: where the seams fall. */
+    if (local.session_count == 1 && out->track_count) {
+        accudisc_session *s = &out->sessions[0];
+
+        for (uint8_t i = 0; i < out->track_count; i++) {
+            out->tracks[i].session = 1;
+            if (ACCUDISC_TRACK_IS_AUDIO(&out->tracks[i]))
+                s->audio_tracks++;
+            else
+                s->data_tracks++;
+        }
+        s->number = 1;
+        s->first_track = out->tracks[0].number;
+        s->last_track = out->tracks[out->track_count - 1].number;
+        s->leadout_lba = out->leadout_lba;
+        out->session_count = 1;
+    }
+
     if (info)
         *info = local;
     return ACCUDISC_OK;

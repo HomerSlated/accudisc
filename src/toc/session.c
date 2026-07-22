@@ -91,6 +91,7 @@ const char *accudisc_range_reason_str(unsigned reason)
     case ACCUDISC_RANGE_CROSSES_SESSION: return "crosses_session";
     case ACCUDISC_RANGE_BEYOND_LEADOUT:  return "beyond_leadout";
     case ACCUDISC_RANGE_NO_SESSION_INFO: return "no_session_info";
+    case ACCUDISC_RANGE_SESSION_UNMAPPED: return "session_unmapped";
     case ACCUDISC_RANGE_EMPTY:           return "empty";
     default:                             return "unknown";
     }
@@ -143,13 +144,26 @@ int accudisc_check_audio_range(const accudisc_toc *toc, uint32_t lba,
         return reject(out, ACCUDISC_RANGE_BEYOND_LEADOUT, 0, 0,
                       lba < toc->leadout_lba ? toc->leadout_lba : lba);
 
-    /* No session structure (the format-0 degrade path). A flat all-audio track
-     * list is safe to walk — there is no seam to fall into. A data track in
-     * that list means the disc is almost certainly multi-session, and without
-     * per-session lead-outs the audio tracks' extents cannot be trusted: the
-     * last audio track's length would run through a lead-out we cannot see.
-     * Refuse rather than guess. */
+    /* No MAPPED sessions: the format-0 degrade path. What is safe here turns
+     * entirely on whether anything could tell us how many sessions exist —
+     * READ DISC INFORMATION answers that from the drive's disc model, so it
+     * survives a lead-in that will not read.
+     *
+     *   total > 1  the seams are KNOWN to exist and their positions are not.
+     *              Format 0 hands back the last session's lead-out, so the
+     *              final track's extent is wrong and every seam is invisible.
+     *              This is the multi-session all-audio case that a track
+     *              census provably cannot detect. Refuse outright.
+     *   total == 0 nobody could say. A flat all-audio list is still safe to
+     *              walk (no seam to fall into), which keeps a single-session
+     *              disc with a dead lead-in rippable; a data track implies
+     *              multi-session strongly enough to refuse.
+     *
+     * total == 1 never reaches here: a single session is fully reconstructible
+     * and accudisc_read_toc_src() maps it. */
     if (!toc->session_count) {
+        if (toc->sessions_total > 1)
+            return reject(out, ACCUDISC_RANGE_SESSION_UNMAPPED, 0, 0, lba);
         for (uint8_t i = 0; i < toc->track_count; i++)
             if (!ACCUDISC_TRACK_IS_AUDIO(&toc->tracks[i]))
                 return reject(out, ACCUDISC_RANGE_NO_SESSION_INFO, 0,

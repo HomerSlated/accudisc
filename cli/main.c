@@ -289,6 +289,10 @@ static int cmd_toc(accudisc_device *dev)
     if (info.source == ACCUDISC_TOC_SRC_FULLTOC)
         printf(" sessions=%u..%u disc_type=0x%02x", info.first_session,
                info.last_session, info.disc_type);
+    /* A COUNT, not a range — the distinction matters. On a degrade this is the
+     * only session structure still reachable, and it comes from a different
+     * opcode (READ DISC INFORMATION) than the TOC. 0 = nobody could say. */
+    printf(" session_count=%u", info.session_count);
     putchar('\n');
 
     if (info.degrade != ACCUDISC_TOC_DEGRADE_NONE)

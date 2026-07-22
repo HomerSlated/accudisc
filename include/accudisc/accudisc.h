@@ -334,10 +334,20 @@ typedef struct accudisc_toc {
     uint8_t track_count;
     uint32_t leadout_lba; /* the LAST session's lead-out = end of the disc */
     accudisc_track tracks[99];
-    /* Session table, ascending by number. session_count == 0 means the source
-     * could not report session structure — NOT that the disc has none. */
+    /* Session table, ascending by number: the sessions we can MAP, meaning we
+     * know which tracks they own and where they end. 0 means the source could
+     * not report session structure — NOT that the disc has none. */
     uint8_t session_count;
     accudisc_session sessions[99];
+    /* How many sessions the disc HAS, from whichever source could say (the
+     * lead-in, or READ DISC INFORMATION, which answers from the drive's disc
+     * model and so survives an unreadable lead-in). 0 = nobody could say.
+     *
+     * Deliberately distinct from session_count: sessions_total > session_count
+     * is the honest description of a degraded read of a multi-session disc —
+     * we know the seams exist but not where they fall, which is strictly more
+     * dangerous than knowing nothing, and must not be silently flattened. */
+    uint8_t sessions_total;
 } accudisc_toc;
 
 /* READ TOC format 0, parsed. Requires a disc. */
@@ -393,6 +403,17 @@ typedef struct accudisc_toc_info {
                             * from a drive rejection. */
     uint8_t first_session; /* valid when source == FULLTOC, else 0 */
     uint8_t last_session;
+    /* Session COUNT from READ DISC INFORMATION — a different opcode from
+     * READ TOC, answered from the drive's own disc model rather than by
+     * re-reading the lead-in. It is therefore available on the DEGRADE path,
+     * where first_session/last_session are not: a flat format-0 track list
+     * cannot reveal how many sessions produced it. 0 = unobtainable.
+     *
+     * Distinct from the fulltoc range above: this is "how many", not "which".
+     * A caller whose policy is session-1-only should refuse a degrade with
+     * session_count > 1 rather than infer structure from a track census that
+     * cannot see it. */
+    uint8_t session_count;
     uint8_t disc_type;     /* A0 psec: 0x00 CD-DA/CD-ROM, 0x10 CD-i,
                             * 0x20 CD-ROM XA. Valid when source == FULLTOC. */
 } accudisc_toc_info;
@@ -448,6 +469,12 @@ typedef enum {
     ACCUDISC_RANGE_NO_SESSION_INFO, /* session structure unknown AND the disc
                                    * carries a data track, so the geometry
                                    * cannot be trusted. Refuse, do not guess. */
+    ACCUDISC_RANGE_SESSION_UNMAPPED, /* the disc is KNOWN to have more than one
+                                   * session, but the degraded lead-in did not
+                                   * say which tracks belong to which. Format 0
+                                   * hands back the LAST session's lead-out, so
+                                   * the final track's extent is wrong and the
+                                   * seams are invisible. */
     ACCUDISC_RANGE_EMPTY          /* count == 0 */
 } accudisc_range_reason;
 

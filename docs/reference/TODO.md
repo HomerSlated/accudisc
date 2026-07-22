@@ -223,11 +223,15 @@ Two layers; the profile is physical, the logical type is not:
   and only a root-directory walk (VIDEO_TS/AUDIO_TS) separates them, which is
   filesystem parsing, not a lookup. Report physical type only. Revisit if/when
   enhanced/mixed-mode work needs it (user decision 2026-07-16).
-- **SA-CD: deferred** (user decision). A hybrid SACD's CD layer is a *genuine*
-  Red Book CD — the drive reports CD-DA and is **correct** about the layer it
-  can see; the HD layer is invisible to every generic command, so there is no
-  "unrecognised" signal to trust. Only a single-layer SACD trips 0x0000/0xFFFF.
-  Reporting CD-DA for a hybrid SACD is not a bug: we read the CD layer.
+- **SA-CD: OUT OF SCOPE, not deferred** (user decision 2026-07-22; CLAUDE.md
+  amended). The DSD layer is DVD-density, read at 650 nm, and encrypted — a
+  CD/DVD drive cannot address it at all, so this is not a matter of effort.
+  (Known SACD rips came from specific Blu-ray players, never a PC drive.)
+  A hybrid SACD's CD layer is a *genuine* Red Book CD: the drive reports CD-DA
+  and is **correct** about the layer it can see, and the HD layer is invisible
+  to every generic command, so there is no "unrecognised" signal to trust.
+  Only a single-layer SACD trips 0x0000/0xFFFF. Reporting CD-DA for a hybrid
+  SACD is not a bug — it is the whole of our SACD story.
 - **Restructure `media`:** profile primary, ATIP supplement. Today it keys on
   ATIP, which only exists on CD-R/RW — a pressed CD-DA or any DVD gets nothing.
 - Optional, no scope breach: READ DISC STRUCTURE (0xAD) fmt 0x00 -> DVD/BD
@@ -707,16 +711,79 @@ Both paths are now hardware-proven. No open verification items.
   answers this from its own disc model, but the Stanley Road disc exists to
   test it.
 
-  **Partly addressed 2026-07-22** by the session model (`accudisc_session`,
-  `accudisc_check_audio_range`). On the degrade path the guard now refuses any
-  range on a disc carrying a data track (`no_session_info`), which closes the
-  Enhanced CD case without needing the count. The **multi-session all-audio**
-  hole remains exactly as described: nothing in a flat format-0 track list
-  distinguishes it, and only READ DISC INFORMATION's count can. Still [P1],
-  still needs the hardware confirmation above.
+  **DONE 2026-07-22.** `accudisc_toc_info.session_count` and
+  `accudisc_toc.sessions_total`; `session_count=<n>` on the `toc` line. Three
+  behaviours now, where there was one: a count of **1** is fully
+  reconstructible (one session owns every track and format 0's lead-out IS its
+  lead-out), so the model is synthesised and a dead-lead-in disc stays wholly
+  rippable; a count **> 1** refuses with `session_unmapped` — the seams are
+  known to exist and their positions are not; a count of **0** falls back to
+  the conservative all-audio walk.
+
+  **Half-verified.** READ DISC INFORMATION independently reported 2 on the
+  Enhanced CD, matching the lead-in's `sessions=1..2` exactly, which proves the
+  count is *accurate*. It does NOT prove it *survives an unreadable lead-in* —
+  the premise that the drive answers from its own disc model rather than the
+  groove. **Still to do: run `accudisc toc` on the MPO/Stanley Road disc** and
+  confirm a sane count alongside `degrade=leadin_unreadable`. Until then treat
+  the degrade-path count as plausible-but-unproven.
 - **[P3]** Bindings (`bindings/python`, `bindings/rust`) do not yet expose
   `accudisc_read_toc_src` or `accudisc_probe_disc`; they are generated against
   the public header, so both are additive whenever next regenerated.
+
+## Formats and specs
+
+- **[P2] CD+G capture and pack extraction** (AccuDisc's half; cdda2img renders).
+  The graphics ride in the **R–W** subchannel, 6 bits x 96 symbols = 72 bytes
+  per sector, packed as 4 x 24-byte packets. `--sub raw` **already captures all
+  96 subchannel bytes**, so the transport work is done; what is missing is the
+  R–W deinterleave out of P–W, pack-boundary alignment, and emitting the packet
+  stream (which *is* the `.cdg` file format, 300 packets/s).
+
+  **Scope line, agreed with cdda2img:** we deinterleave and emit packets;
+  they render packets to images/video. Rendering is presentation, and belongs
+  on their side of the "AccuDisc only moves bits" rule. Note the subchannel has
+  no C1/C2 protection — only a per-frame CRC-16 — so CD+G capture inherits the
+  Q-failure populations already characterised in RECOVERY.md, and packet loss
+  must be *reported*, never interpolated.
+
+- **HDCD: nothing for us to build.** It is a watermark in the LSBs of ordinary
+  16-bit PCM; a bit-exact rip preserves it with zero special handling, and both
+  detection (scanning LSBs for the control-code sync pattern) and decoding
+  (peak extend, gain, dither) are analysis of delivered audio — explicitly out
+  of scope per CLAUDE.md, and communicated to cdda2img as wholly theirs.
+  Recorded here so the question is not reopened.
+
+- **[P3] Obtain the Orange Book** (CD-R/CD-RW, Recordable, incl. multi-session
+  structure). We have the Red Book in a cdda2img private sub-dir; Orange Book
+  is the normative source for the session-overhead constants we currently
+  assert from measurement — session 1 lead-out 6750, subsequent lead-in 4500,
+  subsequent lead-out 2250, pregap 150. Our Enhanced CD reproduced
+  6750+4500+150 = 11400 exactly, so the numbers are right, but a *measurement*
+  is not a *specification*. Also wanted for the session-count ceiling: 99 is
+  widely quoted and I have not verified it is a spec number rather than
+  folklore. Licensed document — same handling as the MMC spec: `private/code/`,
+  never redistributed, summaries only.
+
+- **[P4] Vanity project: a backwards-compatible hi-res audio disc.** Replicate
+  SACD's *audio quality only* in a format readable by drives >= DVD, using a
+  technique in the spirit of HDCD / DTS-CD — payload smuggled inside a
+  container existing hardware already plays. Options deliberately open.
+  Sketch of the design space, to be argued properly later:
+    - *Where the extra bits live.* HDCD hides ~1 bit in PCM LSBs; DTS-CD
+      replaces the PCM entirely with a bitstream (so legacy players emit
+      noise — the thing Enhanced CD was invented to avoid). A middle path
+      keeps a valid 16/44.1 downmix audible and carries the residual
+      elsewhere: LSB subcoding, the R-W subchannel (~72 B/sector), or a
+      second session's data track.
+    - *Why >= DVD matters.* A CD's 74-80 min at 44.1/16 has no headroom for
+      a meaningful residual; DVD-density media gives ~4.7 GB, enough for
+      24/96 outright, and the question becomes what legacy compatibility is
+      even worth preserving at that point.
+    - *The honest tension.* "Backwards compatible" and "hi-res" pull opposite
+      ways: every bit spent staying compatible is a bit not spent on quality.
+      Worth deciding early which one is the constraint and which the goal.
+  Pure vanity, no schedule, and explicitly not on the critical path.
 
 ## Deferred (explicitly, by user decision)
 

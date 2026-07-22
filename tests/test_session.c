@@ -179,18 +179,34 @@ int main(void)
         accudisc_toc t;
         accudisc_range_check c;
 
-        /* All audio, no session structure: safe to walk. There is no seam to
-         * fall into, so this keeps a disc with a dead lead-in rippable. */
+        /* All audio, nothing could report a session count: safe to walk. There
+         * is no seam to fall into, so this keeps a disc with a dead lead-in
+         * rippable. */
         memset(&t, 0, sizeof(t));
         t.leadout_lba = 100000;
         add(&t, 1, 0x10, 0, 0, 50000);
         add(&t, 2, 0x10, 0, 50000, 50000);
         assert(accudisc_check_audio_range(&t, 0, 100000, &c) == ACCUDISC_OK);
 
-        /* A data track with no session structure means the disc is almost
-         * certainly multi-session and the audio extents cannot be trusted:
-         * the last audio track's length runs through a lead-out we cannot
-         * see. Refuse rather than guess. */
+        /* Same list, but READ DISC INFORMATION says the disc has TWO sessions.
+         * This is the multi-session all-audio case a track census provably
+         * cannot detect: nothing in the list above distinguishes it, yet the
+         * lead-out belongs to the LAST session, so track 2's extent is wrong
+         * and the seam is invisible. Must refuse. */
+        t.sessions_total = 2;
+        assert(accudisc_check_audio_range(&t, 0, 100000, &c) != ACCUDISC_OK);
+        assert(c.reason == ACCUDISC_RANGE_SESSION_UNMAPPED);
+
+        /* A count of exactly 1 is reconstructible, so read_toc_src() maps it
+         * and the table is populated — this path is not reached with total==1
+         * and an empty table. Assert the honest thing instead: an unmapped
+         * single session is treated as unknown, not as safe-by-assumption. */
+        t.sessions_total = 1;
+        assert(accudisc_check_audio_range(&t, 0, 100000, &c) == ACCUDISC_OK);
+
+        /* A data track with no count at all still implies multi-session
+         * strongly enough to refuse. */
+        t.sessions_total = 0;
         t.tracks[1].adr_ctrl = 0x14;
         assert(accudisc_check_audio_range(&t, 0, 50000, &c) != ACCUDISC_OK);
         assert(c.reason == ACCUDISC_RANGE_NO_SESSION_INFO);
@@ -209,6 +225,8 @@ int main(void)
                    "beyond_leadout"));
     assert(!strcmp(accudisc_range_reason_str(ACCUDISC_RANGE_NO_SESSION_INFO),
                    "no_session_info"));
+    assert(!strcmp(accudisc_range_reason_str(ACCUDISC_RANGE_SESSION_UNMAPPED),
+                   "session_unmapped"));
     assert(!strcmp(accudisc_range_reason_str(ACCUDISC_RANGE_EMPTY), "empty"));
     assert(!strcmp(accudisc_range_reason_str(99), "unknown"));
 

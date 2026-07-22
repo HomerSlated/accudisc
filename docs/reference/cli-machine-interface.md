@@ -238,7 +238,7 @@ acquisition-path line:
 track <n> lba <lba> sectors <n> audio|data [session <n>]
 session <n> tracks <first>-<last> audio <n> data <n> leadout <lba>
 leadout lba <lba>
-source=<fulltoc|toc> degrade=<reason> pregaps=none [sessions=<a>..<b>] [disc_type=0x<hh>]
+source=<fulltoc|toc> degrade=<reason> pregaps=none [sessions=<a>..<b>] [disc_type=0x<hh>] session_count=<n>
 ```
 
 The first five fields of `track`, and the `leadout` line, are frozen in this
@@ -310,6 +310,39 @@ Making a marginal lead-in fail `toc` would regress exactly the discs this
 fallback exists to serve. The health signal rides on `degrade=`, which is
 strictly more informative than an exit code.
 
+### `session_count=` — a count, and the only structure a degrade keeps
+
+Always present. **A count, not the `sessions=<a>..<b>` range** — the two come
+from different opcodes and have different availability:
+
+| | `sessions=<a>..<b>` | `session_count=<n>` |
+|---|---|---|
+| source | READ TOC format 2 (the lead-in) | READ DISC INFORMATION |
+| meaning | *which* sessions | *how many* sessions |
+| on a degrade | absent | **present** |
+
+READ DISC INFORMATION is answered from the drive's own disc model rather than
+by re-reading the groove, so it still speaks when the lead-in will not. `0`
+means nobody could say — never a guess.
+
+This is what makes a degraded read safe to act on:
+
+| `session_count` | consequence |
+|---|---|
+| `1` | fully reconstructible — one session owns every track and format 0's lead-out **is** that session's lead-out. The model is synthesised, so session selection, extents and the range guard all behave as if the lead-in had answered. |
+| `>1` | `read` refuses with `session_unmapped`: the seams are known to exist and their positions are not. Format 0 returns the *last* session's lead-out, so the final track's extent is wrong. |
+| `0` | unknown — the conservative all-audio walk, refusing if any data track is present (`no_session_info`). |
+
+The `>1` case matters because a **multi-session all-audio** disc is otherwise
+undetectable: nothing in a flat format-0 track list distinguishes it, and a
+track census provably cannot see session boundaries.
+
+**Verification status:** the count was confirmed *accurate* on hardware
+(PX-716A, 2026-07-22 — READ DISC INFORMATION independently reported 2 on an
+Enhanced CD, matching the lead-in's `sessions=1..2`). It has **not** yet been
+confirmed to survive an unreadable lead-in, which is the premise for the `1`
+row. Treat a degrade-path count as plausible-but-unproven until that test runs.
+
 ### `pregaps=` — always `none` from this subcommand
 
 **INDEX 00 exists only in the program-area Q subchannel, never in the lead-in.**
@@ -356,6 +389,7 @@ accudisc: these sectors are not readable as CD-DA; --force overrides
 | `crosses_session` | spans two sessions — readable on both sides, a wasteland between |
 | `beyond_leadout` | runs past the disc |
 | `no_session_info` | session structure is unknown *and* the disc carries a data track, so the extents cannot be trusted |
+| `session_unmapped` | the disc is **known** to have more than one session (`session_count>1`) but the degraded lead-in did not say which tracks belong to which |
 | `empty` | `count` is 0 |
 
 `--force` bypasses the guard. It is deliberately **separate** from `--any`,
