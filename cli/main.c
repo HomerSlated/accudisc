@@ -274,6 +274,13 @@ static int cmd_toc(accudisc_device *dev)
                t->sectors, ACCUDISC_TRACK_IS_AUDIO(t) ? "audio" : "data");
         if (t->session)
             printf(" session %u", t->session);
+        /* Appended, and only when non-zero: sectors before this track's INDEX
+         * 01 that belong to it (ECMA-130 §20). TOC-derivable only for the
+         * first track, where the program area's start at LBA 0 supplies the
+         * other edge. Distinct from the `pregaps` token, which reports whether
+         * SUBCHANNEL index data was collected for every track. */
+        if (t->pregap)
+            printf(" pregap %u", t->pregap);
         putchar('\n');
     }
     for (uint8_t i = 0; i < toc.session_count; i++) {

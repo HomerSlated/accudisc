@@ -115,8 +115,13 @@ int accudisc_toc_session_audio_range(const accudisc_toc *toc, uint8_t session,
     if (!last->sectors)
         return ACCUDISC_ERR_SHORT;
 
-    *lba = first->lba;
-    *count = last->lba + last->sectors - first->lba;
+    /* Start at the track's true beginning, not at INDEX 01. On a disc whose
+     * first track has a program-area pregap those differ, and starting at
+     * INDEX 01 drops real audio: every LBA then sits shifted against the
+     * delivered stream, which changes the computed disc ID. Every other ripper
+     * reads from 0 here. Non-zero only for the first track of session 1. */
+    *lba = first->lba - first->pregap;
+    *count = last->lba + last->sectors - *lba;
     return ACCUDISC_OK;
 }
 
@@ -143,8 +148,11 @@ int accudisc_toc_track_range(const accudisc_toc *toc, uint8_t first,
     if (!b->sectors || b->lba + b->sectors <= a->lba)
         return ACCUDISC_ERR_SHORT;
 
-    *lba = a->lba;
-    *count = b->lba + b->sectors - a->lba;
+    /* Whole tracks means whole tracks: asking for track 1 gets its pregap too,
+     * so --tracks 1-N and the session default agree rather than differing by a
+     * span whose absence is invisible in the output. */
+    *lba = a->lba - a->pregap;
+    *count = b->lba + b->sectors - *lba;
     return ACCUDISC_OK;
 }
 
@@ -188,7 +196,10 @@ static const accudisc_track *track_at(const accudisc_toc *toc, uint32_t lba)
 {
     for (uint8_t i = 0; i < toc->track_count; i++) {
         const accudisc_track *t = &toc->tracks[i];
-        if (lba >= t->lba && lba < t->lba + t->sectors)
+        /* Full extent, pregap included: ECMA-130 §20 makes a Pause part of the
+         * track that follows it, so the sectors before INDEX 01 are owned, not
+         * a gap. Only the first track of the first session ever has one. */
+        if (lba >= t->lba - t->pregap && lba < t->lba + t->sectors)
             return t;
     }
     return NULL;

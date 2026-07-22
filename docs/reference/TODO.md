@@ -276,6 +276,14 @@ on single-extent drives). Revisit the ranged feature in a future session.
 - Needs a **more damaged disc** to exercise the lost-anchor-at-boundary regime.
 
 ### Known bugs to fix along the way
+- ~~Default read range dropped track 1's program-area pregap~~ **FIXED
+  2026-07-23** (cdda2img §30 → §31). Extents were built from INDEX 01 alone, so
+  a first track whose INDEX 01 is past LBA 0 (hidden-track-one audio) left those
+  sectors owned by nobody and the default read started past them — shifting
+  every LBA against the stream and computing a wrong disc ID. ECMA-130 §20 makes
+  a Pause part of the following track; new `accudisc_track.pregap` records it,
+  non-zero only for session 1's first track. `toc` emits `pregap <n>`. ABI:
+  `accudisc_track` 12→16 bytes (appended field, offsets stable).
 - `features` no-disc false negative (C2_UNSUPPORTED/exit 1) -> UNVERIFIED. [P1]
 - `--speed 16` silently honoured as 8x, unreported. [P1]
 - Logical type must be gated on a CD profile. [P2]

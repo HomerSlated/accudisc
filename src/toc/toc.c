@@ -133,8 +133,42 @@ static void toc_fill_extents(accudisc_toc *out)
             out->anomalies |= ACCUDISC_TOC_ANOM_LEADOUT_BEFORE;
     }
 
+    /* The one pregap the TOC can tell us about.
+     *
+     * ECMA-130 §20 defines a Pause as "a part of an Information Track" — the
+     * sectors before INDEX 01 belong to the track that follows, not to nobody.
+     * The lead-in only ever gives INDEX 01, so extents built from it alone
+     * under-attribute at exactly one place: the program area begins at LBA 0,
+     * so if the disc's first track starts later, the difference is its pregap.
+     *
+     * That span is ordinary audio — every other ripper captures it, and
+     * hidden-track-one audio lives there. Leaving it owned by nobody made the
+     * default read start past it, which silently shifts every LBA against the
+     * delivered stream and produces a wrong disc ID.
+     *
+     * Only the FIRST session's first track qualifies. A later session's first
+     * track also has a pregap, but it sits in the inter-session gap after that
+     * session's lead-in, is not addressable as CD-DA, and must stay unowned. */
+    {
+        accudisc_track *lowest = NULL;
+
+        for (uint8_t i = 0; i < out->track_count; i++) {
+            accudisc_track *t = &out->tracks[i];
+
+            /* session 0 = structure unknown (format-0 path): the flat list is
+             * still rooted at LBA 0, so the rule holds. */
+            if (t->session > 1)
+                continue;
+            if (!lowest || t->lba < lowest->lba)
+                lowest = t;
+        }
+        if (lowest && lowest->lba)
+            lowest->pregap = lowest->lba;
+    }
+
     /* Overlap: no ordering reconciles two tracks claiming one sector, so it is
-     * flagged rather than resolved. Extents above are half-open [lba, lba+n). */
+     * flagged rather than resolved. Extents above are half-open
+     * [lba - pregap, lba + sectors). */
     for (uint8_t i = 0; i < out->track_count; i++) {
         const accudisc_track *a = &out->tracks[i];
 
@@ -145,7 +179,11 @@ static void toc_fill_extents(accudisc_toc *out)
 
             if (!b->sectors)
                 continue;
-            if (a->lba < b->lba + b->sectors && b->lba < a->lba + a->sectors)
+            /* Compare FULL extents, pregap included — a pregap that reached
+             * back into the previous track would be exactly the kind of
+             * collision this is here to catch. */
+            if (a->lba - a->pregap < b->lba + b->sectors &&
+                b->lba - b->pregap < a->lba + a->sectors)
                 out->anomalies |= ACCUDISC_TOC_ANOM_OVERLAP;
         }
     }

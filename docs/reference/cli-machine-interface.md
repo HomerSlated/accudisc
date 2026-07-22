@@ -235,11 +235,22 @@ One line per track, then one line per session, then lead-out, then one
 acquisition-path line:
 
 ```
-track <n> lba <lba> sectors <n> audio|data [session <n>]
+track <n> lba <lba> sectors <n> audio|data [session <n>] [pregap <n>]
 session <n> tracks <first>-<last> audio <n> data <n> leadout <lba>
 leadout lba <lba>
 source=<fulltoc|toc> degrade=<reason> pregaps=none [sessions=<a>..<b>] [disc_type=0x<hh>] session_count=<n> [anomalies=<slug>[,<slug>...] [toc_trusted=0]]
 ```
+
+`pregap <n>` is **appended** to the track line, after `session` when both are
+present, and only when non-zero. It is the count of sectors immediately before
+this track's `lba` (INDEX 01) that belong to the track — ECMA-130 §20 makes a
+Pause part of the track that follows it. It is TOC-derivable only for the first
+track of the first session, where the program area's start at LBA 0 fixes the
+other edge; it is 0 (and the token absent) everywhere else, because per-track
+INDEX 00 lives in the subchannel, which no READ TOC format carries. So `lba`
+still marks INDEX 01 and never moves; the track's full extent is
+`[lba - pregap, lba + sectors)`. Do not confuse this with the `pregaps=` token
+below, which reports whether SUBCHANNEL index data was collected.
 
 The first five fields of `track`, and the `leadout` line, are frozen in this
 form. `lba` and `sectors` are decimal. `session <n>` is **appended** to the
@@ -437,7 +448,11 @@ to read:
 | session structure unknown (`source=toc`) | falls back to the flat whole-disc range, still vetted by the guard |
 
 Having chosen a session, the range covers that session's **audio tracks only**,
-from the first audio track's start to the end of the last. On a Mixed Mode CD —
+from the first audio track's start to the end of the last — where "start"
+includes that track's pregap. On session 1 the first audio track's pregap is the
+program area from LBA 0, so **the default range begins at LBA 0**, not at INDEX
+01, and those pre-INDEX-01 sectors (hidden-track-one audio, and load-bearing for
+the disc ID) are captured. On a Mixed Mode CD —
 one session holding a data track first, then audio — this is what makes the
 disc rippable at all; the whole-session range would begin on the data track and
 the guard would (correctly) refuse it. Verified 2026-07-22 on a Mixed Mode CD-R:

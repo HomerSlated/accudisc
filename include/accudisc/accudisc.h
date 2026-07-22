@@ -291,10 +291,35 @@ typedef struct accudisc_track {
     uint8_t number;    /* 1..99 */
     uint8_t adr_ctrl;  /* raw ADR (high nibble) / CTRL (low nibble) */
     uint8_t session;   /* 1..99; 0 = unknown (format-0 degrade, see below) */
-    uint32_t lba;      /* first sector */
-    uint32_t sectors;  /* to the next track in the SAME session; the session's
-                        * last track runs to that session's lead-out — never
-                        * across a session boundary (see accudisc_session) */
+    uint32_t lba;      /* INDEX 01 — where the track's USER DATA begins. This is
+                        * what the lead-in describes and it never moves. */
+    uint32_t sectors;  /* from lba, to the next track in the SAME session; the
+                        * session's last track runs to that session's lead-out —
+                        * never across a session boundary (see accudisc_session) */
+    uint32_t pregap;   /* sectors immediately BEFORE lba that belong to this
+                        * track, so its full extent is
+                        *     [lba - pregap, lba + sectors)
+                        *
+                        * ECMA-130 §20 is explicit that a Pause is "a part of an
+                        * Information Track", not a gap between tracks: the
+                        * sectors before INDEX 01 belong to the track that
+                        * follows them. Building extents from INDEX 01 alone
+                        * therefore under-attributes, leaving real audio owned
+                        * by nobody.
+                        *
+                        * Only ONE pregap is derivable from the TOC, and this is
+                        * the whole of it: the program area begins at LBA 0, so
+                        * if the first track's INDEX 01 is at LBA n > 0, those n
+                        * sectors are its pregap. Every other track's pregap
+                        * lives in the subchannel (INDEX 00), which the lead-in
+                        * does not carry — see the `pregaps` token in
+                        * accudisc_toc_info. So this is non-zero only for the
+                        * first track of the first session, and 0 elsewhere.
+                        *
+                        * It matters archivally: a rip that starts at INDEX 01
+                        * silently drops those sectors, shifting every LBA
+                        * against the audio stream and producing a wrong disc
+                        * ID. Hidden-track-one audio lives here too. */
 } accudisc_track;
 
 #define ACCUDISC_TRACK_IS_AUDIO(t) (((t)->adr_ctrl & 0x04) == 0)

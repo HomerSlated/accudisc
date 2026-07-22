@@ -373,6 +373,96 @@ int main(void)
         assert(c.reason == ACCUDISC_RANGE_DATA_TRACK);
     }
 
+    /* --- track 1's program-area pregap belongs to track 1 ------------------
+     * ECMA-130 §20: a Pause is "a part of an Information Track", so the
+     * sectors before INDEX 01 are owned by the track that follows, not by
+     * nobody. The program area starts at LBA 0, so a first track whose INDEX 01
+     * is at LBA 33 has a 33-sector pregap — ordinary audio that every other
+     * ripper captures, and where hidden-track-one audio lives.
+     *
+     * Reported by cdda2img 2026-07-23: building extents from INDEX 01 alone
+     * made the default read start at 33, shifting every LBA against the
+     * delivered stream and producing a wrong disc ID. */
+    {
+        accudisc_fulltoc f;
+        accudisc_toc t;
+        accudisc_range_check c;
+        uint32_t lba = 0, count = 0;
+
+        base(&f, 1, 2, 300000);
+        ent(&f, 1, 0x10, 1, 33); /* INDEX 01 at 33, not 0 */
+        ent(&f, 1, 0x10, 2, 100000);
+
+        assert(adsc_toc_from_fulltoc(&f, &t, NULL) == ACCUDISC_OK);
+        assert(t.anomalies == 0); /* a pregap is not a defect */
+
+        /* lba keeps its meaning — INDEX 01 never moves. */
+        assert(t.tracks[0].lba == 33);
+        assert(t.tracks[0].pregap == 33);
+        assert(t.tracks[1].pregap == 0); /* only the first track qualifies */
+
+        /* The default range now starts at 0, and still ends at the lead-out. */
+        assert(accudisc_toc_session_audio_range(&t, 1, &lba, &count) ==
+               ACCUDISC_OK);
+        assert(lba == 0);
+        assert(lba + count == 300000);
+
+        /* Sector 0 is owned, and the whole span passes the guard. */
+        assert(accudisc_check_audio_range(&t, 0, 300000, &c) == ACCUDISC_OK);
+        assert(accudisc_check_audio_range(&t, 0, 1, &c) == ACCUDISC_OK);
+
+        /* --tracks 1-2 agrees with the default rather than differing by 33. */
+        {
+            uint32_t tl = 0, tc = 0;
+
+            assert(accudisc_toc_track_range(&t, 1, 2, &tl, &tc) == ACCUDISC_OK);
+            assert(tl == lba && tc == count);
+        }
+    }
+
+    /* A first track at LBA 0 — the ordinary case — gains no pregap, and a
+     * Mixed Mode disc's audio range must NOT reach back over the data track. */
+    {
+        accudisc_fulltoc f;
+        accudisc_toc t;
+        uint32_t lba = 0, count = 0;
+
+        base(&f, 1, 3, 30000);
+        ent(&f, 1, 0x14, 1, 0); /* data at 0 */
+        ent(&f, 1, 0x10, 2, 10000);
+        ent(&f, 1, 0x10, 3, 20000);
+
+        assert(adsc_toc_from_fulltoc(&f, &t, NULL) == ACCUDISC_OK);
+        assert(t.tracks[0].pregap == 0); /* nothing before LBA 0 */
+        assert(accudisc_toc_session_audio_range(&t, 1, &lba, &count) ==
+               ACCUDISC_OK);
+        assert(lba == 10000); /* the data track keeps its sectors */
+    }
+
+    /* A LATER session's first track gets no pregap: the space before it is the
+     * inter-session lead-out/lead-in/pregap gap, which is not readable as CD-DA
+     * and must stay owned by nobody. */
+    {
+        accudisc_fulltoc f;
+        accudisc_toc t;
+
+        memset(&f, 0, sizeof(f));
+        f.first_session = 1;
+        f.last_session = 2;
+        ptr(&f, 1, 0xA0, 1);
+        ptr(&f, 1, 0xA1, 1);
+        ent(&f, 1, 0x10, 0xA2, 195656);
+        ent(&f, 1, 0x10, 1, 33); /* session 1: real pregap */
+        ptr(&f, 2, 0xA0, 2);
+        ptr(&f, 2, 0xA1, 2);
+        ent(&f, 2, 0x14, 0xA2, 211185);
+        ent(&f, 2, 0x14, 2, 207056); /* session 2, across the 11,400 gap */
+
+        assert(adsc_toc_from_fulltoc(&f, &t, NULL) == ACCUDISC_OK);
+        assert(t.tracks[0].pregap == 33);
+        assert(t.tracks[1].pregap == 0); /* NOT 207056 */
+    }
+
     /* --- degenerate input: must not crash ---------------------------------
      * No tracks, no lead-out, and a lead-in whose entries are all control
      * points. Short-circuits rather than indexing an empty track list. */
