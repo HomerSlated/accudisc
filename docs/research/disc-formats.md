@@ -548,12 +548,35 @@ cited, and wrong in the part that mattered — which is the same failure mode as
 over the one that explains a mechanism.
 
 **Several schemes do not touch the TOC at all**, which is worth stating so
-acquisition effort is not wasted: *MediaMax* and *XCP* are Windows kernel-driver
-attacks on an ordinary, well-formed Enhanced-CD-shaped disc (a Linux SG_IO tool
-is unaffected, and their discs serve only as negative controls); *SafeAudio /
-MusicGuard* deliberately corrupts audio samples and their ECC, which is a
-read-integrity problem for the C2 path and never a TOC anomaly. "Second session
+acquisition effort is not wasted. *MediaMax* and *XCP* are Windows kernel-driver
+attacks on an ordinary, well-formed Enhanced-CD-shaped disc — a Linux SG_IO tool
+is unaffected, and their discs serve only as negative controls. "Second session
 present" is not evidence of malformation.
+
+*SafeAudio / MusicGuard* is the interesting one. It deliberately inserts short
+bursts of unrecoverable noise into the audio, sized so a CD player's
+interpolation conceals them while a bit-exact ripper cannot recover them
+(confirmed from contemporaneous reporting, 2001). That is a read-integrity
+problem for the C2 path and never a TOC anomaly — but it is **not** therefore
+low value to us:
+
+- Its errors are **mastered into the disc**, so they are *static* by
+  construction: identical on every re-read. Real media damage mixes transient
+  and static populations, which is precisely what makes them hard to separate.
+  A SafeAudio disc is a **known-pure static population** — the control the
+  C2/re-read work has never had.
+- It is the case where **a CD player interpolates and AccuDisc must not**.
+  RECOVERY.md's rule is report, never interpolate, so a SafeAudio rip should
+  surface hard errors *by design*. Worth knowing before such a rip is mistaken
+  for a damaged disc.
+- Diagnostically: systematic unrecoverable C2 at **consistent locations across
+  re-reads**, on a disc with no visible damage, is a SafeAudio signature rather
+  than a scratch.
+
+So it belongs on the acquisition list against the **read path**, not the parser.
+`private/research/incoming/` names *Volumia! — Puur* (Netherlands, BMG, 2001)
+as the one reasonably-sourced title; the labels deliberately shipped these discs
+with no packaging notice, which is why identifying them is so hard.
 
 Also untouched: schemes based on physical characteristics rather than the TOC —
 deliberate defects, timing/angle measurement, weak sectors (his ch. 9). Those

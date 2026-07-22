@@ -946,9 +946,34 @@ Both paths are now hardware-proven. No open verification items.
 
   Not worth buying for TOC work, stated so effort is not wasted: XCP and
   MediaMax discs are Windows kernel-driver attacks on ordinary, well-formed
-  Enhanced-CD-shaped discs (useful only as negative controls), and
-  SafeAudio/MusicGuard corrupts audio and its ECC, which tests the C2 read path
-  and never the TOC parser. No SafeAudio title could be identified at all.
+  Enhanced-CD-shaped discs, useful only as negative controls.
+
+- **[P2] SafeAudio disc — for the RECOVERY engine, not the parser.** Tracked
+  separately because it tests a different subsystem. SafeAudio inserts short
+  bursts of unrecoverable noise into the audio, sized so a player's
+  interpolation hides them; it never touches the TOC.
+
+  The survey found no title at all. A contemporaneous source
+  (audiorevolution.com 2001-07-24, relaying *de Volkskrant* 2001-07-20; fetched
+  via `cdda2img/tools/wayback/fetch.py` — WebFetch is blocked from
+  web.archive.org) names **Volumia! *Puur*** (Netherlands, BMG, 2001). It also
+  explains why identification is so hard: BMG confirmed the system was shipped
+  **with no notice on the disc**. A second lead, *Groeten uit Salou 4*, is
+  explicitly hedged in that source as possibly key2audio instead — do not buy on
+  it alone.
+
+  Why it is worth having, which the survey undersold:
+    - the errors are **mastered in**, so they are *static* by construction —
+      identical on every re-read. Real damage mixes transient and static
+      populations, and separating them is exactly the hard part. This is a
+      **known-pure static population**, the control the C2/re-read work has
+      never had.
+    - it is the case where **a player interpolates and we must not**. A
+      SafeAudio rip should surface hard errors *by design*; worth establishing
+      before such a rip is read as a damaged disc.
+    - diagnostically, systematic unrecoverable C2 at **consistent locations
+      across re-reads** on visually clean media is a SafeAudio signature rather
+      than a scratch — an inference the recovery engine could surface.
 
   What each disc would actually buy us, in order of value:
     1. a scheme that does something our taxonomy does **not** cover — the only
