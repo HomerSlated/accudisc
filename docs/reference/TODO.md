@@ -779,40 +779,57 @@ Both paths are now hardware-proven. No open verification items.
 
 ## Formats and specs
 
-- **[P2] CD+G capture and pack extraction** (AccuDisc's half; cdda2img renders).
-  **Rescoped 2026-07-22** against the normative spec (Philips/Sony *Subcode/
-  Control and Display System — Channels R–W*, Nov 1991, `private/research/`),
-  which corrected two errors in the earlier entry. Structure, per §5.1:
+- ~~**[P2] CD+G capture and pack extraction**~~ — **DONE 2026-07-22.**
+  `src/cdda/rw.c`, public API `accudisc_rw_*`, CLI `read --cdg FILE`.
 
-      6 bits (one frame's R..W) = 1 SYMBOL
-      24 SYMBOLS                = 1 PACK
-      4 PACKS                   = 1 PACKET
+  Built against the normative spec (Philips/Sony *Subcode/Control and Display
+  System — Channels R-W*, Nov 1991, `private/research/`), which had already
+  corrected two errors in the earlier version of this entry: the pack/packet
+  nesting was inverted, and R-W is Reed-Solomon protected where I had claimed
+  it was not. Structure, per §5.1: 6 bits = SYMBOL, 24 symbols = PACK, 4 packs
+  = PACKET, so one packet per sector, 75 packets/s and **300 packs/s**. The
+  `.cdg` format is the 24-byte **pack** stream.
 
-  A sector's 98 frames less S0/S1 leave 96 symbols = 4 packs = **one packet per
-  sector**, so 75 packets/s and **300 packs/s**. The `.cdg` format is the
-  24-byte **pack** stream at 300/s (7200 B/s), one byte per symbol.
+  Three stages: extract R-W as the low 6 bits of each subcode byte; undo the
+  8-pack convolutional interleave plus its position permutation (three
+  transpositions — (1,18), (2,5), (3,23) — read directly off spec Figures
+  5.3/5.4, which are images and needed rendering rather than text extraction);
+  then Reed-Solomon decode over GF(2^6), `P(X)=X^6+X+1`. Both codes are
+  conventional RS with consecutive roots a^0.., so **one routine serves both**
+  parameterised by length and parity count: (24,20) across the pack correcting
+  2 symbols, (4,2) over symbols 0-3 correcting 1.
 
-  - *Correction 1:* the old entry said "4 x 24-byte packets" and "300
-    packets/s". The nesting was inverted (4 packs **per** packet) and 300 is the
-    **pack** rate. Emitting packets would have produced a file at ¼ rate.
-  - *Correction 2:* the old entry said the subchannel has "no C1/C2 protection —
-    only a per-frame CRC-16". True of **Q**, false of **R–W**, which carries a
-    **(24,20) Reed-Solomon** code over GF(2⁶) (`P(X)=X⁶+X+1`) with **8×
-    interleaving**, plus a **(4,2) RS** on the first two symbols (MODE/ITEM).
+  **Verification, with no CD+G disc available.** Correctness rests on a round
+  trip against an INDEPENDENT encoder in `tests/test_rw.c`, deliberately built
+  by a different method — the encoder solves H*V=0 by Gaussian elimination, the
+  decoder works from syndromes — so a shared mistake is unlikely to cancel out.
+  Covers: clean round trip, exact-count single-error repair, 2-error repair,
+  an 8-symbol channel burst (which the interleave scatters across 8 logical
+  packs), beyond-capacity damage reported rather than silently miscorrected,
+  and an all-zero stream reading as MODE ZERO.
 
-  `--sub raw` **already captures all 96 subchannel bytes**, so the transport
-  work is done. Missing: R–W deinterleave out of P–W, undoing the 8× interleave,
-  **RS decode**, pack-boundary alignment (the pack after S0/S1 is pack 0), and
-  emitting the pack stream. The RS decode is new scope — this is bigger than the
-  earlier "transport is the hard part" framing implied.
+  **Hardware behaviour, measured on the Taiyo Yuden Mixed Mode CD-R** (a disc
+  with NO CD+G, which is still a real test): 1000 sectors gave 3993 packs
+  (= 4n-7, the 8-pack de-interleave span costing 7 at the tail), 95,832 bytes
+  = 3993 x 24 exactly, all MODE ZERO, output entirely zero. In a single read
+  capturing both `--subf` and `--cdg`, the raw subchannel held **48 stray R-W
+  symbols and the P code repaired exactly 48**, across 47 packs — one of which
+  had two strays, so the t=2 path fired on real data.
 
-  **Scope line, agreed with cdda2img:** we deinterleave, RS-correct and emit
-  packs; they render to images/video. Rendering is presentation and belongs on
-  their side of the "AccuDisc only moves bits" rule; RS correction stays ours,
-  as it recovers recorded bits rather than interpreting them. Where correction
-  genuinely fails, loss is *reported*, never interpolated. The Q-failure
-  populations in RECOVERY.md apply to **Q** and do not transfer to R–W
-  unexamined — that was the error.
+  **A finding worth keeping:** the stray count VARIES between reads of the same
+  sectors (39, 66, 48 on three passes). R-W gets no C1/C2 correction from the
+  drive, so these are transient channel errors, not pressed-in bits. That is
+  the empirical argument for doing the RS decode at all — without it every rip
+  of the same disc would differ.
+
+  Still open: **end-to-end verification needs an actual CD+G disc.** What is
+  unproven is only the assumption that the drive returns the 96 subcode bytes
+  in the order assumed; that rests on the Q path in subq.c, which reads bit 6
+  of the same bytes and is hardware-verified. Worth acquiring a karaoke disc.
+
+  Scope line with cdda2img holds: we deinterleave, RS-correct and emit packs;
+  they render. RS correction recovers recorded bits rather than interpreting
+  them, so it stays our side of the "AccuDisc only moves bits" rule.
 
 - **HDCD: nothing for us to build.** It is a watermark in the LSBs of ordinary
   16-bit PCM; a bit-exact rip preserves it with zero special handling, and both

@@ -956,6 +956,83 @@ ACCUDISC_API void accudisc_sub_extract_q(const uint8_t raw[96], uint8_t q[12]);
  * returns ACCUDISC_ERR_CRC when the frame's CRC does not verify. */
 ACCUDISC_API int accudisc_q_parse(const uint8_t q[12], accudisc_q *out);
 
+/* ---- R-W subchannel (CD+G) --------------------------------------------------
+ * Graphics ride in the R to W subchannels. Structure, per the Philips/Sony
+ * "Subcode/Control and Display System, Channels R-W" specification (Nov 1991)
+ * §5.1:
+ *
+ *     6 bits (one frame's R..W)  = 1 SYMBOL
+ *     24 SYMBOLS                 = 1 PACK
+ *     4 PACKS                    = 1 PACKET
+ *
+ * A sector carries 98 frames; the first two are the S0/S1 subcode sync, leaving
+ * 96 symbols = 4 packs = exactly ONE packet per sector. At 75 sectors/s that is
+ * 75 packets/s and 300 PACKS/s. The `.cdg` file format is the 24-byte pack
+ * stream at 300/s (7200 B/s), one byte per symbol with 6 bits significant — so
+ * a pack, not a packet, is the unit that leaves here.
+ *
+ * Unlike the Q channel, whose only check is a per-frame CRC-16, R-W is properly
+ * error-protected: a (24,20) Reed-Solomon code over GF(2^6) across the pack, 8x
+ * interleaved for burst tolerance, plus a (4,2) Reed-Solomon code guarding
+ * symbols 0..3 — the MODE/ITEM and INSTRUCTION fields that say how to read the
+ * rest. Both are decoded here. Correcting them is recovering bits that WERE
+ * recorded, not interpreting them, so it belongs on this side of the
+ * "AccuDisc only moves bits" line; rendering packs to images does not.
+ *
+ * Recovery is REPORTED, never hidden: each pack carries how many symbols were
+ * repaired and whether either code gave up. Nothing is interpolated. */
+
+#define ACCUDISC_RW_PACK_SYMBOLS  24
+#define ACCUDISC_RW_PACKS_PER_SEC 4  /* packs per SECTOR, not per second */
+/* The de-interleave is convolutional with a span of 8 packs, so the first 7
+ * channel packs fed produce no output. Callers that care about exact stream
+ * alignment need this; most do not. */
+#define ACCUDISC_RW_PRIME_PACKS   7
+
+typedef struct accudisc_rw_pack {
+    uint8_t symbol[ACCUDISC_RW_PACK_SYMBOLS]; /* 6-bit values, one per byte */
+    uint8_t p_fixed;  /* symbols repaired by the (24,20) P code (0..2) */
+    uint8_t q_fixed;  /* symbols repaired by the (4,2) Q code (0..1) */
+    uint8_t p_failed; /* 1 = P syndromes non-zero and not correctable */
+    uint8_t q_failed; /* 1 = Q syndromes non-zero and not correctable */
+} accudisc_rw_pack;
+
+/* Symbol 0 packs a 3-bit MODE and a 3-bit ITEM. CD+G is MODE 1 / ITEM 1, which
+ * is why every .cdg player tests byte 0 for 0x09. */
+#define ACCUDISC_RW_MODE(p) (((p)->symbol[0] >> 3) & 0x07)
+#define ACCUDISC_RW_ITEM(p) ((p)->symbol[0] & 0x07)
+#define ACCUDISC_RW_MODE_ZERO      0 /* no R-W data recorded */
+#define ACCUDISC_RW_MODE_GRAPHICS  1 /* ITEM 0 = LINE GRAPHICS, 1 = TV (CD+G) */
+#define ACCUDISC_RW_ITEM_TV_GRAPHICS 1
+
+typedef struct accudisc_rw accudisc_rw;
+
+/* A streaming R-W decoder. Stateful because the de-interleave spans 8 packs. */
+ACCUDISC_API accudisc_rw *accudisc_rw_open(void);
+ACCUDISC_API void accudisc_rw_close(accudisc_rw *rw);
+
+/* Feed one sector's 96 raw P-W subcode bytes (as ACCUDISC_SUB_RAW delivers).
+ * Emits 0 to 4 fully de-interleaved, error-corrected packs into out[], and
+ * writes the count to *emitted. Fewer than 4 only while priming, or when max
+ * is too small — pass max >= ACCUDISC_RW_PACKS_PER_SEC and it never truncates.
+ * Returns ACCUDISC_OK, or ACCUDISC_ERR_INVAL on bad arguments. */
+ACCUDISC_API int accudisc_rw_feed(accudisc_rw *rw, const uint8_t raw[96],
+                                  accudisc_rw_pack *out, unsigned max,
+                                  unsigned *emitted);
+
+typedef struct accudisc_rw_stats {
+    uint64_t packs;        /* packs emitted */
+    uint64_t p_fixed;      /* symbols repaired by the P code */
+    uint64_t q_fixed;      /* symbols repaired by the Q code */
+    uint64_t p_failed;     /* packs where P could not correct */
+    uint64_t q_failed;     /* packs where Q could not correct */
+    uint64_t mode_zero;    /* packs carrying no R-W data */
+    uint64_t mode_graphics;/* packs in a GRAPHICS mode */
+} accudisc_rw_stats;
+
+ACCUDISC_API void accudisc_rw_get_stats(const accudisc_rw *rw,
+                                        accudisc_rw_stats *out);
+
 /* Convenience: scan the disc's Q stream (raw subchannel reads starting at
  * lba) for an MCN / a track ISRC; ACCUDISC_ERR_NOTFOUND when the disc does
  * not carry one. For ISRC, start at the target track's first sector. */

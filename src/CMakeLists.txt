@@ -23,6 +23,7 @@ set(ACCUDISC_SOURCES
     cdda/subq.c
     cdda/scan.c
     cdda/index_map.c
+    cdda/rw.c
     meta/cdtext.c
     write/wparams.c
     write/discinfo.c

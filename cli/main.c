@@ -82,6 +82,8 @@ static void usage(FILE *to)
         "  --pcm FILE     write raw s16le PCM here\n"
         "  --c2f FILE     write the C2 bitmap stream here\n"
         "  --subf FILE    write the subchannel stream here (needs --sub)\n"
+        "  --cdg FILE     write CD+G packs here: R-W de-interleaved and\n"
+        "                 Reed-Solomon corrected, 24 bytes/pack (needs --sub raw)\n"
         "  --chunk N      sectors per READ CD (default: max under 64 KiB)\n"
         "  --retries K    per-sector attempts on failed chunks (default 2)\n"
         "  --c2-retries N hunt a C2-clean copy of each flagged sector with\n"
@@ -1026,7 +1028,8 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
 /* ---- read ------------------------------------------------------------- */
 
 struct read_ctx {
-    FILE *pcm, *c2f, *subf;
+    FILE *pcm, *c2f, *subf, *cdgf;
+    accudisc_rw *rw; /* R-W decoder state; NULL unless --cdg */
     uint32_t total, done;
     int quiet;
     int prog_fd; /* -1 = off; machine 'progress <done> <total>' lines */
@@ -1055,6 +1058,20 @@ static int read_sink(void *user, const accudisc_chunk *c)
             fwrite(sec + c->audio_len, 1, c->c2_len, ctx->c2f);
         if (ctx->subf && c->sub_len)
             fwrite(sec + c->audio_len + c->c2_len, 1, c->sub_len, ctx->subf);
+        /* CD+G: de-interleave and RS-correct the R-W stream into 24-byte
+         * packs. Streamed rather than buffered — the decoder carries the
+         * 8-pack window it needs, so a whole-disc rip costs no extra memory. */
+        if (ctx->rw && c->sub_len == ACCUDISC_BYTES_SUB_RAW) {
+            accudisc_rw_pack pk[ACCUDISC_RW_PACKS_PER_SEC];
+            unsigned got = 0;
+
+            if (accudisc_rw_feed(ctx->rw,
+                                 sec + c->audio_len + c->c2_len, pk,
+                                 ACCUDISC_RW_PACKS_PER_SEC, &got) == ACCUDISC_OK)
+                for (unsigned p = 0; p < got; p++)
+                    fwrite(pk[p].symbol, 1, ACCUDISC_RW_PACK_SYMBOLS,
+                           ctx->cdgf);
+        }
     }
     ctx->done += c->nsec;
 
@@ -1118,6 +1135,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     accudisc_read_req req = {0};
     struct read_ctx ctx = {0};
     const char *pcm_path = NULL, *c2_path = NULL, *sub_path = NULL;
+    const char *cdg_path = NULL;
     const char *map_path = NULL, *fulltoc_path = NULL, *cdtext_path = NULL;
     long start = 0, count = -1;
     int have_start = 0, want_session = -1, force = 0;
@@ -1183,6 +1201,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             pcm_path = argv[++i];
         else if (!strcmp(a, "--c2f") && i + 1 < argc)
             c2_path = argv[++i];
+        else if (!strcmp(a, "--cdg") && i + 1 < argc)
+            cdg_path = argv[++i];
         else if (!strcmp(a, "--subf") && i + 1 < argc)
             sub_path = argv[++i];
         else if (!strcmp(a, "--chunk") && i + 1 < argc)
@@ -1222,6 +1242,12 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             usage(stderr);
             return 1;
         }
+    }
+    if (cdg_path && req.sub != ACCUDISC_SUB_RAW) {
+        /* CD+G lives in R-W, which only the raw 96-byte form carries; the
+         * deinterleaved Q form has thrown those channels away already. */
+        fprintf(stderr, "accudisc: --cdg requires --sub raw\n");
+        return 1;
     }
     if (sub_path && req.sub == ACCUDISC_SUB_NONE) {
         fprintf(stderr, "accudisc: --subf requires --sub raw|q\n");
@@ -1430,6 +1456,16 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         perror(c2_path);
         goto out;
     }
+    if (cdg_path) {
+        if (!(ctx.cdgf = fopen(cdg_path, "wb"))) {
+            perror(cdg_path);
+            return 1;
+        }
+        if (!(ctx.rw = accudisc_rw_open())) {
+            fprintf(stderr, "accudisc: out of memory\n");
+            return 1;
+        }
+    }
     if (sub_path && !(ctx.subf = fopen(sub_path, "wb"))) {
         perror(sub_path);
         goto out;
@@ -1569,6 +1605,37 @@ out:
         fclose(ctx.c2f);
     if (ctx.subf)
         fclose(ctx.subf);
+    if (ctx.rw) {
+        accudisc_rw_stats rs;
+
+        accudisc_rw_get_stats(ctx.rw, &rs);
+        if (!ctx.quiet) {
+            fprintf(stderr, "\naccudisc cdg summary\n");
+            fprintf(stderr, "  packs written    : %llu\n",
+                    (unsigned long long)rs.packs);
+            fprintf(stderr, "  graphics / zero  : %llu / %llu\n",
+                    (unsigned long long)rs.mode_graphics,
+                    (unsigned long long)rs.mode_zero);
+            fprintf(stderr, "  RS repaired      : %llu symbols (P %llu, Q %llu)\n",
+                    (unsigned long long)(rs.p_fixed + rs.q_fixed),
+                    (unsigned long long)rs.p_fixed,
+                    (unsigned long long)rs.q_fixed);
+            fprintf(stderr, "  RS gave up       : %llu packs (P %llu, Q %llu)\n",
+                    (unsigned long long)(rs.p_failed + rs.q_failed),
+                    (unsigned long long)rs.p_failed,
+                    (unsigned long long)rs.q_failed);
+            /* An all-zero R-W stream is the normal state of an ordinary audio
+             * CD, not a failure — say so, so nobody reads 0 graphics packs as
+             * a bug in the decoder. */
+            if (rs.packs && !rs.mode_graphics)
+                fprintf(stderr,
+                        "  note             : no graphics packs — this disc "
+                        "carries no CD+G\n");
+        }
+        accudisc_rw_close(ctx.rw);
+    }
+    if (ctx.cdgf)
+        fclose(ctx.cdgf);
     if (map_path)
         munmap(map, req.count); /* the file stays for post-mortem reads */
     else

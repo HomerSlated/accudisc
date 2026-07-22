@@ -249,6 +249,38 @@ then; a parser that ignores unknown leading keywords is unaffected by their
 absence. The final line is `key=value` tokens — **parse it as tokens, not
 positionally**; new keys may be appended.
 
+## `read --cdg FILE`
+
+Writes the CD+G pack stream: R-W de-interleaved and Reed-Solomon corrected,
+**24 bytes per pack, one byte per 6-bit symbol**, which is the `.cdg` file
+format. Requires `--sub raw` (R-W only survives in the raw 96-byte subcode
+form; the deinterleaved Q form has discarded those channels), and exits 1
+otherwise.
+
+Pack count is `4 * sectors - 7`. The de-interleave is convolutional with an
+8-pack span, so the first 7 packs cannot be assembled and the loss lands at the
+**tail** of the stream, not the head — emitted pack *k* is logical pack *k*.
+
+A summary goes to stderr unless `-q`:
+
+```
+accudisc cdg summary
+  packs written    : <n>
+  graphics / zero  : <n> / <n>
+  RS repaired      : <n> symbols (P <n>, Q <n>)
+  RS gave up       : <n> packs (P <n>, Q <n>)
+```
+
+`graphics` counts packs in a GRAPHICS mode (MODE 1); `zero` counts MODE 0,
+meaning no R-W data recorded. **An ordinary audio CD yields all zero**, and the
+summary says so explicitly rather than leaving 0 graphics packs to look like a
+decoder fault.
+
+`RS repaired` counts symbols recovered by the two Reed-Solomon codes — (24,20)
+across the pack, and (4,2) over symbols 0-3. `RS gave up` counts packs beyond
+correction capacity; those packs are still written, with their damage reported
+here, and are **never interpolated**.
+
 ### `anomalies=` — the lead-in contradicts itself
 
 **Absent entirely on a well-formed disc**, so parsers may treat its presence as
