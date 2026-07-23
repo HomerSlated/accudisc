@@ -294,20 +294,25 @@ on single-extent drives). Revisit the ranged feature in a future session.
 #### Bug audit 2026-07-23 (full report: `private/bugs/2026-07-23-bug-audit.md`)
 Correctness sweep of the whole tree, 7 findings, 0 critical. `rw.c` RS/GF math
 and the pregap/extent/guard interaction both audited **clean**. Top three
-verified against source before recording. **None fixed yet — work deferred to
-next session.** Order to tackle:
+verified against source before recording. **F-001 fixed; F-002..F-007 deferred.**
+Order to tackle:
 
-- **[P1] F-001 SG_IO `resid` never checked — silent corrupt audio.**
-  `src/transport/sgio.c` treats any GOOD status as full success and never reads
-  `io.resid`. A short transfer with GOOD status (marginal USB bridge, drive
-  under-run, end-of-disc) leaves the chunk buffer's tail holding stale/uninit
-  bytes, which stream to `--pcm` marked `MAP_OK` — the C2/consensus net never
-  runs because the read "succeeded". This is exactly the "short read that
-  succeeds" hazard in CLAUDE.md, and the worst class (silent wrong audio). Fix:
-  compute `transferred = buf_len - (resid>0?resid:0)`, treat `resid!=0` on a
-  data-IN read as short, fall back to the per-sector path for the tail. **Add a
-  test that forces a short-transfer path so it can't regress.** This one also
-  hardens what cdda2img is exercising on the recovery ladder right now.
+- **[P1] F-001 SG_IO `resid` never checked — silent corrupt audio. DONE
+  2026-07-23.** `src/transport/sgio.c` treated any GOOD status as full success
+  and never read `io.resid`; a short transfer with GOOD status (marginal USB
+  bridge, drive under-run, end-of-disc) left the chunk buffer's tail holding
+  stale/uninit bytes, which streamed to `--pcm` marked `MAP_OK` with the
+  C2/consensus net never running — the "short read that succeeds" hazard in
+  CLAUDE.md, worst class. Fixed at the correct seam: the transport now *reports*
+  the residual (`cmd->resid`, clamped via `adsc_resid_clamp`) but does not judge
+  it — allocation-length commands (MODE SENSE, READ TOC, GET PERFORMANCE)
+  legitimately transfer short. `adsc_mmc_read_cd`, which alone has an exact
+  expected length, promotes `resid != 0` to `ACCUDISC_ERR_SHORT`
+  (`adsc_exec_check_short`), so `read_span` drops to its existing per-sector
+  fallback rather than trusting the buffer. Both decision helpers are pure and
+  unit-tested (`tests/test_resid.c`) since the ioctl path can't be mocked;
+  hardens the accurate-stream/scan probes too. Deferred nicety: partial-tail
+  recovery (re-read only the missing sectors) rather than the whole span.
 - **[P2] F-002 `accudisc_rw_feed` desyncs the de-interleave if `max < 4`.**
   `src/cdda/rw.c`: the `break` on `n >= max` skips the remaining packs' pushes,
   permanently misaligning the 8-pack ring; returns OK with garbage output.

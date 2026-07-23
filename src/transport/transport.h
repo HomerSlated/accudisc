@@ -40,7 +40,32 @@ typedef struct adsc_cmd {
     /* out */
     uint8_t sense[ADSC_SENSE_LEN];
     uint8_t sense_len;
+    uint32_t resid; /* bytes NOT transferred (buf_len - actual); 0 = full */
 } adsc_cmd;
+
+/* Clamp a raw SG_IO residual (dxfer_len - bytes actually transferred) to
+ * [0, buf_len]. A negative residual (a nonsensical over-transfer) and one
+ * larger than the buffer both clamp, so a caller always gets a trustworthy
+ * count of the bytes that did NOT arrive. */
+static inline uint32_t adsc_resid_clamp(int raw, uint32_t buf_len)
+{
+    if (raw <= 0)
+        return 0;
+    return (uint32_t)raw > buf_len ? buf_len : (uint32_t)raw;
+}
+
+/* Post-process an exec result for a FIXED-length data-IN command (READ CD:
+ * exactly buf_len bytes must arrive). A GOOD-status transfer that fell short
+ * (resid != 0) left stale bytes in the buffer tail, so it is promoted to
+ * ACCUDISC_ERR_SHORT rather than trusted; any non-OK rc passes through. NOT
+ * for allocation-length commands (MODE SENSE, READ TOC, GET PERFORMANCE),
+ * where a drive legitimately returns fewer bytes than requested. */
+static inline int adsc_exec_check_short(int rc, uint32_t resid)
+{
+    if (rc == ACCUDISC_OK && resid != 0)
+        return ACCUDISC_ERR_SHORT;
+    return rc;
+}
 
 /* Returns ACCUDISC_OK or ACCUDISC_ERR_OPEN (errno preserved). */
 int adsc_transport_open(adsc_transport *t, const char *path, int rw);
@@ -48,7 +73,9 @@ void adsc_transport_close(adsc_transport *t);
 
 /* Execute cmd. ACCUDISC_OK on GOOD status; ACCUDISC_ERR_SENSE when the drive
  * returned CHECK CONDITION (cmd->sense populated); ACCUDISC_ERR_IO for
- * ioctl/host/driver/transport failures (no usable sense). */
+ * ioctl/host/driver/transport failures (no usable sense). On any completed
+ * ioctl (OK or CHECK CONDITION) cmd->resid is set to the untransferred byte
+ * count — fixed-length callers must check it (see adsc_exec_check_short). */
 int adsc_transport_exec(adsc_transport *t, adsc_cmd *cmd);
 
 /* CDROM_SELECT_SPEED: unprivileged Nx read-speed set via the block layer. */

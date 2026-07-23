@@ -22,7 +22,9 @@ int adsc_mmc_read_toc_raw(struct accudisc_device *dev, unsigned format,
 /* One READ CD for nsec sectors into buf (nsec * sector_len bytes, where
  * sector_len must equal adsc_read_cd_sector_len(c2, sub)). Per-sector field
  * order is AUDIO, C2, SUB (probed on PX-716A; matches redumper
- * SectorOrder::DATA_C2_SUB — reprobe per drive before trusting). */
+ * SectorOrder::DATA_C2_SUB — reprobe per drive before trusting). Returns
+ * ACCUDISC_ERR_SHORT if the drive completes with GOOD status but transfers
+ * fewer than nsec*sector_len bytes — buf is then partly stale and untrusted. */
 int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
                      unsigned sector_type, unsigned c2, unsigned sub,
                      void *buf, uint32_t sector_len);

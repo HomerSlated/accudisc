@@ -57,6 +57,13 @@ int adsc_transport_exec(adsc_transport *t, adsc_cmd *cmd)
     if (ioctl(t->fd, SG_IO, &io) < 0)
         return ACCUDISC_ERR_IO;
 
+    /* Record the short-transfer residual: SG_IO can complete with GOOD status
+     * yet move fewer bytes than requested (partial DMA / drive under-run). The
+     * generic transport only reports it; the fixed-length caller (READ CD)
+     * decides whether a residual is an error — allocation-length commands do
+     * not. */
+    cmd->resid = adsc_resid_clamp(io.resid, cmd->buf_len);
+
     if ((io.info & SG_INFO_OK_MASK) != SG_INFO_OK) {
         /* sb_len_wr > 0: the drive returned sense — a CHECK CONDITION the
          * caller can decode; anything else (host/driver/transport) is a

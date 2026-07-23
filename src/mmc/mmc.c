@@ -93,7 +93,11 @@ int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
     cmd.buf = buf;
     cmd.buf_len = nsec * sector_len;
     cmd.timeout_ms = ADSC_TIMEOUT_READ_MS;
-    return adsc_dev_exec(dev, &cmd);
+    /* READ CD is exact-length: a GOOD-status short transfer leaves stale bytes
+     * in the buffer tail. Promote it to ACCUDISC_ERR_SHORT so callers fall
+     * back to the per-sector path (or fail the sector) instead of streaming
+     * stale contents as valid audio. */
+    return adsc_exec_check_short(adsc_dev_exec(dev, &cmd), cmd.resid);
 }
 
 int adsc_mmc_mode_sense10(struct accudisc_device *dev, unsigned page,
