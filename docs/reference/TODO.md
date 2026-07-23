@@ -284,8 +284,17 @@ on single-extent drives). Revisit the ranged feature in a future session.
   a Pause part of the following track; new `accudisc_track.pregap` records it,
   non-zero only for session 1's first track. `toc` emits `pregap <n>`. ABI:
   `accudisc_track` 12→16 bytes (appended field, offsets stable).
-- `features` no-disc false negative (C2_UNSUPPORTED/exit 1) -> UNVERIFIED. [P1]
-- `--speed 16` silently honoured as 8x, unreported. [P1]
+- ~~`features` no-disc false negative (C2_UNSUPPORTED/exit 1) -> UNVERIFIED.~~
+  **DONE** — fixed in the `features` split (see the Phase-1 note above:
+  medium-not-present sense 0x02/0x3a now yields `C2_UNVERIFIED`, verified
+  round-trip empty=UNVERIFIED/loaded=SUPPORTED). This line was a stale duplicate.
+- `--speed 16` silently honoured as 8x, unreported. [P1] **BLOCKED on hardware.**
+  The honoured rate is not a reliable MMC read-back — the {4,8,24,32} ladder is
+  PX-716A-measured, and the only empirical answer is timed streaming reads (what
+  the `speeds` command already does). A "report the honoured speed" path on
+  `speed X` / `read --speed X` is therefore a measurement change whose thresholds
+  must be validated on the drive; not a safe source-only fix. Do it in a focused
+  PX-716A session, reusing `speeds.c`'s timing.
 - Logical type must be gated on a CD profile. [P2]
 - `accudisc_eject`/`accudisc_load` header comments describe START STOP UNIT
   (LoEj), but the implementation uses block-layer CDROMEJECT/CDROMCLOSETRAY
