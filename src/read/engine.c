@@ -64,8 +64,15 @@ uint8_t adsc_map_suspect_byte(uint32_t diff_bytes)
 
 uint32_t adsc_audio_diff(const uint8_t *a, const uint8_t *b)
 {
-    uint32_t n = 0;
+    /* Fast path for the common case: two good reads that agree. memcmp is
+     * vectorised and settles equality far faster than a scalar byte scan. Only
+     * on a genuine mismatch do we pay the per-byte count — whose result is used
+     * solely to size the suspect-byte severity, i.e. only on the rare path.
+     * Bit-exact with the plain loop: both return 0 iff the buffers are equal. */
+    if (memcmp(a, b, ACCUDISC_BYTES_AUDIO) == 0)
+        return 0;
 
+    uint32_t n = 0;
     for (uint32_t i = 0; i < ACCUDISC_BYTES_AUDIO; i++)
         n += a[i] != b[i];
     return n;
