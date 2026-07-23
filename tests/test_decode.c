@@ -20,6 +20,15 @@ static void test_msf(void)
     assert(accudisc_msf_to_lba(m, s, f) == 347175);
     accudisc_lba_to_msf(0, &m, &s, &f);
     assert(m == 0 && s == 2 && f == 0);
+
+    /* F-007: an LBA below the lead-in (< -150) is before 00:00:00 — clamp to
+     * 00:00:00 rather than casting a negative quotient to uint8_t garbage. */
+    accudisc_lba_to_msf(-150, &m, &s, &f); /* exactly 00:00:00 (not clamped) */
+    assert(m == 0 && s == 0 && f == 0);
+    accudisc_lba_to_msf(-75, &m, &s, &f);  /* 00:01:00 (representable, unclamped) */
+    assert(m == 0 && s == 1 && f == 0);
+    accudisc_lba_to_msf(-1000, &m, &s, &f); /* below 00:00:00 -> clamped */
+    assert(m == 0 && s == 0 && f == 0);
 }
 
 static void test_q_position(void)
@@ -72,6 +81,9 @@ static void test_q_crc_rejects_corruption(void)
     q[3] ^= 0x10; /* flip one MCN digit bit */
     assert(accudisc_q_parse(q, &parsed) == ACCUDISC_ERR_CRC);
     assert(!parsed.crc_ok);
+    /* F-006: a CRC-failed frame must not leave decoded payload behind — the
+     * MCN string stays empty rather than carrying plausible-looking garbage. */
+    assert(parsed.mcn[0] == '\0');
 }
 
 static void test_fulltoc(void)

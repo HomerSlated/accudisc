@@ -131,7 +131,11 @@ int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba, uint32_t count,
                           accudisc_c2_lag *out)
 {
     const uint32_t sector_len = ACCUDISC_BYTES_AUDIO + ACCUDISC_BYTES_C2;
-    const uint32_t chunk = 24; /* keeps the transfer under 64 KiB */
+    /* Sized so the *pass-2* window read (chunk + C2LAG_RUNUP sectors) stays
+     * under one transfer: (8 + 16) * 2646 = 63504 < ADSC_MAX_XFER (65535).
+     * Sizing chunk for the pass-1 read alone (24 * 2646) overflowed the window
+     * read to 40 sectors / ~105 KB and failed on small-max_sectors HBAs. */
+    const uint32_t chunk = 8;
     const uint32_t wmax = chunk + C2LAG_RUNUP;
 
     if (!dev || !out || count == 0)

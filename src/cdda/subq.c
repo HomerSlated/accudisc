@@ -15,6 +15,10 @@ int32_t accudisc_msf_to_lba(uint8_t m, uint8_t s, uint8_t f)
 void accudisc_lba_to_msf(int32_t lba, uint8_t *m, uint8_t *s, uint8_t *f)
 {
     lba += 150;
+    if (lba < 0)
+        lba = 0; /* below 00:00:00 (deep lead-in): MSF can't represent it, and
+                  * casting a negative quotient to uint8_t is garbage. Clamp,
+                  * matching the write path's put_msf. */
     if (m)
         *m = (uint8_t)(lba / (60 * 75));
     if (s)
@@ -50,6 +54,14 @@ int accudisc_q_parse(const uint8_t q[12], accudisc_q *out)
 
     uint16_t want = (uint16_t)~(((uint16_t)q[10] << 8) | q[11]);
     out->crc_ok = adsc_crc16(q, 10) == want;
+
+    /* Decode payload only for a CRC-good frame. On a bad frame the BCD/ISRC
+     * decoders would emit values > 99 (unvalidated nibbles) or non-alphanumeric
+     * ISRC chars; leaving the fields zeroed (memset above) keeps the struct from
+     * handing back plausible-looking garbage to a caller that ignores the
+     * return. adr/control (the frame-type header) stay set either way. */
+    if (!out->crc_ok)
+        return ACCUDISC_ERR_CRC;
 
     switch (out->adr) {
     case ACCUDISC_Q_POSITION:
@@ -89,5 +101,5 @@ int accudisc_q_parse(const uint8_t q[12], accudisc_q *out)
     default:
         break;
     }
-    return out->crc_ok ? ACCUDISC_OK : ACCUDISC_ERR_CRC;
+    return ACCUDISC_OK; /* the !crc_ok path returned ERR_CRC above */
 }

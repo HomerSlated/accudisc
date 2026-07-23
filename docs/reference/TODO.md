@@ -294,8 +294,8 @@ on single-extent drives). Revisit the ranged feature in a future session.
 #### Bug audit 2026-07-23 (full report: `private/bugs/2026-07-23-bug-audit.md`)
 Correctness sweep of the whole tree, 7 findings, 0 critical. `rw.c` RS/GF math
 and the pregap/extent/guard interaction both audited **clean**. Top three
-verified against source before recording. **F-001 fixed; F-002..F-007 deferred.**
-Order to tackle:
+verified against source before recording. **All seven fixed 2026-07-23**, each
+with a regression test; suite clean under ASan+UBSan. History below.
 
 - **[P1] F-001 SG_IO `resid` never checked — silent corrupt audio. DONE
   2026-07-23.** `src/transport/sgio.c` treated any GOOD status as full success
@@ -328,18 +328,24 @@ Order to tackle:
   Fixed: named `ADSC_CUE_MAX_ENTRIES`/`ADSC_CUE_MAX_BYTES` in `write.h`, buffer
   sized to it; `tests/test_cuesheet.c` builds the 400-entry worst case (OK) and
   one byte short (clean `ERR_SHORT`).
-- **[P3] F-004** `cmd_read` `--cdg` open failures `return` instead of
-  `goto out` (`cli/main.c` ~1480) — leaks the mmap/open files; bounded by
-  immediate process exit. Two-line fix.
-- **[P3] F-005** c2lag pass-2 window read can reach 40 sectors (~105 KB),
-  past the 64 KB one-shot target (`src/drive/c2lag.c`). Degrades a report-only
-  probe on small-`max_sectors` HBAs; no corruption. Shrink `chunk` or split.
-- **[P3] F-006** `accudisc_q_parse` fills BCD/ISRC fields *before* returning
-  `ACCUDISC_ERR_CRC` (`src/cdda/subq.c`) — a non-OK return leaves garbage in the
-  struct for an external caller that ignores the return. All in-tree callers
-  gate on `crc_ok`, so latent. Zero fields on `!crc_ok`, or document.
-- **[P4] F-007** `accudisc_lba_to_msf` garbage for LBA < −150 (deep lead-in);
-  currently unreached (write path clamps via its own `put_msf`). Clamp/document.
+- **[P3] F-004 DONE 2026-07-23.** `cmd_read` `--cdg` open failures used bare
+  `return 1` instead of `goto out` (`cli/main.c`), leaking the status map/mmap
+  and any open `--pcm`/`--c2` files; the `out:` cleanup handles cdgf/rw NULL-safe.
+  Both replaced with `goto out`.
+- **[P3] F-005 DONE 2026-07-23.** c2lag `chunk` was sized (24) for the pass-1
+  read alone; the pass-2 window adds `C2LAG_RUNUP` (16), reaching 40 sectors
+  (~105 KB) past `ADSC_MAX_XFER` (65535) and failing on small-`max_sectors`
+  HBAs. `chunk` reduced to 8 → window read (8+16)×2646 = 63504 < 65535; comment
+  corrected to size for the window, not the chunk.
+- **[P3] F-006 DONE 2026-07-23.** `accudisc_q_parse` (`src/cdda/subq.c`) now
+  early-returns `ACCUDISC_ERR_CRC` before decoding any BCD/ISRC payload, so a
+  CRC-failed frame leaves position/MCN/ISRC zeroed (adr/control still set).
+  Header documents fields as valid only on `ACCUDISC_OK`; regression in
+  `tests/test_decode.c`.
+- **[P4] F-007 DONE 2026-07-23.** `accudisc_lba_to_msf` clamps a post-offset
+  negative (LBA < −150, deep lead-in) to 00:00:00 instead of casting a negative
+  quotient to `uint8_t`. Matches the write path's `put_msf`; header documents
+  the clamp; regression in `tests/test_decode.c`.
 
 ### Meta — a caution for next session
 Four confident spec-derived claims were overturned by hardware today: "setcap is

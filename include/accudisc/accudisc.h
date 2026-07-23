@@ -944,7 +944,9 @@ ACCUDISC_API int accudisc_read_cdda(accudisc_device *dev,
                                     accudisc_read_stats *stats);
 
 /* ---- MSF <-> LBA ----------------------------------------------------------
- * MSF as it appears on disc; LBA 0 == 00:02:00 (the 150-sector pregap). */
+ * MSF as it appears on disc; LBA 0 == 00:02:00 (the 150-sector pregap). An LBA
+ * below -150 (deep lead-in) is before 00:00:00, which MSF cannot represent, so
+ * accudisc_lba_to_msf clamps it to 00:00:00. */
 ACCUDISC_API int32_t accudisc_msf_to_lba(uint8_t m, uint8_t s, uint8_t f);
 ACCUDISC_API void accudisc_lba_to_msf(int32_t lba, uint8_t *m, uint8_t *s,
                                       uint8_t *f);
@@ -977,8 +979,10 @@ typedef struct accudisc_q {
 /* Extract the 12 Q bytes from one raw interleaved 96-byte subcode block. */
 ACCUDISC_API void accudisc_sub_extract_q(const uint8_t raw[96], uint8_t q[12]);
 
-/* Parse a 12-byte Q frame. Fields are filled best-effort either way;
- * returns ACCUDISC_ERR_CRC when the frame's CRC does not verify. */
+/* Parse a 12-byte Q frame. On ACCUDISC_ERR_CRC (CRC did not verify) only adr,
+ * control and crc_ok are set; all position/MCN/ISRC fields are left zero rather
+ * than decoded, since a bad frame yields out-of-range BCD/ISRC values. They are
+ * populated only on ACCUDISC_OK. */
 ACCUDISC_API int accudisc_q_parse(const uint8_t q[12], accudisc_q *out);
 
 /* ---- R-W subchannel (CD+G) --------------------------------------------------

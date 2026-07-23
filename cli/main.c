@@ -1480,11 +1480,11 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     if (cdg_path) {
         if (!(ctx.cdgf = fopen(cdg_path, "wb"))) {
             perror(cdg_path);
-            return 1;
+            goto out; /* ret already 1; bare return would leak map/pcm/c2f */
         }
         if (!(ctx.rw = accudisc_rw_open())) {
             fprintf(stderr, "accudisc: out of memory\n");
-            return 1;
+            goto out;
         }
     }
     if (sub_path && !(ctx.subf = fopen(sub_path, "wb"))) {
