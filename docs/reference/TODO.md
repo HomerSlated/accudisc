@@ -291,6 +291,47 @@ on single-extent drives). Revisit the ranged feature in a future session.
   (LoEj), but the implementation uses block-layer CDROMEJECT/CDROMCLOSETRAY
   (device.c explains why). One-line comment fix; contract vs implementation.
 
+#### Bug audit 2026-07-23 (full report: `private/bugs/2026-07-23-bug-audit.md`)
+Correctness sweep of the whole tree, 7 findings, 0 critical. `rw.c` RS/GF math
+and the pregap/extent/guard interaction both audited **clean**. Top three
+verified against source before recording. **None fixed yet — work deferred to
+next session.** Order to tackle:
+
+- **[P1] F-001 SG_IO `resid` never checked — silent corrupt audio.**
+  `src/transport/sgio.c` treats any GOOD status as full success and never reads
+  `io.resid`. A short transfer with GOOD status (marginal USB bridge, drive
+  under-run, end-of-disc) leaves the chunk buffer's tail holding stale/uninit
+  bytes, which stream to `--pcm` marked `MAP_OK` — the C2/consensus net never
+  runs because the read "succeeded". This is exactly the "short read that
+  succeeds" hazard in CLAUDE.md, and the worst class (silent wrong audio). Fix:
+  compute `transferred = buf_len - (resid>0?resid:0)`, treat `resid!=0` on a
+  data-IN read as short, fall back to the per-sector path for the tail. **Add a
+  test that forces a short-transfer path so it can't regress.** This one also
+  hardens what cdda2img is exercising on the recovery ladder right now.
+- **[P2] F-002 `accudisc_rw_feed` desyncs the de-interleave if `max < 4`.**
+  `src/cdda/rw.c`: the `break` on `n >= max` skips the remaining packs' pushes,
+  permanently misaligning the 8-pack ring; returns OK with garbage output.
+  Contract-guarded (header forbids `max < PACKS_PER_SEC`; both in-tree callers
+  honour it) so latent, not live. Fix: always `push_channel_pack` for all four,
+  gate only emission — and/or return `ACCUDISC_ERR_INVAL` on `max < 4`.
+- **[P2] F-003 DAO cue buffer 32 bytes short.** `src/write/burn.c:64`
+  `cue[99*8*4]`=3168 vs 3200 worst case (99 tracks × ISRC+pregap+track + 4
+  global entries). Bounds-checked so it aborts cleanly (no overflow), but a
+  full 99-track ISRC+pregap disc can't burn, with an opaque "response too
+  short". Fix: size `(99*4 + 4) * 8`, ideally via a named `ADSC_CUE_MAX_ENTRIES`.
+- **[P3] F-004** `cmd_read` `--cdg` open failures `return` instead of
+  `goto out` (`cli/main.c` ~1480) — leaks the mmap/open files; bounded by
+  immediate process exit. Two-line fix.
+- **[P3] F-005** c2lag pass-2 window read can reach 40 sectors (~105 KB),
+  past the 64 KB one-shot target (`src/drive/c2lag.c`). Degrades a report-only
+  probe on small-`max_sectors` HBAs; no corruption. Shrink `chunk` or split.
+- **[P3] F-006** `accudisc_q_parse` fills BCD/ISRC fields *before* returning
+  `ACCUDISC_ERR_CRC` (`src/cdda/subq.c`) — a non-OK return leaves garbage in the
+  struct for an external caller that ignores the return. All in-tree callers
+  gate on `crc_ok`, so latent. Zero fields on `!crc_ok`, or document.
+- **[P4] F-007** `accudisc_lba_to_msf` garbage for LBA < −150 (deep lead-in);
+  currently unreached (write path clamps via its own `put_msf`). Clamp/document.
+
 ### Meta — a caution for next session
 Four confident spec-derived claims were overturned by hardware today: "setcap is
 an artifact of the RO open", "page 2A is a placebo", "MMC has no rotation
