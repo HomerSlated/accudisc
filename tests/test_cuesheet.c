@@ -72,5 +72,30 @@ int main(void)
     /* Too-small buffer is a clean error, not a smash. */
     assert(adsc_cuesheet_build(&toc, buf, 8, &len) == ACCUDISC_ERR_SHORT);
 
+    /* F-003 worst case: 99 tracks each with an ISRC and a pre-gap, plus MCN =
+     * 2 (MCN) + 1 (lead-in) + 99*[2 ISRC + 1 pregap + 1 index1] + 1 (lead-out)
+     * = 400 entries. The old 99*8*4 = 3168-byte buffer was 32 bytes short and
+     * rejected this legitimate disc; ADSC_CUE_MAX_BYTES (3200) fits exactly. */
+    {
+        uint8_t big[ADSC_CUE_MAX_BYTES];
+
+        memset(&toc, 0, sizeof(toc));
+        strcpy(toc.mcn, "0123456789012");
+        toc.ntracks = 99;
+        for (int i = 0; i < 99; i++) {
+            toc.track[i].audio = 1;
+            strcpy(toc.track[i].isrc, "USRC17600001"); /* 12 chars + NUL */
+            toc.track[i].index1_lba = (uint32_t)(i + 1) * 300u;
+            toc.track[i].pregap = 150; /* tracks 2..99 each emit a gap entry */
+        }
+        toc.leadout_lba = 100u * 300u;
+
+        assert(adsc_cuesheet_build(&toc, big, sizeof(big), &len) == ACCUDISC_OK);
+        assert(len == ADSC_CUE_MAX_BYTES); /* 400 entries, 3200 bytes */
+        /* One byte short must still be a clean rejection, not an overrun. */
+        assert(adsc_cuesheet_build(&toc, big, sizeof(big) - 1, &len) ==
+               ACCUDISC_ERR_SHORT);
+    }
+
     return 0;
 }

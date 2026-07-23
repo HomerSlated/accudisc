@@ -313,17 +313,21 @@ Order to tackle:
   unit-tested (`tests/test_resid.c`) since the ioctl path can't be mocked;
   hardens the accurate-stream/scan probes too. Deferred nicety: partial-tail
   recovery (re-read only the missing sectors) rather than the whole span.
-- **[P2] F-002 `accudisc_rw_feed` desyncs the de-interleave if `max < 4`.**
-  `src/cdda/rw.c`: the `break` on `n >= max` skips the remaining packs' pushes,
-  permanently misaligning the 8-pack ring; returns OK with garbage output.
-  Contract-guarded (header forbids `max < PACKS_PER_SEC`; both in-tree callers
-  honour it) so latent, not live. Fix: always `push_channel_pack` for all four,
-  gate only emission — and/or return `ACCUDISC_ERR_INVAL` on `max < 4`.
-- **[P2] F-003 DAO cue buffer 32 bytes short.** `src/write/burn.c:64`
-  `cue[99*8*4]`=3168 vs 3200 worst case (99 tracks × ISRC+pregap+track + 4
-  global entries). Bounds-checked so it aborts cleanly (no overflow), but a
-  full 99-track ISRC+pregap disc can't burn, with an opaque "response too
-  short". Fix: size `(99*4 + 4) * 8`, ideally via a named `ADSC_CUE_MAX_ENTRIES`.
+- **[P2] F-002 `accudisc_rw_feed` desyncs the de-interleave if `max < 4`. DONE
+  2026-07-23.** `src/cdda/rw.c`: the `break` on `n >= max` skipped the remaining
+  packs' ring pushes, permanently misaligning the 8-pack de-interleave. Fixed:
+  the loop now always `push_channel_pack`s and gates only emission (`if (n <
+  max)`), and a non-zero `max < ACCUDISC_RW_PACKS_PER_SEC` is rejected up front
+  with `ACCUDISC_ERR_INVAL` (a sink too small to hold a sector's output can
+  never silently drop the tail). `max == 0` prime-only stays valid. Header
+  contract tightened; `tests/test_rw.c` asserts 1..3 reject, 4 passes.
+- **[P2] F-003 DAO cue buffer 32 bytes short. DONE 2026-07-23.**
+  `src/write/burn.c` `cue[99*8*4]`=3168 vs the 3200 worst case (99 tracks ×
+  [ISRC+pregap+track] + MCN×2 + lead-in + lead-out = 400 entries). Bounds-checked
+  so it aborted cleanly, but a full 99-track ISRC+pregap disc could not burn.
+  Fixed: named `ADSC_CUE_MAX_ENTRIES`/`ADSC_CUE_MAX_BYTES` in `write.h`, buffer
+  sized to it; `tests/test_cuesheet.c` builds the 400-entry worst case (OK) and
+  one byte short (clean `ERR_SHORT`).
 - **[P3] F-004** `cmd_read` `--cdg` open failures `return` instead of
   `goto out` (`cli/main.c` ~1480) — leaks the mmap/open files; bounded by
   immediate process exit. Two-line fix.

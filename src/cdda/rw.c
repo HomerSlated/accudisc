@@ -285,6 +285,13 @@ int accudisc_rw_feed(accudisc_rw *rw, const uint8_t raw[96],
 
     if (!rw || !raw || (!out && max) || !emitted)
         return ACCUDISC_ERR_INVAL;
+    /* A non-zero sink must hold a whole sector's worth of packs. A smaller one
+     * would force dropping this sector's tail — and the previous `break` on a
+     * full sink also skipped the remaining packs' ring pushes, desyncing the
+     * de-interleave for every later sector. Reject it; max == 0 (prime-only,
+     * out may be NULL) stays valid. */
+    if (max != 0 && max < ACCUDISC_RW_PACKS_PER_SEC)
+        return ACCUDISC_ERR_INVAL;
     *emitted = 0;
 
     for (unsigned pk = 0; pk < ACCUDISC_RW_PACKS_PER_SEC; pk++) {
@@ -294,12 +301,14 @@ int accudisc_rw_feed(accudisc_rw *rw, const uint8_t raw[96],
         for (unsigned i = 0; i < ACCUDISC_RW_PACK_SYMBOLS; i++)
             sym[i] = raw[pk * ACCUDISC_RW_PACK_SYMBOLS + i] & 0x3f;
 
+        /* Advance the ring for EVERY pack. The 8-pack convolutional
+         * de-interleave desyncs permanently if any pack is skipped, so
+         * emission is gated (below) but the push never is. */
         push_channel_pack(rw, sym);
         if (rw->seen < 8) /* still priming: the de-interleave spans 8 packs */
             continue;
-        if (n >= max)
-            break;
-        emit_pack(rw, &out[n++]);
+        if (n < max)
+            emit_pack(rw, &out[n++]);
     }
     *emitted = n;
     return ACCUDISC_OK;

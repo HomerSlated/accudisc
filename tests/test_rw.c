@@ -339,14 +339,21 @@ int main(void)
     /* --- argument handling ------------------------------------------------ */
     {
         accudisc_rw *rw = accudisc_rw_open();
-        accudisc_rw_pack p;
+        accudisc_rw_pack p[ACCUDISC_RW_PACKS_PER_SEC];
         uint8_t raw[96] = {0};
         unsigned n = 99;
 
         assert(rw);
-        assert(accudisc_rw_feed(NULL, raw, &p, 1, &n) == ACCUDISC_ERR_INVAL);
-        assert(accudisc_rw_feed(rw, NULL, &p, 1, &n) == ACCUDISC_ERR_INVAL);
-        assert(accudisc_rw_feed(rw, raw, &p, 1, NULL) == ACCUDISC_ERR_INVAL);
+        assert(accudisc_rw_feed(NULL, raw, p, 1, &n) == ACCUDISC_ERR_INVAL);
+        assert(accudisc_rw_feed(rw, NULL, p, 1, &n) == ACCUDISC_ERR_INVAL);
+        assert(accudisc_rw_feed(rw, raw, p, 1, NULL) == ACCUDISC_ERR_INVAL);
+        /* A non-zero sink smaller than a full sector is rejected, not silently
+         * desynced (F-002): 1..3 must fail, PACKS_PER_SEC must pass. */
+        assert(accudisc_rw_feed(rw, raw, p, 1, &n) == ACCUDISC_ERR_INVAL);
+        assert(accudisc_rw_feed(rw, raw, p, ACCUDISC_RW_PACKS_PER_SEC - 1, &n) ==
+               ACCUDISC_ERR_INVAL);
+        assert(accudisc_rw_feed(rw, raw, p, ACCUDISC_RW_PACKS_PER_SEC, &n) ==
+               ACCUDISC_OK);
         /* max = 0 with a NULL sink is legal: it primes without emitting. */
         assert(accudisc_rw_feed(rw, raw, NULL, 0, &n) == ACCUDISC_OK);
         assert(n == 0);

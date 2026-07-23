@@ -1038,8 +1038,10 @@ ACCUDISC_API void accudisc_rw_close(accudisc_rw *rw);
 
 /* Feed one sector's 96 raw P-W subcode bytes (as ACCUDISC_SUB_RAW delivers).
  * Emits 0 to 4 fully de-interleaved, error-corrected packs into out[], and
- * writes the count to *emitted. Fewer than 4 only while priming, or when max
- * is too small — pass max >= ACCUDISC_RW_PACKS_PER_SEC and it never truncates.
+ * writes the count to *emitted. Fewer than 4 only while priming (the
+ * de-interleave spans 8 packs). max must be 0 (prime-only; out may be NULL)
+ * or >= ACCUDISC_RW_PACKS_PER_SEC, so a sector's output is never truncated —
+ * a smaller non-zero max is rejected rather than silently desyncing the ring.
  * Returns ACCUDISC_OK, or ACCUDISC_ERR_INVAL on bad arguments. */
 ACCUDISC_API int accudisc_rw_feed(accudisc_rw *rw, const uint8_t raw[96],
                                   accudisc_rw_pack *out, unsigned max,

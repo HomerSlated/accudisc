@@ -64,6 +64,13 @@ struct adsc_write_toc {
     struct adsc_write_track track[99];
 };
 
+/* SEND CUE SHEET worst case, matching adsc_cuesheet_build's emission: MCN (2)
+ * + lead-in (1) + 99 tracks each carrying [ISRC (2) + pregap (1) + track (1)]
+ * + lead-out (1) = 400 entries of 8 bytes. Size any cue buffer to this so a
+ * legitimate fully-populated 99-track disc is never rejected as ERR_SHORT. */
+#define ADSC_CUE_MAX_ENTRIES (2u + 1u + 99u * 4u + 1u) /* 400 */
+#define ADSC_CUE_MAX_BYTES   (ADSC_CUE_MAX_ENTRIES * 8u) /* 3200 */
+
 /* Build the SEND CUE SHEET payload (8 bytes/entry) for the audio DAO layout in
  * *toc. Writes up to cap bytes into out, sets *out_len. Mirrors cdrdao's
  * createCueSheet. Returns ACCUDISC_ERR_SHORT if cap is too small. */

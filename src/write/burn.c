@@ -61,7 +61,7 @@ int adsc_write_run(struct accudisc_device *dev,
                    const struct adsc_burn_opts *opts,
                    adsc_burn_progress cb, void *user)
 {
-    uint8_t cue[99 * 8 * 4];
+    uint8_t cue[ADSC_CUE_MAX_BYTES];
     uint32_t cuelen = 0;
     uint8_t *chunk = NULL, *zero = NULL;
     int ret;
