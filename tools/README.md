@@ -52,6 +52,24 @@ gcc -o /tmp/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudis
   `private/code/MMC/SET_STREAMING_findings.md`). Needs `CAP_SYS_RAWIO`; restores full
   speed on exit.
 
+## Offline benchmarks (C)
+
+- **`bench_decode.c`** — CPU-isolated microbenchmark of the per-sector decode
+  leaves (`adsc_audio_diff`, C2 `popcount`, `adsc_crc16`, `accudisc_sub_extract_q`)
+  at whole-disc iteration counts. No device, no `CAP_SYS_RAWIO`. Times current vs
+  proposed variants (all local copies at one `-O` level for a fair comparison,
+  results cross-checked against the library functions) and reports each against
+  the ~120 s wall-clock of a 40× rip. Built for the 2026-07-23 optimisation audit
+  (`private/optimiser/`); its finding was that the decode path is ~0.19 % of a
+  drive-bound rip, so the proposed popcount/CRC speedups are not worth taking.
+  Re-run if the pipeline ever becomes non-drive-bound (offline image re-verify) or
+  targets a weak CPU. **Needs `-O2` for meaningful numbers**:
+  ```sh
+  cmake --build build
+  gcc -O2 -o build/bench_decode tools/bench_decode.c -I include -I src build/src/libaccudisc.a
+  ./build/bench_decode
+  ```
+
 ## Offline Q analysis (Python)
 
 Operate on a raw subchannel capture (`accudisc read --sub raw --subf FILE`),
