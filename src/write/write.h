@@ -1,8 +1,9 @@
 /* AccuDisc recording (DAO write) engine — internal interface.
  *
- * Phase 1 (in progress): write-parameters setup + simulate scaffolding.
- * The public accudisc_write_* API will land once the engine is complete
- * (see docs/reference/RECORDING_PLAN.md). Nothing here is part of the stable ABI yet.
+ * Phases 1-2 complete and hardware-verified: audio DAO burns bit-exact
+ * (see docs/reference/RECORDING_PLAN.md §9). Phase 3 in progress: full TOC +
+ * CD-Text. The public accudisc_write() API (include/accudisc/accudisc.h) is
+ * live but provisional — fields may still grow until the engine is complete.
  */
 #ifndef ADSC_WRITE_H
 #define ADSC_WRITE_H
