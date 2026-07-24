@@ -266,10 +266,20 @@ passed through unmodified — see 11.1.
     "correct" a charset declaration even in principle. That matters for the real
     non-conforming discs cdda2img hit — cdrdao-authored and CDEmu-mounted images
     carry raw UTF-8 while declaring charset 0x00 — which now round-trip exactly.
-  - **Authored mode (strings / `.toc` `CD_TEXT` blocks → packs) is deferred to
-    v1**, and is welcome as a *second* mode. Its scope, when built, is the old
-    plan: mirror the decoder's v0 — block 0, single language, single-byte, types
-    0x80 title + 0x81 performer + mandatory 0x8f size-info.
+  - **Authored mode (strings / `.toc` `CD_TEXT` blocks → packs) is COMMITTED as a
+    second mode, sequenced after v0** (Keith, 2026-07-24 — promoted off "deferred",
+    now on cdda2img's migration critical path). *Why it can't stay optional:*
+    cdda2img has **no strings→packs encoder** (`cdtext.py` is decode-only); cdrdao
+    is what encodes their `CD_TEXT` strings at burn time today, so the moment
+    cdrdao leaves, a *fresh* disc authored from MusicBrainz metadata has no CD-Text
+    unless AccuDisc encodes it. Pack encoding is bit-formatting — libaccudisc's job
+    by scope, and a mirror of the decoder we already ship — so it belongs here, not
+    in the caller. cdda2img's interim until this lands is **re-burn-only** (they
+    are *not* porting their own encoder). Scope of the first cut: mirror the
+    decoder's v0 — block 0, single language, single-byte, types 0x80 title + 0x81
+    performer + mandatory 0x8f size-info; an unencodable codepoint fails **before**
+    the burn (§11.9 INVARIANT rule 4), never silently dropped. v0 pass-through
+    still ships first (simpler, and it is what makes re-burns work).
 - **Verification is a closed loop against our own reader**: burn → read back with
   AccuDisc (format-05 blob for CD-Text, Q decode for MCN/ISRC/indices) → compare
   to the source. For CD-Text the comparison is now a **byte-for-byte blob

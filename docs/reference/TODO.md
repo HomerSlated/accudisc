@@ -665,15 +665,29 @@ external absolute gate — so recovery = blind re-reads + cross-read consensus.
 
 ## Recording
 
-- **CD-Text on write (next recording feature).** The write path does NOT burn
-  CD-Text yet, so a round-tripped disc loses album/track titles/performer (the
-  "supplemental metadata"). Have: CD-Text *read* (meta/cdtext.c) and the 2448
-  block-type in the write-parameters page (wparams.c `cdtext`). Need: a CD-Text
-  encoder (pack the CD_TEXT blocks the .toc parser currently ignores) + inject
-  it into the SEND CUE SHEET lead-in (dataForm 0x41 lead-in entry + the R-W
-  sub-channel packs). Reference: cdrdao `CdTextEncoder` / `writeCdTextLeadIn`.
-  Note: CD-Text does NOT affect the Disc ID (pure TOC) — this is content
-  fidelity, separate from the pregap item below.
+- **CD-Text on write — two modes; design of record is `RECORDING_PLAN.md` §11.**
+  The write path does NOT burn CD-Text yet, so a round-tripped disc loses
+  album/track titles/performer. Have: CD-Text *read* (meta/cdtext.c) and the 2448
+  block-type in the write-parameters page (wparams.c `cdtext`).
+  - **v0 — PASS-THROUGH (in progress, first to ship).** `write --cdtext FILE`
+    consumes the raw READ TOC format-0x05 blob byte-for-byte; no encode step.
+    Injects the packs into the SEND CUE SHEET lead-in (dataForm 0x41 + R-W
+    sub-channel packs, ring-filled across the lead-in). Handles re-burns of a
+    captured disc. Steps B1–B5/C/D in §11.
+  - **v1 — AUTHORED (COMMITTED 2026-07-24, Keith — promoted off "deferred", now
+    on the migration critical path).** strings / `.toc` `CD_TEXT` blocks →
+    18-byte packs → the blob v0 already knows how to lay down. Needed because
+    cdda2img has NO strings→packs encoder (their `cdtext.py` is decode-only) and
+    cdrdao is what encodes for them today — so once cdrdao leaves, a *fresh* disc
+    authored from metadata has no CD-Text unless AccuDisc encodes it. cdda2img's
+    interim until this lands is re-burn-only (their option (a); they are NOT
+    porting their own encoder). Scope of first cut: mirror the decoder — block 0,
+    single language, single-byte, types 0x80 title + 0x81 performer + mandatory
+    0x8f size-info; unencodable codepoint fails BEFORE the burn (§11.9 INVARIANT
+    rule 4). Reference: cdrdao `CdTextEncoder` / `writeCdTextLeadIn`, libmirage
+    `cdtext-coder.c` — rewrite, never copy. Sequenced after v0.
+  Note: CD-Text does NOT affect the Disc ID (pure TOC) — content fidelity,
+  separate from the pregap item below.
 - **Disc-ID round-trip mismatch = pregap/TOC, upstream (cdda2img).** Root cause
   pinned via 3-way compare: original disc track 1 @ LBA 33 with a 33-frame
   pregap, lead-out 347208; cdda2img's RBI + our burn both track 1 @ 0, lead-out
