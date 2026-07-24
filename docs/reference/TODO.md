@@ -728,16 +728,28 @@ external absolute gate — so recovery = blind re-reads + cross-read consensus.
       whole TITLE and renumbered the following packs**, so the gap decodes as a
       well-formed "track 13 has no title" — indistinguishable from a disc
       genuinely authored that way. It cost a day of wrong theories about where
-      the gap came from. Our encoder must not reproduce that. Order of
-      preference: **(1) transliterate** where intent is preserved losslessly
-      (U+2010 HYPHEN → `-`, U+2019 → `'`, typographic quotes/dashes) via a
-      published Latin-ASCII folding, **reporting every substitution**;
-      **(2) fail loudly** on a genuinely unmappable field, naming the field and
+      the gap came from. Our encoder must not reproduce that.
+      **MANDATORY: never drop silently.** An unencodable field is either
+      substituted *with a report* or refused *with a report* naming the field and
       the codepoint. `ACCUDISC_WROTE_WITH_CAVEATS` / exit 3 already exists and
-      fits the substitution case exactly. **A silent drop is never acceptable** —
-      it is a well-formed lie, which is worse than an error. This applies to the
-      *decoder* display too: nothing should ever present "no title" without a
-      way to tell "absent on the disc" from "we couldn't render it".
+      fits the substitution case exactly. A silent drop is a well-formed lie,
+      which is worse than an error — nothing downstream can detect it.
+      **OPTIONAL: the transliteration itself** (U+2010 HYPHEN → `-`, U+2019 →
+      `'`, typographic quotes/dashes/ellipsis, NBSP). Deliberately *not*
+      mandatory, per cdda2img §56.2: transliteration tables are not
+      standardised, so two tools folding independently can disagree and make a
+      *verifier* report phantom CD-Text mismatches between the `.toc` and the
+      disc. Callers that fold upstream (cdda2img's `fold_cdtext` does) make ours
+      a no-op; ours is a net for callers that don't, never a second authority on
+      someone else's strings.
+      **Licensing: do NOT pull in a transliteration dependency.** AccuDisc is
+      MIT throughout; a GPL-3 folding library would break that, and the 95 % case
+      is one small punctuation class (U+2010–2015, U+2018/19/201C/201D, U+2026,
+      NBSP) — a few dozen lines, with everything else reported rather than
+      discarded.
+      Applies to the *decoder* display too: nothing should ever present "no
+      title" without a way to tell "absent on the disc" from "we couldn't
+      render it".
   Note: CD-Text does NOT affect the Disc ID (pure TOC) — content fidelity,
   separate from the pregap item below.
 - **Disc-ID round-trip mismatch = pregap/TOC, upstream (cdda2img).** Root cause
