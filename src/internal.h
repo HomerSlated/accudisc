@@ -28,6 +28,11 @@ struct accudisc_device {
 
     void (*log_fn)(void *user, const char *msg);
     void *log_user;
+
+    /* Cause of the most recent ACCUDISC_ERR_IO ("" if none yet). The companion
+     * to last_sense: ERR_SENSE carries the drive's own explanation, ERR_IO
+     * carries the transport's. */
+    char last_io[96];
 };
 
 /* Run a command on the device, recording decoded sense in the handle on any

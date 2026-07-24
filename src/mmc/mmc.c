@@ -60,6 +60,7 @@ int adsc_mmc_read_toc_raw(struct accudisc_device *dev, unsigned format,
         return ACCUDISC_ERR_NOTFOUND;
     if (len > 0xffff)
         len = 0xffff;
+    len = adsc_alloc_even(len); /* see adsc_alloc_even: odd => DID_ERROR */
 
     uint8_t *buf = malloc(len);
     if (!buf)
@@ -122,6 +123,9 @@ int adsc_mmc_mode_sense10(struct accudisc_device *dev, unsigned page,
         return rc;
 
     uint32_t total = (uint32_t)(((unsigned)buf[0] << 8) | buf[1]) + 2;
+    /* Same hazard as the full TOC: a mode-page length is drive data and may be
+     * odd. Round before it becomes a transfer, then re-clamp to the buffer. */
+    total = adsc_alloc_even(total);
     if (total > cap)
         total = cap;
 

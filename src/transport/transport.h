@@ -4,6 +4,7 @@
 #ifndef ADSC_TRANSPORT_H
 #define ADSC_TRANSPORT_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <accudisc/accudisc.h>
@@ -41,7 +42,20 @@ typedef struct adsc_cmd {
     uint8_t sense[ADSC_SENSE_LEN];
     uint8_t sense_len;
     uint32_t resid; /* bytes NOT transferred (buf_len - actual); 0 = full */
+    /* Why an ACCUDISC_ERR_IO happened. Without these, a timeout, a host/adapter
+     * error, a kernel command-filter rejection and a sense-less CHECK CONDITION
+     * are indistinguishable — every one reports "transport I/O failure" and the
+     * cause is unrecoverable after the fact. Valid only when exec returned
+     * ACCUDISC_ERR_IO; io_errno is set only for an outright ioctl failure. */
+    int io_errno;
+    uint16_t host_status;   /* SG DID_* */
+    uint16_t driver_status; /* SG DRIVER_* */
+    uint8_t scsi_status;    /* SCSI status byte */
 } adsc_cmd;
+
+/* Render an ACCUDISC_ERR_IO cause into out (always NUL-terminated), e.g.
+ * "timeout", "host=0x07 driver=0x00", "ioctl: No medium found". Never empty. */
+void adsc_io_detail(const adsc_cmd *cmd, char *out, size_t cap);
 
 /* Clamp a raw SG_IO residual (dxfer_len - bytes actually transferred) to
  * [0, buf_len]. A negative residual (a nonsensical over-transfer) and one

@@ -309,6 +309,22 @@ on single-extent drives). Revisit the ranged feature in a future session.
   stops at newline too. Regression in `tests/test_tocparse.c`. **Owed: notify
   cdda2img** — their `escape_toc_string` was our only guard until this landed
   (RECORDING_PLAN.md §11.9).
+- ~~`toc` reported `leadin_unreadable` on roughly half of all discs~~ **FIXED
+  2026-07-24 (field report).** READ TOC's second transfer was sized straight from
+  the returned data-length header, and a full TOC is `4 + 11*ndesc` bytes with
+  `ndesc = 3 pointers + ntracks` = `37 + 11*ntracks` — **odd on every disc with an
+  EVEN track count**. ATAPI moves 16 bits at a time, so the odd length was
+  rejected by the host adapter before the drive answered: Linux `host_status`
+  **DID_ERROR (0x07)**, no sense, surfacing as a bare `ACCUDISC_ERR_IO` that the
+  TOC path reported as `degrade=leadin_unreadable` — i.e. **as disc damage**.
+  Measured: 11-track disc = 158 B (even) always worked; 12-track disc = 169 B
+  (odd) never did. Fix: shared `adsc_alloc_even()` (`src/mmc/mmc.h`) applied to
+  READ TOC and to `mode_sense10`, which had the identical latent defect.
+  Regression: `tests/test_alloc_even.c`. **Two lessons worth keeping**: an
+  `ACCUDISC_ERR_IO` used to discard `errno`/`host_status`/`driver_status`, which
+  is why this went unattributed for so long (now surfaced via
+  `accudisc_last_io()`); and a *transport* fault was being reported as a *disc
+  health* verdict, which is the more dangerous half — the tool blamed the media.
 - **[P2] Parser hostile-input sweep** (RECORDING_PLAN.md §11.9 REVIEW QUESTION,
   adopted from cdda2img §40.3): apply *"what does this accept if the producer is
   hostile, or merely wrong?"* to every parser fed from a boundary we don't

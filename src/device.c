@@ -134,7 +134,22 @@ int adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
         memset(&dev->last_sense, 0, sizeof(dev->last_sense));
     else
         adsc_sense_decode(cmd->sense, cmd->sense_len, &dev->last_sense);
+
+    /* An ERR_IO has no sense to decode, so record the transport's own account
+     * instead — otherwise the failure is unattributable. Deliberately NOT
+     * cleared on success: a fallback path (full TOC -> format 0) runs a
+     * SUCCEEDING command straight after the failure it is recovering from, and
+     * clearing here would erase the very cause the caller is about to report. */
+    if (rc == ACCUDISC_ERR_IO)
+        adsc_io_detail(cmd, dev->last_io, sizeof(dev->last_io));
     return rc;
+}
+
+const char *accudisc_last_io(accudisc_device *dev)
+{
+    if (!dev || !dev->last_io[0])
+        return "";
+    return dev->last_io;
 }
 
 int adsc_dev_identify(struct accudisc_device *dev)

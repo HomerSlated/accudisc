@@ -99,6 +99,14 @@ ACCUDISC_API void accudisc_close(accudisc_device *dev);
 ACCUDISC_API void accudisc_last_sense(const accudisc_device *dev,
                                       accudisc_sense *out);
 
+/* Why the most recent ACCUDISC_ERR_IO happened, as a short human string —
+ * "timeout (driver=0x06 host=0x00)", "ioctl: No medium found",
+ * "host=0x07 driver=0x00". An ERR_IO carries no sense data, so without this a
+ * transport failure cannot be attributed after the fact. Returns "" when the
+ * last command succeeded or failed some other way. Owned by dev; valid until
+ * the next command. */
+ACCUDISC_API const char *accudisc_last_io(accudisc_device *dev);
+
 /* INQUIRY identification strings, space-trimmed and NUL-terminated. */
 typedef struct accudisc_drive_id {
     char vendor[9];

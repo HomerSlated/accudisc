@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <linux/cdrom.h>
 #include <scsi/sg.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -54,8 +55,14 @@ int adsc_transport_exec(adsc_transport *t, adsc_cmd *cmd)
     io.sbp = cmd->sense;
     io.timeout = cmd->timeout_ms ? cmd->timeout_ms : ADSC_TIMEOUT_CTRL_MS;
 
-    if (ioctl(t->fd, SG_IO, &io) < 0)
+    cmd->io_errno = 0;
+    cmd->host_status = cmd->driver_status = 0;
+    cmd->scsi_status = 0;
+
+    if (ioctl(t->fd, SG_IO, &io) < 0) {
+        cmd->io_errno = errno; /* ENOMEDIUM, EPERM (filter), EINVAL, ... */
         return ACCUDISC_ERR_IO;
+    }
 
     /* Record the short-transfer residual: SG_IO can complete with GOOD status
      * yet move fewer bytes than requested (partial DMA / drive under-run). The
@@ -72,9 +79,43 @@ int adsc_transport_exec(adsc_transport *t, adsc_cmd *cmd)
             cmd->sense_len = io.sb_len_wr;
             return ACCUDISC_ERR_SENSE;
         }
+        /* Keep WHY. A bare ERR_IO here is otherwise unattributable after the
+         * fact: DRIVER_TIMEOUT, DID_ERROR from the adapter and a status-only
+         * failure all look identical to the caller. */
+        cmd->host_status = io.host_status;
+        cmd->driver_status = io.driver_status;
+        cmd->scsi_status = io.status;
         return ACCUDISC_ERR_IO;
     }
     return ACCUDISC_OK;
+}
+
+void adsc_io_detail(const adsc_cmd *cmd, char *out, size_t cap)
+{
+    if (!out || cap == 0)
+        return;
+    if (!cmd) {
+        snprintf(out, cap, "unknown");
+        return;
+    }
+    if (cmd->io_errno) {
+        snprintf(out, cap, "ioctl: %s", strerror(cmd->io_errno));
+        return;
+    }
+    /* DRIVER_TIMEOUT (0x06) is the one worth naming outright: it is the most
+     * common cause of a lead-in read failing on a slow or marginal disc, and
+     * reads very differently from an adapter fault. */
+    if ((cmd->driver_status & 0x0f) == 0x06) {
+        snprintf(out, cap, "timeout (driver=0x%02x host=0x%02x)",
+                 cmd->driver_status, cmd->host_status);
+        return;
+    }
+    if (cmd->host_status || cmd->driver_status || cmd->scsi_status) {
+        snprintf(out, cap, "host=0x%02x driver=0x%02x status=0x%02x",
+                 cmd->host_status, cmd->driver_status, cmd->scsi_status);
+        return;
+    }
+    snprintf(out, cap, "no detail reported");
 }
 
 int adsc_transport_select_speed(adsc_transport *t, unsigned speed_x)

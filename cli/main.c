@@ -132,6 +132,14 @@ static int fail_dev(accudisc_device *dev, const char *what, int err)
     if (s.valid)
         fprintf(stderr, " (key=0x%x asc=0x%02x ascq=0x%02x)", s.key, s.asc,
                 s.ascq);
+    else if (err == ACCUDISC_ERR_IO) {
+        /* No sense to print — say what the transport reported instead, or the
+         * failure is indistinguishable from every other transport failure. */
+        const char *why = accudisc_last_io(dev);
+
+        if (why[0])
+            fprintf(stderr, " (%s)", why);
+    }
     fputc('\n', stderr);
     return 2;
 }
@@ -326,12 +334,19 @@ static int cmd_toc(accudisc_device *dev)
     }
     putchar('\n');
 
-    if (info.degrade != ACCUDISC_TOC_DEGRADE_NONE)
+    if (info.degrade != ACCUDISC_TOC_DEGRADE_NONE) {
+        /* On a transport failure name the cause too — "transport I/O failure"
+         * alone cannot distinguish a timeout from an adapter fault from a
+         * kernel filter rejection, which makes such a report undiagnosable. */
+        const char *why = accudisc_last_io(dev);
+
         fprintf(stderr,
-                "accudisc: full TOC unavailable (%s: %s) — geometry from "
+                "accudisc: full TOC unavailable (%s: %s%s%s) — geometry from "
                 "READ TOC format 0; session structure unavailable\n",
                 accudisc_toc_degrade_str(info.degrade),
-                accudisc_strerror(info.degrade_err));
+                accudisc_strerror(info.degrade_err),
+                why[0] ? " — " : "", why);
+    }
 
     /* Deliberately exit 0 on a degrade. `toc` promises track geometry, and a
      * degrade still delivers it in full — nothing the caller asked for is

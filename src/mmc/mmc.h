@@ -9,6 +9,26 @@
 #include "../internal.h"
 #include "cdb.h"
 
+/* Round a computed transfer length up to an even number of bytes.
+ *
+ * ATAPI moves data 16 bits at a time, so an ODD allocation length can be
+ * rejected by the host adapter BEFORE the drive ever sees it — Linux reports
+ * host_status DID_ERROR (0x07) with no sense data, which surfaces as a bare
+ * ACCUDISC_ERR_IO. Any two-step read that sizes its second transfer from a
+ * returned data-length header must round, because that length is drive/disc
+ * data and nothing guarantees it is even.
+ *
+ * The case that bit us (2026-07-24): a full TOC is 4 + 11*ndesc bytes with
+ * ndesc = 3 pointers + ntracks, i.e. 37 + 11*ntracks — odd on every disc with
+ * an EVEN track count. Half of all discs failed, and the failure masqueraded
+ * as an unreadable lead-in (degrade=leadin_unreadable) rather than a
+ * transfer-length fault. Reading one extra byte is always safe: the drive
+ * returns only what it has, and the parsers walk whole descriptors. */
+static inline uint32_t adsc_alloc_even(uint32_t len)
+{
+    return len + (len & 1u);
+}
+
 int adsc_mmc_inquiry(struct accudisc_device *dev, accudisc_drive_id *out);
 
 /* READ TOC/PMA/ATIP with two-step allocation (4-byte header for the data
