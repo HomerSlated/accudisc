@@ -449,37 +449,47 @@ Validate the incoming format-05 blob *without interpreting the payload*:
 Unit-testable with zero hardware: feed it a captured ABBA blob plus mutations
 (odd length, bad header length, 3-pack stream, flipped CRC byte).
 
-### 11.5 Step B3 — packs → 96-byte R-W blocks (src/meta/cdtext_encode.c, NEW)
+### 11.5 Step B3 — packs → 96-byte R-W blocks — LANDED 2026-07-24 (src/meta/cdtext_encode.c)
 
 Only the *second* layer of the original two-layer plan survives; B3a
 (strings → 18-byte packs) moves to the deferred authored mode.
 
-**18-byte packs → 96-byte R-W subchannel blocks**, one block per lead-in sector.
-The lead-in carries CD-Text as 6-bit R-W symbols: **3 bytes → 4 symbols**, each
-symbol in the low 6 bits of one byte, so 96 symbols = 72 bytes = **exactly 4
-packs per block**. Mirror cdrdao `PWSubChannel96` (rewrite, never copy).
+**18-byte packs → 96-byte R-W subchannel blocks**. The lead-in carries CD-Text as
+6-bit R-W symbols: **3 bytes → 4 symbols** (MSB first), each symbol in the low 6
+bits of one byte, so 96 symbols = 72 bytes = **exactly 4 packs per block**. This is
+a *plain* bit packing — **CD-Text uses no Reed-Solomon and no interleave** (unlike
+CD+G program-area R-W in `src/cdda/rw.c`); its error protection is the per-pack CRC
+that B2 checks. Confirmed against cdrdao `PWSubChannel96::setRawRWdata` (the "used
+for CD-TEXT" path) and its inverse `getRawRWdata`. `adsc_cdtext_encode_rw` +
+`adsc_cdtext_rw_block_count`; the top two bits (P, Q) are left for the burn path.
 
 **Ring fill — the consequence of 11.4's dropped multiple-of-4 rule.** With a pack
 count not divisible by 4 (33 and 35 both occur in the wild), the last block of one
 pass through the stream is short. Do **not** pad it with synthesised packs — that
 is invention, which is the one thing pass-through exists to prevent. Instead treat
-the pack stream as a **ring and fill blocks continuously across the wrap**: the
-lead-in is cycled to fill the extent anyway (11.6), so block boundaries simply do
-not align with stream boundaries, and the pattern repeats after
-`lcm(npacks, 4) / 4` blocks (33 packs → 33 blocks; 35 → 35). Every block is fully
+the pack stream as a **ring and fill blocks continuously across the wrap**: block b
+carries packs `(4b .. 4b+3) mod npacks`. The minimal set that tiles seamlessly is
+`lcm(npacks, 4) / 4 == npacks / gcd(npacks, 4)` blocks (33 → 33, 35 → 35, 42 → 21),
+which the burn path then cycles to fill the extent (11.6). Every block is fully
 populated with real packs and nothing is invented.
 
-Note this is a *deliberate divergence from cdrdao*, which cycles pre-built blocks
-rather than packs and so can only ever emit multiples of 4. Ours is the more
-faithful behaviour for the pass-through case, but it is a hypothesis about what
-the drive accepts until Step C/D confirms it — **if read-back shows the drive
-requires block-aligned pack groups, that is the finding, and it lands here.**
+**CORRECTION 2026-07-24 — this is NOT a divergence from cdrdao; it matches it.**
+The earlier draft (and cdda2img §35.3) claimed cdrdao "cycles pre-built blocks
+rather than packs and so can only ever emit multiples of 4", making ring-fill our
+speculative divergence. Reading the source refutes that: `CdTextEncoder::
+buildSubChannels` **ring-fills packs** — it walks the pack list gathering four at a
+time with wraparound (`if ((prun = prun->next_) == NULL) prun = packs_`) and its
+`packCount % 4` switch produces exactly `lcm(npacks,4)/4` blocks (`%4==0 → /4`,
+`%4==2 → /2`, odd → `npacks`), closing the ring (`assert(prun == packs_)`). So our
+behaviour is **identical to shipping cdrdao**, which burns real non-multiple-of-4
+CD-Text discs — it is *proven*, not a hypothesis awaiting Step C/D. (Told cdda2img.)
 
-**Unit test without hardware**: write the inverse extraction (96-byte block →
-4 packs) in the test and assert `packs → blocks → packs` is the identity over real
-blobs — **including a 33-pack and a 35-pack capture**, which are the cases that
-exercise the ring wrap. The hardware round-trip (Step C/D) is then confirmation,
-not the only evidence.
+**Unit test (landed, hardware-free)**: `tests/test_cdtext_encode.c` writes the
+inverse extraction (96-byte block → 4 packs, mirroring `getRawRWdata`) and asserts
+`packs → blocks → packs` is the identity for 1/2/3/4/6/8/33/35/42 packs — the wild
+non-multiples included — plus the exact cdrdao bit vector (FF,00,FF → 3f,30,03,3f)
+and that no output byte uses the P/Q bits. Clean under clang ASan+UBSan. The
+hardware round-trip (Step C/D) is confirmation, not the only evidence.
 
 ### 11.6 Step B4/B5 — write path (src/write/{wparams,cuesheet,burn}.c, mmc/)
 
