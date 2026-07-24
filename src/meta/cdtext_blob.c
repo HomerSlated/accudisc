@@ -83,3 +83,12 @@ int adsc_cdtext_blob_validate(uint8_t *blob, uint32_t len,
     }
     return ACCUDISC_OK;
 }
+
+int adsc_cdtext_sizeinfo_mismatch(const struct adsc_cdtext_info *info,
+                                  int ntracks)
+{
+    if (!info || !info->have_size_info || ntracks < 1)
+        return 0; /* nothing to compare against */
+    return info->si_first_track != 1u ||
+           info->si_last_track != (unsigned)ntracks;
+}

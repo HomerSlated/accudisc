@@ -119,7 +119,8 @@ static void usage(FILE *to)
         "  1  usage / argument / local file error\n"
         "  2  fatal: device, transport, or command could not complete\n"
         "  3  completed with caveats: data absent (cdtext/fulltoc/scan),\n"
-        "     or read finished with hard/suspect/C2-flagged sectors\n"
+        "     read finished with hard/suspect/C2-flagged sectors, or a burn\n"
+        "     whose CD-Text SIZE_INFO disagreed with the .toc (written as given)\n"
         "  (exception: 'features' keeps its frozen 0-iff-C2-usable contract)\n");
 }
 
@@ -1037,18 +1038,27 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
     int err = accudisc_write(dev, toc, bin, &o, write_progress, &wp);
     fprintf(stderr, "\n");
     if (err == ACCUDISC_ERR_UNSUPPORTED) {
+        /* Not blank = a precondition that could not complete, i.e. exit 2 per
+         * the tool-wide convention (fatal: command could not complete). Nothing
+         * was written. (Was exit 3 here, which collided with "completed with
+         * caveats" — corrected 2026-07-24.) */
         fprintf(stderr, "accudisc: write: disc is not blank\n");
-        return 3;
+        return 2;
     }
-    if (err != ACCUDISC_OK)
+    if (err < 0)
         return fail_dev(dev, "write", err);
 
+    /* err >= 0: the burn completed. ACCUDISC_WROTE_WITH_CAVEATS (positive) means
+     * it completed with a caveat already logged to stderr (e.g. CD-Text
+     * SIZE_INFO vs .toc) — exit 3, the caller must not treat it as a clean run. */
+    int caveats = (err == ACCUDISC_WROTE_WITH_CAVEATS);
     const char *mode = o.simulate ? "simulate" : "burn";
-    printf("write done sectors=%u mode=%s\n", wp.total, mode);
+    printf("write done sectors=%u mode=%s%s\n", wp.total, mode,
+           caveats ? " caveats=1" : "");
     if (wp.prog_fd >= 0)
-        dprintf(wp.prog_fd, "summary sectors=%u mode=%s result=ok\n",
-                wp.total, mode);
-    return 0;
+        dprintf(wp.prog_fd, "summary sectors=%u mode=%s result=%s\n",
+                wp.total, mode, caveats ? "caveats" : "ok");
+    return caveats ? 3 : 0;
 }
 
 /* ---- read ------------------------------------------------------------- */

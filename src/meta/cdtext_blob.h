@@ -30,4 +30,13 @@ struct adsc_cdtext_info {
 int adsc_cdtext_blob_validate(uint8_t *blob, uint32_t len,
                               struct adsc_cdtext_info *info);
 
+/* True when the CD-Text SIZE_INFO track range disagrees with the .toc being
+ * burned (first != 1 or last != ntracks) — e.g. the wrong blob for this disc.
+ * This is a CAVEAT, not a refusal: pass-through still writes the blob verbatim,
+ * but the CD-Text may not describe the audio, so the caller should know. False
+ * when no SIZE_INFO was present (nothing to check against) or ntracks < 1.
+ * Pure. */
+int adsc_cdtext_sizeinfo_mismatch(const struct adsc_cdtext_info *info,
+                                  int ntracks);
+
 #endif /* ADSC_CDTEXT_BLOB_H */

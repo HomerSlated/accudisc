@@ -124,6 +124,17 @@ int accudisc_write(accudisc_device *dev, const char *toc_path,
                           " (payload untouched)",
                      cti.crc_recomputed, cti.npacks);
 
+    /* CD-Text SIZE_INFO vs .toc consistency. A mismatch is a CAVEAT, not a
+     * refusal: pass-through writes the blob as given, but the CD-Text describes
+     * a different track range than the audio, so warn now and report it on the
+     * return so the caller can flag it (CLI exit 3). See RECORDING_PLAN §11.4. */
+    int caveat = adsc_cdtext_sizeinfo_mismatch(&cti, toc->ntracks);
+    if (caveat)
+        adsc_dev_log(dev, "cdtext: SIZE_INFO declares tracks %u-%u but the .toc "
+                          "has 1-%d; writing the blob as given — the CD-Text may "
+                          "not match the audio",
+                     cti.si_first_track, cti.si_last_track, toc->ntracks);
+
     int bin = open(bin_path, O_RDONLY);
     if (bin < 0) {
         free(cdtext_buf);
@@ -137,5 +148,9 @@ int accudisc_write(accudisc_device *dev, const char *toc_path,
     close(bin);
     free(cdtext_buf);
     free(toc);
+    /* Only promote to a caveat if the burn itself completed; a real failure
+     * dominates and keeps its own (negative) code. */
+    if (rc == ACCUDISC_OK && caveat)
+        return ACCUDISC_WROTE_WITH_CAVEATS;
     return rc;
 }

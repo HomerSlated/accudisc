@@ -512,9 +512,24 @@ audio → SYNCHRONIZE CACHE. The lead-in write cycles the B3 block set over
   would write nothing and an underflow would request ~4 billion sectors.
 - **Deferred B2 surfacing now wired**: `adsc_write_load_model` takes a
   `adsc_cdtext_info` out-param and `accudisc_write` logs any zero-CRC
-  regeneration. *Still open*: the SIZE_INFO-vs-`.toc` mismatch warning → exit 3,
-  which needs a "completed with caveats" return path (an API contract change
-  cdda2img depends on — decide before adding).
+  regeneration.
+- **SIZE_INFO-vs-`.toc` mismatch → exit 3 — DONE 2026-07-24.** `accudisc_write`
+  now returns a POSITIVE `ACCUDISC_WROTE_WITH_CAVEATS` when the burn completed but
+  the CD-Text SIZE_INFO's track range disagrees with the `.toc` (pure
+  `adsc_cdtext_sizeinfo_mismatch`); the blob is still written verbatim
+  (pass-through) and a warning is logged. The CLI maps it to **exit 3**.
+  - **Contract reconciliation, because exit 3 was overloaded.** `cmd_write`
+    returned exit 3 for "disc not blank", which is a *precondition that could not
+    complete* — exit **2** per the tool-wide convention (0 clean / 1 usage / 2
+    could-not-complete / 3 completed-with-caveats). Moved not-blank 3→2 so exit 3
+    means only "completed with caveats", matching the read side. **cdda2img
+    depended on `rc == 3` meaning "not blank"** (their `disc_writer.py`); told them
+    to remap (rc 2 = not blank, rc 3 = caveat-but-burned) before they build on it.
+  - Return contract: negative = burn did not complete; `ACCUDISC_OK` = clean;
+    positive = completed with caveats. Test with `rc > 0`, not `rc != OK`.
+  - Verified on the CDEmu blank: matching blob → exit 0 `result=ok`; a blob whose
+    SIZE_INFO was hand-edited to 1-12 against the 19-track `.toc` → exit 3
+    `result=caveats` + the stderr warning, disc still written.
 - Tests: cue-sheet CD-Text lead-in entry (0x41 + MSF, and that a blob without
   disc info falls back rather than emitting a bogus MSF); lead-in geometry.
   Suite 23/23. **Untested without hardware**: the lead-in WRITE(10) itself —

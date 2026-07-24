@@ -123,6 +123,27 @@ int main(void)
         free(b);
     }
 
+    /* --- SIZE_INFO vs .toc track-range check (the exit-3 caveat) ----------
+     * PACKS declares SIZE_INFO first=1 last=3. Against a 3-track disc that is a
+     * match; against any other track count it is a caveat. No SIZE_INFO, or
+     * ntracks < 1, means nothing to compare -> never a mismatch. */
+    {
+        uint8_t *b = build(PACKS, 3, &len);
+        assert(adsc_cdtext_blob_validate(b, len, &info) == ACCUDISC_OK);
+        assert(info.have_size_info && info.si_first_track == 1 &&
+               info.si_last_track == 3);
+        assert(adsc_cdtext_sizeinfo_mismatch(&info, 3) == 0); /* exact match */
+        assert(adsc_cdtext_sizeinfo_mismatch(&info, 2) == 1); /* wrong last */
+        assert(adsc_cdtext_sizeinfo_mismatch(&info, 19) == 1);
+        assert(adsc_cdtext_sizeinfo_mismatch(&info, 0) == 0); /* nothing to burn */
+        free(b);
+
+        /* A blob with no SIZE_INFO pack: nothing to check, never a mismatch. */
+        struct adsc_cdtext_info none = {0};
+        assert(adsc_cdtext_sizeinfo_mismatch(&none, 5) == 0);
+        assert(adsc_cdtext_sizeinfo_mismatch(NULL, 5) == 0);
+    }
+
     /* --- NULL blob rejected ------------------------------------------------ */
     assert(adsc_cdtext_blob_validate(NULL, 100, &info) == ACCUDISC_ERR_INVAL);
 

@@ -162,10 +162,24 @@ typedef struct accudisc_write_opts {
     const char *cdtext_path;
 } accudisc_write_opts;
 
+/* A POSITIVE accudisc_write() return: the burn COMPLETED, but with a caveat the
+ * caller should surface (CLI maps it to exit 3, "completed with caveats"). The
+ * disc was written. Distinct from ACCUDISC_OK (clean) and from any negative
+ * ACCUDISC_ERR_* (the burn did not complete). Test with `rc > 0`, not
+ * `rc != ACCUDISC_OK`. The specific caveat is emitted via the log sink
+ * (accudisc_set_log). Today the only caveat is a CD-Text SIZE_INFO pack whose
+ * declared track range disagrees with the .toc being burned. */
+#define ACCUDISC_WROTE_WITH_CAVEATS 1
+
 /* Burn toc_path (a cdrdao .toc) + bin_path (the raw s16 audio it names).
- * progress (may be NULL) is called with sectors done / total. Returns
- * ACCUDISC_OK, ACCUDISC_ERR_UNSUPPORTED if the disc is not blank, or a
- * transport/parse error. */
+ * progress (may be NULL) is called with sectors done / total. Returns:
+ *   ACCUDISC_OK (0)             clean burn (or clean simulate);
+ *   ACCUDISC_WROTE_WITH_CAVEATS the burn completed but see the log (e.g. the
+ *                               CD-Text SIZE_INFO disagrees with the .toc);
+ *   ACCUDISC_ERR_UNSUPPORTED    the disc is not blank — nothing was written;
+ *   other negative ACCUDISC_ERR_*  a transport/parse/local error.
+ * A negative return means the burn did NOT complete; a non-negative return
+ * means it did. */
 ACCUDISC_API int accudisc_write(accudisc_device *dev, const char *toc_path,
                                 const char *bin_path,
                                 const accudisc_write_opts *opts,
