@@ -66,12 +66,12 @@ static const char *parse_qstr(const char *p, char *dst, size_t cap)
         return NULL;
     p++;
     size_t i = 0;
-    while (*p && *p != '"') {
+    while (*p && *p != '"' && *p != '\n') {
         if (dst && i + 1 < cap)
             dst[i++] = *p;
         p++;
     }
-    if (*p != '"')
+    if (*p != '"')          /* unterminated (hit EOL/EOF before the close) */
         return NULL;
     if (dst)
         dst[i] = 0;
@@ -90,8 +90,18 @@ int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out)
     for (const char *p = text; *p;) {
         const char *ls = skipws(p);
         const char *le = ls;
-        while (*le && *le != '\n')
+        int inq = 0;
+        while (*le && *le != '\n') {
+            if (*le == '"')
+                inq = !inq;
             le++;
+        }
+        /* A string literal may not span a line (matches cdrdao's flex lexer).
+         * An unterminated quote here means a value carries an embedded newline,
+         * whose tail would otherwise be scanned as its own directive line —
+         * the TOC-injection vector. Refuse rather than reinterpret. */
+        if (inq)
+            return ACCUDISC_ERR_INVAL;
 
         if (kw(ls, "CATALOG")) {
             char m[32];

@@ -59,5 +59,42 @@ int main(void)
     struct adsc_write_toc bad;
     assert(adsc_toc_parse_cue("CD_DA\n", &bad) == ACCUDISC_ERR_INVAL);
 
+    /* --- TOC injection via a newline inside a quoted value ------------------
+     * A line-oriented scan that loses quote context lets a value carrying an
+     * embedded '\n' spill its tail onto the next physical line, where a
+     * column-0 keyword is matched as a real directive. Here a CD_TEXT TITLE
+     * smuggles in a whole phantom track with a forged ISRC. The producer that
+     * would emit this is a hostile or buggy one; the parser must refuse the
+     * whole file rather than silently grow a track and change the lead-out.
+     * A string literal may not span a line, so this is ACCUDISC_ERR_INVAL. */
+    {
+        static const char *INJECT =
+            "CD_DA\n"
+            "TRACK AUDIO\n"
+            "CD_TEXT { LANGUAGE 0 {\n"
+            "  TITLE \"innocent\n"
+            "TRACK AUDIO\n"
+            "ISRC \"ZZZZZ9999999\"\n"
+            "FILE \"phantom.bin\" 00:00:00 05:00:00\n"
+            "\"\n"
+            "} }\n"
+            "FILE \"real.bin\" 00:00:00 00:10:00\n";
+        struct adsc_write_toc inj;
+        assert(adsc_toc_parse_cue(INJECT, &inj) == ACCUDISC_ERR_INVAL);
+    }
+
+    /* A legitimately quoted single-line value with balanced quotes still
+     * parses — the guard rejects unterminated quotes, not quotes as such. */
+    {
+        static const char *OK =
+            "CD_DA\n"
+            "TRACK AUDIO\n"
+            "TITLE \"A perfectly ordinary title\"\n"
+            "FILE \"real.bin\" 00:00:00 00:10:00\n";
+        struct adsc_write_toc t2;
+        assert(adsc_toc_parse_cue(OK, &t2) == ACCUDISC_OK);
+        assert(t2.ntracks == 1);
+    }
+
     return 0;
 }
