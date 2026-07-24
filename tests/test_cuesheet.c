@@ -116,11 +116,18 @@ int main(void)
         toc.leadout_lba = 100;
         toc.track[0].audio = 1;
 
-        /* Without a blob, di must change nothing. */
+        /* Without a blob, di must change nothing: plain audio lead-in, data
+         * form 0x01 (device generates the frame — never 0x00, which would ask
+         * the drive to expect 2352 bytes/frame of lead-in from us). */
         assert(adsc_cuesheet_build(&toc, &di, buf, sizeof(buf), &len) ==
                ACCUDISC_OK);
-        assert(E(0)[0] == 0x01 && E(0)[3] == 0x00);
+        assert(E(0)[0] == 0x01 && E(0)[3] == 0x01);
         assert(E(0)[5] == 0 && E(0)[6] == 0 && E(0)[7] == 0);
+
+        /* The lead-out is device-generated for the same reason. Entries here:
+         * lead-in, track 1 pre-gap, track 1 index 1, lead-out. */
+        assert(len == 4 * 8);
+        assert(E(3)[1] == 0xaa && E(3)[3] == 0x01);
 
         /* With a blob AND di: data form 0x41 + the lead-in start MSF. */
         toc.cdtext = blob;
@@ -135,7 +142,7 @@ int main(void)
          * plain lead-in rather than emitting a bogus MSF. */
         assert(adsc_cuesheet_build(&toc, NULL, buf, sizeof(buf), &len) ==
                ACCUDISC_OK);
-        assert(E(0)[3] == 0x00 && E(0)[5] == 0);
+        assert(E(0)[3] == 0x01 && E(0)[5] == 0);
     }
 
     return 0;

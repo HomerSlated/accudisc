@@ -7,7 +7,18 @@
  *
  * Entry := { ctlAdr, trackNr, indexNr, dataForm, scms, min, sec, frame }.
  * Absolute MSF = image LBA + 150 (LBA 0 sits at 00:02:00).
+ *
+ * Data Form byte (MMC-5 6.33.3.8): bits 7-6 = Data Form of Sub-channel,
+ * bits 3-0 = Data Form of Main Data. Main data 0 = CD-DA, 2352 bytes supplied
+ * by the host; 1 = CD-DA, transfer size 0, the DEVICE generates the frame.
+ * Sub-channel 00 = device generates zeros (size 0); 01 = 96 bytes of raw P-W
+ * supplied by the host. 6.33.3.10: lead-in and lead-out data are generated
+ * automatically EXCEPT when the data form is 0x41 — which is exactly the
+ * "here comes CD-Text in the lead-in P-W" opt-in.
  */
+
+#define ADSC_CUE_DF_AUDIO_GEN  0x01  /* audio, device generates the frame */
+#define ADSC_CUE_DF_AUDIO_PW   0x41  /* + host supplies 96 B raw P-W (CD-Text) */
 
 #include <string.h>
 
@@ -67,8 +78,9 @@ int adsc_cuesheet_build(const struct adsc_write_toc *toc,
      * cdrdao createCueSheet. */
     ENTRY(n);
     e[0] = 0x01;                     /* CTL=0 | ADR=1 */
+    e[3] = ADSC_CUE_DF_AUDIO_GEN;
     if (toc->cdtext && toc->cdtext_len && di) {
-        e[3] = 0x41;
+        e[3] = ADSC_CUE_DF_AUDIO_PW;
         e[5] = di->leadin_m;
         e[6] = di->leadin_s;
         e[7] = di->leadin_f;
@@ -128,11 +140,14 @@ int adsc_cuesheet_build(const struct adsc_write_toc *toc,
         n++;
     }
 
-    /* Lead-out: TNO 0xAA, INDEX 1. */
+    /* Lead-out: TNO 0xAA, INDEX 1. Like the lead-in, the drive generates the
+     * main-channel data, so the data form must say so (0x01) — 0x00 would
+     * promise the drive 2352 bytes/frame of lead-out audio we never send. */
     ENTRY(n);
     e[0] = 0x01;                     /* audio lead-out */
     e[1] = 0xaa;
     e[2] = 1;
+    e[3] = ADSC_CUE_DF_AUDIO_GEN;
     put_msf(e, (int32_t)toc->leadout_lba + 150);
     n++;
 

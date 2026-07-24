@@ -333,6 +333,20 @@ on single-extent drives). Revisit the ranged feature in a future session.
   surfaced three times in one session across three codebases (each trusted its
   boundary because the *usual* producer is well-behaved); do this as one sweep,
   not three separate fixes as they bite.
+- **[P2] `.toc` FILE start/length: accept the bare-integer forms.** cdrdao's
+  grammar (`private/code/cdrdao/trackdb/TocParser.g`, rules `samples` and
+  `dataLength`) accepts *either* an MSF *or* a plain integer for the two fields
+  of `FILE "x" <start> <length>` — and the units differ per field: a bare start
+  is **samples**, a bare length is **bytes** (`dataLength` multiplies only the
+  MSF form by the block size). `adsc_toc_parse_cue` requires MSF for both and
+  returns `ACCUDISC_ERR_INVAL` otherwise, so a perfectly legal cdrdao .toc is
+  refused as `write: invalid argument` with no indication of which line lost.
+  Refusing is the *right* failure mode (misreading a sample count as frames
+  would silently mislocate every track), so this is a compatibility gap, not a
+  correctness bug — but the diagnostic is useless and the input is legal.
+  Two parts: accept both forms with the correct per-field units, and report the
+  offending line number instead of a bare INVAL. Matters for interop: cdda2img
+  generates .toc files and may well emit the integer form.
 
 #### Bug audit 2026-07-23 (full report: `private/bugs/2026-07-23-bug-audit.md`)
 Correctness sweep of the whole tree, 7 findings, 0 critical. `rw.c` RS/GF math

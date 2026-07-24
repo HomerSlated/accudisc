@@ -51,13 +51,23 @@ int adsc_write_set_params(struct accudisc_device *dev,
     p[8] = 0x00;
 
     rc = adsc_mmc_mode_select10(dev, buf, len, po);
-    if (rc == ACCUDISC_OK || !wp->cdtext)
+    if (rc == ACCUDISC_OK || !wp->cdtext) {
+        if (rc == ACCUDISC_OK && wp->cdtext)
+            adsc_dev_log(dev, "cdtext: write params accepted with P-W subchannel "
+                              "(data block type 3)");
         return rc;
+    }
 
     /* Some drives reject the page with data block type 3. cdrdao meets this
      * with a mode-page variant that simply omits it (its
      * WMP_VAR_CDTEXT_NO_DATA_BLOCK_TYPE) and still writes CD-Text, so retry
-     * that way rather than failing the burn outright. */
+     * that way rather than failing the burn outright. But a drive that will
+     * not take DBT 3 may not honour the P-W lead-in write at all, so this must
+     * NOT be silent — a burn that drops the CD-Text and exits 0 is the exact
+     * failure mode this project refuses. */
+    adsc_dev_log(dev, "cdtext: WARNING drive rejected data block type 3 "
+                      "(raw + P-W); retrying without it — CD-Text lead-in may "
+                      "not be written on this drive");
     p[4] = (uint8_t)(p[4] & 0xf0);
     return adsc_mmc_mode_select10(dev, buf, len, po);
 }
