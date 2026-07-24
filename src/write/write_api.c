@@ -10,8 +10,10 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
+#include "../internal.h"
 #include "../meta/cdtext_blob.h"
 #include "../mmc/mmc.h"
 #include "write.h"
@@ -53,11 +55,14 @@ static int slurp_file(const char *path, int nul, uint8_t **out, uint32_t *out_le
 }
 
 int adsc_write_load_model(const char *toc_path, const char *cdtext_path,
-                          struct adsc_write_toc *out, uint8_t **cdtext_buf)
+                          struct adsc_write_toc *out, uint8_t **cdtext_buf,
+                          struct adsc_cdtext_info *info)
 {
     if (!toc_path || !out || !cdtext_buf)
         return ACCUDISC_ERR_INVAL;
     *cdtext_buf = NULL;
+    if (info)
+        memset(info, 0, sizeof(*info));
 
     uint8_t *txt = NULL;
     int rc = slurp_file(toc_path, 1, &txt, NULL);
@@ -79,7 +84,7 @@ int adsc_write_load_model(const char *toc_path, const char *cdtext_path,
             return rc;
         /* Validate (and repair zero-CRC packs) at intake, before the model can
          * reach the burn path. A bad blob costs an error, never a blank. */
-        rc = adsc_cdtext_blob_validate(blob, len, NULL);
+        rc = adsc_cdtext_blob_validate(blob, len, info);
         if (rc != ACCUDISC_OK) {
             free(blob);
             return rc;
@@ -104,11 +109,20 @@ int accudisc_write(accudisc_device *dev, const char *toc_path,
         return ACCUDISC_ERR_NOMEM;
 
     uint8_t *cdtext_buf = NULL;
-    int rc = adsc_write_load_model(toc_path, opts->cdtext_path, toc, &cdtext_buf);
+    struct adsc_cdtext_info cti;
+    int rc = adsc_write_load_model(toc_path, opts->cdtext_path, toc,
+                                   &cdtext_buf, &cti);
     if (rc != ACCUDISC_OK) {
         free(toc);
         return rc;
     }
+    /* The one place pass-through is not byte-for-byte: a pack whose CRC field
+     * the drive dropped (all-zero) gets its check field regenerated from the
+     * untouched payload. Never silent — see RECORDING_PLAN §11.4. */
+    if (cti.crc_recomputed)
+        adsc_dev_log(dev, "cdtext: regenerated %u zero CRC field(s) of %u pack(s)"
+                          " (payload untouched)",
+                     cti.crc_recomputed, cti.npacks);
 
     int bin = open(bin_path, O_RDONLY);
     if (bin < 0) {

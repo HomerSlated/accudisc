@@ -27,7 +27,7 @@ int main(void)
     toc.track[1].index1_lba = 10000;
     toc.track[1].pregap = 150;         /* 2s pre-gap before track 2 */
 
-    assert(adsc_cuesheet_build(&toc, buf, sizeof(buf), &len) == ACCUDISC_OK);
+    assert(adsc_cuesheet_build(&toc, NULL, buf, sizeof(buf), &len) == ACCUDISC_OK);
     assert(len == 8 * 8);              /* MCN2 + leadin + t1(gap,idx1)
                                         * + t2(pregap,idx1) + leadout */
 
@@ -65,12 +65,12 @@ int main(void)
     toc.track[0].audio = 1;
     toc.track[0].preemphasis = 1;
     toc.track[0].copy = 1;
-    assert(adsc_cuesheet_build(&toc, buf, sizeof(buf), &len) == ACCUDISC_OK);
+    assert(adsc_cuesheet_build(&toc, NULL, buf, sizeof(buf), &len) == ACCUDISC_OK);
     /* leadin(2) then track1 gap(3) + idx1(4)... index 1 entry is E(2). */
     assert((E(2)[0] & 0xf0) == 0x30);  /* CTL 0x20 copy | 0x10 pre-emph */
 
     /* Too-small buffer is a clean error, not a smash. */
-    assert(adsc_cuesheet_build(&toc, buf, 8, &len) == ACCUDISC_ERR_SHORT);
+    assert(adsc_cuesheet_build(&toc, NULL, buf, 8, &len) == ACCUDISC_ERR_SHORT);
 
     /* F-003 worst case: 99 tracks each with an ISRC and a pre-gap, plus MCN =
      * 2 (MCN) + 1 (lead-in) + 99*[2 ISRC + 1 pregap + 1 index1] + 1 (lead-out)
@@ -90,11 +90,52 @@ int main(void)
         }
         toc.leadout_lba = 100u * 300u;
 
-        assert(adsc_cuesheet_build(&toc, big, sizeof(big), &len) == ACCUDISC_OK);
+        assert(adsc_cuesheet_build(&toc, NULL, big, sizeof(big), &len) == ACCUDISC_OK);
         assert(len == ADSC_CUE_MAX_BYTES); /* 400 entries, 3200 bytes */
         /* One byte short must still be a clean rejection, not an overrun. */
-        assert(adsc_cuesheet_build(&toc, big, sizeof(big) - 1, &len) ==
+        assert(adsc_cuesheet_build(&toc, NULL, big, sizeof(big) - 1, &len) ==
                ACCUDISC_ERR_SHORT);
+    }
+
+    /* --- CD-Text changes the lead-in entry (Step B4, §11.6) ----------------
+     * The drive must be told the lead-in carries P-W: data form 0x41, and the
+     * entry carries the media's lead-in START MSF rather than zeros. Both come
+     * from cdrdao createCueSheet. Nothing else about the sheet changes. */
+    {
+        struct adsc_disc_info di;
+        uint8_t blob[4 + 18] = {0};
+
+        memset(&di, 0, sizeof(di));
+        di.leadin_m = 97;           /* a typical CD-R ATIP lead-in start */
+        di.leadin_s = 24;
+        di.leadin_f = 1;
+        di.leadin_len = 11699;
+
+        memset(&toc, 0, sizeof(toc));
+        toc.ntracks = 1;
+        toc.leadout_lba = 100;
+        toc.track[0].audio = 1;
+
+        /* Without a blob, di must change nothing. */
+        assert(adsc_cuesheet_build(&toc, &di, buf, sizeof(buf), &len) ==
+               ACCUDISC_OK);
+        assert(E(0)[0] == 0x01 && E(0)[3] == 0x00);
+        assert(E(0)[5] == 0 && E(0)[6] == 0 && E(0)[7] == 0);
+
+        /* With a blob AND di: data form 0x41 + the lead-in start MSF. */
+        toc.cdtext = blob;
+        toc.cdtext_len = sizeof blob;
+        assert(adsc_cuesheet_build(&toc, &di, buf, sizeof(buf), &len) ==
+               ACCUDISC_OK);
+        assert(E(0)[0] == 0x01 && E(0)[1] == 0 && E(0)[2] == 0);
+        assert(E(0)[3] == 0x41);
+        assert(E(0)[5] == 97 && E(0)[6] == 24 && E(0)[7] == 1);
+
+        /* A blob but no disc info (caller could not read it): fall back to the
+         * plain lead-in rather than emitting a bogus MSF. */
+        assert(adsc_cuesheet_build(&toc, NULL, buf, sizeof(buf), &len) ==
+               ACCUDISC_OK);
+        assert(E(0)[3] == 0x00 && E(0)[5] == 0);
     }
 
     return 0;

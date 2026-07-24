@@ -491,7 +491,37 @@ non-multiples included — plus the exact cdrdao bit vector (FF,00,FF → 3f,30,
 and that no output byte uses the P/Q bits. Clean under clang ASan+UBSan. The
 hardware round-trip (Step C/D) is confirmation, not the only evidence.
 
-### 11.6 Step B4/B5 — write path (src/write/{wparams,cuesheet,burn}.c, mmc/)
+### 11.6 Step B4/B5 — write path — LANDED 2026-07-24 (src/write/{wparams,cuesheet,discinfo,burn}.c)
+
+**As built.** `adsc_write_run` now: set params (data block type 3 when CD-Text)
+→ blank check + lead-in geometry → OPC → SEND CUE SHEET (lead-in entry data form
+0x41 + lead-in start MSF when CD-Text) → **`write_cdtext_leadin`** → lead-in gap →
+audio → SYNCHRONIZE CACHE. The lead-in write cycles the B3 block set over
+`di.leadin_len` sectors at **96 bytes per block** starting at
+`-150 - leadin_len`, ending exactly where the gap begins.
+- **96 bytes/block, not 2448** — cdrdao's `writeCdTextLeadIn` transfers `n * 96`;
+  the drive generates the main channel. Data block type 3 is set on the mode page
+  because MMC-3 requires it to *enable* P-W lead-in writing, but it does not
+  govern this transfer's size. Audio still writes at 2352.
+- **Mode-page fallback**: a drive that rejects data block type 3 gets a retry with
+  it cleared (cdrdao's `WMP_VAR_CDTEXT_NO_DATA_BLOCK_TYPE`) rather than a failed
+  burn.
+- **`adsc_leadin_len_from_msf`** factored out pure and unit-tested
+  (`tests/test_discinfo.c`): in-window starts give `450000 - startLBA`; at/above
+  100:00:00, below 80:00:00, or garbage falls back to 4500 — a zero-length lead-in
+  would write nothing and an underflow would request ~4 billion sectors.
+- **Deferred B2 surfacing now wired**: `adsc_write_load_model` takes a
+  `adsc_cdtext_info` out-param and `accudisc_write` logs any zero-CRC
+  regeneration. *Still open*: the SIZE_INFO-vs-`.toc` mismatch warning → exit 3,
+  which needs a "completed with caveats" return path (an API contract change
+  cdda2img depends on — decide before adding).
+- Tests: cue-sheet CD-Text lead-in entry (0x41 + MSF, and that a blob without
+  disc info falls back rather than emitting a bogus MSF); lead-in geometry.
+  Suite 23/23. **Untested without hardware**: the lead-in WRITE(10) itself —
+  that is Step C.
+
+Original design notes follow.
+
 
 - **write params**: when CD-Text is present, set mode-page-05 data-block-type for
   the 96-byte subchannel lead-in write (cdrdao `setWriteParameters` CD-Text

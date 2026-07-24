@@ -56,7 +56,7 @@ int main(void)
 
     /* --- with a CD-Text blob: parsed, attached byte-for-byte, buf owns it --- */
     buf = NULL;
-    assert(adsc_write_load_model(tocp, blobp, &m, &buf) == ACCUDISC_OK);
+    assert(adsc_write_load_model(tocp, blobp, &m, &buf, NULL) == ACCUDISC_OK);
     assert(m.ntracks == 1);
     assert(buf != NULL);
     assert(m.cdtext == buf);                    /* model borrows the owned buf */
@@ -66,7 +66,7 @@ int main(void)
 
     /* --- no CD-Text: cdtext stays NULL/0 and buf is reset to NULL --------- */
     buf = (uint8_t *)0xdeadbeef;                 /* must be overwritten */
-    assert(adsc_write_load_model(tocp, NULL, &m, &buf) == ACCUDISC_OK);
+    assert(adsc_write_load_model(tocp, NULL, &m, &buf, NULL) == ACCUDISC_OK);
     assert(m.ntracks == 1);
     assert(m.cdtext == NULL);
     assert(m.cdtext_len == 0);
@@ -74,20 +74,22 @@ int main(void)
 
     /* --- missing .toc: ERR_OPEN, nothing attached ------------------------- */
     buf = NULL;
-    assert(adsc_write_load_model("/nonexistent/x.toc", NULL, &m, &buf) ==
+    assert(adsc_write_load_model("/nonexistent/x.toc", NULL, &m, &buf, NULL) ==
            ACCUDISC_ERR_OPEN);
     assert(buf == NULL);
 
     /* --- valid .toc but missing blob: ERR_OPEN, buf stays NULL ------------ */
     buf = NULL;
-    assert(adsc_write_load_model(tocp, "/nonexistent/x.cdtext", &m, &buf) ==
+    assert(adsc_write_load_model(tocp, "/nonexistent/x.cdtext", &m, &buf, NULL) ==
            ACCUDISC_ERR_OPEN);
     assert(buf == NULL);
 
     /* --- NULL arguments rejected ------------------------------------------ */
-    assert(adsc_write_load_model(NULL, NULL, &m, &buf) == ACCUDISC_ERR_INVAL);
-    assert(adsc_write_load_model(tocp, NULL, NULL, &buf) == ACCUDISC_ERR_INVAL);
-    assert(adsc_write_load_model(tocp, NULL, &m, NULL) == ACCUDISC_ERR_INVAL);
+    assert(adsc_write_load_model(NULL, NULL, &m, &buf, NULL) == ACCUDISC_ERR_INVAL);
+    assert(adsc_write_load_model(tocp, NULL, NULL, &buf, NULL) ==
+           ACCUDISC_ERR_INVAL);
+    assert(adsc_write_load_model(tocp, NULL, &m, NULL, NULL) ==
+           ACCUDISC_ERR_INVAL);
 
     unlink(tocp);
     unlink(blobp);

@@ -50,6 +50,15 @@ int adsc_write_set_params(struct accudisc_device *dev,
     /* byte 8: session format. 0x00 = CD-DA / CD-ROM. */
     p[8] = 0x00;
 
+    rc = adsc_mmc_mode_select10(dev, buf, len, po);
+    if (rc == ACCUDISC_OK || !wp->cdtext)
+        return rc;
+
+    /* Some drives reject the page with data block type 3. cdrdao meets this
+     * with a mode-page variant that simply omits it (its
+     * WMP_VAR_CDTEXT_NO_DATA_BLOCK_TYPE) and still writes CD-Text, so retry
+     * that way rather than failing the burn outright. */
+    p[4] = (uint8_t)(p[4] & 0xf0);
     return adsc_mmc_mode_select10(dev, buf, len, po);
 }
 
