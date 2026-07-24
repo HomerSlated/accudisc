@@ -131,3 +131,30 @@ static const uint8_t vec_fulltoc[246] = {
     0x00, 0x46, 0x24, 0x00, 0x01, 0x10, 0x00, 0x13, 0x00, 0x00, 0x00,
     0x00, 0x4a, 0x1b, 0x19,
 };
+
+/* CD-Text TITLE stream in which a track's string is OMITTED entirely — no
+ * empty-string placeholder — so the n-th string is not the n-th track.
+ *
+ * Shape (two 0x80 packs, 12 payload bytes each):
+ *   pack 0, header track 1: "AAA\0BBB\0CCCC"
+ *   pack 1, header track 4: "DD\0EEE\0FFFFF"
+ *
+ * "CCCC" starts in pack 0 (a naive counter calls it track 3) and continues
+ * into pack 1, whose header says 4. So the string is track 4's, track 3 has no
+ * title at all, and the correction arrives MID-STRING — a decoder that only
+ * resyncs at string boundaries still gets this wrong.
+ *
+ * Correct:  track 3 empty, track 4 "CCCCDD", track 5 "EEE".
+ * Counting: track 3 "CCCCDD",  track 4 "EEE"  — every later title shifted.
+ *
+ * Taken from a real shape, not invented: ABBA "Gold: Greatest Hits" omits
+ * track 13's title (18 strings for 19 tracks), and its 12->14 header
+ * correction likewise lands mid-string. Reproduce with
+ * `accudisc cdtext F` + `accudisc text` on that disc.
+ */
+static const uint8_t vec_cdtext_gap[40] = {
+    0x00, 0x00, 0x00, 0x00, 0x80, 0x01, 0x00, 0x00, 0x41, 0x41, 0x41, 0x00,
+    0x42, 0x42, 0x42, 0x00, 0x43, 0x43, 0x43, 0x43, 0xb2, 0x28, 0x80, 0x04,
+    0x01, 0x00, 0x44, 0x44, 0x00, 0x45, 0x45, 0x45, 0x00, 0x46, 0x46, 0x46,
+    0x46, 0x46, 0x55, 0xe6,
+};

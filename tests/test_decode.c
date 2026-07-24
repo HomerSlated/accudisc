@@ -139,6 +139,21 @@ static void test_cdtext(void)
                   "Voulez\xe2\x80\x90Vous (edit)") == 0);
     accudisc_free(text);
 
+    /* An OMITTED string must not shift every later track (found on ABBA
+     * "Gold", reported by cdda2img 2026-07-24). The per-pack track number is
+     * the only signal that a string was skipped, and the correction can land
+     * mid-string — so the decoder must resync on every pack, not just the
+     * first and not only at string boundaries. See vectors.h. */
+    text = NULL;
+    assert(accudisc_cdtext_decode(vec_cdtext_gap, sizeof(vec_cdtext_gap),
+                                  &text) == ACCUDISC_OK);
+    assert(strcmp(text->track[1].title, "AAA") == 0);
+    assert(strcmp(text->track[2].title, "BBB") == 0);
+    assert(text->track[3].title[0] == '\0');      /* omitted, not "CCCCDD" */
+    assert(strcmp(text->track[4].title, "CCCCDD") == 0);
+    assert(strcmp(text->track[5].title, "EEE") == 0);
+    accudisc_free(text);
+
     /* A blob with no usable packs is a soft absence. */
     uint8_t junk[4 + 18] = {0};
     assert(accudisc_cdtext_decode(junk, sizeof(junk), &text)
