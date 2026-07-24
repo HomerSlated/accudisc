@@ -546,14 +546,36 @@ Original design notes follow.
 - **orchestration** (`adsc_write_run`): set params (CD-Text mode) → SEND CUE
   SHEET → **writeCdTextLeadIn** → lead-in gap → audio → SYNCHRONIZE CACHE.
 
-### 11.7 Step C — verify CD-Text round-trip on CDEmu
+### 11.7 Step C — verify CD-Text round-trip on CDEmu — **PASSED 2026-07-24**
 
 Burn ABBA (with `--cdtext <blob>`) to CDEmu, then `accudisc read --cdtext` the
 result and **compare the returned blob byte-for-byte against the one we fed in**.
 Decode both sides as a human-readable diagnostic on mismatch, but the blob
 compare is the assertion — pass-through means anything less is a weaker test than
-the contract we promised cdda2img. If CDEmu does not return CD-Text (READ TOC
-format 5), this moves to Step D.
+the contract we promised cdda2img.
+
+**RESULT — clean pass, first attempt.** Article: `libmirage_abba_gold__42packs.cdtext`
+(760 B) fed to a full 19-track, 347208-sector ABBA burn on the CDEmu blank.
+
+- **CD-Text: 760 bytes in, 760 bytes out, `cmp` IDENTICAL.** The blob carries real
+  content (`Gold: Greatest Hits`, `Dancing Queen`, `Knowing Me, Knowing You`…), so
+  this is not two identically-empty buffers agreeing.
+- The lead-in write behaved exactly as B3/B4 predicted:
+  `cdtext: 42 packs -> 21 R-W blocks, filling 10927 lead-in sectors from LBA -11077`
+  — 21 = `lcm(42,4)/4` (the ring-fill count), and `-11077 = -150 - 10927`.
+- Media-derived extent confirmed live: `leadin_len` 10927 came from the blank, not
+  from the pack count, exactly as 11.6 argues.
+- **Everything else round-tripped too** (not required by Step C, but free with the
+  disc in hand): 19 tracks, lead-out 347208, `source=fulltoc degrade=none`; MCN
+  `0731451700729` and per-track ISRCs (`SEAYD7601020`, `SEAYD7601050`, …) read back
+  off the burned Q identical to the source `.toc`.
+- **`--byteswap` NOT used**: the source here is WAV-derived raw, which is s16**le**.
+  The byteswap rule applies to cdda2img's s16**be** BINs — a distinction worth
+  keeping straight, as it silently destroys audio rather than failing.
+
+Reproduce: strip the 44-byte RIFF header (`tail -c +45`) to get 347208 exact
+sectors, `cdemu create-blank --writer-id=WRITER-TOC 0 /var/tmp/cdr`, burn, then
+`accudisc cdtext FILE` and `cmp`.
 
 ### 11.8 Step D — real burn on the Plextor /dev/sr0 (acceptance)
 
@@ -567,8 +589,27 @@ Note the CD-Text blob here is **one we author** (a held capture — the 42-pack
 libmirage fixture — or a synthesised blob fed through `write --cdtext`), not
 ABBA's own lead-in, which carries none (§11.1). This is not a compromise for
 pass-through v0: the property under test is "the write path lays down and recovers
-the exact packs it was given", and any valid blob exercises it. No original-CD-Text
-pressing exists to test against, and by the pass-through design none is needed.
+the exact packs it was given", and any valid blob exercises it.
+
+**UPDATE 2026-07-24 — a live CD-Text article now exists: Paul Weller, *Stanley
+Road*.** It had been set aside on two grounds; the odd-length READ TOC fix
+(`8bda198`) deleted one of them. The disc is 12 tracks — `37 + 11*12 = 169`, odd —
+so it was in the exact failure class and read `degrade=leadin_unreadable`; cdda2img
+re-tested it on the fixed build and it now reads `source=fulltoc degrade=none`
+(their §47, hardware we do not have). It carries **genuine on-disc CD-Text** (disc
+`TITLE "Stanley Road"` / `PERFORMER "Paul Weller"` + `SIZE_INFO`).
+- **It is a *stronger* article than a rich disc**, which is the non-obvious part:
+  its per-track blocks carry **empty-string fields** (empty track-1 `PERFORMER`,
+  empty track-12 `TITLE`) beside a populated disc block and a real `SIZE_INFO`.
+  Empty strings, NUL-separator runs and a non-trivial SIZE_INFO are precisely the
+  shapes an encoder fumbles, and a byte-for-byte compare over them is a harder test
+  than a tidy capture. When authored mode lands it gives a *real* round-trip target
+  rather than a synthesised one.
+- This does **not** contradict §11.1's "no original-CD-Text pressing" decision —
+  Stanley Road is a CD-R, not a pressing. What changed is that a physical disc
+  carrying CD-Text we did not author is now readable, which is all Step D needed.
+- Captures requested from cdda2img: the raw format-05 blob (`read --cdtext`) and
+  the raw full TOC. Those are what Step C/D consume.
 
 ### 11.9 Cross-cutting
 
