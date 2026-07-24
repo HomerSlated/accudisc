@@ -147,6 +147,11 @@ typedef struct accudisc_write_opts {
     int simulate;   /* test-write: run the full path with the laser off */
     int byteswap;   /* swap each 16-bit audio sample before writing */
     int speed;      /* 0 = leave the drive's current write speed */
+    /* Optional CD-Text (pass-through). Path to a raw READ TOC format-0x05 blob,
+     * byte-for-byte as accudisc_read_cdtext emits it; it is laid into the
+     * lead-in verbatim. NULL = burn no CD-Text. Appended field: zero-init
+     * callers get NULL and the prior behaviour unchanged. */
+    const char *cdtext_path;
 } accudisc_write_opts;
 
 /* Burn toc_path (a cdrdao .toc) + bin_path (the raw s16 audio it names).

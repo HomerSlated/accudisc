@@ -63,6 +63,14 @@ struct adsc_write_toc {
     int      ntracks;
     uint32_t leadout_lba;   /* absolute image LBA of the lead-out */
     struct adsc_write_track track[99];
+    /* CD-Text pass-through (Phase 3, §11): the raw READ TOC format-0x05 blob to
+     * lay into the lead-in verbatim, exactly as accudisc_read_cdtext emits it.
+     * BORROWED — the buffer is owned by whoever built the model (see
+     * adsc_write_load_model / accudisc_write), not by this struct. NULL/0 when
+     * the caller supplied no CD-Text. Not decoded here; the burn path consumes
+     * the bytes as-is. */
+    const uint8_t *cdtext;
+    uint32_t       cdtext_len;
 };
 
 /* SEND CUE SHEET worst case, matching adsc_cuesheet_build's emission: MCN (2)
@@ -83,6 +91,15 @@ int adsc_cuesheet_build(const struct adsc_write_toc *toc, uint8_t *out,
  * the disc MCN. Audio tracks only. Computes each track's start_lba/index1_lba
  * and the lead-out. Returns ACCUDISC_ERR_INVAL on malformed input. */
 int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out);
+
+/* Load a .toc (and, if cdtext_path is non-NULL, a raw CD-Text blob) from disk
+ * into the DAO model. Slurps both files, parses the .toc via adsc_toc_parse_cue,
+ * and attaches the CD-Text blob as *out's borrowed cdtext pointer. On success,
+ * *cdtext_buf owns the blob buffer (NULL when no cdtext_path) and the CALLER
+ * must free it after the burn; on any error nothing is left allocated. Device-
+ * free so it is unit-testable. Returns a parse/IO/open error otherwise. */
+int adsc_write_load_model(const char *toc_path, const char *cdtext_path,
+                          struct adsc_write_toc *out, uint8_t **cdtext_buf);
 
 /* ------------------------------------------------------------------ */
 /* DAO burn orchestration                                             */

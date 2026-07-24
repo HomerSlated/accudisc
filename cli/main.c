@@ -52,8 +52,10 @@ static void usage(FILE *to)
         "  load           close the tray / load the disc\n"
         "  read           read CD-DA sectors (see read options)\n"
         "  write          burn an audio session DAO from a cdrdao .toc:\n"
-        "                 --toc FILE --bin FILE [--simulate] [--byteswap]\n"
-        "                 [--speed X] [--progress-fd N]  (needs blank disc)\n"
+        "                 --toc FILE --bin FILE [--cdtext FILE] [--simulate]\n"
+        "                 [--byteswap] [--speed X] [--progress-fd N]\n"
+        "                 (--cdtext takes a raw format-05 blob from read --cdtext;\n"
+        "                  needs blank disc)\n"
         "  cxscan         hardware C1/C2/CU error census (needs --driver)\n"
         "  version        print the library version\n"
         "\n"
@@ -997,6 +999,8 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
             toc = argv[++i];
         else if (!strcmp(argv[i], "--bin") && i + 1 < argc)
             bin = argv[++i];
+        else if (!strcmp(argv[i], "--cdtext") && i + 1 < argc)
+            o.cdtext_path = argv[++i];
         else if (!strcmp(argv[i], "--simulate"))
             o.simulate = 1;
         else if (!strcmp(argv[i], "--byteswap"))
