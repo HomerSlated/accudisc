@@ -127,7 +127,9 @@ int adsc_mmc_mode_sense10(struct accudisc_device *dev, unsigned page,
      * odd. Round before it becomes a transfer, then re-clamp to the buffer. */
     total = adsc_alloc_even(total);
     if (total > cap)
-        total = cap;
+        total = cap & ~1u; /* clamp WITHOUT undoing the rounding: an odd cap
+                            * would otherwise hand an odd length straight back,
+                            * and *len feeds mode_select10's OUT transfer too */
 
     adsc_cdb_mode_sense10(cmd.cdb, page, (uint16_t)total);
     cmd.buf_len = total;
