@@ -202,12 +202,16 @@ CD-DA/DAO focus); cdrecord is the tie-breaker for drive-specific behaviour.
 - Does the caller ever want us to *combine* read-offset and write-offset, or
   keep them fully separate (recommended: separate; the caller composes).
 
-## 11. Phase 3 execution plan (drafted 2026-07-23; execute next session)
+## 11. Phase 3 execution plan (drafted 2026-07-23; revised 2026-07-24)
 
 Completes the write path to **all of: PCM, TOC, lead-in/out, MCN, ISRC, album
 title/performer, per-track title/performer, pre-gaps, CD-Text.** CD+G and other
-non-essentials are deferred. Everything is derived **purely from the .toc** (no
-raw-subchannel input; cdda2img does not store one yet).
+non-essentials are deferred.
+
+Everything *except CD-Text* is derived **purely from the .toc** (no raw-subchannel
+input; cdda2img does not store one yet). **CD-Text is different as of the
+2026-07-24 revision**: it arrives as the raw `READ TOC` format-0x05 blob and is
+passed through unmodified — see 11.1.
 
 ### 11.1 Context and locked decisions
 
@@ -219,23 +223,98 @@ raw-subchannel input; cdda2img does not store one yet).
   scope** for burn (no WAV/RIFF handling in the write path).
 - **Test article: ABBA "Gold: Greatest Hits"** (`cdda2img/extracted/Gold:
   Greatest Hits_1.{toc,bin}`). Raw `.bin`, **s16be → burn with `--byteswap`**.
-  Carries full CD-Text (disc + 19 tracks), CATALOG (MCN), per-track ISRC, and
-  pre-gaps — exercises all 11 items. Audio already burns bit-exact (§9 Phase 2).
+  Carries CATALOG (MCN), per-track ISRC, and pre-gaps. Audio already burns
+  bit-exact (§9 Phase 2).
+  - **CORRECTION 2026-07-24 — ABBA carries NO CD-Text on the pressing.** The
+    2026-07-23 draft claimed "full CD-Text (disc + 19 tracks)"; that was wrong.
+    `accudisc cdtext --device /dev/sr0` on the real disc returns *absent*. The
+    `CD_TEXT` blocks in cdda2img's `.toc` are **synthesised by their `toc.py`
+    from MusicBrainz metadata**, not lifted from the disc.
+  - **Consequence: ABBA cannot serve as the Step D real-disc CD-Text acceptance
+    article** — there is no original blob to round-trip against. It remains the
+    article for audio/MCN/ISRC/pregaps.
+  - **The general rule this exposes (cdda2img, §38.3): an RBI does not preserve
+    the original CD-Text blob.** It stores a *generated* TOC whose `CD_TEXT` is
+    synthesised from looked-up metadata. So **no stored image can round-trip an
+    *original* pressing's CD-Text, however many of them we hold** — that would
+    need a physical disc carrying real CD-Text. This is the trap ABBA sprang, and
+    it would spring identically on ZZ Top, Tracy Chapman, Green Day or Avril
+    Lavigne.
+  - **RESOLVED 2026-07-24 (Keith): there is no original-CD-Text pressing, and one
+    is unlikely ever to be acquired — "the only CD-Text discs we will ever have
+    are those we create."** (Full rationale in the cdda2img correspondence.) This
+    *dissolves* the requirement rather than blocking on it: pass-through v0 never
+    reproduces a pressing, it round-trips **a valid blob we already hold**. Step D
+    CD-Text acceptance is therefore *write a blob we author → burn to real media →
+    read it back byte-identical*, with the blob sourced from our captures
+    (`libmirage_abba_gold__42packs.cdtext`, or a synthesised fixture), **not** from
+    any disc's lead-in. The RBI limitation above still stands as a recorded fact,
+    but it is no longer on the critical path — we are validating that our write
+    path lays down and recovers whatever packs it is given, which needs no
+    original disc at all.
 - **Burn target: CDEmu `/dev/sr1`** (`cdemu unload 0; cdemu create-blank
   --writer-id=WRITER-TOC 0 /var/tmp/cdr` — recreate after each burn). **Final
   acceptance: real Plextor `/dev/sr0`** burn.
-- **CD-Text scope = mirror the decoder's v0**: block 0, single language
-  (EN, code 9 from `LANGUAGE_MAP { 0: 9 }`), single-byte, pack types **0x80
-  title + 0x81 performer + mandatory 0x8f size-info**. Songwriter/UPC/genre
-  deferred. Non-ASCII is **byte-preserving passthrough** (consistent with the
-  reader's "no character-set interpretation"; ABBA is ASCII so moot).
+- **CD-Text v0 is PASS-THROUGH, not authored** (locked 2026-07-24, at cdda2img's
+  request — their §32.1, our reply of 2026-07-24). `accudisc write --cdtext FILE`
+  consumes **byte-for-byte what `accudisc read --cdtext FILE` emits**: the whole
+  `READ TOC` format-0x05 response, header included. Rationale: rip→burn becomes
+  bit-exact because there is no decode/re-encode step in which loss could occur —
+  and it is *less* work for us (no string encoder, no charset logic, no CRC
+  generation; a drive already produced well-formed packs).
+  - Consequence: **we never read the payload bytes**, so we cannot transcode or
+    "correct" a charset declaration even in principle. That matters for the real
+    non-conforming discs cdda2img hit — cdrdao-authored and CDEmu-mounted images
+    carry raw UTF-8 while declaring charset 0x00 — which now round-trip exactly.
+  - **Authored mode (strings / `.toc` `CD_TEXT` blocks → packs) is deferred to
+    v1**, and is welcome as a *second* mode. Its scope, when built, is the old
+    plan: mirror the decoder's v0 — block 0, single language, single-byte, types
+    0x80 title + 0x81 performer + mandatory 0x8f size-info.
 - **Verification is a closed loop against our own reader**: burn → read back with
-  AccuDisc (`accudisc_cdtext_decode` for CD-Text, Q decode for MCN/ISRC/indices)
-  → compare to the source .toc. The encoder additionally round-trips through the
-  decoder with **no hardware** (see 11.4).
+  AccuDisc (format-05 blob for CD-Text, Q decode for MCN/ISRC/indices) → compare
+  to the source. For CD-Text the comparison is now a **byte-for-byte blob
+  compare**, which is strictly stronger than the string compare the authored path
+  would have allowed.
 - **Licensing**: `CdTextEncoder.cc` / `PWSubChannel96.cc` (GPL,
   `private/code/cdrdao/`) are read-only references — **rewrite, never copy**;
   credit in `docs/reference/ATTRIBUTION.md`.
+- **Golden reference — capture it before cdda2img deletes cdrdao** (Keith,
+  2026-07-24). Our own reader agreeing with our own writer is a closed loop that a
+  *systematic* error in the R-W packing would pass perfectly; cdrdao is the last
+  independent CD-Text writer on the machine. So: **burn ABBA *Gold* with cdrdao,
+  read the result back with `accudisc read --cdtext`, keep that blob**, plus the
+  source blob — input → cdrdao → output as a triple. **On CDEmu, not real media**
+  (Keith's amendment — costs no blank).
+  - **OUTCOME 2026-07-24 — ran clean, but the artifact is NOT cdrdao's packing.**
+    CDEmu *does* return CD-Text on READ TOC format 5 (760 B, 42 packs, all CRCs
+    valid — verified independently with our own code), so the predicted failure
+    did not occur. A subtler one did: **CDEmu decodes the packs to text and
+    re-encodes on read.** `/var/tmp/cdr.toc` holds decoded `CD_TEXT { TITLE … }`
+    blocks, so cdrdao's actual R-W stream was consumed and discarded at the
+    virtual writer. The blob is **libmirage's packing**.
+    - **Therefore no virtual writer can ever produce the cdrdao oracle** — a text
+      round-trip destroys packing by construction. Getting cdrdao's genuine
+      packing needs a real burn to real media: **open, pending a fresh decision
+      from Keith. Do not assume into it.**
+    - **What it IS good for, and it is not nothing:**
+      `libmirage_abba_gold__42packs.cdtext` (+ `abba_gold_source.toc`, the exact
+      input) is an independently-encoded, well-formed blob from outside AccuDisc.
+      As a **pass-through acceptance fixture it is ideal** — feed it in, read
+      back, demand byte-identity. That breaks the closed loop against libmirage
+      rather than cdrdao: weaker than asked for, strictly better than
+      self-referential.
+    - **42 % 4 = 2 — a third counterexample to the multiple-of-4 rule**, and the
+      first produced by an *encoder* rather than read off a drive.
+  - **Scope limit** (cdda2img's §35.3, and it is the sharper point): cdrdao cycles
+    pre-built blocks and therefore *cannot* emit a non-multiple-of-4 stream, so
+    this reference validates the **4-aligned path only**. The 33- and 35-pack
+    ring-fill cases have a weaker oracle — drive acceptance plus reader
+    round-trip — and a failure there will present as a puzzle, not a diff.
+- **Test fixtures stay private** (Keith, 2026-07-24). cdda2img's three real
+  captures live in `private/research/incoming/cdtext-captures/` (git-ignored;
+  commercial-pressing metadata). Tracked unit tests therefore run against
+  **synthesised** 33- and 35-pack fixtures, with the real captures as a local-only
+  acceptance set.
 
 ### 11.2 Step A — verify the EXISTING metadata round-trips (items MCN/ISRC/pregaps)
 
@@ -246,78 +325,257 @@ decode) to the .toc. **Caveat**: CDEmu's subchannel synthesis fidelity is
 unknown — if it does not reproduce Q from the cue sheet, defer this check to the
 Plextor (Step D). Deliverable: pass/fail on MCN/ISRC/pregaps from a real burn.
 
-### 11.3 Step B1 — data model (src/write/write.h)
+### 11.3 Step B1 — data model + CLI intake (src/write/write.h, cli/main.c)
 
-Add CD-Text carriers to the DAO model:
+The pass-through decision makes this small — the model carries a **blob**, not
+decoded strings:
 
-- `adsc_write_toc`: `char album_title[ACCUDISC_TEXT_MAX]; char
-  album_performer[ACCUDISC_TEXT_MAX]; uint8_t cdtext_language; int has_cdtext;`
-- `adsc_write_track`: `char title[ACCUDISC_TEXT_MAX]; char
-  performer[ACCUDISC_TEXT_MAX];`
+- `adsc_write_toc`: `const uint8_t *cdtext; uint32_t cdtext_len;` (borrowed
+  pointer, caller-owned, NULL = no CD-Text). No `album_title` / `performer` /
+  `cdtext_language` fields in v0 — those belong to the deferred authored mode.
+- `cli/main.c` `cmd_write`: add `--cdtext FILE`, sitting alongside the existing
+  `--toc` / `--bin` / `--simulate` / `--byteswap` / `--speed` / `--progress-fd`.
+  Load the file whole (it is a few KiB), pass pointer+len through
+  `accudisc_write_opts`. **No `accudisc_write()` signature change** — cdda2img is
+  mid-migration off cdrdao and the function shape is frozen (11.9).
 
-Reuse `ACCUDISC_TEXT_MAX` from the public header for symmetry with the decoder.
+### 11.4 Step B2 — blob validation (src/meta/cdtext.c or new cdtext_blob.c)
 
-### 11.4 Step B2 — TOC parser CD_TEXT (src/write/tocparse.c)
+Replaces the old "parse `CD_TEXT` out of the .toc" step, which is **deferred to
+the authored mode (v1)**. `src/write/tocparse.c` keeps ignoring `CD_TEXT`.
 
-Extend the line scanner (today it *ignores* CD_TEXT) to parse:
+Validate the incoming format-05 blob *without interpreting the payload*:
 
-- disc-level `CD_TEXT { LANGUAGE_MAP { 0: N } LANGUAGE 0 { TITLE ".." PERFORMER
-  ".." } }` → album fields + `cdtext_language = N`, `has_cdtext = 1`;
-- per-track `CD_TEXT { LANGUAGE 0 { TITLE ".." PERFORMER ".." } }` → track fields.
+```
+[0..1] TOC data length (big-endian, = len-2)   <- READ TOC header
+[2..3] reserved
+[4..]  N x 18-byte CD-Text packs
+```
 
-Needs brace-depth / current-LANGUAGE tracking (the parser is line-oriented).
-Ignore non-v0 items (SONGWRITER etc.). **Unit test** (`tests/test_tocparse.c` or
-new): parse the ABBA .toc text, assert album + a sample of track titles/
-performers, and that a .toc with no CD_TEXT sets `has_cdtext = 0`.
+- `len >= 4 + 18` and `(len - 4) % 18 == 0`; header length field cross-checked
+  against the buffer size, **refuse on inconsistency** (some drives pad).
+  cdda2img has no counterexample to the cross-check in four captures — treat that
+  as "none found", not "never happens".
+- **Pack count is NOT required to be a multiple of 4.** The 2026-07-23 draft
+  planned to refuse otherwise; **cdda2img's §34.1 killed that with data and it
+  must not ship**. **Two of their three** captures fail it — 33 packs
+  (`cdemu_utf8`) and 35 packs (a redumper dump off `PLEXTOR - DVDR PX-716A`, our
+  own drive model). Neither is truncated: sequence numbers run contiguously
+  (verified 0–32 and 0–34 with our own code) and both end with the 3-pack
+  `SIZE_INFO` trio, which is exactly what a truncated capture would lack. *Caveat
+  on that last point:* the Technotronic trio's third pack fails CRC, so **our
+  decoder sees a pair, not a trio** — do not assert on the trio.
+  The 4-packs-per-96-byte-block relation governs the *media
+  encoding*; the drive hands back one de-duplicated logical stream whose length
+  has no such constraint. Consequence for the writer: see 11.5.
+- **CRC-16 check every pack**, but with a **three-way** outcome, not two. Verified
+  2026-07-24 against cdda2img's delivered captures
+  (`private/research/incoming/cdtext-captures/`) using our own `adsc_crc16`:
+  - **CRC valid** → write.
+  - **CRC field is zero (0x0000)** → **transport artifact, not damage.** The
+    35-pack `technotronic_px716a` capture — real hardware, `PLEXTOR - DVDR
+    PX-716A` rev 1.11, i.e. our own drive model — has exactly this on its **last**
+    pack, a `SIZE_INFO` (0x8f) whose payload is intact and plausible (language
+    code 0x09 = English in the right slot) but whose stored CRC is all zeroes.
+    The drive dropped the check field in transport; the payload survived.
+    Refusing here would reject a real capture, and passing it through verbatim
+    would burn a pack that every conforming reader discards — including **our
+    own decoder, which already skips it** (`src/meta/cdtext.c`: "corrupt pack:
+    skip, never guess"). So a strict pass-through would silently produce a disc
+    *worse* than its source. **DECIDED (Keith, 2026-07-24): recompute the CRC for
+    zero-CRC packs only**, payload untouched, noted on stderr. This regenerates a
+    check field the transport lost; it does not alter content — the payload is
+    never read, interpreted or transcoded, only the 16 bits that exist solely to
+    validate it, derived from that same payload. The rule is mechanical rather
+    than a judgement call: all-zeroes is a signature, wrong-but-nonzero is damage.
+    **This is the one place where "AccuDisc only moves bits" carries an
+    asterisk** — document it in the man page and `cli-machine-interface.md`, not
+    only here.
+    *Mechanism — resolved 2026-07-24 from redumper's source, and it is NOT what
+    either side inferred.* cdda2img concluded from a 4-capture table that the
+    zeroing "follows redumper's dump path" and is therefore one tool's quirk (an
+    edge case). Reading the source says otherwise:
+    - **redumper does not zero anything.** Its dump path writes the raw READ TOC
+      format-05 buffer verbatim — `write_vector(cdtext_path, cd_text_buffer)`
+      straight from `cmd_read_toc`, no CRC handling at all
+      (`private/code/redumper/cd/cd_common.ixx:190-195`). It cannot be the origin.
+    - **redumper independently documents it as a PLEXTOR DRIVE behaviour.**
+      `cd/toc.ixx:422-428` hard-codes an exemption for the final descriptor:
+      `// PLEXTOR PX-W5224TA: crc of last pack is always zeroed`, skipping the
+      check when `i + 1 == descriptors_count`. A separate project, on a
+      *different* Plextor model, hit the same thing and blamed the drive.
+    - **So it is a Plextor-family behaviour, i.e. our own drive** — which makes it
+      the *expected* case in our environment, not an edge case. The stderr note
+      should therefore **not** be quietened (cdda2img's §37.3 suggestion rests on
+      the wrong premise).
+    - **Unresolved, and stated as such:** `stanley_road` was captured off the
+      *same PX-716A* with our own tooling and its final-pack CRC is **valid**, so
+      "always zeroed" does not hold for the 716A. Firmware, disc, or transport
+      differences remain candidates. **Hypothesis worth testing** (cheap, and it
+      connects to F-001): an allocation-length short transfer would leave the
+      final pack's trailing 2 bytes at their zero-initialised value — i.e. the
+      "zeroed CRC" would be a *truncated read*, which our `resid` check now
+      detects. Test: re-capture Technotronic with our own tooling and see whether
+      the zero reproduces and whether `resid` is non-zero.
+  - **CRC non-zero and wrong** → damage. Refuse the burn; escape flag writes
+    verbatim anyway.
+- **Run the whole of this validation at intake, before any media is touched** —
+  before SEND CUE SHEET and before the first write — so a bad capture costs an
+  error message rather than a blank (cdda2img's request, §34.1).
+- **Consistency warning (not an error)**: the 0x8f size-info pack declares
+  first/last track. If that disagrees with the `.toc` being burned, write the
+  bytes as given, warn on stderr, **exit 3** ("completed with caveats") — the
+  decision stays with the caller.
 
-### 11.5 Step B3 — CD-Text encoder (src/meta/cdtext_encode.c, NEW)
+Unit-testable with zero hardware: feed it a captured ABBA blob plus mutations
+(odd length, bad header length, 3-pack stream, flipped CRC byte).
 
-Mirror `meta/cdtext.c` (decoder) + cdrdao `CdTextEncoder`. **Two layers, split so
-the hard part is unit-testable without hardware:**
+### 11.5 Step B3 — packs → 96-byte R-W blocks (src/meta/cdtext_encode.c, NEW)
 
-- **B3a — strings → 18-byte packs.** For each type (0x80, 0x81): a stream of
-  NUL-terminated strings, one per track starting at track 0 (album), chunked into
-  12-byte payloads across packs; set `[0]`type `[1]`track `[2]`sequence
-  `[3]`block/charpos, compute the complemented CRC-16 into `[16..17]`. Emit the
-  **0x8f size-info** pack(s) (char code, first/last track, per-type pack counts,
-  language code). This layer is **round-trip unit-tested**: encode → prepend the
-  4-byte header → `accudisc_cdtext_decode` → assert strings identical. The
-  reader is the oracle; zero hardware.
-- **B3b — 18-byte packs → 96-byte R-W subchannel blocks** (one per lead-in
-  sector), for the write. Mirror cdrdao `PWSubChannel96`. Verified only on a real
-  burn + read-back (READ TOC format 5 does the inverse extraction on read).
+Only the *second* layer of the original two-layer plan survives; B3a
+(strings → 18-byte packs) moves to the deferred authored mode.
+
+**18-byte packs → 96-byte R-W subchannel blocks**, one block per lead-in sector.
+The lead-in carries CD-Text as 6-bit R-W symbols: **3 bytes → 4 symbols**, each
+symbol in the low 6 bits of one byte, so 96 symbols = 72 bytes = **exactly 4
+packs per block**. Mirror cdrdao `PWSubChannel96` (rewrite, never copy).
+
+**Ring fill — the consequence of 11.4's dropped multiple-of-4 rule.** With a pack
+count not divisible by 4 (33 and 35 both occur in the wild), the last block of one
+pass through the stream is short. Do **not** pad it with synthesised packs — that
+is invention, which is the one thing pass-through exists to prevent. Instead treat
+the pack stream as a **ring and fill blocks continuously across the wrap**: the
+lead-in is cycled to fill the extent anyway (11.6), so block boundaries simply do
+not align with stream boundaries, and the pattern repeats after
+`lcm(npacks, 4) / 4` blocks (33 packs → 33 blocks; 35 → 35). Every block is fully
+populated with real packs and nothing is invented.
+
+Note this is a *deliberate divergence from cdrdao*, which cycles pre-built blocks
+rather than packs and so can only ever emit multiples of 4. Ours is the more
+faithful behaviour for the pass-through case, but it is a hypothesis about what
+the drive accepts until Step C/D confirms it — **if read-back shows the drive
+requires block-aligned pack groups, that is the finding, and it lands here.**
+
+**Unit test without hardware**: write the inverse extraction (96-byte block →
+4 packs) in the test and assert `packs → blocks → packs` is the identity over real
+blobs — **including a 33-pack and a 35-pack capture**, which are the cases that
+exercise the ring wrap. The hardware round-trip (Step C/D) is then confirmation,
+not the only evidence.
 
 ### 11.6 Step B4/B5 — write path (src/write/{wparams,cuesheet,burn}.c, mmc/)
 
-- **write params**: when `has_cdtext`, set mode-page-05 data-block-type for the
-  96-byte subchannel lead-in write (cdrdao `setWriteParameters` CD-Text variant).
+- **write params**: when CD-Text is present, set mode-page-05 data-block-type for
+  the 96-byte subchannel lead-in write (cdrdao `setWriteParameters` CD-Text
+  variant).
 - **cue sheet**: lead-in entry data-form → **0x41** (CD-DA with P-W) when CD-Text
   is present (`cuesheet.c`).
-- **MMC**: WRITE(10) of 96-byte blocks at negative LBA. cdrdao writes CD-Text at
-  `lba = -150 - leadInLen`, cycling the encoded blocks to fill `leadInLen`
-  sectors, with the same buffer-full (SK2/04/08) retry as audio.
+- **MMC**: WRITE(10) of 96-byte blocks at negative LBA, starting at
+  `lba = -150 - leadInLen`, with the same buffer-full (SK2/04/08 = "not ready,
+  long write in progress" → sleep 40 ms, retry) handling as audio.
+- **`leadInLen` — RESOLVED 2026-07-24** (was the blocking open question; answer
+  read out of `GenericMMC.cc:414-432` and `:1344-1397`, not guessed):
+  - It comes from **READ DISC INFORMATION (0x51) bytes 17-19** = lead-in start
+    MSF. If that start is **>= 80:00:00** then `leadInLen = 450000 - startLBA`
+    (450000 = MSF 100:00:00); otherwise the fallback is **1 minute = 4500
+    sectors** (with a 30 s lead-out instead of the usual 90 s).
+  - The encoded block list is then **cycled repeatedly to fill the entire
+    lead-in** (`scp` wraps at the block count).
+  - **Therefore the lead-in extent is a property of the blank media, not of the
+    pack count** — which is why pass-through works at any (multiple-of-4) pack
+    count, and why nothing in the write path needs to know how much CD-Text
+    there is.
 - **orchestration** (`adsc_write_run`): set params (CD-Text mode) → SEND CUE
   SHEET → **writeCdTextLeadIn** → lead-in gap → audio → SYNCHRONIZE CACHE.
-- **OPEN QUESTION to resolve first**: how is `leadInLen` determined? (cdrdao
-  `leadInLen_`.) Read `GenericMMC.cc` for whether it is fixed, disc-reported, or
-  computed from the CD-Text size. Do not guess — this sets the write extent.
 
 ### 11.7 Step C — verify CD-Text round-trip on CDEmu
 
-Burn ABBA (with CD-Text) to CDEmu → `accudisc_cdtext_decode` on read-back →
-assert album + per-track title/performer match the .toc. If CDEmu does not return
-CD-Text (READ TOC format 5), this moves to Step D.
+Burn ABBA (with `--cdtext <blob>`) to CDEmu, then `accudisc read --cdtext` the
+result and **compare the returned blob byte-for-byte against the one we fed in**.
+Decode both sides as a human-readable diagnostic on mismatch, but the blob
+compare is the assertion — pass-through means anything less is a weaker test than
+the contract we promised cdda2img. If CDEmu does not return CD-Text (READ TOC
+format 5), this moves to Step D.
 
 ### 11.8 Step D — real burn on the Plextor /dev/sr0 (acceptance)
 
 Full ABBA burn: audio + MCN + ISRC + pre-gaps + CD-Text. Read **everything** back
 with AccuDisc and confirm all 11 items round-trip. **Definition of done:** a real
-Plextor burn whose PCM is bit-exact AND whose MCN, every ISRC, every pre-gap, and
-all CD-Text (album + per-track title/performer) read back identical to the source
-.toc via AccuDisc's own read path.
+Plextor burn whose PCM is bit-exact, whose MCN, every ISRC and every pre-gap read
+back identical to the source .toc, and whose **CD-Text blob is byte-identical to
+the one supplied** — all via AccuDisc's own read path.
+
+Note the CD-Text blob here is **one we author** (a held capture — the 42-pack
+libmirage fixture — or a synthesised blob fed through `write --cdtext`), not
+ABBA's own lead-in, which carries none (§11.1). This is not a compromise for
+pass-through v0: the property under test is "the write path lays down and recovers
+the exact packs it was given", and any valid blob exercises it. No original-CD-Text
+pressing exists to test against, and by the pass-through design none is needed.
 
 ### 11.9 Cross-cutting
 
+- **FIXED 2026-07-24 (was: MUST-FIX BEFORE ANY PHASE 3 BURN) — `adsc_toc_parse_cue`
+  was directive-injectable through a quoted string** (found 2026-07-24 while
+  reviewing cdda2img's §39.2; reproduced, not theorised). The scanner in
+  `src/write/tocparse.c` is
+  line-oriented and does **not** track quote context, so a literal newline inside
+  a `CD_TEXT` `TITLE "…"` value is parsed as TOC directives. Measured, same
+  parser, same base TOC:
+
+  | input | rc | ntracks | lead-out | track 3 ISRC |
+  |---|---|---|---|---|
+  | clean | 0 | 2 | 35345 | — |
+  | title carries `\nFILE …\nTRACK AUDIO\nISRC "ZZZZZ9999999"\n` | **0** | **3** | **39845** | **`ZZZZZ9999999`** |
+
+  It returns **`ACCUDISC_OK`** — a clean success — for a layout with a phantom
+  track, shifted boundaries, a changed lead-out and an attacker-chosen ISRC. Burnt,
+  that is a wrong disc reported as a good one: **our own violation of the
+  invariant below.**
+  - **Reachability:** the `.toc` is generated by cdda2img from MusicBrainz
+    free text (user-editable). They escape it (`escape_toc_string`, their
+    GRD-2026-0531-01) *specifically* to stop this — so today we are safe only
+    because the caller sanitises. `accudisc_write()` is public API; any caller can
+    hand us a `.toc`, and we must not depend on someone else's escaping.
+  - **Fix as landed:** the line-scan now tracks quote context and rejects an
+    unterminated quote at end-of-line with `ACCUDISC_ERR_INVAL`; `parse_qstr` also
+    stops at a newline for defence in depth. That matches cdrdao's own grammar
+    (its flex lexer does not let a quoted string span lines), so it makes the
+    parse *correct* rather than merely refusing. Regression added to
+    `tests/test_tocparse.c` (the injected TOC above → `ACCUDISC_ERR_INVAL`, plus a
+    balanced single-line quoted value → `ACCUDISC_OK`); 19/19 tests pass.
+    **Still owed: tell cdda2img it landed** — until they hear so, they must keep
+    `escape_toc_string` as the sole guard; after, it becomes defence in depth.
+  - **REVIEW QUESTION, adopted from cdda2img §40.3 — apply to every parser, not
+    just this one:** *"what does this accept if the producer is hostile, or merely
+    wrong?"* Three instances of the identical shape surfaced in one session across
+    three projects — cdrdao assumed its producer supplied encodable strings; we
+    assumed ours supplied escaped ones; cdda2img's `import` assumes a foreign
+    `.toc` is cdrdao-shaped and benign. In each case **the boundary was trusted
+    because the usual producer happens to be well-behaved.** Worth a sweep of our
+    other parsers (drive responses in `mmc/`, `cdda/subq.c`, `meta/cdtext.c`,
+    `toc/`) against that question rather than three separate fixes.
+- **INVARIANT — exit 0 must never mean "burned the disc but silently dropped
+  metadata."** Learned from a real cdrdao burn on 2026-07-24 that cost a Taiyo
+  Yuden blank: cdrdao logged `CD-TEXT writing is supported` and `Writing CD-TEXT
+  lead-in...`, then produced a disc with **no CD-Text at all** and **exited 0**.
+  Cause: one `U+2010 HYPHEN` in one track title (from MusicBrainz, missed by
+  cdda2img's sanitiser) was unencodable in the CD-Text charset, so cdrdao dropped
+  **all 20 blocks** and continued. Verified in source:
+  `trackdb/CdTextItem.cc:305-315` — `updateEncoding()` logs and returns **void**,
+  so the failure cannot propagate to a caller even in principle. Its message is
+  itself broken: `log_message(-2, "CD-TEXT: Unable to encode \"%s\" into
+  compatible format")` — `%s` with **no argument** (undefined behaviour, prints
+  garbage varargs), so it cannot even say which string failed.
+  Rules this fixes in place for us:
+  1. **Validate at intake, before SEND CUE SHEET and before any write** (already
+     11.4) — this is the case that proves the rule.
+  2. **A metadata failure is a hard failure, not a downgrade.** If any part of the
+     requested CD-Text cannot be written, refuse the burn. Never write the audio
+     and drop the metadata.
+  3. **Never a bare `%s` without its argument**, and every diagnostic names the
+     offending item. Our stderr is cdda2img's end-user text (their §32.5), and
+     they have no fallback engine behind us.
+  4. When the **authored mode** (v1) lands, an unencodable string fails *before*
+     the burn — never "encode what fits and continue".
 - **Commit per logical step** through `scripts/sync.py` (build+test gate).
 - **Update §9 phase status** as steps land; retire §10's stale "resolve before
   phase 1" framing.
@@ -326,4 +584,12 @@ all CD-Text (album + per-track title/performer) read back identical to the sourc
   `accudisc_write_opts` (documented "provisional") not the function shape.
 - **Risks to watch**: CDEmu subchannel/CD-Text read-back fidelity (may force
   Plextor-only verification); the 96-byte subchannel write-params mode may differ
-  CDEmu vs Plextor; `leadInLen` (11.6).
+  CDEmu vs Plextor. (`leadInLen` is no longer a risk — resolved, 11.6.)
+- **Not Phase 3, but owed to cdda2img from the same exchange** (tracked so they
+  are not lost with the plan): freeze `--retries` / `--c2-retries` / `--verify` /
+  `--overlap` / `--ladder` in `cli-machine-interface.md` (including that
+  `--retries` defaults to **2**, the one flag that does carry a default); fix the
+  unguarded `strtol` → `uint8_t` truncation on all five (`--retries 256` silently
+  becomes 2 today); document that `speeds` reports `page2a=0` as *"not reported"*,
+  not *"quantized to zero"*, since their ladder rule `req == page2a` would
+  otherwise admit nothing on a drive with no usable mode page 2A.

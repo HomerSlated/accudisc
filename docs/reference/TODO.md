@@ -299,6 +299,24 @@ on single-extent drives). Revisit the ranged feature in a future session.
 - `accudisc_eject`/`accudisc_load` header comments describe START STOP UNIT
   (LoEj), but the implementation uses block-layer CDROMEJECT/CDROMCLOSETRAY
   (device.c explains why). One-line comment fix; contract vs implementation.
+- ~~`adsc_toc_parse_cue` directive-injectable through a quoted string~~ **FIXED
+  2026-07-24.** A line-oriented scan that lost quote context let a newline inside
+  a `CD_TEXT TITLE "…"` value spill its tail onto the next physical line, where a
+  column-0 keyword was parsed as a real directive (phantom track + forged ISRC +
+  changed lead-out, all returning `ACCUDISC_OK`). Fix: the line-scan now tracks
+  quotes and rejects an unterminated quote at EOL with `ACCUDISC_ERR_INVAL`
+  (matches cdrdao's flex lexer — a string may not span a line); `parse_qstr`
+  stops at newline too. Regression in `tests/test_tocparse.c`. **Owed: notify
+  cdda2img** — their `escape_toc_string` was our only guard until this landed
+  (RECORDING_PLAN.md §11.9).
+- **[P2] Parser hostile-input sweep** (RECORDING_PLAN.md §11.9 REVIEW QUESTION,
+  adopted from cdda2img §40.3): apply *"what does this accept if the producer is
+  hostile, or merely wrong?"* to every parser fed from a boundary we don't
+  control — drive responses in `mmc/`, `cdda/subq.c`, `meta/cdtext.c`, `toc/`.
+  The `adsc_toc_parse_cue` injection above was one instance of a pattern that
+  surfaced three times in one session across three codebases (each trusted its
+  boundary because the *usual* producer is well-behaved); do this as one sweep,
+  not three separate fixes as they bite.
 
 #### Bug audit 2026-07-23 (full report: `private/bugs/2026-07-23-bug-audit.md`)
 Correctness sweep of the whole tree, 7 findings, 0 critical. `rw.c` RS/GF math
