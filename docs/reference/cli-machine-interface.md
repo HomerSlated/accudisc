@@ -130,11 +130,22 @@ with the laser off (test-write); requires a blank disc and an O_RDWR open.
 
 - **stderr**: human `\rwriting <done>/<total> (…%)` line — not a stable
   interface.
-- **stdout**: final `write done sectors=<n> mode=<simulate|burn>`.
+- **stdout**: final `write done sectors=<n> mode=<simulate|burn>`, with
+  ` caveats=1` appended when the burn completed with a caveat.
 - **`--progress-fd N`**: machine tokens, throttled — `progress <done> <total>`
-  lines plus a final `summary sectors=<n> mode=<simulate|burn> result=ok`.
-- **exit**: 0 done; 1 usage / missing `--toc`/`--bin`; 2 transport failure;
-  **3 disc is not blank**.
+  lines plus a final `summary sectors=<n> mode=<simulate|burn> result=<r>`. The
+  `summary` is emitted on **every** outcome (unlike `read`), so a caller can key
+  on `result=` rather than the exit code or stderr. `result` is one of:
+  - `ok` — clean burn (exit 0);
+  - `caveats` — burn completed but see the log, e.g. the CD-Text SIZE_INFO
+    disagreed with the `.toc` (exit 3); the disc **was** written;
+  - `not_blank` — the disc was not blank; nothing written (exit 2);
+  - `error` — a transport/device/local failure; nothing usable written (exit 2).
+  `sectors` is the count actually written (0 for `not_blank`).
+- **exit**: 0 done; 1 usage / missing `--toc`/`--bin`; 2 fatal (disc not blank,
+  or transport/device failure — could not complete); 3 completed with caveats.
+  Exit 2 covers both not-blank and other failures; **use `result=not_blank` to
+  tell them apart**, not the stderr text.
 
 `done`/`total` are sectors; `total` is the lead-out LBA (sum of track lengths).
 `--byteswap` swaps each 16-bit audio sample before writing (audio byte order is

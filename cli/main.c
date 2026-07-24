@@ -1037,28 +1037,42 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
 
     int err = accudisc_write(dev, toc, bin, &o, write_progress, &wp);
     fprintf(stderr, "\n");
+    const char *mode = o.simulate ? "simulate" : "burn";
+    const char *result;
+    int ret;
+
     if (err == ACCUDISC_ERR_UNSUPPORTED) {
         /* Not blank = a precondition that could not complete, i.e. exit 2 per
          * the tool-wide convention (fatal: command could not complete). Nothing
          * was written. (Was exit 3 here, which collided with "completed with
          * caveats" — corrected 2026-07-24.) */
         fprintf(stderr, "accudisc: write: disc is not blank\n");
-        return 2;
+        result = "not_blank";
+        ret = 2;
+    } else if (err < 0) {
+        (void)fail_dev(dev, "write", err); /* prints the human detail; exit 2 */
+        result = "error";
+        ret = 2;
+    } else {
+        /* err >= 0: the burn completed. ACCUDISC_WROTE_WITH_CAVEATS (positive)
+         * means a caveat was already logged to stderr (e.g. CD-Text SIZE_INFO vs
+         * .toc) — exit 3; the caller must not treat it as a clean run. */
+        int caveats = (err == ACCUDISC_WROTE_WITH_CAVEATS);
+        printf("write done sectors=%u mode=%s%s\n", wp.total, mode,
+               caveats ? " caveats=1" : "");
+        result = caveats ? "caveats" : "ok";
+        ret = caveats ? 3 : 0;
     }
-    if (err < 0)
-        return fail_dev(dev, "write", err);
 
-    /* err >= 0: the burn completed. ACCUDISC_WROTE_WITH_CAVEATS (positive) means
-     * it completed with a caveat already logged to stderr (e.g. CD-Text
-     * SIZE_INFO vs .toc) — exit 3, the caller must not treat it as a clean run. */
-    int caveats = (err == ACCUDISC_WROTE_WITH_CAVEATS);
-    const char *mode = o.simulate ? "simulate" : "burn";
-    printf("write done sectors=%u mode=%s%s\n", wp.total, mode,
-           caveats ? " caveats=1" : "");
+    /* Machine channel gets a summary on EVERY outcome, so a caller can key on
+     * result= (ok|caveats|not_blank|error) instead of scraping stderr — which
+     * is deliberately not a stable interface. exit 2's two sub-cases (not-blank
+     * vs other failure) are otherwise indistinguishable by exit code alone.
+     * Requested by cdda2img 2026-07-24. */
     if (wp.prog_fd >= 0)
         dprintf(wp.prog_fd, "summary sectors=%u mode=%s result=%s\n",
-                wp.total, mode, caveats ? "caveats" : "ok");
-    return caveats ? 3 : 0;
+                wp.total, mode, result);
+    return ret;
 }
 
 /* ---- read ------------------------------------------------------------- */
