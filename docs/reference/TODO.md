@@ -722,6 +722,22 @@ external absolute gate — so recovery = blind re-reads + cross-read consensus.
     BEFORE the burn (§11.9 INVARIANT rule 4). Reference: cdrdao `CdTextEncoder` /
     `writeCdTextLeadIn`, libmirage `cdtext-coder.c` — rewrite, never copy.
     Sequenced after v0.
+    - **UNENCODABLE CODEPOINTS — the failure mode is the requirement** (adopted
+      from cdda2img §55.2, whose evidence is a disc we both handled). cdrdao,
+      given `"Voulez‐Vous (edit)"` from a `.toc`, **silently discarded the
+      whole TITLE and renumbered the following packs**, so the gap decodes as a
+      well-formed "track 13 has no title" — indistinguishable from a disc
+      genuinely authored that way. It cost a day of wrong theories about where
+      the gap came from. Our encoder must not reproduce that. Order of
+      preference: **(1) transliterate** where intent is preserved losslessly
+      (U+2010 HYPHEN → `-`, U+2019 → `'`, typographic quotes/dashes) via a
+      published Latin-ASCII folding, **reporting every substitution**;
+      **(2) fail loudly** on a genuinely unmappable field, naming the field and
+      the codepoint. `ACCUDISC_WROTE_WITH_CAVEATS` / exit 3 already exists and
+      fits the substitution case exactly. **A silent drop is never acceptable** —
+      it is a well-formed lie, which is worse than an error. This applies to the
+      *decoder* display too: nothing should ever present "no title" without a
+      way to tell "absent on the disc" from "we couldn't render it".
   Note: CD-Text does NOT affect the Disc ID (pure TOC) — content fidelity,
   separate from the pregap item below.
 - **Disc-ID round-trip mismatch = pregap/TOC, upstream (cdda2img).** Root cause
