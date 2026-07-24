@@ -25,6 +25,7 @@ set(ACCUDISC_SOURCES
     cdda/index_map.c
     cdda/rw.c
     meta/cdtext.c
+    meta/cdtext_blob.c
     write/wparams.c
     write/discinfo.c
     write/cuesheet.c

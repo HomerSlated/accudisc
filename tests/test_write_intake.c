@@ -13,6 +13,7 @@
 
 #include <accudisc/accudisc.h>
 
+#include "cdda/crc16.h"
 #include "write/write.h"
 
 /* Write a byte buffer to a fresh temp file; returns its malloc'd path. */
@@ -34,11 +35,18 @@ int main(void)
         "TRACK AUDIO\n"
         "FILE \"x.bin\" 00:00:00 00:10:00\n";
 
-    /* A distinctive 40-byte "blob" — B1 does not validate it, so any bytes do;
-     * the test only demands byte-exact carry. */
-    uint8_t blob[40];
-    for (int i = 0; i < (int)sizeof blob; i++)
-        blob[i] = (uint8_t)(i * 7 + 1);
+    /* A VALID single-pack format-05 blob: the loader now validates the blob at
+     * intake (B2), so a well-formed one is required for the carry test. 4-byte
+     * header (data length = 20) + one title pack with a correct complemented
+     * CRC, so validation makes no changes and the byte-exact carry holds. */
+    uint8_t blob[22] = { 0x00, 0x14, 0x00, 0x00,   /* hdr: len-2 = 20 */
+                         0x80, 0x01, 0x00, 0x00,   /* title, track 1, seq 0 */
+                         'T', 'E', 'S', 'T', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    {
+        uint16_t stored = (uint16_t)~adsc_crc16(blob + 4, 16);
+        blob[20] = (uint8_t)(stored >> 8);
+        blob[21] = (uint8_t)stored;
+    }
 
     char *tocp = write_temp(TOC, strlen(TOC));
     char *blobp = write_temp(blob, sizeof blob);

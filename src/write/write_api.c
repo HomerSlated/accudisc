@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include "../meta/cdtext_blob.h"
 #include "../mmc/mmc.h"
 #include "write.h"
 
@@ -76,6 +77,13 @@ int adsc_write_load_model(const char *toc_path, const char *cdtext_path,
         rc = slurp_file(cdtext_path, 0, &blob, &len);
         if (rc != ACCUDISC_OK)
             return rc;
+        /* Validate (and repair zero-CRC packs) at intake, before the model can
+         * reach the burn path. A bad blob costs an error, never a blank. */
+        rc = adsc_cdtext_blob_validate(blob, len, NULL);
+        if (rc != ACCUDISC_OK) {
+            free(blob);
+            return rc;
+        }
         out->cdtext = blob;
         out->cdtext_len = len;
         *cdtext_buf = blob;
