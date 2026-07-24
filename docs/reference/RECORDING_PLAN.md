@@ -275,11 +275,20 @@ passed through unmodified — see 11.1.
     unless AccuDisc encodes it. Pack encoding is bit-formatting — libaccudisc's job
     by scope, and a mirror of the decoder we already ship — so it belongs here, not
     in the caller. cdda2img's interim until this lands is **re-burn-only** (they
-    are *not* porting their own encoder). Scope of the first cut: mirror the
-    decoder's v0 — block 0, single language, single-byte, types 0x80 title + 0x81
-    performer + mandatory 0x8f size-info; an unencodable codepoint fails **before**
-    the burn (§11.9 INVARIANT rule 4), never silently dropped. v0 pass-through
-    still ships first (simpler, and it is what makes re-burns work).
+    are *not* porting their own encoder). **Locked first-cut scope (cdda2img §43,
+    grounded in what their `generate_toc` actually authors):** block 0, single
+    language, single-byte charset, pack types **0x80 title (disc + per-track) +
+    0x81 performer (disc + per-track) + 0x86 disc-id (disc-level, conditional on
+    the field being set) + mandatory 0x8f size-info**. Note 0x86 is *not* in our
+    current decoder (`src/meta/cdtext.c` decodes 0x80/0x81 only) — it is new to
+    us, but cheap: the encoder is pack-type-agnostic, so 0x86 is one more type
+    byte, not a subsystem. Explicitly **out**: 0x82 songwriter (never authored),
+    and 0x8e UPC/ISRC — MCN/ISRC are Q-subcode directives (`CATALOG`/`ISRC` →
+    cuesheet → Q subchannel), not CD-Text packs, so encoding them here would
+    duplicate metadata that already reaches the disc another way. An unencodable
+    codepoint fails **before** the burn (§11.9 INVARIANT rule 4), never silently
+    dropped. v0 pass-through still ships first (simpler, and it is what makes
+    re-burns work).
 - **Verification is a closed loop against our own reader**: burn → read back with
   AccuDisc (format-05 blob for CD-Text, Q decode for MCN/ISRC/indices) → compare
   to the source. For CD-Text the comparison is now a **byte-for-byte blob

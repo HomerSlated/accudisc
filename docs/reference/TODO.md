@@ -681,11 +681,17 @@ external absolute gate — so recovery = blind re-reads + cross-read consensus.
     cdrdao is what encodes for them today — so once cdrdao leaves, a *fresh* disc
     authored from metadata has no CD-Text unless AccuDisc encodes it. cdda2img's
     interim until this lands is re-burn-only (their option (a); they are NOT
-    porting their own encoder). Scope of first cut: mirror the decoder — block 0,
-    single language, single-byte, types 0x80 title + 0x81 performer + mandatory
-    0x8f size-info; unencodable codepoint fails BEFORE the burn (§11.9 INVARIANT
-    rule 4). Reference: cdrdao `CdTextEncoder` / `writeCdTextLeadIn`, libmirage
-    `cdtext-coder.c` — rewrite, never copy. Sequenced after v0.
+    porting their own encoder). **Locked first-cut scope (cdda2img §43):** block
+    0, single language, single-byte, pack types 0x80 title (disc+track) + 0x81
+    performer (disc+track) + 0x86 disc-id (disc-level, conditional) + mandatory
+    0x8f size-info. NB 0x86 is NOT in our current decoder (cdtext.c does 0x80/0x81
+    only) — new to us but cheap (encoder is pack-type-agnostic); consider adding
+    0x86 *decode* too for the `cdtext` display (separate, off critical path). OUT:
+    0x82 songwriter (never authored), 0x8e UPC/ISRC (that's Q-subcode via
+    CATALOG/ISRC → cuesheet, not a CD-Text pack). Unencodable codepoint fails
+    BEFORE the burn (§11.9 INVARIANT rule 4). Reference: cdrdao `CdTextEncoder` /
+    `writeCdTextLeadIn`, libmirage `cdtext-coder.c` — rewrite, never copy.
+    Sequenced after v0.
   Note: CD-Text does NOT affect the Disc ID (pure TOC) — content fidelity,
   separate from the pregap item below.
 - **Disc-ID round-trip mismatch = pregap/TOC, upstream (cdda2img).** Root cause
