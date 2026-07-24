@@ -58,5 +58,35 @@ int main(void)
         assert((adsc_alloc_even(fulltoc_len(n)) & 1u) == 0);
     }
 
+    /* --- the rounding must not overflow the 16-bit CDB allocation field -----
+     * Clamping to 0xffff (odd) and THEN rounding gives 0x10000, which truncates
+     * to 0 in the CDB — asking the drive for nothing. Hence the clamp is to
+     * 0xfffe, the largest even allocation length. */
+    assert(adsc_alloc_even(0xfffe) == 0xfffe);
+    assert((uint16_t)adsc_alloc_even(0xfffe) == 0xfffe); /* survives the cast */
+    assert((uint16_t)adsc_alloc_even(0xffff) == 0);      /* why 0xffff is banned */
+
+    /* --- the pad must not escape as data ----------------------------------
+     * Rounding is a TRANSFER concern. The declared length stays the response
+     * length, so a raw dump is byte-comparable: cdda2img measured a 12-track
+     * Stanley Road full TOC at 169 real / 170 transferred, pad 0x2b — drive
+     * buffer residue, not disc data, and not guaranteed reproducible. A dump
+     * sized by the transfer would compare unequal to an identical one. */
+    {
+        uint32_t declared = fulltoc_len(12);            /* 169 */
+        uint32_t transfer = adsc_alloc_even(declared);  /* 170 */
+
+        assert(declared == 169 && transfer == 170);
+        assert(transfer - declared == 1);               /* exactly one pad byte */
+        /* An even-length format (0x05 CD-Text: 4 + 18*npacks) never pads, so
+         * the fix is a no-op there — confirmed empirically by cdda2img, whose
+         * 148-byte capture is byte-identical before and after the fix. */
+        for (uint32_t npacks = 1; npacks <= 64; npacks++) {
+            uint32_t cdtext = 4u + 18u * npacks;
+            assert(adsc_alloc_even(cdtext) == cdtext);
+        }
+        assert(4u + 18u * 8u == 148); /* the Stanley Road capture, unchanged */
+    }
+
     return 0;
 }

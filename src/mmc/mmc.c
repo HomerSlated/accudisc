@@ -58,24 +58,34 @@ int adsc_mmc_read_toc_raw(struct accudisc_device *dev, unsigned format,
     if (len <= 4) /* header only: the drive answered, the disc simply has
                    * no data of this format (e.g. no CD-Text) */
         return ACCUDISC_ERR_NOTFOUND;
-    if (len > 0xffff)
-        len = 0xffff;
-    len = adsc_alloc_even(len); /* see adsc_alloc_even: odd => DID_ERROR */
+    /* Clamp to the largest EVEN allocation length: 0xffff would round up to
+     * 0x10000 and truncate to 0 in the 16-bit CDB field — asking for nothing. */
+    if (len > 0xfffe)
+        len = 0xfffe;
 
-    uint8_t *buf = malloc(len);
+    /* Ask for an even count (see adsc_alloc_even: odd => DID_ERROR), but keep
+     * `len` as the TRUE response length the drive declared. Reporting the
+     * padded figure would hand callers a trailing byte of drive buffer residue
+     * that is not disc data and need not be reproducible across drives or
+     * reads — measured by cdda2img on a 12-track disc: 169 real, 170 padded,
+     * pad 0x2b. A raw dump compared by file size would then differ from an
+     * identical one, so the pad must not escape this function. */
+    uint32_t xfer = adsc_alloc_even(len);
+
+    uint8_t *buf = malloc(xfer);
     if (!buf)
         return ACCUDISC_ERR_NOMEM;
 
-    adsc_cdb_read_toc(cmd.cdb, format, time_bit, track, (uint16_t)len);
+    adsc_cdb_read_toc(cmd.cdb, format, time_bit, track, (uint16_t)xfer);
     cmd.buf = buf;
-    cmd.buf_len = len;
+    cmd.buf_len = xfer;
     rc = adsc_dev_exec(dev, &cmd);
     if (rc != ACCUDISC_OK) {
         free(buf);
         return rc;
     }
     *out = buf;
-    *out_len = len;
+    *out_len = len; /* true length, never the padded transfer */
     return ACCUDISC_OK;
 }
 
