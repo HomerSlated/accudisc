@@ -592,7 +592,53 @@ Reproduce: strip the 44-byte RIFF header (`tail -c +45`) to get 347208 exact
 sectors, `cdemu create-blank --writer-id=WRITER-TOC 0 /var/tmp/cdr`, burn, then
 `accudisc cdtext FILE` and `cmp`.
 
-### 11.8 Step D — real burn on the Plextor /dev/sr0 (acceptance)
+### 11.8 Step D — real burn on the Plextor /dev/sr0 (acceptance) — **PASSED 2026-07-24 (second attempt)**
+
+**Result.** Full 19-track / 347208-sector ABBA burn to a Taiyo Yuden CD-R
+(ATIP lead-in 97:24:01) with the 760 B 42-pack blob. Read back through
+AccuDisc's own read path:
+
+- **CD-Text: 760 bytes in, 760 bytes out, `cmp` IDENTICAL** — on physical media,
+  not an emulator. Decodes to the real content (*Gold: Greatest Hits* / ABBA,
+  19 track titles and performers).
+- TOC `source=fulltoc degrade=none`, 19 audio tracks, lead-out 347208.
+- MCN `0731451700729` and all 19 ISRCs identical to the source `.toc`.
+- Drive log confirms `write params accepted with P-W subchannel (data block
+  type 3)` and `42 packs -> 21 R-W blocks, filling 11699 lead-in sectors from
+  LBA -11849` (`11699 == 450000 - 438301`; `-11849 == -150 - 11699`).
+- SG_IO capture of the burn: 19 lead-in `WRITE(10)`s, **zero** non-clean
+  status/host/driver/resid across the entire run — no BURN-Proof stalls, no
+  retries.
+
+**The first attempt failed, and why matters.** Attempt 1 (earlier the same day)
+produced perfect audio, MCN and ISRC but **no CD-Text at all**, with every
+command returning success. The cause was a single byte in the cue sheet: the
+lead-out entry's **Data Form** was left at `00h` ("host supplies 2352 bytes per
+frame") instead of `01h` ("the device generates the frame") — MMC-5 §6.33.3.8,
+§6.33.3.10. Fixed in `eba7099`; that byte was the only change between the two
+burns, so this is a controlled result, not a coincidence.
+
+Three things are worth carrying forward from it:
+
+- **The emulator could not have caught this.** libmirage does not validate the
+  cue sheet, so CDEmu wrote and returned the CD-Text correctly from a sheet real
+  firmware rejected. Step C passing was necessary and not remotely sufficient.
+  For anything that is a *protocol contract* rather than a data transformation,
+  the emulator is not a substitute for media.
+- **The diagnosis came from diffing the transport, not re-reading the code.**
+  `strace -f -e trace=ioctl -s 300` decodes `SG_IO` including `cmdp` and
+  `dxferp` as hex; running cdrdao and AccuDisc against the *same* virtual blank
+  reduced "why won't the drive do it" to a byte diff of what the drive was told.
+  Two earlier hypotheses (a raw96r write-mode requirement; a `leadInLen`
+  off-by-150) were both refuted by that diff before either could be "fixed".
+- **A drive that documents a feature and appears not to do it is a bug report
+  against us first.** The failure was initially read as a PX-716A limitation;
+  the user's counter-evidence — cdrdao-burned CD-Text discs from this same drive
+  — was decisive and correct.
+
+---
+
+Original definition of done, for the record:
 
 Full ABBA burn: audio + MCN + ISRC + pre-gaps + CD-Text. Read **everything** back
 with AccuDisc and confirm all 11 items round-trip. **Definition of done:** a real
