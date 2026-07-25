@@ -165,19 +165,25 @@ static int cmd_info(accudisc_device *dev)
     return 0;
 }
 
-/* Plextor Q-Check style census: drive reads while the vendor counters are
- * armed; we sample them every CXSCAN_CADENCE sectors.
- *
- * 75 sectors is one second of audio, which is what makes the reported figures
- * comparable to every other C1/C2 tool — the units in `cx summary` are per
- * second, and they are only per second because the sample window is a second.
- * Named rather than inlined so tests/policy_constants.sh can see it: this is
- * acquisition policy that belongs in the library (API_PLAN.md §5.3), and the
- * test exists to catch it being duplicated into src/ rather than moved. */
-#define CXSCAN_CADENCE 75
+/* Plextor Q-Check style census. The scan itself — cadence, counter lifetime,
+ * aggregation — is accudisc_counter_census (API_PLAN.md §5.3); this is the
+ * printf around it. The cadence constant moved with the algorithm and now lives
+ * in the public header as ACCUDISC_CENSUS_CADENCE. */
+static int cxscan_sample(const accudisc_census_sample *s, void *user)
+{
+    (void)user;
+    if (s->read_err != ACCUDISC_OK)
+        fprintf(stderr, "accudisc: read at %u: %s (continuing)\n", s->lba,
+                accudisc_strerror(s->read_err));
+    printf("cx %u %u %u %u\n", s->lba, s->counters.c1, s->counters.c2,
+           s->counters.cu);
+    return 0;
+}
 
 static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
 {
+    accudisc_census_opts opts = {0};
+    accudisc_census_stats st;
     long start = 0;
     unsigned speed = 0;
 
@@ -192,59 +198,36 @@ static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
         }
     }
 
-    int err = accudisc_counter_scan_begin(dev);
+    /* Read the TOC before arming, not after. The old order armed the counters
+     * first, so the lead-in traffic of the TOC read landed in the first
+     * sample's interval — sectors the census never claimed to cover. */
+    accudisc_toc toc;
+    int err = accudisc_read_toc(dev, &toc);
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "read toc", err);
+
+    opts.start = (uint32_t)(start < 0 ? 0 : start);
+    opts.end = toc.leadout_lba;
+    opts.speed_x = (uint16_t)speed;
+
+    err = accudisc_counter_census(dev, &opts, cxscan_sample, NULL, &st);
     if (err == ACCUDISC_ERR_UNSUPPORTED) {
         fprintf(stderr, "accudisc: counter scan unsupported via %s — a "
                         "vendor driver is required (--driver auto)\n",
                 accudisc_access_method(dev));
         return 2;
     }
-    if (err != ACCUDISC_OK)
-        return fail_dev(dev, "counter scan begin", err);
 
-    accudisc_toc toc;
-    err = accudisc_read_toc(dev, &toc);
-    if (err != ACCUDISC_OK) {
-        accudisc_counter_scan_end(dev);
-        return fail_dev(dev, "read toc", err);
-    }
-    if (speed)
-        accudisc_set_speed(dev, speed);
-
-    uint64_t tc1 = 0, tc2 = 0, tcu = 0;
-    uint32_t peak_c1 = 0, peak_c2 = 0, peak_cu = 0;
-    int ret = 0;
-
-    for (long lba = start; lba < (long)toc.leadout_lba;
-         lba += CXSCAN_CADENCE) {
-        accudisc_read_req req = {0};
-        accudisc_counters c;
-
-        req.lba = (uint32_t)lba;
-        req.count = (uint32_t)(toc.leadout_lba - lba < CXSCAN_CADENCE
-                                   ? toc.leadout_lba - lba : CXSCAN_CADENCE);
-        req.retries = 1;
-        err = accudisc_read_cdda(dev, &req, NULL, NULL, NULL);
-        if (err != ACCUDISC_OK)
-            fprintf(stderr, "accudisc: read at %ld: %s (continuing)\n", lba,
-                    accudisc_strerror(err));
-        err = accudisc_counter_scan_read(dev, &c);
-        if (err != ACCUDISC_OK) {
-            ret = fail_dev(dev, "counter read", err);
-            break;
-        }
-        printf("cx %ld %u %u %u\n", lba, c.c1, c.c2, c.cu);
-        tc1 += c.c1; tc2 += c.c2; tcu += c.cu;
-        if (c.c1 > peak_c1) peak_c1 = c.c1;
-        if (c.c2 > peak_c2) peak_c2 = c.c2;
-        if (c.cu > peak_cu) peak_cu = c.cu;
-    }
-    accudisc_counter_scan_end(dev);
     fprintf(stderr, "cx summary: C1 %llu (peak %u/s)  C2 %llu (peak %u/s)  "
                     "CU %llu (peak %u/s)\n",
-            (unsigned long long)tc1, peak_c1, (unsigned long long)tc2,
-            peak_c2, (unsigned long long)tcu, peak_cu);
-    return ret;
+            (unsigned long long)st.c1, st.peak_c1, (unsigned long long)st.c2,
+            st.peak_c2, (unsigned long long)st.cu, st.peak_cu);
+
+    /* The summary prints either way — a census that stopped early still mapped
+     * everything before the stop, and that is the useful part. */
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "counter read", err);
+    return 0;
 }
 
 /* Pre-flight guard: which of burn / rip is legal for the loaded disc. The

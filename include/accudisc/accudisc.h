@@ -240,6 +240,54 @@ ACCUDISC_API int accudisc_counter_scan_read(accudisc_device *dev,
                                             accudisc_counters *out);
 ACCUDISC_API int accudisc_counter_scan_end(accudisc_device *dev);
 
+/* ---- counter census (the scan built on the three calls above) --------------
+ * Read a span while the counters are armed, sampling them every `cadence`
+ * sectors. The default cadence of 75 sectors is one second of audio, and that
+ * is the whole reason the reported figures are comparable with other C1/C2
+ * tools — their units are per second because the sample window is a second.
+ * Change it only if you also change how the results are labelled. */
+#define ACCUDISC_CENSUS_CADENCE 75
+
+typedef struct accudisc_census_sample {
+    uint32_t lba;               /* first sector of this sample */
+    uint32_t count;             /* sectors covered (< cadence at the tail) */
+    accudisc_counters counters; /* accumulated over those sectors */
+    int read_err;               /* the read's result: ACCUDISC_OK, or why not.
+                                 * A failed read does NOT stop the census — the
+                                 * point is to map damage — but its sample is
+                                 * flagged so a caller never mistakes "unread"
+                                 * for "read clean". */
+} accudisc_census_sample;
+
+/* Called once per sample. Return nonzero to stop the census early (reported as
+ * ACCUDISC_ERR_CANCELLED); the counters are always disarmed regardless. */
+typedef int (*accudisc_census_fn)(const accudisc_census_sample *sample,
+                                  void *user);
+
+typedef struct accudisc_census_opts {
+    uint32_t start;    /* first sector */
+    uint32_t end;      /* one past the last — normally toc.leadout_lba */
+    uint32_t cadence;  /* sectors per sample; 0 = ACCUDISC_CENSUS_CADENCE */
+    uint16_t speed_x;  /* set before scanning; 0 = leave as-is */
+    const volatile int *cancel; /* poll: nonzero aborts; or NULL */
+} accudisc_census_opts;
+
+typedef struct accudisc_census_stats {
+    uint64_t c1, c2, cu;                    /* totals over the span */
+    uint32_t peak_c1, peak_c2, peak_cu;     /* worst single sample */
+    uint32_t samples;                       /* samples delivered */
+    uint32_t read_errors;                   /* samples whose read failed */
+} accudisc_census_stats;
+
+/* Arms the counters, scans [start, end), disarms — including on every error
+ * path, which is the reason this exists as one call rather than three. Returns
+ * ACCUDISC_ERR_UNSUPPORTED without an attached driver offering the counters,
+ * and in that case nothing was armed. stats may be NULL. */
+ACCUDISC_API int accudisc_counter_census(accudisc_device *dev,
+                                         const accudisc_census_opts *opts,
+                                         accudisc_census_fn fn, void *user,
+                                         accudisc_census_stats *stats);
+
 /* ---- read-speed uncap (driver capability) ----------------------------------
  * Firmware caps CD read speed on some media; where the vendor offers an
  * override (Plextor: "SpeedRead"), this toggles it, raising the ceiling

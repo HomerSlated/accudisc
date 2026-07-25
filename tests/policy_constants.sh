@@ -33,9 +33,24 @@ fails=0
 
 # Each name is an acquisition-policy constant that must live on exactly one
 # side of the cli/src line. Add to this list when a new one is introduced.
-for name in PREGAP_WINDOW PREGAP_TAIL CXSCAN_CADENCE; do
-	n_cli=$(grep -rlw "$name" "$ROOT/cli" 2>/dev/null | wc -l)
-	n_src=$(grep -rlw "$name" "$ROOT/src" "$ROOT/include" 2>/dev/null | wc -l)
+#
+# CXSCAN_CADENCE became ACCUDISC_CENSUS_CADENCE in phase 2.2 — the cadence is
+# part of the public contract now, because the units of every figure derived
+# from it are per-second only by virtue of its value. This test caught the
+# rename by failing "found nowhere", which is what the positive-hit rule above
+# is for: a not-in-both test would have gone green on a constant that had
+# ceased to exist.
+for name in PREGAP_WINDOW PREGAP_TAIL ACCUDISC_CENSUS_CADENCE; do
+	# Match DEFINITIONS, not mentions. A migrated constant is public, so the
+	# CLI may legitimately reference it by name — that is the refactor working,
+	# not drift. What must never exist twice is the #define itself, which is
+	# precisely the "helper lands, CLI keeps its copy" state this test is for.
+	# (Matching mentions flagged a comment in cli/main.c naming the constant it
+	# had just given up. Right answer, wrong question — the check has to be
+	# about the definition.)
+	def="^[[:space:]]*#[[:space:]]*define[[:space:]]+$name\b"
+	n_cli=$(grep -rlE "$def" "$ROOT/cli" 2>/dev/null | wc -l)
+	n_src=$(grep -rlE "$def" "$ROOT/src" "$ROOT/include" 2>/dev/null | wc -l)
 
 	if [ "$n_cli" -gt 0 ] && [ "$n_src" -gt 0 ]; then
 		printf '  FAIL %s: defined in BOTH cli/ (%d files) and src|include/ (%d files)\n' \
