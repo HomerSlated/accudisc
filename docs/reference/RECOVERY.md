@@ -1032,11 +1032,34 @@ rests on.
 > temp, rename over target), which replaces the directory entry with a **new
 > inode** and silently severs the link; `sed -i` does the same. The two repos then
 > hold look-alike files that diverge from the next edit onward. Edit in place
-> (`cat new > RECOVERY.md`) and verify immediately with
-> `stat -c '%i %h' docs/reference/RECOVERY.md` — the link count must be **2**.
-> If it reads 1 the link is severed: reconcile, `ln -f` from one side, and
-> re-verify before either side commits. (It was severed once, found 2026-07-25;
-> the copies had diverged by 45 lines.)
+> (`cat new > RECOVERY.md`) and verify immediately.
+>
+> **Verify inode *identity*, not link count.** Compare the two paths:
+>
+> ```sh
+> [ "$(stat -c %i A)" = "$(stat -c %i B)" ] && cmp -s A B
+> ```
+>
+> The earlier version of this note said "the link count must be **2**", which is
+> the wrong property — it answers *how many names does this inode have*, when the
+> question is *are these two names the same file*. A backup made with `ln`, or a
+> third repo taking the document, gives `links=3` and a perfectly correct link
+> then reports as severed. Corrected 2026-07-25 after the same defect was found
+> in the repair script written to enforce it (§12.8's class, instance #7);
+> AccuDisc's `CLAUDE.md` carried the identical wording and has been flagged.
+> Treat the link count as information worth printing, not as the assertion.
+>
+> If the inodes differ the link is severed. **Do not simply `ln -f`** — that
+> destroys whatever is at the target path, which may be the other project's work.
+> Diff the peer copy first and merge anything unique before relinking.
+> `tools/relink_recovery_md.sh` does all of this: no-ops when already linked,
+> refuses and prints the offending lines when the peer has unique content,
+> requires `--force` to discard them, and verifies inode identity plus `cmp`
+> afterwards.
+>
+> (Severed and repaired four times on 2026-07-25 alone; the first time it went
+> unnoticed and the copies had diverged by 45 lines. The severing is caused by the
+> editing tool, so no amount of author care prevents it — only the check does.)
 
 ### 12.1 What the bench does
 
