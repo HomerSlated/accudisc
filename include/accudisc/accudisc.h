@@ -772,6 +772,93 @@ ACCUDISC_API int accudisc_check_audio_range(const accudisc_toc *toc,
 /* Stable lowercase token for the machine interface. Never NULL. */
 ACCUDISC_API const char *accudisc_range_reason_str(unsigned reason);
 
+/* ---- read-range planning ---------------------------------------------------
+ * What to read, decided from the TOC alone. The primitives above are all
+ * public already; what was not was the ORDERING and the DEFAULTS — which lived
+ * in the CLI, so a binding author had to reconstruct them from the man page.
+ *
+ * Pure: TOC in, plan out, no device. That is the point. Every branch here
+ * (HTOA pregap, Mixed Mode split, multi-session ambiguity, degraded lead-in)
+ * used to be reachable only with the right physical disc in the drive.
+ *
+ * Precedence: TRACKS beat SESSION. Naming tracks already names an extent, and
+ * a session is a coarser way of saying the same thing, so there is nothing for
+ * the session to add and it must not overwrite what the tracks decided. */
+
+/* Why a plan was refused. DISTINCT from accudisc_range_reason above, which
+ * describes why a *sector range* is unreadable — these say why no range could
+ * be chosen at all. Two enums, disjoint meanings, overlapping small integers:
+ * passing one to the other's _str() yields a well-formed token that is simply
+ * wrong, so they are deliberately named apart, down to the struct field. */
+typedef enum {
+    ACCUDISC_PLAN_OK = 0,
+    ACCUDISC_PLAN_TRACKS_NOT_FOUND,        /* a named track is not on the disc */
+    ACCUDISC_PLAN_TRACKS_CROSS_SESSION,    /* first and last in different
+                                            * sessions: the span would include
+                                            * the lead-out and lead-in between */
+    ACCUDISC_PLAN_TRACKS_NO_EXTENT,        /* last < first, or the pair yields
+                                            * no usable extent */
+    ACCUDISC_PLAN_MULTIPLE_AUDIO_SESSIONS, /* no defensible default; the caller
+                                            * must name one. Enumerating them
+                                            * is the application's business */
+    ACCUDISC_PLAN_NO_AUDIO_SESSION,        /* every track is marked data. May be
+                                            * a lie — SunnComm MediaCloQ presents
+                                            * audio as data to a computer drive,
+                                            * which is the whole protection — so
+                                            * a caller SHOULD say so and offer
+                                            * the force override */
+    ACCUDISC_PLAN_SESSION_SPLIT_BY_DATA,   /* the session's audio tracks sit
+                                            * either side of a data track; no
+                                            * single range covers them */
+    ACCUDISC_PLAN_SESSION_NOT_FOUND,       /* session absent, or holds no audio */
+    ACCUDISC_PLAN_START_PAST_LEADOUT,
+    ACCUDISC_PLAN_EMPTY_RANGE,             /* count <= 0; see resolved_count,
+                                            * which is where a NEGATIVE count
+                                            * (start beyond the named extent)
+                                            * stays visible */
+    ACCUDISC_PLAN_GUARD_REFUSED,           /* a range resolved, but is not
+                                            * readable as CD-DA. .check carries
+                                            * the detail; .lba/.count carry what
+                                            * was refused */
+    ACCUDISC_PLAN_BAD_ARGUMENT             /* NULL, or out of representable range */
+} accudisc_plan_reason;
+
+typedef struct accudisc_range_spec {
+    int32_t session;     /* -1 = unspecified */
+    int32_t first_track; /* -1 or 0 = unspecified */
+    int32_t last_track;
+    int64_t start;       /* -1 = unspecified */
+    int64_t count;       /* -1 = unspecified (through the end) */
+    uint8_t force;       /* skip the audio-range guard; does NOT skip
+                          * resolution — the two are separate questions */
+} accudisc_range_spec;
+
+typedef struct accudisc_range_plan {
+    uint32_t lba;
+    uint32_t count;
+    /* The count before it was known to be valid. Equals .count on success and
+     * is the ONLY field carrying information when the reason is EMPTY_RANGE:
+     * a negative value there says the start lies beyond the extent that was
+     * named, which an unsigned field would render as a huge positive number. */
+    int64_t resolved_count;
+    uint8_t session;     /* session actually chosen; 0 = flat / no structure */
+    uint8_t plan_reason; /* accudisc_plan_reason — NOT .check.reason */
+    accudisc_range_check check; /* populated when the guard refused */
+} accudisc_range_plan;
+
+/* Resolve a read request against a TOC. Returns ACCUDISC_OK with *out
+ * describing the range, ACCUDISC_ERR_INVAL for NULL or unrepresentable
+ * arguments, and ACCUDISC_ERR_UNSUPPORTED for every refusal — the detail is in
+ * out->plan_reason, never in the return code, so that a caller can distinguish
+ * "name a session" from "this disc claims to have no audio" and say something
+ * useful about each. *out is always written. Pure. */
+ACCUDISC_API int accudisc_plan_read_range(const accudisc_toc *toc,
+                                          const accudisc_range_spec *spec,
+                                          accudisc_range_plan *out);
+
+/* Stable lowercase token for the machine interface. Never NULL. */
+ACCUDISC_API const char *accudisc_plan_reason_str(unsigned plan_reason);
+
 /* Raw CD-Text packs from the lead-in (READ TOC format 5, undecoded).
  * Returns ACCUDISC_ERR_NOTFOUND when the drive answers but the disc carries
  * no CD-Text; a drive that rejects format 5 outright still surfaces as

@@ -1262,53 +1262,45 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
      * first sit a lead-out, a lead-in and a pregap that hold no payload. */
     if (!force || count < 0) {
         accudisc_toc toc;
-        accudisc_range_check chk;
         accudisc_toc_info info = {0};
+        accudisc_range_spec spec;
+        accudisc_range_plan plan;
         int err = accudisc_read_toc_src(dev, &toc, &info);
 
         if (err != ACCUDISC_OK)
             return fail_dev(dev, "read toc", err);
 
-        if (want_first_track) {
-            uint32_t tlba = 0, tcount = 0;
+        spec.session = want_session;
+        spec.first_track = want_first_track ? want_first_track : -1;
+        spec.last_track = want_last_track;
+        spec.start = have_start ? (int64_t)start : -1;
+        spec.count = count;
+        spec.force = (uint8_t)(force ? 1 : 0);
 
-            err = accudisc_toc_track_range(&toc, (uint8_t)want_first_track,
-                                           (uint8_t)want_last_track, &tlba,
-                                           &tcount);
-            if (err == ACCUDISC_ERR_NOTFOUND) {
+        err = accudisc_plan_read_range(&toc, &spec, &plan);
+        if (err != ACCUDISC_OK) {
+            /* The message is chosen from plan_reason, never from err — every
+             * refusal returns the same code, which is the point of §5.2. */
+            switch (plan.plan_reason) {
+            case ACCUDISC_PLAN_TRACKS_NOT_FOUND:
                 fprintf(stderr,
                         "accudisc: tracks %d-%d: not on this disc (has 1-%u)\n",
                         want_first_track, want_last_track,
                         toc.track_count ? toc.tracks[toc.track_count - 1].number
                                         : 0);
-                return 1;
-            }
-            if (err == ACCUDISC_ERR_UNSUPPORTED) {
+                break;
+            case ACCUDISC_PLAN_TRACKS_CROSS_SESSION:
                 fprintf(stderr,
                         "accudisc: tracks %d and %d are in different sessions; "
                         "a span across a session seam includes the lead-out "
                         "and lead-in between them\n",
                         want_first_track, want_last_track);
-                return 1;
-            }
-            if (err != ACCUDISC_OK) {
+                break;
+            case ACCUDISC_PLAN_TRACKS_NO_EXTENT:
                 fprintf(stderr, "accudisc: tracks %d-%d: no usable extent\n",
                         want_first_track, want_last_track);
-                return 1;
-            }
-            if (!have_start)
-                start = (long)tlba;
-            if (count < 0)
-                count = (long)(tlba + tcount) - start;
-            if (!ctx.quiet)
-                fprintf(stderr, "accudisc: tracks %d-%d, lba %ld count %ld\n",
-                        want_first_track, want_last_track, start, count);
-        } else if (want_session < 0 && !have_start && count < 0) {
-            /* Neither a range nor a session named: pick the audio session, if
-             * there is exactly one. */
-            int s = accudisc_toc_default_audio_session(&toc);
-
-            if (s == ACCUDISC_ERR_UNSUPPORTED) {
+                break;
+            case ACCUDISC_PLAN_MULTIPLE_AUDIO_SESSIONS:
                 fprintf(stderr,
                         "accudisc: more than one session contains audio; "
                         "choose one with --session N\n");
@@ -1318,9 +1310,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                             toc.sessions[i].last_track,
                             toc.sessions[i].audio_tracks,
                             toc.sessions[i].data_tracks);
-                return 1;
-            }
-            if (s == ACCUDISC_ERR_NOTFOUND) {
+                break;
+            case ACCUDISC_PLAN_NO_AUDIO_SESSION:
                 fprintf(stderr, "accudisc: no session contains audio tracks "
                                 "(%u track%s, all marked data)\n",
                         toc.track_count, toc.track_count == 1 ? "" : "s");
@@ -1336,73 +1327,64 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                         "its CTRL bits may be misreporting track type — some\n"
                         "accudisc: copy-protection schemes do this "
                         "deliberately. --force reads it anyway.\n");
-                return 1;
-            }
-            if (s > 0)
-                want_session = s;
-            /* ERR_INVAL = no session structure (degraded lead-in): fall
-             * through to the flat whole-disc default, which the range guard
-             * still vets. */
-        }
-
-        if (want_session > 0) {
-            uint32_t slba = 0, scount = 0;
-
-            /* The AUDIO span, not the whole session. On a Mixed Mode CD the
-             * session also holds a data track; the whole-session range would
-             * include it and the guard below would (correctly) refuse the lot. */
-            err = accudisc_toc_session_audio_range(&toc, (uint8_t)want_session,
-                                                   &slba, &scount);
-            if (err == ACCUDISC_ERR_UNSUPPORTED) {
+                break;
+            case ACCUDISC_PLAN_SESSION_SPLIT_BY_DATA:
                 fprintf(stderr,
                         "accudisc: session %d has audio tracks either side of "
                         "a data track; no single range covers them\n",
                         want_session);
                 fprintf(stderr,
                         "accudisc: select explicitly, e.g. --tracks A-B\n");
-                return 1;
-            }
-            if (err != ACCUDISC_OK) {
+                break;
+            case ACCUDISC_PLAN_SESSION_NOT_FOUND:
                 fprintf(stderr,
                         "accudisc: session %d not on this disc, or has no "
                         "audio tracks\n", want_session);
-                return 1;
-            }
-            if (!have_start)
-                start = (long)slba;
-            if (count < 0)
-                count = (long)(slba + scount) - start;
-            if (!ctx.quiet)
-                fprintf(stderr, "accudisc: session %d, lba %ld count %ld\n",
-                        want_session, start, count);
-        } else if (count < 0) { /* no session structure: through lead-out */
-            if ((uint32_t)start >= toc.leadout_lba) {
+                break;
+            case ACCUDISC_PLAN_START_PAST_LEADOUT:
                 fprintf(stderr, "accudisc: start %ld >= lead-out %u\n", start,
                         toc.leadout_lba);
-                return 1;
+                break;
+            case ACCUDISC_PLAN_EMPTY_RANGE:
+                /* resolved_count, not plan.count: a start past the named
+                 * extent gives a NEGATIVE count, and that is the number that
+                 * explains the refusal. */
+                fprintf(stderr, "accudisc: empty range (count %lld)\n",
+                        (long long)plan.resolved_count);
+                break;
+            case ACCUDISC_PLAN_GUARD_REFUSED:
+                fprintf(stderr,
+                        "accudisc: refusing lba %u count %u: %s at lba %u",
+                        plan.lba, plan.count,
+                        accudisc_range_reason_str(plan.check.reason),
+                        plan.check.first_bad_lba);
+                if (plan.check.track)
+                    fprintf(stderr, " (track %u)", plan.check.track);
+                fprintf(stderr, "\n");
+                fprintf(stderr,
+                        "accudisc: these sectors are not readable as CD-DA; "
+                        "--force overrides\n");
+                break;
+            default:
+                fprintf(stderr, "accudisc: cannot plan a read range: %s\n",
+                        accudisc_plan_reason_str(plan.plan_reason));
+                break;
             }
-            count = (long)toc.leadout_lba - start;
-        }
-
-        if (count <= 0) {
-            fprintf(stderr, "accudisc: empty range (count %ld)\n", count);
             return 1;
         }
 
-        if (!force &&
-            accudisc_check_audio_range(&toc, (uint32_t)start, (uint32_t)count,
-                                       &chk) != ACCUDISC_OK) {
-            fprintf(stderr,
-                    "accudisc: refusing lba %ld count %ld: %s at lba %u",
-                    start, count, accudisc_range_reason_str(chk.reason),
-                    chk.first_bad_lba);
-            if (chk.track)
-                fprintf(stderr, " (track %u)", chk.track);
-            fprintf(stderr, "\n");
-            fprintf(stderr,
-                    "accudisc: these sectors are not readable as CD-DA; "
-                    "--force overrides\n");
-            return 1;
+        start = (long)plan.lba;
+        count = (long)plan.count;
+        /* Describe the range by what was ASKED for, not by plan.session — the
+         * planner reports the tracks' session too, and keying off that would
+         * silently turn a "tracks A-B" line into a "session N" one. */
+        if (!ctx.quiet) {
+            if (want_first_track)
+                fprintf(stderr, "accudisc: tracks %d-%d, lba %ld count %ld\n",
+                        want_first_track, want_last_track, start, count);
+            else if (plan.session)
+                fprintf(stderr, "accudisc: session %u, lba %ld count %ld\n",
+                        plan.session, start, count);
         }
     }
 

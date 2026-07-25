@@ -20,6 +20,7 @@ set(ACCUDISC_SOURCES
     toc/toc.c
     toc/fulltoc.c
     toc/session.c
+    toc/plan.c
     read/engine.c
     cdda/crc16.c
     cdda/subq.c
