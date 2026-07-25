@@ -570,10 +570,17 @@ phase 0   golden-output test + constants-location test      DONE 2026-07-25
 phase 1   guards 4.1, 4.2 + uncap probe (§9.1)   DONE 2026-07-25, unconfirmed
           on hardware (CLI rewired: its inline identify+get_speed heuristic
           now re-sources from the probe)
-phase 2   5.4 uncap push/pop   -> CLI rewired, same commit   (mechanical)
-          5.3 census cadence   -> CLI rewired, same commit   (mechanical)
-          5.2 range resolution -> CLI rewired, same commit   (needs media)
-          5.1 pregap scan      -> CLI rewired, same commit   (needs media)
+phase 2   COMPLETE 2026-07-25. All four rewired the CLI in the same commit.
+          5.4 uncap push/pop   fcbfaef
+          5.3 census cadence   c78fd33  (+1 behaviour change: TOC read now
+                               precedes arming, so sample 1 excludes its
+                               lead-in traffic)
+          5.2 range resolution 3c68971  (pure; needed no media after all —
+                               found a silent wrong-extent bug where --tracks
+                               and --session both wrote start)
+          5.1 pregap scan      2f9ce4e  (+1 behaviour change: rows that
+                               decoded before a failed boundary are now
+                               printed rather than discarded)
 phase 2b  doc: exit-code/semantic mapping table
           fix CLAUDE.md:56 "thin layer" (see §12)
 phase 3   resolve §7.1-7.3; ONE message to cdda2img (§8)
