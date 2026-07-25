@@ -340,11 +340,30 @@ leaving derived geometry alone. That is a trap: the numbers that move are the
 ones being measured, and the ones that stay put are the ones that would have
 caught it.
 
-Proposed to them as §57.3: wrap every `/dev/sr0` command in
+**Adopted by both projects 2026-07-25.** Wrap every `/dev/sr0` command in
 `flock /var/tmp/sr0.lock -c '…'`, taking the lock for a whole long job rather
-than per-command. Advisory, so it only works if both sides honour it. **Any
-timed or quality-sensitive measurement taken without the lock should be
-treated as suspect.**
+than per-command, and write who/what/ETA to `/var/tmp/sr0.owner` for anything
+over a minute. Advisory, so it only works because both sides honour it — which
+they did on its first real contention: both hit an empty tray, read each
+other's owner note, no collision.
+
+**We then over-reacted, and were corrected by data — worth recording because
+the correction is the useful part.** Reasoning that contention fakes exactly
+the "irreducible Q" signature in RECOVERY.md's two-lever model, we proposed
+caveating those figures as being of unknown provenance. cdda2img audited all 41
+baseline Q measurements instead of agreeing: **every repeated (disc, speed)
+cell reproduces to within 0.04 pp** except the one known-contended run, with
+cross-session replicates four hours apart holding ±0.04 pp. A contention
+artefact does not reproduce to four significant figures. So the historical
+figures stand, and the audit *supports* the static-Q population rather than
+undermining it.
+
+The lesson generalises: **caveating data you have positive evidence for is not
+a free safety measure — it devalues good measurements.** Ask for the corpus
+before flagging. What landed in `RECOVERY.md` §12 is therefore a methodology
+note recording the hazard and its one measured magnitude, not a caveat on the
+numbers — carrying an explicit scope limit that the audit bounds *large*
+contention only and cannot exclude sub-percent effects.
 
 ## 9. Open questions — resolve before phase 1
 
