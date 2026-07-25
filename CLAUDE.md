@@ -53,7 +53,13 @@ of Mixed Mode discs. No ISO9660/CD-ROM data processing, no DVD/BD.
   - `read/` — ripping engine (rereads, verification, offset correction)
   - `write/` — DAO burning engine
   - `meta/` — CD-Text, ISRC, MCN
-- `cli/` — the `accudisc` command-line tool (thin layer over the library)
+- `cli/` — the `accudisc` command-line tool. Structurally thin (it uses the
+  public header only, never `src/` internals) but **not** behaviourally
+  equivalent to the library, and the difference is deliberate: exit codes,
+  `--progress-fd`, terminal rendering and the human stderr diagnostics are
+  *process* conventions that stay here by design (API_PLAN §3). A binding
+  reproduces their **semantics**, not their mechanism — the mapping is in
+  `docs/reference/cli-machine-interface.md`.
 - `bindings/python/`, `bindings/rust/`
 - `tests/`, `tools/` (dev scripts), `cmake/`
 

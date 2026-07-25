@@ -34,3 +34,11 @@ add_test(NAME test_cli_surface
 add_test(NAME test_policy_constants
          COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/policy_constants.sh
                  ${PROJECT_SOURCE_DIR})
+
+# Catches an exit-3 path existing in cli/main.c that cli-machine-interface.md
+# does not document. That document calls itself a stable interface; on
+# 2026-07-26 four subcommands could exit 3 without being listed, and nothing
+# could have noticed, because a stale document still compiles.
+add_test(NAME test_exit_codes
+         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/exit_codes.sh
+                 ${PROJECT_SOURCE_DIR})

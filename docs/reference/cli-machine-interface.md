@@ -25,9 +25,66 @@ Exit 3 per subcommand:
   format. No output file is written. A drive that *rejects* the request
   (CHECK CONDITION) is exit 2 — deliberately not conflated with absence.
 - `scan`: neither an MCN nor any ISRC was found.
+- `pregaps`: at least one track boundary decoded as `UNKNOWN` — the approach to
+  it was too damaged to place INDEX 00, so the pregap is undetermined rather
+  than absent. Every other boundary in the listing is still valid.
+- `c2lag`: the probe ran but was **inconclusive** — either no C2 fired anywhere
+  in the span, or too few rereads disagreed to place the lag. Not a failure and
+  not a measurement; re-run over a damaged span.
+- `media`: the disc carries no ATIP (a pressed disc, or no recordable medium).
+  `atip absent` is printed to stdout.
+- `write`: the burn completed but a caveat was logged — today, CD-Text
+  `SIZE_INFO` disagreeing with the `.toc`. `result=caveats` on `--progress-fd`.
+- `disc`: the disc was classified successfully and `kind=NEITHER` — neither
+  ripping nor burning is legal for it. Refusing is a *successful*
+  classification, which is why it is 3 and not 2. The `reason=` slug says which
+  refusal; see the `disc` section below for the precedence and the full list.
 
 Exception: `features` keeps its frozen contract — exit **0 iff C2 is clearly
 usable**, 1 otherwise.
+
+## Exit codes → library semantics
+
+For binding authors. A library returns errors; it does not exit, and it has no
+`--progress-fd` (API_PLAN §3). What a binding must reproduce is the **decision**
+each exit code encodes, from values the library already returns — not the exit
+code itself, and never by shelling out to compare.
+
+Every row below was read out of `cli/main.c`, not inferred from this document.
+
+| exit | CLI subcommand | the condition, in library terms |
+|------|----------------|---------------------------------|
+| 3 | `read` | `accudisc_read_stats`: `hard_errors \|\| sectors_suspect \|\| sectors_flagged` — the same three fields, no threshold |
+| 3 | `cdtext` | `accudisc_read_cdtext` → `ACCUDISC_ERR_NOTFOUND` |
+| 3 | `fulltoc` | `accudisc_read_full_toc` → `ACCUDISC_ERR_NOTFOUND` |
+| 3 | `read --cdtext F` / `--fulltoc F` | same two calls, `ERR_NOTFOUND`; **non-fatal to the read** — the inline capture notes the absence and the rip continues |
+| 3 | `scan` | `accudisc_scan_mcn` *and* every `accudisc_scan_isrc` returned `ERR_NOTFOUND` — the caveat is "nothing at all", not "something missing". Where to scan is part of it: MCN at `toc.tracks[0].lba`, ISRC at each track's own `lba`, and **audio tracks only** (`ACCUDISC_TRACK_IS_AUDIO`) |
+| 3 | `pregaps` | any entry in the `accudisc_index_map` array has `pregap_state == ACCUDISC_PREGAP_UNKNOWN` |
+| 3 | `c2lag` | `accudisc_probe_c2_lag` → `ERR_NOTFOUND`. The struct is still filled, so `sectors_active == 0` distinguishes "clean span" from "C2 seen but inconclusive" |
+| 3 | `media` | `accudisc_read_atip` → `ERR_NOTFOUND` |
+| 3 | `write` | `accudisc_write` returned `ACCUDISC_WROTE_WITH_CAVEATS` (a **positive** return, not an error) |
+| 2 | any | any negative `accudisc_err` from a device call. The CLI adds no judgement here — it prints and exits |
+| 1 | any | **no library equivalent.** Argument and local-file validation happen before any device call; in-process that is the caller's own code |
+| 0 | any | none of the above |
+
+Three properties of that table are load-bearing:
+
+- **`ERR_NOTFOUND` is the caveat code throughout.** It means the drive answered
+  and the data legitimately is not there. A drive that *rejects* the command
+  returns `ACCUDISC_ERR_SENSE`, which is exit 2. Conflating them turns "this
+  disc has no CD-Text" into "this drive cannot read CD-Text", and a binding that
+  maps every non-`OK` to one exception loses exactly that distinction.
+- **`write`'s caveat is a positive return.** `rc < 0` is an error, `rc > 0` is
+  `ACCUDISC_WROTE_WITH_CAVEATS`, `rc == 0` is clean — so a binding testing
+  `if rc:` treats a successful burn as a failure, and one testing `if rc < 0:`
+  silently drops the caveat. Both compile and neither is caught by a type check.
+  `accudisc.h` says the same thing at the declaration ("Test with `rc > 0`, not
+  `rc != ACCUDISC_OK`"); it is repeated here because this is the document a
+  binding author reads when deciding what an exit code *meant*.
+- **Exit 3 is never a *relative* verification pass.** `read` exiting 0 means no
+  C2, suspect or hard-error signal fired — it does not mean the audio is
+  correct. The absolute gates (AccurateRip, CTDB) live in the calling
+  application and this contract says nothing about them.
 
 ## `features` output (stdout)
 
