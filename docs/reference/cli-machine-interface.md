@@ -249,7 +249,7 @@ acquisition-path line:
 track <n> lba <lba> sectors <n> audio|data [session <n>] [pregap <n>]
 session <n> tracks <first>-<last> audio <n> data <n> leadout <lba>
 leadout lba <lba>
-source=<fulltoc|toc> degrade=<reason> pregaps=none [sessions=<a>..<b>] [disc_type=0x<hh>] session_count=<n> [anomalies=<slug>[,<slug>...] [toc_trusted=0]]
+source=<fulltoc|toc> degrade=<reason> subq_indices=none [sessions=<a>..<b>] [disc_type=0x<hh>] session_count=<n> [anomalies=<slug>[,<slug>...] [toc_trusted=0]]
 ```
 
 `pregap <n>` is **appended** to the track line, after `session` when both are
@@ -260,8 +260,20 @@ track of the first session, where the program area's start at LBA 0 fixes the
 other edge; it is 0 (and the token absent) everywhere else, because per-track
 INDEX 00 lives in the subchannel, which no READ TOC format carries. So `lba`
 still marks INDEX 01 and never moves; the track's full extent is
-`[lba - pregap, lba + sectors)`. Do not confuse this with the `pregaps=` token
-below, which reports whether SUBCHANNEL index data was collected.
+`[lba - pregap, lba + sectors)`.
+
+`pregap <n>` counts SECTORS; `subq_indices=` describes ACQUISITION. They answer
+different questions and can never contradict each other — a disc may perfectly
+well report `pregap 33` on track 1 while `subq_indices=none` says this command
+did not scan the subchannel.
+
+> **Renamed 2026-07-25: `pregaps=` → `subq_indices=`.** The old spelling shared
+> a stem with the per-track `pregap <n>` field while describing a different
+> axis, so real output like
+> `track 1 lba 33 ... pregap 33` alongside `pregaps=none` read as a
+> self-contradiction. This is the one **non-additive** change this document has
+> taken; it was made while the token was still a constant with no known
+> consumer. The value set is unchanged (`none`).
 
 The first five fields of `track`, and the `leadout` line, are frozen in this
 form. `lba` and `sectors` are decimal. `session <n>` is **appended** to the
@@ -434,14 +446,22 @@ cross-checked against READ DISC INFORMATION's first-track-in-last-session field
 reconstruction was then exercised end to end: session table synthesised on a
 `source=toc` line, and `read` resolved session 1 across the whole disc.
 
-### `pregaps=` — always `none` from this subcommand
+### `subq_indices=` — always `none` from this subcommand
+
+Reports whether **this invocation collected INDEX data from the subchannel**.
+It is a statement about acquisition, not about the disc: `none` never means
+"this disc has no pregaps".
 
 **INDEX 00 exists only in the program-area Q subchannel, never in the lead-in.**
-Neither READ TOC format carries pregap data, so a successful `source=fulltoc`
-supplies no more of it than a degraded `source=toc` does. The key is present so
-that callers branch on the token rather than on `source=`, and so a future
-program-area-derived value is additive. Pregaps come from the `pregaps`
+Neither READ TOC format carries it, so a successful `source=fulltoc` supplies no
+more of it than a degraded `source=toc` does — hence the constant. The key is
+present so that callers branch on the token rather than on `source=`, and so a
+future scanned value is additive. Index/pregap data comes from the `pregaps`
 subcommand (CRC-gated Q decode) or from a raw subchannel capture.
+
+A parser must not treat `subq_indices=none` as evidence about track geometry.
+The one pregap the TOC *can* prove is reported on the track line as
+`pregap <n>`, and the two are independent.
 
 ## `read` session selection and the audio-range guard
 

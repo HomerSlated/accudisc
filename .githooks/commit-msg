@@ -1,0 +1,24 @@
+#!/bin/sh
+# Refuse any commit message carrying a coding-session identifier.
+#
+# This repo is PUBLIC. Session URLs are ephemeral, useless to any reader of the
+# history, and leak conversation metadata. The rule was documented in
+# scripts/sync.py's reminder and nothing enforced it, so it was broken on
+# 2026-07-25 (one session URL reached 7 pushed commits). scripts/sync.py now
+# checks too; this hook covers commits made with plain `git commit`, including
+# --amend and rebase reword.
+#
+# Enable (once per clone — .git/hooks is not tracked):
+#     git config core.hooksPath .githooks
+
+if grep -nEi '^[[:space:]]*Claude-Session[[:space:]]*:|claude\.ai/code/session[_/-]|session_[A-Za-z0-9]{16,}' "$1" >&2; then
+	cat >&2 <<'EOF'
+
+commit-msg: the message above contains a session identifier, and this repo is
+public. Delete those lines and commit again.
+
+The only trailer this project publishes is Co-Authored-By.
+EOF
+	exit 1
+fi
+exit 0

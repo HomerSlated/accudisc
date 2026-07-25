@@ -339,9 +339,12 @@ typedef struct accudisc_track {
                         * if the first track's INDEX 01 is at LBA n > 0, those n
                         * sectors are its pregap. Every other track's pregap
                         * lives in the subchannel (INDEX 00), which the lead-in
-                        * does not carry — see the `pregaps` token in
-                        * accudisc_toc_info. So this is non-zero only for the
-                        * first track of the first session, and 0 elsewhere.
+                        * does not carry, so it takes a program-area scan —
+                        * accudisc_index_map_decode over a raw subchannel read.
+                        * (This used to cite a `pregaps` token in
+                        * accudisc_toc_info; no such field exists or ever did.)
+                        * So this is non-zero only for the first track of the
+                        * first session, and 0 elsewhere.
                         *
                         * It matters archivally: a rip that starts at INDEX 01
                         * silently drops those sectors, shifting every LBA

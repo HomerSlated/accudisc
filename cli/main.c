@@ -288,8 +288,10 @@ static int cmd_toc(accudisc_device *dev)
         /* Appended, and only when non-zero: sectors before this track's INDEX
          * 01 that belong to it (ECMA-130 §20). TOC-derivable only for the
          * first track, where the program area's start at LBA 0 supplies the
-         * other edge. Distinct from the `pregaps` token, which reports whether
-         * SUBCHANNEL index data was collected for every track. */
+         * other edge. This is a COUNT OF SECTORS; the `subq_indices=` token
+         * below is a statement about ACQUISITION and answers a different
+         * question. (Until 2026-07-25 that token was spelled `pregaps=`, which
+         * made `pregap 33 ... pregaps=none` read as a self-contradiction.) */
         if (t->pregap)
             printf(" pregap %u", t->pregap);
         putchar('\n');
@@ -302,10 +304,12 @@ static int cmd_toc(accudisc_device *dev)
     }
     printf("leadout lba %u\n", toc.leadout_lba);
 
-    /* Acquisition path. Pregaps are deliberately reported as absent here: they
-     * live in the program-area Q subchannel, never in the lead-in, so neither
-     * READ TOC format supplies them (see `pregaps`). */
-    printf("source=%s degrade=%s pregaps=none",
+    /* Acquisition path. `subq_indices` says whether THIS command collected
+     * INDEX data from the subchannel — never how many pregap sectors exist.
+     * It is always `none` here: INDEX 00 lives in the program-area Q
+     * subchannel, never in the lead-in, so no READ TOC format can supply it.
+     * The `pregaps` SUBCOMMAND is what scans for it. */
+    printf("source=%s degrade=%s subq_indices=none",
            accudisc_toc_source_str(info.source),
            accudisc_toc_degrade_str(info.degrade));
     if (info.source == ACCUDISC_TOC_SRC_FULLTOC)

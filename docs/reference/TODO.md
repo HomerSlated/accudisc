@@ -865,8 +865,11 @@ Both paths are now hardware-proven. No open verification items.
   captures `--sub raw`, so `toc --pregaps` would be a second program-area pass
   over data they already hold. No other consumer wants it. `pregaps` stays the
   standalone diagnostic — which is what proved the point on Stanley Road. The
-  `pregaps=` token still ships (always `none`) so a future value is additive.
-  **Do not build this without a new requester.**
+  token still ships (always `none`) so a future value is additive; it was
+  **renamed `pregaps=` → `subq_indices=` on 2026-07-25** because the old
+  spelling collided with the per-track `pregap <n>` field. Verification
+  transcripts above quote the pre-rename output verbatim and are left as the
+  dated record. **Do not build this without a new requester.**
 - **Phase C (retry counter) — WITHDRAWN 2026-07-22 by the requester.** cdda2img
   §26.5 assumed a retry loop existed in the 0x02 path. It does not — there is no
   retry logic anywhere in `src/mmc/` or `src/transport/`. On being told, they
@@ -1236,8 +1239,37 @@ Both paths are now hardware-proven. No open verification items.
       Worth deciding early which one is the constraint and which the goal.
   Pure vanity, no schedule, and explicitly not on the critical path.
 
+## Library API completion — PLAN ONLY, do not execute without direction
+
+Raised 2026-07-25. Audit finding: the C API is **complete at the ABI level and
+incomplete at the policy level** — `libaccudisc.so` and `accudisc.h` agree
+exactly (65/65 symbols, no leakage, no reach-through from `cli/`), but the
+*judgement* lives in `cli/main.c`: 1838 lines against a 1199-line header.
+
+**The full design is `docs/reference/API_PLAN.md`** — scope, the guard/policy/
+convention split, proposed signatures, the ABI questions gating the bindings,
+the cdda2img communication ledger, and the effort estimate. Do not duplicate it
+here; that document is the source of record.
+
+Headline items, for grep:
+
+- `[P1]` Two silent-failure guards must move INTO the library: the SpeedRead +
+  subchannel interlock (`cli/main.c:1543`) and the read-only-fd vendor-opcode
+  check (`cli/main.c:1762`). Both currently exist only in the CLI, so a library
+  caller gets corrupt Q data or obscure failures with a success return.
+- `[P2]` Promote four acquisition strategies to public API — **and rewrite the
+  CLI onto them in the same commit**, or the policy exists three times (CLI,
+  Python, Rust) and drifts.
+- `[P2]` Do NOT promote exit codes, `--progress-fd`, or `render_map` — those are
+  process conventions, not library concerns. Document the mapping instead.
+- `[P3]` Bindings: settle the transparent-struct ABI hazard and the FFI callback
+  design first. soname is `.so.0`, so breaking ABI is free now and not later.
+- cdda2img is pinned to a snapshot fork of the binary for the duration.
+
 ## Deferred (explicitly, by user decision)
 
 - Python / Rust bindings (generated against `include/accudisc/*.h` only).
+  **Reopened 2026-07-25** — see "Library API completion" above for the
+  prerequisites.
 - Man page (must mirror `docs/ATTRIBUTION.md`).
 - Write / burn (DAO) path — paused; do not start without direction.
