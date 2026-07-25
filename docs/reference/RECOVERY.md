@@ -1262,6 +1262,64 @@ Because targeted Q recovery is (strongly indicated to be) ineffective, "do we ne
 Q recovery" reduces to "do we need Q *at all*" — an archival-policy decision, not a
 recovery-engine capability.
 
+### 12.8 Q health is not a proxy for capture quality — measured, 2026-07-25
+
+This document's central invariant is that **relative checks (C2, consensus, overlap)
+never outrank absolute gates (AccurateRip / CTDB)**. It has been a design principle
+throughout. This is the first measured instance of it biting, and the measurement is
+stronger than the principle: a relative check did not merely fail to help, it
+*anti-correlated* with the absolute gate.
+
+**The measurement.** ABBA *Gold* (CDDB 09121513), PX-716A, one session, three
+whole-disc baseline captures per speed at `--passes 3`:
+
+| speed | pass 1 | pass 2 | pass 3 | spread | vs binomial σ_diff |
+|---|---|---|---|---|---|
+| 32× | 0.47794 | 0.47791 | 0.47795 | 0.004 pp | 0.0σ |
+| 24× | 0.99181 | 0.99183 | 0.99182 | 0.002 pp | 0.1σ |
+| 8× | 0.99198 | **0.98228** | 0.99226 | **0.998 pp** | **~36σ** |
+
+At 8×, `ar_v2` was **False, True, True** — in that order. **The median-Q pass (p1,
+0.99198) failed AccurateRip; the lowest-Q pass (p2, 0.98228) passed it.**
+
+`recovery_bench` selects the pass that feeds the recovery rungs by median Q yield, on
+the unstated assumption that subchannel health proxies for capture quality. These
+three passes refute it on this disc: the two quantities pointed opposite ways. Any
+`ctdb`/`ctdb-noc2` row at 8× is therefore a statement about the *selected* pass, not
+about the disc — and a row reading "clean, nothing to repair" would be the most
+misleading possible form of that error.
+
+**Consequence for the tables.** §12.2-style rows must carry every pass's AR outcome
+beside the ctdb verdict rather than collapsing to the median. A column headed as
+though it means "the representative pass" whose selector means "the median-Q pass" is
+a silently narrowed domain — well-formed, plausible, and about something other than
+the question asked.
+
+**Two further facts from the same twelve captures.**
+
+*Q yield is bimodal, not stochastic and not deterministic.* At 8× the p1↔p3 pair sits
+at 1.3σ — textbook binomial — while p2 is ~36σ from either. Ordinary sampling plus an
+occasional disturbed pass. The high rungs looked deterministic only because all three
+of their passes landed in the tight mode. **Two passes cannot distinguish the modes**,
+so `--passes 3` is the floor for any Q claim, not a refinement. It also means
+`q_transient`'s 0.90 floor is aimed two orders of magnitude too coarse to catch a
+disturbed pass: the one here is 1 pp below its neighbours, not 60 pp.
+
+*The high-rung AR failures are a speed characteristic, not degradation.* run1, weeks
+earlier, recorded the same pattern on this disc — `ar_v2` False at 32× and 24×, True
+at 8×, False at 4× — including the non-monotonicity. A cross-week repeat rules out
+accumulated damage as the explanation.
+
+**Where the invariant now stands.** Recorded as a constraint rather than a preference:
+no pass, sector, rung or strategy may be selected on Q health, C2 counts, or any other
+relative signal, when an absolute gate is available to select on instead. AccuDisc
+verified their read engine is not exposed — its `subq_ok`/`subq_total` counters are
+write-only, incremented for the summary and never read back, and rescue/consensus
+operate on C2 flags and audio agreement rather than on subchannel health. That is
+partly luck: the idea was never rejected, it simply never got wired in. It is written
+down here so that a future "select the pass with the healthiest subchannel" proposal
+meets this measurement instead of sounding reasonable.
+
 ---
 
 ## Part XI — Offset detection: three mechanisms compared (2026-07-21)
