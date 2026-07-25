@@ -346,6 +346,26 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     if (req->c2 > ACCUDISC_C2_PTRS_BEB || req->sub > ACCUDISC_SUB_Q)
         return ACCUDISC_ERR_INVAL;
 
+    /* The vendor read-speed uncap destroys the Q subchannel on inner/mid tracks
+     * while leaving the audio and C2 streams clean and reporting no error — so
+     * a subchannel capture taken with it on succeeds and lies. Refuse.
+     *
+     * Only on the AUTHORITATIVE states. ACCUDISC_UNCAP_LIKELY_ON is an
+     * inference from a speed number against a one-model table; refusing on it
+     * would make subchannel unreadable on any drive we fail to recognise, which
+     * is a worse failure than the one being prevented and is not ours to
+     * impose. The caller has accudisc_speed_uncap_probe and can set policy.
+     * See API_PLAN §9.2 — the hole is reported, deliberately, not closed. */
+    if (req->sub != ACCUDISC_SUB_NONE && !req->allow_unsafe) {
+        accudisc_uncap_state u;
+        if (accudisc_speed_uncap_probe(dev, &u, NULL) == ACCUDISC_OK &&
+            u == ACCUDISC_UNCAP_ON) {
+            adsc_dev_log(dev, "refusing subchannel read: the vendor read-speed "
+                              "uncap is on and corrupts Q on inner/mid tracks");
+            return ACCUDISC_ERR_UNSAFE_COMBINATION;
+        }
+    }
+
     r.dev = dev;
     r.req = req;
     r.sector_type = req->any_type ? ADSC_SECTOR_ANY : ADSC_SECTOR_CDDA;

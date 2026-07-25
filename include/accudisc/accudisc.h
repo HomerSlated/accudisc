@@ -61,9 +61,16 @@ typedef enum accudisc_err {
     ACCUDISC_ERR_UNSUPPORTED = -7, /* not supported by drive or build */
     ACCUDISC_ERR_CANCELLED   = -8, /* stopped by cancel flag or sink */
     ACCUDISC_ERR_CRC         = -9, /* checksum failed (Q frame, CD-Text pack) */
-    ACCUDISC_ERR_NOTFOUND    = -10 /* requested data legitimately absent
+    ACCUDISC_ERR_NOTFOUND    = -10, /* requested data legitimately absent
                                       (MCN/ISRC/CD-Text/driver/offset) —
                                       never a transport failure */
+    ACCUDISC_ERR_UNSAFE_COMBINATION = -11 /* the request is self-defeating
+                                      against this drive's current state and
+                                      would return silently corrupt data.
+                                      Never returned for a merely unusual
+                                      request — only where the corruption is
+                                      known and measured. Overridable per-call
+                                      where the request offers a field for it. */
 } accudisc_err;
 
 /* Static human-readable name for an accudisc_err value. */
@@ -245,6 +252,45 @@ ACCUDISC_API int accudisc_counter_scan_end(accudisc_device *dev);
  * operation should read the prior value first and restore it. */
 ACCUDISC_API int accudisc_speed_uncap_get(accudisc_device *dev, int *on);
 ACCUDISC_API int accudisc_speed_uncap_set(accudisc_device *dev, int on);
+
+/* How confidently we know the uncap's state. The distinction is load-bearing:
+ * the uncap corrupts the Q subchannel (see accudisc_read_cdda), and refusing a
+ * read on a guess is a worse failure than performing one — it would leave a
+ * caller unable to read subchannel at all on a drive we merely fail to
+ * recognise, with nothing to diagnose it from. So the library refuses only on
+ * the authoritative values and reports the inferred one. */
+typedef enum accudisc_uncap_state {
+    ACCUDISC_UNCAP_OFF = 0,   /* authoritative */
+    ACCUDISC_UNCAP_ON,        /* authoritative */
+    ACCUDISC_UNCAP_LIKELY_ON, /* inferred: the drive's reported maximum read
+                               * speed exceeds this model's known stock ceiling.
+                               * Treat as on for safety decisions; do not treat
+                               * as proof. */
+    ACCUDISC_UNCAP_UNKNOWN    /* no driver, and the model is not one whose stock
+                               * ceiling we have verified. Not "off". */
+} accudisc_uncap_state;
+
+/* Determine whether the vendor read-speed uncap is currently on, WITHOUT
+ * requiring an attached driver. Resolution order, most authoritative first:
+ *
+ *   1. this handle set it (accudisc_speed_uncap_set on this dev)  -> ON
+ *   2. a driver is attached and answers speed_uncap_get           -> ON / OFF
+ *   3. INQUIRY + mode page 2A maximum read speed, compared against this
+ *      model's verified stock ceiling        -> LIKELY_ON / OFF / UNKNOWN
+ *
+ * Step 3 exists because the uncap is persistent DRIVE state: a previous
+ * session, or another tool entirely, can have left it on before this handle
+ * existed. It is keyed per model rather than against a fixed speed, because a
+ * fixed threshold is one drive's stock ceiling masquerading as a constant.
+ * Models whose ceiling we have not verified in both directions resolve to
+ * UNKNOWN rather than being guessed at.
+ *
+ * max_x, if non-NULL, receives the drive's reported maximum read speed in Nx
+ * (0 when it could not be read). Returns ACCUDISC_OK whenever *state was set —
+ * including UNKNOWN, which is an answer, not a failure. */
+ACCUDISC_API int accudisc_speed_uncap_probe(accudisc_device *dev,
+                                            accudisc_uncap_state *state,
+                                            unsigned *max_x);
 
 /* Best-effort drive read-speed control, in Nx CD speed (176 kB/s units).
  * Prefers SET STREAMING (0xB6, a ceiling the drive enforces; needs
@@ -918,6 +964,15 @@ typedef struct accudisc_read_req {
      * current speed. Caller-owned; must outlive the call. */
     const uint16_t *speed_ladder;
     uint8_t ladder_len;
+    /* Proceed even when the request is known-unsafe against the drive's current
+     * state — today: capturing subchannel with the vendor read-speed uncap on,
+     * which silently corrupts Q (see accudisc_speed_uncap_probe). Without this,
+     * such a read returns ACCUDISC_ERR_UNSAFE_COMBINATION. For diagnostics and
+     * for deliberately measuring the corruption; not for production reads.
+     *
+     * Sits here, wedged against ladder_len, purely to occupy existing padding:
+     * its natural home beside `sub` would shift every following field. */
+    uint8_t allow_unsafe;
     uint8_t *status_map;        /* count bytes, or NULL; see status map above */
     const volatile int *cancel; /* poll: nonzero aborts at the next chunk; or NULL */
 } accudisc_read_req;

@@ -62,7 +62,43 @@ static int attach_verified(struct accudisc_device *dev,
                            const accudisc_driver *drv, void *handle)
 {
     dev->host.dev = dev;
+
+    /* State the condition, not a prediction. The kernel's SG_IO filter blocks
+     * vendor opcodes on a read-only fd — but it short-circuits entirely under
+     * CAP_SYS_RAWIO, which this project's optional `setcap` build target
+     * installs. So a read-only handle is a hint worth logging, never grounds
+     * for refusing to attach: that would break the setcap configuration, which
+     * we support and cannot detect from here. */
+    if (!dev->t.rw)
+        adsc_dev_log(dev, "driver %s: attaching on a read-only handle — vendor "
+                          "opcodes need ACCUDISC_OPEN_RDWR or CAP_SYS_RAWIO",
+                     drv->name);
+
+    /* The selftest is the real gate: it issues an actual vendor opcode, so it
+     * answers the question empirically under either regime. Clear last_io first
+     * — it deliberately survives a success (see adsc_dev_exec) so a stale entry
+     * from an earlier unrelated failure could otherwise be misattributed to the
+     * selftest below. */
+    dev->last_io[0] = '\0';
+
     if (drv->selftest(&dev->host) != ACCUDISC_OK) {
+        /* Name the cause that ERR_UNSUPPORTED flattens away. A filter rejection
+         * (EPERM, recorded as ERR_IO + last_io) means the opcode never reached
+         * the drive; a drive rejection (ERR_SENSE) means it did and was
+         * refused. Only the second means "wrong drive", and they are otherwise
+         * indistinguishable to the caller. Measured on /dev/sr1 with 0xEA:
+         * O_RDONLY -> EPERM at the filter, O_RDWR -> reaches the device and
+         * returns sense key 0x05. */
+        const char *io = accudisc_last_io(dev);
+
+        if (!dev->t.rw && io[0])
+            adsc_dev_log(dev, "driver %s: the selftest never reached the drive "
+                              "on this read-only handle (%s) — reopen with "
+                              "ACCUDISC_OPEN_RDWR, or install the capability "
+                              "(cmake --build build --target setcap). This is "
+                              "not evidence about the drive",
+                         drv->name, io);
+
         adsc_dev_log(dev, "driver %s: selftest failed on %s %s — "
                           "staying on generic MMC",
                      drv->name, dev->id.vendor, dev->id.product);
@@ -208,9 +244,17 @@ int accudisc_speed_uncap_get(accudisc_device *dev, int *on)
 
 int accudisc_speed_uncap_set(accudisc_device *dev, int on)
 {
+    int rc;
+
     if (!dev)
         return ACCUDISC_ERR_INVAL;
     if (!dev->drv || !dev->drv->speed_uncap_set)
         return ACCUDISC_ERR_UNSUPPORTED;
-    return dev->drv->speed_uncap_set(&dev->host, on ? 1 : 0);
+    rc = dev->drv->speed_uncap_set(&dev->host, on ? 1 : 0);
+    /* Remember only what the drive accepted. On failure the drive's state is
+     * whatever it was, which is exactly the case the probe must not claim to
+     * know — leaving uncap_set alone keeps it honest. */
+    if (rc == ACCUDISC_OK)
+        dev->uncap_set = on ? 1 : -1;
+    return rc;
 }

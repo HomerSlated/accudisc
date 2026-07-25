@@ -3,6 +3,8 @@
 #ifndef ADSC_INTERNAL_H
 #define ADSC_INTERNAL_H
 
+#include <stddef.h> /* size_t — the public header deals only in stdint types */
+
 #include <accudisc/accudisc.h>
 #include <accudisc/driver.h>
 
@@ -19,6 +21,14 @@ struct accudisc_device {
     /* SET STREAMING speed control: 0 = untried, 1 = works, -1 = unusable
      * (unsupported/illegal/unprivileged) — fall back to CDROM_SELECT_SPEED. */
     int streaming;
+
+    /* Vendor read-speed uncap, as set THROUGH THIS HANDLE: 0 = we never set it,
+     * 1 = we set it on, -1 = we set it off. The uncap is persistent drive
+     * state, so this is not the whole story — a prior session can have left it
+     * on before we existed, which is what accudisc_speed_uncap_probe's page-2A
+     * path is for. But when it is non-zero it is the one source that needs no
+     * driver and no inference, so the probe consults it first. */
+    int uncap_set;
 
     /* attached vendor driver (NULL = generic MMC/SG) */
     void *drv_handle; /* dlopen handle */
@@ -41,6 +51,18 @@ int adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd);
 
 /* Identify once and cache (INQUIRY). */
 int adsc_dev_identify(struct accudisc_device *dev);
+
+/* Collapse whitespace runs in an INQUIRY field to single spaces and trim the
+ * ends, so table lookups match regardless of how a drive pads its fixed-width
+ * fields ("DVDR   PX-716A" vs "DVDR PX-716A"). Always NUL-terminates. */
+void adsc_inquiry_normalize(const char *src, char *dst, size_t cap);
+
+/* The driver-free half of accudisc_speed_uncap_probe: given INQUIRY strings and
+ * the drive's reported maximum read speed in Nx, decide whether the vendor
+ * read-speed uncap looks enabled. Pure — no device, no I/O — so the whole table
+ * is testable without hardware. See src/drive/uncap.c. */
+accudisc_uncap_state adsc_uncap_classify(const char *vendor,
+                                         const char *product, unsigned max_x);
 
 void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...);
 

@@ -537,10 +537,21 @@ Consequences:
   so its only headroom is the inner radius (17->20x) — exactly where its RPM
   kills Q. The recorded whole-disc A/B showed NO throughput gain (both 24.2x)
   while Q fell 99.2% -> 40.6%. Consider escalating the --uncap+--sub guard to
-  "never for CD-DA reads at all".
+  "never for CD-DA reads at all". **Partly landed 2026-07-25:** the library now
+  refuses a subchannel read outright when the uncap is *authoritatively* on
+  (ACCUDISC_ERR_UNSAFE_COMBINATION, overridable via `allow_unsafe`), and warns
+  when it is only inferred. Escalating further — refusing the uncap for any
+  CD-DA read, sub or not — is still open, and would want the "no throughput
+  gain" claim re-measured on a second drive first: it currently rests on one
+  whole-disc A/B on the PX-716A.
 - **Triage caveat:** "current_x < max_x => degraded" only holds with SpeedRead
   OFF. With it on, a pristine disc reads 40 < 48 and would be falsely flagged.
   Compare current_x against the CD-DA nominal (40x), or check SpeedRead first.
+  **"Check SpeedRead first" is now possible without a driver attached:**
+  `accudisc_speed_uncap_probe` (landed 2026-07-25, API_PLAN §9.1) answers
+  ON/OFF/LIKELY_ON/UNKNOWN. Note it returns UNKNOWN on any drive whose stock
+  ceiling we have not verified, so triage built on it must handle UNKNOWN as
+  "do not flag" rather than as "SpeedRead is off".
 - **GET PERFORMANCE nominal is RPM-derived, not medium-measured:** identical
   across no-disc / ABBA (leadout 347208) / ZZ Top (leadout 204143) — end_lba is
   always 359999, never the real leadout — but it DOES track SpeedRead. Constant

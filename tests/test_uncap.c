@@ -1,0 +1,114 @@
+/* The read-speed uncap classifier: does the per-model stock-ceiling table say
+ * the right thing, including for models it has never heard of?
+ *
+ * The point of this test is the UNKNOWN cases. A table lookup that returns the
+ * right answer for the one drive we own is easy; the failure this guards
+ * against is the previous implementation's, which compared against a bare
+ * `> 40` and therefore answered confidently about every drive in the world
+ * from one drive's measurements. An unknown model must come back UNKNOWN and
+ * never OFF — "we cannot tell" and "it is off" lead to opposite decisions.
+ */
+
+#include <stdio.h>
+#include <string.h>
+
+#include "internal.h"
+
+static int fails;
+
+static const char *name(accudisc_uncap_state s)
+{
+    switch (s) {
+    case ACCUDISC_UNCAP_OFF:       return "OFF";
+    case ACCUDISC_UNCAP_ON:        return "ON";
+    case ACCUDISC_UNCAP_LIKELY_ON: return "LIKELY_ON";
+    case ACCUDISC_UNCAP_UNKNOWN:   return "UNKNOWN";
+    }
+    return "?";
+}
+
+static void check(const char *what, const char *vendor, const char *product,
+                  unsigned max_x, accudisc_uncap_state want)
+{
+    accudisc_uncap_state got = adsc_uncap_classify(vendor, product, max_x);
+
+    if (got != want) {
+        printf("FAIL %-46s got %s, want %s\n", what, name(got), name(want));
+        fails++;
+    } else {
+        printf("ok   %-46s %s\n", what, name(got));
+    }
+}
+
+int main(void)
+{
+    /* The one verified row. FEATURES.md feature 1: SpeedRead ON flips page-2A
+     * max read 40x -> 48x on the PX-716A, SET OFF restores 40x — measured live
+     * in both directions, which is the table's entry rule. */
+    check("PX-716A at 48x -> uncapped", "PLEXTOR", "DVDR   PX-716A", 48,
+          ACCUDISC_UNCAP_LIKELY_ON);
+    check("PX-716A at 40x -> stock", "PLEXTOR", "DVDR   PX-716A", 40,
+          ACCUDISC_UNCAP_OFF);
+    check("PX-716A at 41x -> just over stock", "PLEXTOR", "DVDR   PX-716A", 41,
+          ACCUDISC_UNCAP_LIKELY_ON);
+
+    /* Below stock is still "not uncapped". A drive reporting under its own
+     * ceiling is odd, but it is unambiguously not lifted. */
+    check("PX-716A at 32x -> below stock", "PLEXTOR", "DVDR   PX-716A", 32,
+          ACCUDISC_UNCAP_OFF);
+
+    /* INQUIRY padding must not defeat the lookup: drives pad fixed-width
+     * fields, so "DVDR   PX-716A" and "DVDR PX-716A" are the same drive. */
+    check("PX-716A, single-spaced product", "PLEXTOR", "DVDR PX-716A", 48,
+          ACCUDISC_UNCAP_LIKELY_ON);
+    check("PX-716A, trailing pad", "PLEXTOR", "DVDR   PX-716A   ", 48,
+          ACCUDISC_UNCAP_LIKELY_ON);
+
+    /* THE CASES THAT MATTER. Each of these would have returned a confident
+     * (and possibly wrong) answer under a bare `max_x > 40`. */
+    check("another Plextor, 48x, not in table", "PLEXTOR", "DVDR   PX-760A",
+          48, ACCUDISC_UNCAP_UNKNOWN);
+    check("another Plextor, 40x, not in table", "PLEXTOR", "DVDR   PX-760A",
+          40, ACCUDISC_UNCAP_UNKNOWN);
+    check("non-Plextor at 48x", "HL-DT-ST", "DVDRAM GH24NSD1", 48,
+          ACCUDISC_UNCAP_UNKNOWN);
+    check("right product, wrong vendor", "PIONEER", "DVDR   PX-716A", 48,
+          ACCUDISC_UNCAP_UNKNOWN);
+
+    /* max_x == 0 means page 2A could not be read — nothing to judge. */
+    check("speed unreadable (0x)", "PLEXTOR", "DVDR   PX-716A", 0,
+          ACCUDISC_UNCAP_UNKNOWN);
+
+    /* Defensive: the probe passes dev->id fields, which are always non-NULL,
+     * but the classifier is public within the library. */
+    check("NULL vendor", NULL, "DVDR   PX-716A", 48, ACCUDISC_UNCAP_UNKNOWN);
+    check("NULL product", "PLEXTOR", NULL, 48, ACCUDISC_UNCAP_UNKNOWN);
+
+    /* The error the guard returns must have a real message: a caller printing
+     * "unknown error" cannot act on it, which defeats a guard whose whole
+     * purpose is to explain a refusal. */
+    const char *msg = accudisc_strerror(ACCUDISC_ERR_UNSAFE_COMBINATION);
+    if (!msg || strcmp(msg, "unknown error") == 0) {
+        printf("FAIL %-46s strerror gives \"%s\"\n",
+               "ERR_UNSAFE_COMBINATION has a message", msg ? msg : "(null)");
+        fails++;
+    } else {
+        printf("ok   %-46s \"%s\"\n", "ERR_UNSAFE_COMBINATION has a message",
+               msg);
+    }
+
+    /* And it must not collide with an existing code — a duplicate value would
+     * silently alias two unrelated failures. */
+    if (ACCUDISC_ERR_UNSAFE_COMBINATION == ACCUDISC_ERR_NOTFOUND ||
+        ACCUDISC_ERR_UNSAFE_COMBINATION == ACCUDISC_ERR_CRC ||
+        ACCUDISC_ERR_UNSAFE_COMBINATION == ACCUDISC_ERR_UNSUPPORTED) {
+        printf("FAIL %-46s value collides\n", "ERR_UNSAFE_COMBINATION unique");
+        fails++;
+    } else {
+        printf("ok   %-46s %d\n", "ERR_UNSAFE_COMBINATION unique",
+               (int)ACCUDISC_ERR_UNSAFE_COMBINATION);
+    }
+
+    printf(fails ? "\n%d failure(s)\n" : "\nall passed\n", fails);
+    return fails ? 1 : 0;
+}

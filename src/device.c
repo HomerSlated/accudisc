@@ -71,6 +71,9 @@ const char *accudisc_strerror(int err)
     case ACCUDISC_ERR_CANCELLED:   return "cancelled";
     case ACCUDISC_ERR_CRC:         return "checksum failed";
     case ACCUDISC_ERR_NOTFOUND:    return "data absent";
+    case ACCUDISC_ERR_UNSAFE_COMBINATION:
+                                   return "unsafe request for the drive's "
+                                          "current state (would corrupt data)";
     default:                       return "unknown error";
     }
 }

@@ -22,8 +22,10 @@ static const struct offset_entry offsets[] = {
 #include "offsets_db.inc"
 };
 
-/* Collapse whitespace runs to single spaces, trim ends. */
-static void normalize(const char *src, char *dst, size_t cap)
+/* Collapse whitespace runs to single spaces, trim ends. Shared with the other
+ * INQUIRY-keyed tables in this module (see src/drive/uncap.c) — declared in
+ * internal.h so the matching rule stays one implementation, not two that drift. */
+void adsc_inquiry_normalize(const char *src, char *dst, size_t cap)
 {
     size_t o = 0;
     int in_space = 1; /* swallows leading spaces */
@@ -52,11 +54,11 @@ int accudisc_read_offset(accudisc_device *dev, int32_t *samples)
     if (rc != ACCUDISC_OK)
         return rc;
 
-    normalize(dev->id.vendor, vendor, sizeof(vendor));
-    normalize(dev->id.product, product, sizeof(product));
+    adsc_inquiry_normalize(dev->id.vendor, vendor, sizeof(vendor));
+    adsc_inquiry_normalize(dev->id.product, product, sizeof(product));
 
     for (size_t i = 0; i < sizeof(offsets) / sizeof(offsets[0]); i++) {
-        normalize(offsets[i].product, want_p, sizeof(want_p));
+        adsc_inquiry_normalize(offsets[i].product, want_p, sizeof(want_p));
         if (strcmp(vendor, offsets[i].vendor) == 0 &&
             strcmp(product, want_p) == 0) {
             *samples = offsets[i].samples;

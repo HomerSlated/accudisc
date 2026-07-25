@@ -1506,23 +1506,30 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         goto out;
     }
 
-    /* Warn (driver-free) if SpeedRead already looks enabled for a subchannel
-     * read: on a Plextor, mode-page-2A max read speed above 40x means the
-     * uncap is on — persistent drive state a prior session may have left set.
-     * We do not change it (caller's drive); we make the silent loss visible. */
+    /* Warn if the uncap already looks enabled for a subchannel read —
+     * persistent drive state a prior session may have left set. We do not
+     * change it (caller's drive); we make the silent loss visible.
+     *
+     * The detection moved into the library (accudisc_speed_uncap_probe): the
+     * old inline test here was `PLEXTOR && max_x > 40`, which is one drive's
+     * stock ceiling used as a universal constant. The probe keys it per model
+     * and says UNKNOWN where we have not verified one. An authoritative ON is
+     * refused outright by accudisc_read_cdda, so reaching that case here means
+     * the library declined to guess and left the policy to us — the CLI's
+     * policy is to warn loudly and proceed. */
     if (req.sub != ACCUDISC_SUB_NONE && !ctx.quiet) {
-        accudisc_drive_id id;
-        unsigned mk = 0, ck = 0;
-        if (accudisc_drive_identify(dev, &id) == ACCUDISC_OK &&
-            !strcmp(id.vendor, "PLEXTOR") &&
-            accudisc_get_speed(dev, &mk, &ck) == ACCUDISC_OK && mk / 176 > 40)
+        accudisc_uncap_state u;
+        unsigned mx = 0;
+        if (accudisc_speed_uncap_probe(dev, &u, &mx) == ACCUDISC_OK &&
+            u == ACCUDISC_UNCAP_LIKELY_ON)
             fprintf(stderr,
-                "accudisc: WARNING: SpeedRead appears enabled (max read %ux) "
-                "with --sub requested;\n"
-                "  the Q subchannel will be corrupted on inner/mid tracks. "
-                "Disable it first:\n"
+                "accudisc: WARNING: the read-speed uncap appears enabled "
+                "(max read %ux, above this\n"
+                "  model's stock ceiling) with --sub requested; the Q "
+                "subchannel will be corrupted\n"
+                "  on inner/mid tracks. Disable it first:\n"
                 "  accudisc speed-uncap off --driver plextor\n",
-                mk / 176);
+                mx);
     }
 
     /* --uncap: lift the firmware read-speed cap for this read only. The

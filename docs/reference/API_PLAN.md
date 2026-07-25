@@ -77,11 +77,27 @@ What *is* owed: a mapping table in `cli-machine-interface.md` so binding authors
 reproduce equivalent **semantics** (e.g. "`rc > 0` from `accudisc_write` is the
 exit-3 condition") without reproducing the mechanism.
 
-## 4. Phase 1 — the two silent-failure guards `[P1]`
+## 4. Phase 1 — the two silent-failure guards `[P1]` — **LANDED 2026-07-25**
 
 Highest value, smallest change, no hardware needed to write (hardware needed to
 confirm). Do these first and independently; they are useful even if the rest of
 the plan is never executed.
+
+| piece | where |
+|---|---|
+| `accudisc_uncap_state`, `accudisc_speed_uncap_probe` | `include/accudisc/accudisc.h` |
+| stock-ceiling table + `adsc_uncap_classify` (pure) | `src/drive/uncap.c` |
+| `uncap_set` on the handle, set only on a successful set | `src/internal.h`, `src/drive/driver.c` |
+| refusal on authoritative `ON` | `src/read/engine.c` |
+| `allow_unsafe` opt-out (placed in existing padding) | `include/accudisc/accudisc.h` |
+| `ACCUDISC_ERR_UNSAFE_COMBINATION` + `strerror` | `include/accudisc/accudisc.h`, `src/device.c` |
+| read-only-handle diagnosis at attach | `src/drive/driver.c` |
+| CLI warning re-sourced from the probe | `cli/main.c` |
+| 15 cases, no hardware | `tests/test_uncap.c` |
+
+Both guards are written and the suite is green at 28/28. **Neither has been
+confirmed against the drive** — that needs a Plextor with the uncap actually
+toggled, and is the one outstanding item.
 
 ### 4.1 SpeedRead + subchannel
 
@@ -105,13 +121,48 @@ authoritative values. See §9.1–9.2 for the resolution order, the per-model st
 ceiling table that replaces the CLI's hardcoded `> 40`, and the residual hole
 that is deliberately reported rather than closed.
 
-### 4.2 Read-only fd + vendor opcodes
+### 4.2 Read-only fd + vendor opcodes — **premise corrected 2026-07-25**
 
-`accudisc_driver_attach` must fail loudly on a device opened without
-`ACCUDISC_OPEN_RDWR`. The kernel's SG_IO filter blocks vendor opcodes (and
-WRITE(10)/SEND CUE SHEET) on a read-only fd. The CLI infers the mode at
-`cli/main.c:1762`; the library says nothing, so the attach appears to succeed
-and every subsequent vendor command fails obscurely.
+The kernel's SG_IO filter blocks vendor opcodes (and WRITE(10)/SEND CUE SHEET)
+on a read-only fd. Measured here, `/dev/sr1`, opcode `0xEA`, no capability:
+
+```
+O_RDONLY  ioctl fails EPERM        <- filter rejects it; the drive never sees it
+O_RDWR    ioctl OK, sense key 0x05 <- reaches the device, which refuses it
+```
+
+Two corrections to what this section originally said.
+
+**"The attach appears to succeed" was wrong.** The selftest issues a real vendor
+opcode (`px_selftest`, `drivers/plextor/plextor.c`), so on a read-only fd it
+fails and the attach is correctly refused. The defect is not a false success —
+it is that the failure is reported as `driver plextor: 0xEA arm refused`, which
+names the symptom and not the cause, and is indistinguishable from "this is not
+a Plextor".
+
+**"Must fail loudly on a device opened without `ACCUDISC_OPEN_RDWR`" is not
+implementable as stated.** The filter short-circuits entirely under
+`CAP_SYS_RAWIO`, which this project's *optional* `setcap` build target installs
+(`CMakeLists.txt:39-44`). So vendor opcodes on a read-only handle work fine in a
+configuration we ship and support. A hard refusal would break it, and the
+library cannot detect which regime it is in without probing for a capability it
+has no business asking about.
+
+**What landed instead**, correct under both regimes and with no false positives:
+
+- At attach, if the handle is read-only, log the *condition* — "vendor opcodes
+  need `ACCUDISC_OPEN_RDWR` or `CAP_SYS_RAWIO`" — not a prediction of failure.
+  Under setcap it is noise; under the default it is the hint that saves the
+  debugging session.
+- Keep the selftest as the gate: it answers empirically under either regime.
+- When it fails, distinguish the two failures the measurement above separates.
+  A filter rejection arrives as `ERR_IO` with `dev->last_io` set; a drive
+  rejection as `ERR_SENSE`. Only the second is evidence about the drive, and the
+  log now says so.
+
+`dev->last_io` is cleared immediately before the selftest — it deliberately
+survives a success (`src/device.c:141-145`), so a stale entry from an unrelated
+earlier failure could otherwise be misattributed to the selftest.
 
 **Both are behaviour changes to shipped functions** and need release notes even
 at 0.x. Guard 4.1 in particular can break a caller currently getting bad data
@@ -501,8 +552,9 @@ resolved.
 
 ```
 phase 0   golden-output test + constants-location test      DONE 2026-07-25
-phase 1   guards 4.1, 4.2 + uncap probe (§9.1)               (CLI rewired:
-          its inline identify+get_speed heuristic re-sources from the probe)
+phase 1   guards 4.1, 4.2 + uncap probe (§9.1)   DONE 2026-07-25, unconfirmed
+          on hardware (CLI rewired: its inline identify+get_speed heuristic
+          now re-sources from the probe)
 phase 2   5.4 uncap push/pop   -> CLI rewired, same commit   (mechanical)
           5.3 census cadence   -> CLI rewired, same commit   (mechanical)
           5.2 range resolution -> CLI rewired, same commit   (needs media)
