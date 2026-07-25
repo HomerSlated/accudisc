@@ -8,6 +8,8 @@
 
 #include <accudisc/accudisc.h>
 
+#include "format.h"
+
 static void usage(FILE *to)
 {
     fprintf(to,
@@ -164,7 +166,16 @@ static int cmd_info(accudisc_device *dev)
 }
 
 /* Plextor Q-Check style census: drive reads while the vendor counters are
- * armed; we sample them every 75 sectors (one second of audio). */
+ * armed; we sample them every CXSCAN_CADENCE sectors.
+ *
+ * 75 sectors is one second of audio, which is what makes the reported figures
+ * comparable to every other C1/C2 tool — the units in `cx summary` are per
+ * second, and they are only per second because the sample window is a second.
+ * Named rather than inlined so tests/policy_constants.sh can see it: this is
+ * acquisition policy that belongs in the library (API_PLAN.md §5.3), and the
+ * test exists to catch it being duplicated into src/ rather than moved. */
+#define CXSCAN_CADENCE 75
+
 static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
 {
     long start = 0;
@@ -204,13 +215,14 @@ static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
     uint32_t peak_c1 = 0, peak_c2 = 0, peak_cu = 0;
     int ret = 0;
 
-    for (long lba = start; lba < (long)toc.leadout_lba; lba += 75) {
+    for (long lba = start; lba < (long)toc.leadout_lba;
+         lba += CXSCAN_CADENCE) {
         accudisc_read_req req = {0};
         accudisc_counters c;
 
         req.lba = (uint32_t)lba;
-        req.count = (uint32_t)(toc.leadout_lba - lba < 75
-                                   ? toc.leadout_lba - lba : 75);
+        req.count = (uint32_t)(toc.leadout_lba - lba < CXSCAN_CADENCE
+                                   ? toc.leadout_lba - lba : CXSCAN_CADENCE);
         req.retries = 1;
         err = accudisc_read_cdda(dev, &req, NULL, NULL, NULL);
         if (err != ACCUDISC_OK)
@@ -277,67 +289,11 @@ static int cmd_toc(accudisc_device *dev)
 
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "read toc", err);
-    for (uint8_t i = 0; i < toc.track_count; i++) {
-        const accudisc_track *t = &toc.tracks[i];
-        /* session is appended, never inserted: the first five fields are the
-         * frozen contract and stay where existing parsers expect them. */
-        printf("track %u lba %u sectors %u %s", t->number, t->lba,
-               t->sectors, ACCUDISC_TRACK_IS_AUDIO(t) ? "audio" : "data");
-        if (t->session)
-            printf(" session %u", t->session);
-        /* Appended, and only when non-zero: sectors before this track's INDEX
-         * 01 that belong to it (ECMA-130 §20). TOC-derivable only for the
-         * first track, where the program area's start at LBA 0 supplies the
-         * other edge. This is a COUNT OF SECTORS; the `subq_indices=` token
-         * below is a statement about ACQUISITION and answers a different
-         * question. (Until 2026-07-25 that token was spelled `pregaps=`, which
-         * made `pregap 33 ... pregaps=none` read as a self-contradiction.) */
-        if (t->pregap)
-            printf(" pregap %u", t->pregap);
-        putchar('\n');
-    }
-    for (uint8_t i = 0; i < toc.session_count; i++) {
-        const accudisc_session *s = &toc.sessions[i];
-        printf("session %u tracks %u-%u audio %u data %u leadout %u\n",
-               s->number, s->first_track, s->last_track, s->audio_tracks,
-               s->data_tracks, s->leadout_lba);
-    }
-    printf("leadout lba %u\n", toc.leadout_lba);
 
-    /* Acquisition path. `subq_indices` says whether THIS command collected
-     * INDEX data from the subchannel — never how many pregap sectors exist.
-     * It is always `none` here: INDEX 00 lives in the program-area Q
-     * subchannel, never in the lead-in, so no READ TOC format can supply it.
-     * The `pregaps` SUBCOMMAND is what scans for it. */
-    printf("source=%s degrade=%s subq_indices=none",
-           accudisc_toc_source_str(info.source),
-           accudisc_toc_degrade_str(info.degrade));
-    if (info.source == ACCUDISC_TOC_SRC_FULLTOC)
-        printf(" sessions=%u..%u disc_type=0x%02x", info.first_session,
-               info.last_session, info.disc_type);
-    /* A COUNT, not a range — the distinction matters. On a degrade this is the
-     * only session structure still reachable, and it comes from a different
-     * opcode (READ DISC INFORMATION) than the TOC. 0 = nobody could say. */
-    printf(" session_count=%u", info.session_count);
-    /* Structural defects in the lead-in, as a comma-separated slug list.
-     * Absent entirely on a well-formed disc, so nothing changes for the
-     * overwhelmingly common case; present it means the TOC contradicts itself
-     * and is most likely copy-protected. */
-    if (toc.anomalies) {
-        int first = 1;
-
-        printf(" anomalies=");
-        for (unsigned b = 0; b < 16; b++) {
-            if (!(toc.anomalies & (1u << b)))
-                continue;
-            printf("%s%s", first ? "" : ",",
-                   accudisc_toc_anomaly_str(1u << b));
-            first = 0;
-        }
-        if (toc.anomalies & ACCUDISC_TOC_ANOM_UNTRUSTED_GEOMETRY)
-            printf(" toc_trusted=0");
-    }
-    putchar('\n');
+    /* Acquisition above, formatting below: the split exists so the exact bytes
+     * this command emits can be asserted from a captured lead-in blob, with no
+     * disc in the tray. See cli/format.c and tests/test_cli_toc_format.c. */
+    adsc_cli_fmt_toc(stdout, &toc, &info);
 
     if (info.degrade != ACCUDISC_TOC_DEGRADE_NONE) {
         /* On a transport failure name the cause too — "transport I/O failure"

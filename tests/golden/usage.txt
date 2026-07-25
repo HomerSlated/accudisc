@@ -1,0 +1,111 @@
+usage: accudisc [--device DEV] <command> [options]
+
+commands:
+  info           identify the drive (INQUIRY)
+  disc           pre-flight guard: is the loaded disc rippable audio,
+                 a blank to burn, or neither (exit 3)
+  toc            list tracks (LBA); prefers the full TOC and degrades
+                 to format 0 on an unreadable lead-in, reporting which
+  fulltoc [FILE] parsed session structure, or raw dump to FILE
+  cdtext FILE    dump raw CD-Text packs to FILE (no file if absent)
+  text           decode and print CD-Text (block 0)
+  scan           MCN and per-track ISRCs from the Q subchannel
+  pregaps        per-track index/pregap map from Q (CRC-gated);
+                 reports pregap Nf / gapless / UNKNOWN per boundary
+  features [FLAG] probe drive capability. --c2: C2 boolean (exit 0
+                 iff clearly usable) — the only flag that gates exit.
+                 --stream: Accurate Stream. --rotation: CAV/CLV drive
+                 type (disc-free). --all / bare: everything, exit 0
+  speed [X]      report read speed + rotation (CAV/CLV/...); with X,
+                 set an Nx ceiling first (SET STREAMING, else SET CD
+                 SPEED). [--exact] pins the rate (CLV; may be refused).
+                 [--start L --count N] REQUESTS that range (a perf hint;
+                 locality is drive-dependent — whole-disc on all drives
+                 tested so far). A standalone set persists (not restored)
+  speed-uncap [on|off]
+                 report or set the vendor read-speed uncap
+                 (Plextor: SpeedRead) — needs --driver; persistent
+                 drive state. No argument = report only
+  media          identify recordable media from ATIP:
+                 manufacturer, ATIP code, capacity, CD-R/RW
+  speeds         probe which speed settings the drive really
+                 honours: [--start L] [--ladder LIST] — timed
+                 streaming reads per rung; page 2A vs measured
+  c2lag          probe the drive's C2-bitmap/audio alignment
+                 [--start L] [--count N] [--speed X] — point it at
+                 a DAMAGED span (C2 must fire); report-only
+  stop           spin the spindle down (no eject)
+  eject          open the tray / unload the disc
+  load           close the tray / load the disc
+  read           read CD-DA sectors (see read options)
+  write          burn an audio session DAO from a cdrdao .toc:
+                 --toc FILE --bin FILE [--cdtext FILE] [--simulate]
+                 [--byteswap] [--speed X] [--progress-fd N]
+                 (--cdtext takes a raw format-05 blob from read --cdtext;
+                  needs blank disc)
+  cxscan         hardware C1/C2/CU error census (needs --driver)
+  version        print the library version
+
+driver options (vendor features are OFF unless requested):
+  --driver auto|NAME  permit loading a vendor driver: auto-match
+                      the drive, or request NAME (warn if missing)
+  --drivers-dir DIR   driver location (default: $ACCUDISC_DRIVER_DIR
+                      or the installed directory)
+
+read options:
+  --start LBA    first sector (default: start of the audio session)
+  --count N      sectors to read (default: to that session's lead-out)
+  --session N    which session to read; default is the single audio
+                 session, and is required when more than one has audio
+  --tracks A-B   read tracks A through B (or --track N for one); both
+                 must be in the same session. Overrides --session
+  --no-c2        do not request C2 pointers (default: requested)
+  --c2beb        request C2 + block-error bits (296 B) variant
+  --sub raw|q    also capture subchannel (raw P-W or formatted Q)
+  --any          expected sector type ANY (default CD-DA)
+  --force        bypass the audio-range guard (data tracks, session
+                 seams) — the drive will reject what it cannot read
+  --fulltoc FILE also dump the raw full TOC (single-spin capture)
+  --cdtext FILE  also dump raw CD-Text packs; absence is noted
+                 but does not affect the read's exit code
+  --pcm FILE     write raw s16le PCM here
+  --c2f FILE     write the C2 bitmap stream here
+  --subf FILE    write the subchannel stream here (needs --sub)
+  --cdg FILE     write CD+G packs here: R-W de-interleaved and
+                 Reed-Solomon corrected, 24 bytes/pack (needs --sub raw)
+  --chunk N      sectors per READ CD (default: max under 64 KiB)
+  --retries K    per-sector attempts on failed chunks (default 2)
+  --c2-retries N hunt a C2-clean copy of each flagged sector with
+                 up to N cache-defeated rereads (default 0 = off)
+  --verify P     read everything P times (cache-defeated); sectors
+                 whose reads disagree are resolved by consensus or
+                 marked suspect (default 1 = off)
+  --overlap K    boundary overlap check: extend each chunk by K
+                 sectors and verify the seam against the next chunk
+                 (default 0 = off, max 8)
+  --ladder LIST  speed ladder for problem-sector rereads, e.g.
+                 32,16,8,4 — attempt n runs at the n-th speed;
+                 pass speed is restored for streaming
+  --speed X      set drive read speed to Xx first (best-effort)
+  --uncap        lift the vendor read-speed cap for this read only,
+                 restoring the drive's prior setting afterwards
+                 (needs --driver; Plextor: SpeedRead)
+  --map          render a per-sector disc map when done
+  --map-file F   live status map: F is exactly COUNT bytes, one
+                 status byte per sector (ACCUDISC_MAP_* encoding,
+                 see accudisc.h), updated in place during the read;
+                 mmap it MAP_SHARED to watch progress/state live
+  --progress-fd N  machine progress on fd N, newline-delimited:
+                 'progress <done> <total>' lines, then a final
+                 'summary hard= c2= recovered= suspect= rereads=
+                 slips=' line (stable format; -q does not mute it)
+  -q             quiet: no human progress line
+
+exit codes (all commands):
+  0  completed, no caveats
+  1  usage / argument / local file error
+  2  fatal: device, transport, or command could not complete
+  3  completed with caveats: data absent (cdtext/fulltoc/scan),
+     read finished with hard/suspect/C2-flagged sectors, or a burn
+     whose CD-Text SIZE_INFO disagreed with the .toc (written as given)
+  (exception: 'features' keeps its frozen 0-iff-C2-usable contract)

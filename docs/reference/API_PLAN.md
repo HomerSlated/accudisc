@@ -207,7 +207,34 @@ Rust `Drop` and a Python context manager map onto this exactly — the bindings
 will do it *better* than C can, which is fine. Parity means no capability or
 safety is lost, not that every layer has the same shape.
 
-## 6. Phase 0 — the seatbelt, built before phase 1
+## 6. Phase 0 — the seatbelt, built before phase 1 — **LANDED 2026-07-25**
+
+What exists now:
+
+| artefact | what it pins |
+|---|---|
+| `cli/format.c` + `format.h` | `cmd_toc`'s output split into a pure function of `(toc, info)` — no device handle. This is what made the rest testable. |
+| `tests/test_cli_toc_format.c` | 4 cases through the real chain `vec_fulltoc → accudisc_fulltoc_parse → adsc_toc_from_fulltoc → adsc_cli_fmt_toc`. Covers the `pregap` token, a format-0 degrade, and an anomalous lead-in with `toc_trusted=0` — three branches previously reachable only with the right physical disc. |
+| `tests/cli_surface.sh` + `tests/golden/usage.txt` | The 111-line usage text on both stdout and stderr, the `accudisc <semver>` version shape, and exit codes 0/1/2 — asserted against the real binary. |
+| `tests/policy_constants.sh` | The drift detector. See below. |
+
+Verified against real media before the drive became unavailable: `info disc
+media features toc fulltoc text scan` all byte-identical pre- and
+post-refactor, exit codes unchanged. Baseline captures live in
+`private/bench/refactor-baseline-2026-07-25/` (git-ignored) for phases 1–2 to
+diff against.
+
+**The drift detector enforces "in exactly one of `cli/` and `src/`", not "not
+in both."** A not-in-both rule passes when a constant is renamed away or when
+the source path is wrong — green forever, checking nothing. Requiring a
+positive hit on exactly one side makes a bad path a failure. Verified against
+four synthetic trees: correct tree passes, duplicated constant fails, missing
+constant fails, bad root fails. `CXSCAN_CADENCE` was named in the same commit
+(it was a bare `75`) so it could be tracked at all.
+
+Original reasoning follows.
+
+
 
 Not a branch. A branch isolates a regression; it does not detect one. What
 detects one is a golden-output test.
@@ -284,9 +311,40 @@ message when the rewrite lands. Do not dribble it out.
 | 2 | CLI behaviour through the refactor | target: **no change at all** | Must be No — that is the phase-0 test's job |
 | 3 | Guard 4.1/4.2 | CLI already interlocks both; no CLI-visible change | No |
 | 4 | Bindings availability + ABI policy | phase 4 | N/A |
+| 5 | An unknown command exits **2**, not 1 | pinned by `cli_surface.sh`, unchanged | No — but see below |
 
 Anything that lands in this table as "breaks a parser: Yes" needs a decision,
 not just a note.
+
+Row 5 is a wart found while writing the phase-0 tests, not a change: `main()`
+opens the device *before* it dispatches, so `accudisc not-a-command` fails with
+`exit 2` (could not complete) rather than `exit 1` (usage). A misspelled
+command should not require hardware. It is pinned by the golden test as-is so
+that fixing it has to be deliberate — and if it is ever fixed, it changes an
+exit code, which is exactly the class of change that belongs in this ledger
+before it ships.
+
+### 8.1 The drive is a shared, uninterlocked resource
+
+Not an interface change, but it belongs here because it corrupts measurements
+on both sides. There is **one optical drive and two agents**, with nothing
+arbitrating access. On 2026-07-25 both projects drove `/dev/sr0` concurrently:
+cdda2img's `recovery_bench.py` ran 14:00:44 onward while our post-refactor
+verification ran 14:10:16–14:15:56, including a seek-heavy `pregaps` scan.
+
+The damage was measurable in both directions. Our own `pregaps` Q-CRC counters
+moved between an idle-drive run and a contended one (`[141 ok, 9 bad]` →
+`[142 ok, 8 bad]`) with the decoded values byte-identical — so contention
+perturbs exactly the subchannel-quality signal their bench rungs measure, while
+leaving derived geometry alone. That is a trap: the numbers that move are the
+ones being measured, and the ones that stay put are the ones that would have
+caught it.
+
+Proposed to them as §57.3: wrap every `/dev/sr0` command in
+`flock /var/tmp/sr0.lock -c '…'`, taking the lock for a whole long job rather
+than per-command. Advisory, so it only works if both sides honour it. **Any
+timed or quality-sensitive measurement taken without the lock should be
+treated as suspect.**
 
 ## 9. Open questions — resolve before phase 1
 
@@ -333,7 +391,7 @@ resolved.
 ## 11. Sequencing summary
 
 ```
-phase 0   golden-output test + constants-location test      (no risk)
+phase 0   golden-output test + constants-location test      DONE 2026-07-25
 phase 1   guards 4.1, 4.2                                   (no CLI change)
 phase 2   5.4 uncap push/pop   -> CLI rewired, same commit   (mechanical)
           5.3 census cadence   -> CLI rewired, same commit   (mechanical)
