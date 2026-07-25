@@ -252,6 +252,31 @@ passed through unmodified — see 11.1.
     but it is no longer on the critical path — we are validating that our write
     path lays down and recovers whatever packs it is given, which needs no
     original disc at all.
+  - **SHARPENED 2026-07-25 (Keith) — pass-through is NOT a production path, and
+    the blob it consumes cannot be produced by this pipeline.** An extracted RBI
+    contains exactly two things a burn can use: one s16le PCM stream and one
+    ASCII `.toc` (block list: TOC / Provenance / ReplayGain / AccurateRip / Rip
+    log / Album art / PCM audio — **no CD-Text blob block**). The 42-pack fixture
+    reached us by a detour the workflow cannot reproduce: `.toc` text → cdrdao
+    encoded it → CDEmu → libmirage decoded and re-encoded → `accudisc cdtext`
+    captured the result. Steps C/D therefore validated the **lead-in write
+    mechanism** — which is real, and hardware-proven — but not any route by which
+    packs can reach it. **For RBI → disc there is no CD-Text without authoring.**
+    v0's only genuine workflow is disc → `read --cdtext blob` → burn with the
+    blob carried out-of-band, which by the line above has no possible input here.
+  - **And pass-through is the WEAKER path on charset, not merely the narrower
+    one** (Keith, 2026-07-25). A blob is validated for structure and CRC and its
+    payload is *never inspected* — that is the design. So an illegal codepoint
+    passes straight to the disc, where it will not render on standalone hi-fi
+    equipment. Our own corpus already contains the proof:
+    `cdemu_utf8__33packs.cdtext` is UTF-8 declared as charset 0x00. Authoring
+    cannot have that failure: mapping strings to bytes *forces* every character
+    to be confronted, so the plaintext `.toc` path is a guaranteed validation
+    point and the blob path is a hole. Storing a raw blob in the RBI to "preserve
+    the original" was considered and **rejected** on both counts — there is no
+    original (every CD-Text disc here is a CD-R we burned, Stanley Road included,
+    so its packs are themselves authored from text we still hold), and it would
+    reintroduce the validation hole.
 - **Burn target: CDEmu `/dev/sr1`** (`cdemu unload 0; cdemu create-blank
   --writer-id=WRITER-TOC 0 /var/tmp/cdr` — recreate after each burn). **Final
   acceptance: real Plextor `/dev/sr0`** burn.

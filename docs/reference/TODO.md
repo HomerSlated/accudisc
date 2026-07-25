@@ -704,9 +704,23 @@ external absolute gate — so recovery = blind re-reads + cross-read consensus.
     Injects the packs into the SEND CUE SHEET lead-in (dataForm 0x41 + R-W
     sub-channel packs, ring-filled across the lead-in). Handles re-burns of a
     captured disc. Steps B1–B5/C/D in §11.
-  - **v1 — AUTHORED (COMMITTED 2026-07-24, Keith — promoted off "deferred", now
-    on the migration critical path).** strings / `.toc` `CD_TEXT` blocks →
-    18-byte packs → the blob v0 already knows how to lay down. Needed because
+  - **v1 — AUTHORED (COMMITTED 2026-07-24; the ONLY production path, 2026-07-25).**
+    strings / `.toc` `CD_TEXT` blocks → 18-byte packs → the blob v0 already knows
+    how to lay down.
+    **INPUT SURFACE IS SETTLED, and it is the `.toc`.** An extracted RBI holds one
+    s16le PCM stream and one ASCII `.toc`; there is no CD-Text blob block, so v0
+    has no reachable input in this pipeline and the Step C/D fixture was
+    manufactured via a CDEmu detour the workflow cannot reproduce. First task is
+    therefore `adsc_toc_parse_cue`, which ignores `CD_TEXT` today — a new parser
+    fed from a boundary we don't control, so it lands inside the `[P2]` hostile-
+    input sweep above.
+    **Authoring is also the stronger path on charset**, not a compromise: a blob's
+    payload is never inspected (by design), so an illegal codepoint reaches the
+    disc and fails to render on standalone hi-fi equipment — `cdemu_utf8__33packs`
+    in our corpus is UTF-8 declared as charset 0x00. Mapping strings to bytes
+    forces every character to be confronted, which is why the rule below is
+    enforceable here and unenforceable in v0.
+    Needed because
     cdda2img has NO strings→packs encoder (their `cdtext.py` is decode-only) and
     cdrdao is what encodes for them today — so once cdrdao leaves, a *fresh* disc
     authored from metadata has no CD-Text unless AccuDisc encodes it. cdda2img's
