@@ -989,6 +989,29 @@ figures across separate runs — so that reproducibility is a *static* property 
 the disc, which is what the irreducible-vs-transient split in the recovery model
 rests on.
 
+> **Weakened 2026-07-25 by §12.8, and by how much is calculable.** Every cell in
+> the 41-row audit was a *two*-pass comparison, and §12.8 shows Q yield is bimodal:
+> most passes land in a tight mode, an occasional one sits ~36 σ out. Two passes
+> cannot distinguish "this cell is reproducible" from "both draws landed in the
+> tight mode", so the audit's tightness is partly selection and "reproduces to four
+> significant figures" is weaker evidence than it read as when written.
+>
+> What survives is still substantial. Tracy's figure rests on 8 passes (4 speeds ×
+> 2 invocations) all landing tight. If a disturbed pass occurs independently with
+> probability *q*, that outcome has probability (1−*q*)⁸ — so the data exclude
+> *q* ≥ 0.31 at the 5 % level and *q* ≥ 0.25 at 10 %. The disturbed mode is
+> therefore *rare on that disc*, which is what the static-property argument needs.
+> But ABBA *Gold* at 8× showed 1 disturbed pass in 3 (*q* ≈ 0.33), right at that
+> boundary — so the rate is disc- and speed-specific and must not be assumed low
+> elsewhere.
+>
+> This does **not** reopen the contention hypothesis. Bimodality is not contention:
+> the disturbed pass recurs within a single session with nothing else changed, and
+> contention was an 86-point excursion, not one point. The irreducible-Q model
+> stands. What changes is the strength of the replicate argument supporting it —
+> and the design rule that follows: **three passes are the floor for any Q claim;
+> two cannot distinguish the modes, regardless of how the output is analysed.**
+
 > **Note on this file.** `docs/reference/RECOVERY.md` is one document hardlinked
 > into both the cdda2img and AccuDisc repos — one inode, two paths, and git
 > enforces nothing about the relationship. Most editors save atomically (write
