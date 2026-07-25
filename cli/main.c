@@ -1536,7 +1536,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
      * setting is persistent drive state, so the prior value is restored
      * afterwards — a read must not silently reconfigure the drive. */
     if (uncap) {
-        int err = accudisc_speed_uncap_get(dev, &uncap_prior);
+        int err = accudisc_speed_uncap_push(dev, 1, &uncap_prior);
 
         if (err == ACCUDISC_ERR_UNSUPPORTED) {
             fprintf(stderr, "accudisc: --uncap unsupported via %s — a vendor "
@@ -1546,11 +1546,12 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             goto out;
         }
         if (err != ACCUDISC_OK) {
-            ret = fail_dev(dev, "speed-uncap get", err);
-            goto out;
-        }
-        if ((err = accudisc_speed_uncap_set(dev, 1)) != ACCUDISC_OK) {
-            ret = fail_dev(dev, "speed-uncap set", err);
+            /* uncap_prior says which half failed, so the two distinct messages
+             * survive the move into the library: still -1 means the prior could
+             * not be read, >= 0 means it was read and the set failed. */
+            ret = fail_dev(dev, uncap_prior < 0 ? "speed-uncap get"
+                                                : "speed-uncap set",
+                           err);
             goto out;
         }
         if (!ctx.quiet)
@@ -1628,8 +1629,10 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                                                                        : 0;
 
 out:
-    if (uncap_prior >= 0)
-        accudisc_speed_uncap_set(dev, uncap_prior); /* leave the drive as found */
+    /* Unconditional: pop is a no-op on the -1 that push leaves when it changed
+     * nothing, so every exit path restores without testing whether it got far
+     * enough to need to. Leave the drive as found. */
+    accudisc_speed_uncap_pop(dev, uncap_prior);
     if (ctx.pcm)
         fclose(ctx.pcm);
     if (ctx.c2f)

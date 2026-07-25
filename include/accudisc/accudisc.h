@@ -292,6 +292,30 @@ ACCUDISC_API int accudisc_speed_uncap_probe(accudisc_device *dev,
                                             accudisc_uncap_state *state,
                                             unsigned *max_x);
 
+/* Scoped uncap: set it for one operation and put it back afterwards.
+ *
+ * The uncap is persistent drive state, so an operation that flips it and exits
+ * has reconfigured the user's drive. push/pop is the discipline: pop only what
+ * you pushed, and restore to the PRIOR value rather than to a factory default —
+ * the caller does not know what the drive was set to before it arrived.
+ *
+ * push reads the prior value FIRST and does not attempt the set if that read
+ * fails: changing persistent state you have no way to undo is worse than not
+ * changing it. *prior_out receives -1 when nothing needs restoring, which pop
+ * treats as a no-op, so the caller can pass it to pop unconditionally on every
+ * exit path — including error paths — without tracking whether it got that far.
+ *
+ * On failure, *prior_out also says which half failed: still -1 means the prior
+ * could not be read; >= 0 means it was read and the set failed. The prior is
+ * recorded before the set is attempted, deliberately, because a failed set may
+ * have partially applied — an unnecessary restore is harmless, a skipped one is
+ * not.
+ *
+ * Returns ACCUDISC_ERR_UNSUPPORTED without an attached driver offering it. */
+ACCUDISC_API int accudisc_speed_uncap_push(accudisc_device *dev, int on,
+                                           int *prior_out);
+ACCUDISC_API int accudisc_speed_uncap_pop(accudisc_device *dev, int prior);
+
 /* Best-effort drive read-speed control, in Nx CD speed (176 kB/s units).
  * Prefers SET STREAMING (0xB6, a ceiling the drive enforces; needs
  * CAP_SYS_RAWIO), falling back to the unprivileged CDROM_SELECT_SPEED path. */

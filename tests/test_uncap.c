@@ -143,6 +143,83 @@ int main(void)
         }
     }
 
+    /* --- scoped push/pop (§5.4) ---------------------------------------------
+     *
+     * The property under test is the safety one: a push that changed nothing
+     * must leave `prior` at -1, and pop must then be a no-op. If that breaks,
+     * `cmd_read`'s unconditional pop in the `out:` block starts writing a stale
+     * stack value into persistent drive state on every error path — silently,
+     * and only on hardware. No test above would notice.
+     *
+     * Reachable with a zeroed handle: with drv == NULL both get and set return
+     * ERR_UNSUPPORTED before touching the transport. */
+    {
+        struct accudisc_device d;
+        int prior = 12345; /* deliberate garbage: push must overwrite it */
+        int rc;
+
+        memset(&d, 0, sizeof(d));
+        rc = accudisc_speed_uncap_push(&d, 1, &prior);
+
+        if (rc != ACCUDISC_ERR_UNSUPPORTED) {
+            printf("FAIL %-46s rc=%d, want ERR_UNSUPPORTED\n",
+                   "push with no driver refuses", rc);
+            fails++;
+        } else {
+            printf("ok   %-46s ERR_UNSUPPORTED\n", "push with no driver refuses");
+        }
+
+        if (prior != -1) {
+            printf("FAIL %-46s prior=%d, want -1\n",
+                   "failed push leaves nothing to restore", prior);
+            fails++;
+        } else {
+            printf("ok   %-46s prior=-1\n",
+                   "failed push leaves nothing to restore");
+        }
+
+        /* The pairing that matters: pop after a failed push must do nothing at
+         * all, not attempt a write. */
+        rc = accudisc_speed_uncap_pop(&d, prior);
+        if (rc != ACCUDISC_OK) {
+            printf("FAIL %-46s rc=%d, want OK\n",
+                   "pop after failed push is a no-op", rc);
+            fails++;
+        } else {
+            printf("ok   %-46s OK\n", "pop after failed push is a no-op");
+        }
+
+        /* A real prior does reach the drive layer — which has no driver here,
+         * so it surfaces ERR_UNSUPPORTED rather than pretending to succeed. */
+        rc = accudisc_speed_uncap_pop(&d, 0);
+        if (rc != ACCUDISC_ERR_UNSUPPORTED) {
+            printf("FAIL %-46s rc=%d, want ERR_UNSUPPORTED\n",
+                   "pop with a real prior does attempt a set", rc);
+            fails++;
+        } else {
+            printf("ok   %-46s ERR_UNSUPPORTED\n",
+                   "pop with a real prior does attempt a set");
+        }
+
+        /* Argument validation, since cmd_read passes these straight through. */
+        struct { const char *what; int rc; int want; } inval[] = {
+            { "push(NULL) rejected",   accudisc_speed_uncap_push(NULL, 1, &prior),
+              ACCUDISC_ERR_INVAL },
+            { "push(prior=NULL) rejected", accudisc_speed_uncap_push(&d, 1, NULL),
+              ACCUDISC_ERR_INVAL },
+            { "pop(NULL) rejected",    accudisc_speed_uncap_pop(NULL, 0),
+              ACCUDISC_ERR_INVAL },
+        };
+        for (size_t i = 0; i < sizeof(inval) / sizeof(inval[0]); i++) {
+            if (inval[i].rc != inval[i].want) {
+                printf("FAIL %-46s rc=%d\n", inval[i].what, inval[i].rc);
+                fails++;
+            } else {
+                printf("ok   %-46s ERR_INVAL\n", inval[i].what);
+            }
+        }
+    }
+
     /* The error the guard returns must have a real message: a caller printing
      * "unknown error" cannot act on it, which defeats a guard whose whole
      * purpose is to explain a refusal. */

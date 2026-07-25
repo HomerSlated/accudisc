@@ -112,6 +112,39 @@ accudisc_uncap_state adsc_uncap_authoritative(accudisc_device *dev)
     return ACCUDISC_UNCAP_UNKNOWN;
 }
 
+int accudisc_speed_uncap_push(accudisc_device *dev, int on, int *prior_out)
+{
+    int prior = 0, rc;
+
+    if (!dev || !prior_out)
+        return ACCUDISC_ERR_INVAL;
+
+    /* -1 until we have something worth restoring, so a caller that passes this
+     * straight to pop() on an early error path gets a no-op rather than a
+     * write of whatever was in its stack slot. */
+    *prior_out = -1;
+
+    rc = accudisc_speed_uncap_get(dev, &prior);
+    if (rc != ACCUDISC_OK)
+        return rc; /* never set what we cannot put back */
+
+    /* Record before attempting the set, not after. A failed set may have
+     * partially applied and we have no way to tell; restoring unnecessarily
+     * costs one command, failing to restore costs the user's drive state. */
+    *prior_out = prior;
+
+    return accudisc_speed_uncap_set(dev, on);
+}
+
+int accudisc_speed_uncap_pop(accudisc_device *dev, int prior)
+{
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+    if (prior < 0)
+        return ACCUDISC_OK; /* nothing was pushed — pop only what you pushed */
+    return accudisc_speed_uncap_set(dev, prior ? 1 : 0);
+}
+
 int accudisc_speed_uncap_probe(accudisc_device *dev,
                                accudisc_uncap_state *state, unsigned *max_x)
 {
