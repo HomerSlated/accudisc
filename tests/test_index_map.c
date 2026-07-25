@@ -130,5 +130,46 @@ int main(void)
     assert(map[4].index1_lba == 900);
     assert(map[4].index0_lba == -1);
 
+    /* ---- accudisc_scan_pregaps argument handling (API_PLAN §5.1) ----------
+     * The scan itself needs a drive, but its refusals must not, and one
+     * property is worth pinning without one: *n_out is written to 0 BEFORE
+     * any early return. A caller that checks n_out instead of the return code
+     * — which the signature invites, since n_out is how many entries are
+     * readable — would otherwise walk an uninitialised count into an array it
+     * believes the library filled. */
+    {
+        accudisc_index_map out[4];
+        accudisc_toc toc = {0};
+        uint8_t n = 0xAA; /* poison: a scan that forgets to write n_out fails
+                           * here rather than passing on a lucky zero */
+
+        assert(accudisc_scan_pregaps(NULL, &toc, NULL, out, 4, &n) ==
+               ACCUDISC_ERR_INVAL);
+        assert(n == 0);
+
+        n = 0xAA;
+        assert(accudisc_scan_pregaps((accudisc_device *)&toc, NULL, NULL, out,
+                                     4, &n) == ACCUDISC_ERR_INVAL);
+        assert(n == 0);
+
+        n = 0xAA;
+        assert(accudisc_scan_pregaps((accudisc_device *)&toc, &toc, NULL, NULL,
+                                     4, &n) == ACCUDISC_ERR_INVAL);
+        assert(n == 0);
+
+        /* max == 0 is a caller error, not a silent no-op: it means the caller
+         * has nowhere to put an answer, and returning OK with n_out 0 would be
+         * indistinguishable from a disc with no tracks. */
+        n = 0xAA;
+        assert(accudisc_scan_pregaps((accudisc_device *)&toc, &toc, NULL, out,
+                                     0, &n) == ACCUDISC_ERR_INVAL);
+        assert(n == 0);
+
+        /* NULL n_out is refused rather than tolerated — without it there is no
+         * way to say how many entries are valid, so the call has no contract. */
+        assert(accudisc_scan_pregaps((accudisc_device *)&toc, &toc, NULL, out,
+                                     4, NULL) == ACCUDISC_ERR_INVAL);
+    }
+
     return 0;
 }

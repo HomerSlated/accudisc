@@ -461,29 +461,6 @@ static int cmd_scan(accudisc_device *dev)
 
 /* Collect the raw 96-byte subchannel of each delivered sector into a flat
  * buffer indexed by (lba - base), for the index/pregap decoder. */
-struct sub_collector {
-    uint8_t *buf;
-    uint32_t base;
-    uint32_t count;
-};
-
-static int sub_collect_sink(void *user, const accudisc_chunk *c)
-{
-    struct sub_collector *sc = user;
-
-    if (!c->sub_len)
-        return 0;
-    for (uint32_t s = 0; s < c->nsec; s++) {
-        uint32_t lba = c->lba + s;
-        if (lba < sc->base || lba - sc->base >= sc->count)
-            continue;
-        const uint8_t *sec = c->data + (size_t)s * c->sector_len;
-        memcpy(sc->buf + (size_t)(lba - sc->base) * 96,
-               sec + c->audio_len + c->c2_len, 96);
-    }
-    return 0;
-}
-
 static const char *pregap_state_str(uint8_t st)
 {
     switch (st) {
@@ -494,68 +471,50 @@ static const char *pregap_state_str(uint8_t st)
     }
 }
 
-/* Read each track boundary's neighbourhood and decode the index/pregap map.
- * Boundaries are read separately (seeking defeats the drive cache between
- * them); each window is the 400 sectors before the track start plus a few
- * after to catch the index-1 frame itself. */
-#define PREGAP_WINDOW 400u
-#define PREGAP_TAIL   4u
-
 static int cmd_pregaps(accudisc_device *dev)
 {
     accudisc_toc toc;
+    accudisc_index_map maps[99];
+    uint8_t n = 0;
     int err = accudisc_read_toc(dev, &toc);
 
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "read toc", err);
 
-    uint8_t *buf = malloc((size_t)(PREGAP_WINDOW + PREGAP_TAIL) * 96);
-    if (!buf) {
-        fprintf(stderr, "accudisc: out of memory\n");
-        return 1;
-    }
+    /* The window and the one-read-per-boundary rule now live in the library
+     * (API_PLAN §5.1) so Python and Rust scan identically. NULL opts = the
+     * documented defaults, which is exactly what this command used. */
+    err = accudisc_scan_pregaps(dev, &toc, NULL, maps,
+                                (uint8_t)(sizeof maps / sizeof maps[0]), &n);
 
+    /* Entries written before a failure are still valid and still worth
+     * printing — on a damaged disc the boundaries that DID decode are the
+     * useful part of the answer, and discarding them because a later one
+     * failed would throw away the result to report the error. */
     int ret = 0;
-    for (uint8_t i = 0; i < toc.track_count; i++) {
-        const accudisc_track *t = &toc.tracks[i];
-        uint32_t L = t->lba;
-        uint32_t start = L > PREGAP_WINDOW ? L - PREGAP_WINDOW : 0;
-        uint32_t count = L - start + PREGAP_TAIL;
+    for (uint8_t i = 0; i < n; i++) {
+        const accudisc_index_map *m = &maps[i];
 
-        struct sub_collector sc = { buf, start, count };
-        accudisc_read_req req = {
-            .lba = start, .count = count, .sub = ACCUDISC_SUB_RAW,
-        };
-        err = accudisc_read_cdda(dev, &req, sub_collect_sink, &sc, NULL);
-        if (err != ACCUDISC_OK) {
-            free(buf);
-            return fail_dev(dev, "boundary read", err);
-        }
-
-        /* Single-track TOC so the decoder reports just this boundary. */
-        accudisc_toc one = { .first_track = t->number, .last_track = t->number,
-                             .track_count = 1 };
-        one.tracks[0] = *t;
-        accudisc_index_map m;
-        accudisc_index_map_decode(buf, start, count, &one, &m, 1);
-
-        printf("track %2u  index1 %7d  %-7s", m.track, m.index1_lba,
-               pregap_state_str(m.pregap_state));
-        if (m.pregap_state == ACCUDISC_PREGAP_PRESENT)
+        printf("track %2u  index1 %7d  %-7s", m->track, m->index1_lba,
+               pregap_state_str(m->pregap_state));
+        if (m->pregap_state == ACCUDISC_PREGAP_PRESENT)
             printf("  %3uf  index0 %7d  [%u ok, %u bad]",
-                   m.pregap_frames, m.index0_lba, m.crc_ok, m.crc_bad);
-        else if (m.pregap_state == ACCUDISC_PREGAP_UNKNOWN)
+                   m->pregap_frames, m->index0_lba, m->crc_ok, m->crc_bad);
+        else if (m->pregap_state == ACCUDISC_PREGAP_UNKNOWN)
             printf("  (damaged approach: %u bad frames near boundary)",
-                   m.crc_bad);
-        if (m.q_index1_lba >= 0 && m.q_index1_lba != m.index1_lba)
-            printf("  [!] Q index1 %d != TOC", m.q_index1_lba);
+                   m->crc_bad);
+        if (m->q_index1_lba >= 0 && m->q_index1_lba != m->index1_lba)
+            printf("  [!] Q index1 %d != TOC", m->q_index1_lba);
         putchar('\n');
 
-        if (m.pregap_state == ACCUDISC_PREGAP_UNKNOWN)
+        if (m->pregap_state == ACCUDISC_PREGAP_UNKNOWN)
             ret = 3; /* at least one boundary needs recovery to resolve */
     }
 
-    free(buf);
+    if (err != ACCUDISC_OK) {
+        fflush(stdout); /* the rows above belong before the error */
+        return fail_dev(dev, "boundary read", err);
+    }
     return ret;
 }
 

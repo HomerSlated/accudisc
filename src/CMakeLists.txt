@@ -26,6 +26,7 @@ set(ACCUDISC_SOURCES
     cdda/subq.c
     cdda/scan.c
     cdda/index_map.c
+    cdda/pregap_scan.c
     cdda/rw.c
     meta/cdtext.c
     meta/cdtext_blob.c

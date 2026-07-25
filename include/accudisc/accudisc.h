@@ -1358,6 +1358,51 @@ ACCUDISC_API uint32_t accudisc_index_map_decode(const uint8_t *raw,
                                                 accudisc_index_map *out,
                                                 uint32_t max_out);
 
+/* ---- pregap / index scan ---------------------------------------------------
+ * Read each track boundary's neighbourhood and decode it. The acquisition
+ * POLICY here — how much to read around a boundary, and that boundaries are
+ * read one at a time — was the CLI's, so every binding would have had to guess
+ * it, and two callers guessing differently produce index maps that are not
+ * comparable while looking identical.
+ *
+ * ONE READ PER BOUNDARY is the load-bearing part, not an implementation
+ * detail: the seek between boundaries is what defeats the drive's cache. A
+ * caller that "optimises" this into one long read gets the cache's answer for
+ * every boundary after the first. */
+
+/* Defaults for accudisc_pregap_scan_opts. Public because they define what the
+ * numbers a scan reports actually mean: crc_ok/crc_bad are counts over exactly
+ * this window, so a caller comparing two scans taken with different windows is
+ * comparing nothing, and it cannot know that if the window is invisible. */
+#define ACCUDISC_PREGAP_WINDOW 400u /* sectors read BEFORE each track start */
+#define ACCUDISC_PREGAP_TAIL   4u   /* and after, to catch index 01 itself */
+
+typedef struct accudisc_pregap_scan_opts {
+    uint32_t window;  /* 0 = ACCUDISC_PREGAP_WINDOW */
+    uint32_t tail;    /* 0 = ACCUDISC_PREGAP_TAIL */
+    uint16_t speed_x; /* 0 = leave the drive's speed alone. When set, the prior
+                       * speed is restored on every exit path — see the note in
+                       * src/cdda/pregap_scan.c about what "prior" can mean. */
+    const volatile int *cancel; /* poll: nonzero aborts between boundaries */
+} accudisc_pregap_scan_opts;
+
+/* Scan every track boundary in toc, writing up to max entries and the number
+ * written to *n_out. Returns ACCUDISC_OK, or the read error from the FIRST
+ * boundary that failed.
+ *
+ * A failed boundary read ABORTS the scan; entries already written stay valid
+ * and *n_out says how many. It deliberately does not mark the failed boundary
+ * and continue: the only value available to mark it with is
+ * ACCUDISC_PREGAP_NO_DATA, which already means "the scan did not cover this
+ * track", and overloading it would make "not scanned" and "unreadable"
+ * indistinguishable to every caller. Reporting per-boundary read errors needs a
+ * field in accudisc_index_map and is not smuggled in here. */
+ACCUDISC_API int accudisc_scan_pregaps(accudisc_device *dev,
+                                       const accudisc_toc *toc,
+                                       const accudisc_pregap_scan_opts *opts,
+                                       accudisc_index_map *out, uint8_t max,
+                                       uint8_t *n_out);
+
 /* ---- full TOC (session structure) ------------------------------------------
  * Parses the blob from accudisc_read_full_toc (READ TOC format 2): raw
  * lead-in entries per session. Points 0x01-0x63 are track starts (address in

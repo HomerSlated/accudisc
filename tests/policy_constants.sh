@@ -34,13 +34,18 @@ fails=0
 # Each name is an acquisition-policy constant that must live on exactly one
 # side of the cli/src line. Add to this list when a new one is introduced.
 #
-# CXSCAN_CADENCE became ACCUDISC_CENSUS_CADENCE in phase 2.2 — the cadence is
-# part of the public contract now, because the units of every figure derived
-# from it are per-second only by virtue of its value. This test caught the
-# rename by failing "found nowhere", which is what the positive-hit rule above
-# is for: a not-in-both test would have gone green on a constant that had
-# ceased to exist.
-for name in PREGAP_WINDOW PREGAP_TAIL ACCUDISC_CENSUS_CADENCE; do
+# All three have now migrated, each acquiring the ACCUDISC_ prefix on the way
+# across: CXSCAN_CADENCE -> ACCUDISC_CENSUS_CADENCE in phase 2.2, and
+# PREGAP_WINDOW/PREGAP_TAIL -> ACCUDISC_PREGAP_WINDOW/_TAIL in phase 2.4. This
+# test caught BOTH renames by failing "found nowhere", which is what the
+# positive-hit rule above is for: a not-in-both test would have gone green on a
+# constant that had ceased to exist.
+#
+# With the migration complete the test changes job rather than retiring: it now
+# guards the reverse direction, a copy reappearing in cli/ beside the public
+# one. That is the same drift, and it is likelier now than before — the names
+# are public, so re-#define-ing one in the CLI compiles and looks harmless.
+for name in ACCUDISC_PREGAP_WINDOW ACCUDISC_PREGAP_TAIL ACCUDISC_CENSUS_CADENCE; do
 	# Match DEFINITIONS, not mentions. A migrated constant is public, so the
 	# CLI may legitimately reference it by name — that is the refactor working,
 	# not drift. What must never exist twice is the #define itself, which is
