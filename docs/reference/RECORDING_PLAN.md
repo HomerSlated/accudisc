@@ -640,7 +640,7 @@ produced perfect audio, MCN and ISRC but **no CD-Text at all**, with every
 command returning success. The cause was a single byte in the cue sheet: the
 lead-out entry's **Data Form** was left at `00h` ("host supplies 2352 bytes per
 frame") instead of `01h` ("the device generates the frame") — MMC-5 §6.33.3.8,
-§6.33.3.10. Fixed in `eba7099`; that byte was the only change between the two
+§6.33.3.10. Fixed in `143b0ff`; that byte was the only change between the two
 burns, so this is a controlled result, not a coincidence.
 
 Three things are worth carrying forward from it:
