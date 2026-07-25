@@ -193,9 +193,10 @@ read-engine side; "caller" means cdda2img (or any application driving AccuDisc).
 - **Dependencies**: a settable read speed (best-effort `CDROM_SELECT_SPEED` /
   `--speed`); requires an external gate (AR) to know when to stop.
 - **Optional**: `recovery_passes` config (default 3; 0 disables).
-- **Auto-detected**: the ladder is probed live per drive (`drive_speed.
-  probe_speed_ladder` / `accudisc speeds`: set each candidate, read back the
-  achieved speed).
+- **Auto-detected**: the ladder is probed live (`drive_speed.probe_speed_ladder` /
+  `drive_speed.admitted_ladder` over `accudisc speeds`: set each candidate, read back
+  the achieved speed). **Probe it every time; never cache it.** The ladder is a
+  property of drive × disc × *session*, not of the drive — see the caveat below.
 - **Conflicts**: alternative exit to parity repair (2.3). Not self-sufficient —
   without a gate there is nothing to verify a candidate against.
 - **Combinations**: sequential after parity-repair failure; each attempt
@@ -1073,17 +1074,72 @@ faithful stand-in for a drive with no C2). The AccuDisc side supplies the
 relative signals (C2, Q-health, the status map); cdda2img supplies the absolute
 gates (AR v1/v2, CTDB CRC + parity) and the disc geometry.
 
+> **Every ladder in this Part is session-scoped (2026-07-25).** The admitted-speed
+> ladders recorded in §12.2–§12.7 are written as though they were properties of a
+> (drive, disc) pair. They are not: the PX-716A gave `[32, 24, 8, 4]` on ABBA *Gold*
+> in July, `[8, 4]` on the same disc on 2026-07-25, and `[32, 24, 8, 4]` again the
+> next day with a tray open/close in between. Three ladders, one drive, one disc.
+>
+> AccuDisc's mechanism for this — a hypothesis from one drive, not a finding — is that
+> the PX-716A pins a per-disc quality ceiling **at drive init**, so a tray cycle
+> re-inits and can pick a different ceiling. It predicts the observation and predicts
+> the ladder should be stable *within* a session. run6's 20 cells were one session with
+> no tray cycle and held a flat 32× governor ceiling throughout, which is consistent —
+> one session on one drive, not a confirmation.
+>
+> The data are not relabelled, because a one-drive hypothesis is not grounds for
+> rewriting a table. But no ladder here should be read as reproducible on a later
+> session, and none may be cached, shipped in a table, or asserted in a test.
+
 ### 12.2 Disc coverage
 
 | Disc | Speeds | Rungs | C2 | Damage profile | Result |
 |------|--------|-------|----|----|--------|
 | ZZ Top | 40,32,24,16,8,4 | R0–R4 | on | clean | 36 rows, Q 0.998–0.999, 0 C2, AR/CTDB pass all speeds, no cliff |
 | ABBA *Gold* | 32,24,8,4 | R0–R4 | on | clean-ish | R1 cut C2 58→2 at +0 s (damage-proportional rescue) |
+| ABBA *Gold* | 32,24,8,4 | ctdb + ctdb-noc2, `--passes 3` | on | **needs parity repair** | the backfill — §12.2.1 |
 | Tracy Chapman | 40,32,24,8,4 | R0–R4 | **off** | — | `spans=0` at every speed — C2 off = no localization surface |
 | Tracy Chapman | 40,32,24,8,4 | R0–R4 + ctdb + ctdb-noc2 | on | localized, **intermittent** | the full matrix — §12.3 |
 
-**Gap:** ZZ Top and ABBA predate the ctdb rungs; Tracy is the only disc with full
-coverage. A fair cross-disc CTDB comparison needs a backfill pass on both (deferred).
+**Remaining gap:** ZZ Top still predates the ctdb rungs (needs a disc swap; not urgent —
+it is the clean control and the least likely to exercise parity). ABBA's backfill landed
+2026-07-25 as run6 and is below.
+
+#### 12.2.1 ABBA *Gold* CTDB backfill (run6, 2026-07-25)
+
+20 cells: `ctdb` + `ctdb-noc2` across the disc-bound ladder `[32, 24, 8, 4]`, three
+whole-disc baseline passes per speed, `--read-offset 30`, drive held under
+`flock /var/tmp/sr0.lock` throughout. ~2 h 40 m.
+
+| speed | Q yield ×3 | `ar_v2` ×3 | `ctdb` | `ctdb-noc2` |
+|---|---|---|---|---|
+| 32× | 0.478 / 0.478 / 0.478 | F F F | pass=F repaired=**F** | pass=F repaired=**F** |
+| 24× | 0.992 / 0.992 / 0.992 | F F F | pass=F repaired=**F** | pass=F repaired=**F** |
+| 8× | 0.992 / 0.982 / 0.992 | F **T** **T** | pass=F repaired=**T** | pass=F repaired=**T** |
+| 4× | 0.965 / 0.965 / 0.965 | F F F | pass=F repaired=**T** | pass=F repaired=**T** |
+
+`repaired=True` means the CTDB **checksum gate failed and the parity repair then
+succeeded** — verified through the AR double-gate, so it is a real recovery, not an
+unchecked splice.
+
+**This disc is not "clean-ish".** The old row's damage profile was inferred from a rung
+set that could not attempt parity. Corrected: ABBA *Gold* **requires** parity repair,
+**gets** it at 8× and 4×, and is **unrecoverable at 24× and 32×** — those captures are
+past RS capacity, not merely slower. That is a materially different status, and it is
+the answer to a question the pre-backfill table was shaped not to ask.
+
+Three further results from the same run:
+
+1. **C2-assisted and error-only parity agree at every speed.** `ctdb` and `ctdb-noc2`
+   returned identical verdicts in all four cells. On this disc the C2 bitmap neither
+   helps nor hurts the repair — consistent with §12.3's Tracy finding that error-only
+   was sufficient at that damage level, now reproduced on a second disc.
+2. **The high-rung AR failures are a speed characteristic, not degradation.** run1,
+   weeks earlier, recorded the same per-speed pattern — `ar_v2` False at 32× and 24×,
+   True at 8×, False at 4×, including the non-monotonicity. A cross-week repeat over
+   four speeds rules out damage accumulated in between.
+3. **Q health did not predict capture quality** — at 8× the median-Q pass failed AR
+   while the lowest-Q pass passed. See §12.8; that finding came out of this run.
 
 > **Corrected 2026-07-25:** the parenthetical "no CTDB parity data for either" was
 > wrong for ABBA *Gold* — it is in CTDB with parity (entry 829896, confidence 1430,
