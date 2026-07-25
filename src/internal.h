@@ -64,6 +64,11 @@ void adsc_inquiry_normalize(const char *src, char *dst, size_t cap);
 accudisc_uncap_state adsc_uncap_classify(const char *vendor,
                                          const char *product, unsigned max_x);
 
+/* The uncap's state from authoritative sources only (this handle set it, or an
+ * attached driver says so) — ON, OFF or UNKNOWN, never LIKELY_ON. Costs no MODE
+ * SENSE, so the read engine can consult it per read; the full probe cannot. */
+accudisc_uncap_state adsc_uncap_authoritative(accudisc_device *dev);
+
 void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...);
 
 #endif /* ADSC_INTERNAL_H */

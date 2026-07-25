@@ -84,6 +84,65 @@ int main(void)
     check("NULL vendor", NULL, "DVDR   PX-716A", 48, ACCUDISC_UNCAP_UNKNOWN);
     check("NULL product", "PLEXTOR", NULL, 48, ACCUDISC_UNCAP_UNKNOWN);
 
+    /* --- the value the read-engine refusal actually keys on -----------------
+     *
+     * accudisc_read_cdda refuses on adsc_uncap_authoritative(dev) == ON, so a
+     * polarity slip here would disable the guard (or refuse every subchannel
+     * read) without any test above noticing. Exercisable with no hardware: with
+     * drv == NULL, source 2 returns ERR_UNSUPPORTED before touching the
+     * transport, so a zeroed handle reaches only source 1.
+     *
+     * What this still does NOT cover is the end-to-end refusal returning
+     * ACCUDISC_ERR_UNSAFE_COMBINATION from a real read — that needs a drive and
+     * is the outstanding hardware item. */
+    struct {
+        int set;
+        accudisc_uncap_state want;
+        const char *what;
+    } auth[] = {
+        { 0,  ACCUDISC_UNCAP_UNKNOWN, "handle untouched, no driver -> UNKNOWN" },
+        { 1,  ACCUDISC_UNCAP_ON,      "we set it on -> ON (refusal fires)" },
+        { -1, ACCUDISC_UNCAP_OFF,     "we set it off -> OFF (refusal silent)" },
+    };
+
+    for (size_t i = 0; i < sizeof(auth) / sizeof(auth[0]); i++) {
+        struct accudisc_device d;
+        accudisc_uncap_state got;
+
+        memset(&d, 0, sizeof(d)); /* no driver, no transport touched */
+        d.uncap_set = auth[i].set;
+        got = adsc_uncap_authoritative(&d);
+
+        if (got != auth[i].want) {
+            printf("FAIL %-46s got %s, want %s\n", auth[i].what, name(got),
+                   name(auth[i].want));
+            fails++;
+        } else {
+            printf("ok   %-46s %s\n", auth[i].what, name(got));
+        }
+    }
+
+    /* The authoritative query must never invent the inferred value — that is
+     * source 3's, and returning it here would make the read engine refuse on
+     * an inference, which is precisely the design decision being avoided. */
+    {
+        struct accudisc_device d;
+        int leaked = 0;
+        for (int s = -1; s <= 1; s++) {
+            memset(&d, 0, sizeof(d));
+            d.uncap_set = s;
+            if (adsc_uncap_authoritative(&d) == ACCUDISC_UNCAP_LIKELY_ON)
+                leaked = 1;
+        }
+        if (leaked) {
+            printf("FAIL %-46s returned LIKELY_ON\n",
+                   "authoritative never yields LIKELY_ON");
+            fails++;
+        } else {
+            printf("ok   %-46s\n", "authoritative never yields LIKELY_ON");
+        }
+    }
+
     /* The error the guard returns must have a real message: a caller printing
      * "unknown error" cannot act on it, which defeats a guard whose whole
      * purpose is to explain a refusal. */

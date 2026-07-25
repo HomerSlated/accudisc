@@ -357,9 +357,12 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
      * impose. The caller has accudisc_speed_uncap_probe and can set policy.
      * See API_PLAN §9.2 — the hole is reported, deliberately, not closed. */
     if (req->sub != ACCUDISC_SUB_NONE && !req->allow_unsafe) {
-        accudisc_uncap_state u;
-        if (accudisc_speed_uncap_probe(dev, &u, NULL) == ACCUDISC_OK &&
-            u == ACCUDISC_UNCAP_ON) {
+        /* The authoritative-only query, not the full probe: this runs at the
+         * head of every subchannel read, and the full probe would issue a MODE
+         * SENSE(10) to compute a LIKELY_ON/UNKNOWN that cannot change the
+         * outcome here. No extra drive command on the hot path. */
+        accudisc_uncap_state u = adsc_uncap_authoritative(dev);
+        if (u == ACCUDISC_UNCAP_ON) {
             adsc_dev_log(dev, "refusing subchannel read: the vendor read-speed "
                               "uncap is on and corrupts Q on inner/mid tracks");
             return ACCUDISC_ERR_UNSAFE_COMBINATION;

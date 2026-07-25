@@ -77,7 +77,7 @@ What *is* owed: a mapping table in `cli-machine-interface.md` so binding authors
 reproduce equivalent **semantics** (e.g. "`rc > 0` from `accudisc_write` is the
 exit-3 condition") without reproducing the mechanism.
 
-## 4. Phase 1 — the two silent-failure guards `[P1]` — **LANDED 2026-07-25**
+## 4. Phase 1 — the two silent-failure guards `[P1]` — **WRITTEN 2026-07-25, refusal unexercised**
 
 Highest value, smallest change, no hardware needed to write (hardware needed to
 confirm). Do these first and independently; they are useful even if the rest of
@@ -95,9 +95,24 @@ the plan is never executed.
 | CLI warning re-sourced from the probe | `cli/main.c` |
 | 15 cases, no hardware | `tests/test_uncap.c` |
 
-Both guards are written and the suite is green at 28/28. **Neither has been
-confirmed against the drive** — that needs a Plextor with the uncap actually
-toggled, and is the one outstanding item.
+**Accurate status, because "LANDED" flatters it:** both guards are written and
+the suite is green at 28/28, and the *decision* each keys on is tested —
+`adsc_uncap_classify` over the whole table, `adsc_uncap_authoritative` over all
+three handle states including that it never yields `LIKELY_ON`.
+
+**The end-to-end refusal has never executed.** Nothing has yet made
+`accudisc_read_cdda` return `ACCUDISC_ERR_UNSAFE_COMBINATION`. It cannot be
+reached device-free — `main()` opens the device before dispatch, so the CLI's
+own `--uncap` + `--sub` interlock is equally unreachable from
+`tests/cli_surface.sh` — and reaching it needs a Plextor with the uncap actually
+toggled. That is the one outstanding item, and until it is done "the guard
+works" is an inference from its parts, not an observation.
+
+A hot-path note that shaped the code: the engine calls
+`adsc_uncap_authoritative`, not `accudisc_speed_uncap_probe`. The full probe
+issues a MODE SENSE(10), and it runs at the head of *every* subchannel read; the
+inferred state it would compute cannot change the refusal, so the split keeps
+the guard free of any extra drive command.
 
 ### 4.1 SpeedRead + subchannel
 

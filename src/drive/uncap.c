@@ -86,36 +86,49 @@ accudisc_uncap_state adsc_uncap_classify(const char *vendor,
     return ACCUDISC_UNCAP_UNKNOWN; /* model not in the table: not "off" */
 }
 
+/* Sources 1 and 2 only — the two that can yield an authoritative answer, and
+ * the two that cost no MODE SENSE. Split out because accudisc_read_cdda calls
+ * this on every subchannel read: the read engine refuses only on an
+ * authoritative ON, so computing the *inferred* state there would be a drive
+ * command issued into the hot path for a value that cannot change the outcome.
+ *
+ * Yields ON, OFF, or UNKNOWN. Never LIKELY_ON — that is source 3's to give. */
+accudisc_uncap_state adsc_uncap_authoritative(accudisc_device *dev)
+{
+    int on = 0;
+
+    /* 1. We set it ourselves through this handle. No driver needed, no
+     *    inference: whatever the drive was doing before, we know what we did.
+     *    Deliberately survives accudisc_driver_detach — that is the point of
+     *    it. Detaching a driver does not un-set a persistent drive setting. */
+    if (dev->uncap_set != 0)
+        return dev->uncap_set > 0 ? ACCUDISC_UNCAP_ON : ACCUDISC_UNCAP_OFF;
+
+    /* 2. A driver is attached and will answer authoritatively. Returns
+     *    ERR_UNSUPPORTED with no driver, which leaves us at UNKNOWN. */
+    if (accudisc_speed_uncap_get(dev, &on) == ACCUDISC_OK)
+        return on ? ACCUDISC_UNCAP_ON : ACCUDISC_UNCAP_OFF;
+
+    return ACCUDISC_UNCAP_UNKNOWN;
+}
+
 int accudisc_speed_uncap_probe(accudisc_device *dev,
                                accudisc_uncap_state *state, unsigned *max_x)
 {
     unsigned max_kbps = 0, mx = 0;
-    int on = 0;
 
     if (!dev || !state)
         return ACCUDISC_ERR_INVAL;
 
-    *state = ACCUDISC_UNCAP_UNKNOWN;
     if (max_x)
         *max_x = 0;
-
-    /* 1. We set it ourselves through this handle. No driver needed, no
-     *    inference: whatever the drive was doing before, we know what we did. */
-    if (dev->uncap_set != 0) {
-        *state = dev->uncap_set > 0 ? ACCUDISC_UNCAP_ON : ACCUDISC_UNCAP_OFF;
-        /* Fall through to read max_x for the caller's benefit, but the state
-         * is already decided and page 2A cannot overrule it. */
-    }
-
-    /* 2. A driver is attached and will answer authoritatively. */
-    if (*state == ACCUDISC_UNCAP_UNKNOWN &&
-        accudisc_speed_uncap_get(dev, &on) == ACCUDISC_OK)
-        *state = on ? ACCUDISC_UNCAP_ON : ACCUDISC_UNCAP_OFF;
+    *state = adsc_uncap_authoritative(dev);
 
     /* 3. Driver-free inference from the reported ceiling. accudisc_get_speed
      *    issues a fresh MODE SENSE(10) on every call rather than caching at
      *    open (src/device.c), which is what lets this see state a prior session
-     *    left behind. */
+     *    left behind. Read it even when the state is already settled, because
+     *    the caller asked for max_x. */
     if (accudisc_get_speed(dev, &max_kbps, NULL) == ACCUDISC_OK)
         mx = max_kbps / KBPS_PER_X;
     if (max_x)
