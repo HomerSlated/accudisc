@@ -996,14 +996,28 @@ rests on.
 > tight mode", so the audit's tightness is partly selection and "reproduces to four
 > significant figures" is weaker evidence than it read as when written.
 >
-> What survives is still substantial. Tracy's figure rests on 8 passes (4 speeds ×
-> 2 invocations) all landing tight. If a disturbed pass occurs independently with
-> probability *q*, that outcome has probability (1−*q*)⁸ — so the data exclude
-> *q* ≥ 0.31 at the 5 % level and *q* ≥ 0.25 at 10 %. The disturbed mode is
-> therefore *rare on that disc*, which is what the static-property argument needs.
-> But ABBA *Gold* at 8× showed 1 disturbed pass in 3 (*q* ≈ 0.33), right at that
-> boundary — so the rate is disc- and speed-specific and must not be assumed low
-> elsewhere.
+> How much survives depends on the unit, and the first version of this note got the
+> unit wrong. If a disturbed pass occurs independently with probability *q*, then
+> *n* consecutive tight passes has probability (1−*q*)ⁿ, and the bound is:
+>
+> | *n* | excluded at 5 % | at 10 % |
+> |---|---|---|
+> | 8 (Tracy, pooled over 4 speeds × 2 invocations) | *q* ≥ 0.31 | *q* ≥ 0.25 |
+> | 3 (`--passes 3`) | *q* ≥ 0.63 | *q* ≥ 0.54 |
+> | **2 (one audit cell)** | ***q* ≥ 0.78** | *q* ≥ 0.68 |
+>
+> The pooled *n* = 8 figure is **not** the applicable one. Pooling assumes a single
+> *q* across all four speeds, and §12.8 measures the opposite on the same afternoon:
+> ABBA ran 0/3 disturbed at 32×, 0/3 at 24×, and 1/3 at 8×. *q* is a (disc, speed)
+> cell property, near zero at the high rungs and ≈ 0.33 at 8× — so pooling averages
+> over precisely the variation being estimated.
+>
+> The audit's claim is per-cell ("every repeated (disc, speed) cell reproduces to
+> within 0.04 pp"), so the per-cell *n* = 2 row is the one that applies:
+> **no individual cell in the 41-row audit is constrained below *q* ≈ 0.78.** A cell
+> with ABBA's measured 8× rate of *q* ≈ 0.33 shows two tight passes 44 % of the time.
+> What the pooled figure does support is narrower and worth keeping: Tracy's *average*
+> disturbed rate across its four speeds is ≲ 0.31.
 >
 > This does **not** reopen the contention hypothesis. Bimodality is not contention:
 > the disturbed pass recurs within a single session with nothing else changed, and
