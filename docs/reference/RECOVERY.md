@@ -965,6 +965,42 @@ offset +30, Accurate Stream = yes). Data: `private/bench/runs/run1/` (per-disc,
 progress, 40 rows, 2026-07-19). **Provisional** — the harness is still maturing;
 read §12.5 before drawing method conclusions.*
 
+### 12.0 Drive interlock — a confound that cannot be detected after the fact
+
+**Drive interlock (2026-07-25).** Two projects share this machine's optical drive.
+A contended read and an intrinsically poor disc produce the same signature —
+collapsed Q yield, clean audio, passing checksums — so concurrent access is a
+confound that cannot be detected after the fact. Measured once: 99.17 % → 13.43 %
+Q yield, +59 % wall, C2 unchanged at 0, AR v2 passing throughout. All `/dev/sr0`
+access is now serialised with `flock /var/tmp/sr0.lock`. Figures recorded before
+this date were not taken under the lock; a cross-run audit of all 41 baseline Q
+measurements found every repeated (disc, speed) cell reproducing to within
+0.04 pp except the one known contended run, so the historical figures are
+retained as sound.
+
+That audit bounds *large* contention only: an 86-point collapse cannot hide in
+replicates agreeing to 0.04 pp. It does not exclude sub-percent effects, which no
+measurement here could detect.
+
+The audit is also positive evidence in the other direction. Tracy Chapman yields
+98.0 % at 8×, 24×, 32× and 40× in two independent invocations four hours apart,
+agreeing to ±0.04 pp. A contention artefact does not reproduce to four significant
+figures across separate runs — so that reproducibility is a *static* property of
+the disc, which is what the irreducible-vs-transient split in the recovery model
+rests on.
+
+> **Note on this file.** `docs/reference/RECOVERY.md` is one document hardlinked
+> into both the cdda2img and AccuDisc repos — one inode, two paths, and git
+> enforces nothing about the relationship. Most editors save atomically (write
+> temp, rename over target), which replaces the directory entry with a **new
+> inode** and silently severs the link; `sed -i` does the same. The two repos then
+> hold look-alike files that diverge from the next edit onward. Edit in place
+> (`cat new > RECOVERY.md`) and verify immediately with
+> `stat -c '%i %h' docs/reference/RECOVERY.md` — the link count must be **2**.
+> If it reads 1 the link is severed: reconcile, `ln -f` from one side, and
+> re-verify before either side commits. (It was severed once, found 2026-07-25;
+> the copies had diverged by 45 lines.)
+
 ### 12.1 What the bench does
 
 Per swept speed it takes **one whole-disc baseline capture**, clusters the
@@ -986,9 +1022,32 @@ gates (AR v1/v2, CTDB CRC + parity) and the disc geometry.
 | Tracy Chapman | 40,32,24,8,4 | R0–R4 | **off** | — | `spans=0` at every speed — C2 off = no localization surface |
 | Tracy Chapman | 40,32,24,8,4 | R0–R4 + ctdb + ctdb-noc2 | on | localized, **intermittent** | the full matrix — §12.3 |
 
-**Gap:** ZZ Top and ABBA predate the ctdb rungs (no CTDB parity data for either);
-Tracy is the only disc with full coverage. A fair cross-disc CTDB comparison needs
-a backfill pass on both (deferred).
+**Gap:** ZZ Top and ABBA predate the ctdb rungs; Tracy is the only disc with full
+coverage. A fair cross-disc CTDB comparison needs a backfill pass on both (deferred).
+
+> **Corrected 2026-07-25:** the parenthetical "no CTDB parity data for either" was
+> wrong for ABBA *Gold* — it is in CTDB with parity (entry 829896, confidence 1430,
+> npar 8). What actually happened is that CTDB repair was *structurally impossible*
+> on that disc until the domain fix below, so it looked like absent data.
+>
+> **The ABBA *Gold* CTDB domain defect.** CTDB's parity and per-track CRCs are
+> computed over `[first-track INDEX 01, lead-out)`; our PCM spans `[LBA 0, lead-out)`.
+> On the ~all discs whose track 1 starts at LBA 0 these coincide. ABBA *Gold* has a
+> 33-frame program-area pre-gap, so they differed, with two consequences:
+> `ctdb_repair.track_crc_at` derived `laststride` from the PCM buffer, over-trimming
+> the *last* track's CRC window by 1,764 sample-pairs — outside the ±700 sweep, so
+> the CTDB gate could never pass; and `ctanalyse` silently ignored `--toc`, shifting
+> its RS grid by 3 whole strides and emitting 7,375 confident-but-wrong corrections
+> on a provably perfect rip. The CTDB CRC gate rejected them, so no data was harmed,
+> and the speed ladder recovered the disc instead.
+>
+> Fixed 2026-07-25: `laststride` now comes from `(bounds[-1] - bounds[0])`,
+> `ctanalyse` honours `--toc`, `verify_ctdb` reports per-track roles
+> (unfixed / regressed / abstained), the decline reason reaches PROV
+> (`ctdb_declined`), and a failed erasure-assisted run now falls back to error-only.
+> Verified end-to-end on this disc: 5 deliberately damaged words in track 5 repaired
+> bit-exactly through both gates. Full analysis:
+> `private/research/incoming/ctdb-failure-abba-gold-20260725.md`.
 
 ### 12.3 The Tracy full matrix (run2)
 
@@ -1079,6 +1138,22 @@ concrete reasons:
 1. **One damaged disc, intermittently damaged.** ZZ Top and ABBA are clean; Tracy
    manifests damage on only 2 of 5 passes. R0–R4 were therefore exercised on
    exactly two dirty baselines, **n=1 each**.
+
+   > **Corrected 2026-07-25: ABBA *Gold* is not clean.** Four independent lines of
+   > evidence, none of which were available when this was written: §12.2's own run1
+   > row records R1 cutting C2 spans 58→2 (a clean disc has no 58); run3 makes ABBA
+   > t19 the *hardest* target in the whole bench (n=47 flagged sectors, the sole cell
+   > where only `track-ladder` scored 3/3); the 2026-07-25 rip failed AR on tracks 1
+   > and 19 and needed the speed ladder to recover both; and the PX-716A's read
+   > governor now throttles every request ≥8× down to 8× **on this disc** — the drive
+   > itself classifies the media as degraded before we read a sector.
+   >
+   > This *strengthens* the section's conclusion rather than weakening it. The claim
+   > was "one damaged disc"; the truth is two, but ABBA's damage was never put through
+   > R0–R4 (it predates the ctdb rungs — §12.2's gap), so the count of dirty baselines
+   > the audio ladder was actually measured on is unchanged at two. What changes is
+   > the backfill's value: it is not a tidiness exercise, it is the second damaged
+   > disc the dataset needs.
 2. **n=1 against a stochastic process.** §3.5's own discipline: only the randomized
    `--characterize` mode (Wilson CIs) can attribute an effect to a method. "R0–R4
    recovered nothing" is within noise, not a conclusion.
