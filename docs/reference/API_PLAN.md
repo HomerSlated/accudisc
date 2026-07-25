@@ -86,7 +86,7 @@ the plan is never executed.
 ### 4.1 SpeedRead + subchannel
 
 `accudisc_read_cdda` must refuse `sub != ACCUDISC_SUB_NONE` while the vendor
-read-speed uncap is on. Today the CLI interlocks at `cli/main.c:1543`; the
+read-speed uncap is on. Today the CLI interlocks at `cli/main.c:1502`; the
 library states nothing, so a caller doing `accudisc_speed_uncap_set(dev, 1)`
 then reading with `ACCUDISC_SUB_RAW` gets a corrupted Q subchannel on inner/mid
 tracks — **measured 0% Q-CRC** — with a success return and no warning. See
@@ -95,6 +95,15 @@ tracks — **measured 0% Q-CRC** — with a success return and no warning. See
 New error: `ACCUDISC_ERR_UNSAFE_COMBINATION`, and an explicit opt-out field in
 `accudisc_read_req` for a caller who genuinely wants it (diagnostics, our own
 measurement runs).
+
+**Scope grew when §9.1 was resolved.** The uncap is persistent drive state, so
+"is it on?" is not always answerable with certainty, and a guard that refuses on
+a guess is worse than one that reports. This guard therefore ships as *two*
+pieces: a new `accudisc_speed_uncap_probe` returning a four-valued
+`accudisc_uncap_state`, and a refusal in `read_cdda` that fires only on the
+authoritative values. See §9.1–9.2 for the resolution order, the per-model stock
+ceiling table that replaces the CLI's hardcoded `> 40`, and the residual hole
+that is deliberately reported rather than closed.
 
 ### 4.2 Read-only fd + vendor opcodes
 
@@ -365,24 +374,105 @@ note recording the hazard and its one measured magnitude, not a caveat on the
 numbers — carrying an explicit scope limit that the audit bounds *large*
 contention only and cannot exclude sub-percent effects.
 
-## 9. Open questions — resolve before phase 1
+## 9. Open questions — **RESOLVED 2026-07-25**
 
-1. **How does guard 4.1 detect the uncap without a driver?**
-   `accudisc_speed_uncap_get` is driver-gated and returns `ERR_UNSUPPORTED`
-   with no driver attached — but the uncap is *persistent drive state* a prior
-   session may have left on. The CLI has a driver-free heuristic (PLEXTOR +
-   mode-page-2A max read > 40×) at `cli/main.c:1560`. Does the guard use the
-   driver query, the heuristic, or both? A guard that only fires when a driver
-   happens to be attached is a guard with a hole.
-2. **Refuse or warn?** Refusing is safer and is the stated intent, but it is a
-   behaviour change. Proposal: refuse by default, explicit opt-out field in
-   `accudisc_read_req`. Confirm before building.
-3. **Does `accudisc_plan_read_range` own the `--force` semantics**, or does the
-   caller skip the guard itself? Proposal: it owns it, via `spec.force`, so
-   every consumer gets the same override with the same meaning.
-4. **Is `subq_indices` the right final name**, given a future scanned value?
-   `subq_indices=none|scanned` reads well; alternatives were `index_src=`.
-   Locked for now — cheap to revisit while the fork is pinned.
+### 9.1 — How does guard 4.1 detect the uncap without a driver?
+
+**Both, keyed — but they answer with different authority, and the design must
+not flatten that.** Three sources, consulted in order:
+
+| # | source | authority | yields |
+|---|---|---|---|
+| 1 | this handle called `accudisc_speed_uncap_set(dev, 1)` | certain | `ON` |
+| 2 | driver attached → `speed_uncap_get` | certain | `ON` / `OFF` |
+| 3 | no driver → INQUIRY + mode page 2A `max_x` vs a per-model stock ceiling | inference | `LIKELY_ON` / `OFF` / `UNKNOWN` |
+
+```c
+typedef enum {
+    ACCUDISC_UNCAP_OFF = 0,   /* authoritative */
+    ACCUDISC_UNCAP_ON,        /* authoritative */
+    ACCUDISC_UNCAP_LIKELY_ON, /* max_x above this model's verified stock ceiling */
+    ACCUDISC_UNCAP_UNKNOWN,   /* no driver, model not in table, or query failed */
+} accudisc_uncap_state;
+
+ACCUDISC_API int accudisc_speed_uncap_probe(accudisc_device *dev,
+                                            accudisc_uncap_state *state,
+                                            unsigned *max_x);
+```
+
+Source 1 needs a tri-state field on `struct accudisc_device`, exactly like the
+existing `dev->streaming` (`src/internal.h:19-21`). It closes the commonest real
+path — a caller that sets the uncap itself — with **certainty and no heuristic
+at all**, which is the case source 3 was being asked to cover and should not be.
+
+**Source 3 must key the threshold on the model, not hardcode 40×.** The CLI's
+current `mk / 176 > 40` (`cli/main.c:1518`) is one drive's stock ceiling
+promoted to a universal constant: `FEATURES.md:16` verifies the 40× → 48×
+transition on the **PX-716A specifically**, and we own one drive. On any Plextor
+whose stock CD read ceiling exceeds 40×, a bare `> 40` fires with SpeedRead off.
+Comparing against `stock_read_x(product)` instead collapses that false-positive
+population to "models not in the table", which resolve `UNKNOWN` and are
+therefore *reported as unknown* rather than silently misjudged.
+
+The table lives in `src/drive/` — factual hardware data, the same class as read
+offsets, which CLAUDE.md explicitly permits in core. **Entry rule: a row exists
+only where the uncap transition has been verified in both directions on that
+model.** That rule is what makes "`max_x` at stock ⇒ `OFF`" sound rather than
+hopeful. One row today (PX-716A: stock 40×, uncapped 48×); everything else
+`UNKNOWN`. A one-row table that admits its ignorance beats a bare `> 40`
+pretending to be general.
+
+Verified while resolving this: `accudisc_get_speed` issues a fresh MODE SENSE(10)
+on every call (`src/device.c:244`) — nothing is cached at open — so the probe
+does see an uncap that a prior session left on after our handle was created,
+which is the entire reason source 3 exists.
+
+### 9.2 — Refuse or warn?
+
+**Resolved by the split above: refuse on certainty, report on inference.**
+
+`accudisc_read_cdda` returns `ACCUDISC_ERR_UNSAFE_COMBINATION` when
+`sub != ACCUDISC_SUB_NONE` and the state is **authoritatively** `ON` (sources 1–2),
+unless the caller sets the opt-out field in `accudisc_read_req`. On `LIKELY_ON`
+and `UNKNOWN` it proceeds.
+
+Refusing on `LIKELY_ON` would convert a silent-bad-data risk into a hard
+inability to read subchannel at all on an unrecognised drive, with no diagnosis
+available to the caller — a worse failure, and one we cannot justify from a
+one-row table. Proceeding while making the state queryable hands the caller the
+fact and lets it set policy, which is where §3 already puts policy and human
+diagnostics.
+
+**State the residual hole rather than papering over it: on `LIKELY_ON` the
+library does not refuse. The hole is reported, not closed.** The application
+closes it — the CLI keeps its hard refusal on *intent* (`cli/main.c:1502`, which
+needs no probe: the request itself is contradictory) and its warning on *state*
+(`cli/main.c:1513-1526`), with the latter re-sourced from the probe instead of
+its own inline `drive_identify` + `get_speed`.
+
+**The advisory channel is the probe, not `accudisc_read_stats`.** The CLI needs
+this *before* the read — it warns, then reads anyway — and `read_stats` only
+exists afterwards. One pre-flight function, matching §5.2's pure-function
+preference.
+
+### 9.3 — Does `accudisc_plan_read_range` own `--force`?
+
+**Yes**, via `spec.force`, as proposed. Every consumer then gets the same
+override with the same meaning, and the override is visible in the plan rather
+than applied behind it.
+
+### 9.4 — Is `subq_indices` the right final name?
+
+**Yes, locked.** `subq_indices=none|scanned` still reads correctly against a
+future scanned value, and the fork is pinned so it stays cheap to revisit.
+
+### 9.5 — What this costs the phase-1 framing
+
+The resolution adds public surface §4 did not anticipate: one enum, one probe
+function, one `accudisc_read_req` field. That is defensible — the probe is
+precisely what makes the §9.1 hole reportable instead of hidden — but §4.1 has
+been updated to match, so the phase description and the design do not diverge.
+Still no hardware needed to write; hardware confirmation waits on the drive.
 
 ## 10. Effort estimate
 
@@ -395,7 +485,7 @@ params, disc-state check, cue-sheet builder, `.toc` parser and full engine.
 | piece | estimate |
 |---|---|
 | Phase 0 seatbelt | ~150–200 lines |
-| Phase 1 guards + tests | ~80–120 lines |
+| Phase 1 guards + tests | ~180–240 lines (was ~80–120 before §9.1 added the probe, the `accudisc_uncap_state` enum and the stock-ceiling table) |
 | Phase 2 helpers in `src/`+`include/` | ~450–550 lines |
 | `cli/main.c` rewired | shrinks ~250–350 |
 | new tests (codebase runs ~1:3 test:source) | ~150–250 lines |
@@ -411,7 +501,8 @@ resolved.
 
 ```
 phase 0   golden-output test + constants-location test      DONE 2026-07-25
-phase 1   guards 4.1, 4.2                                   (no CLI change)
+phase 1   guards 4.1, 4.2 + uncap probe (§9.1)               (CLI rewired:
+          its inline identify+get_speed heuristic re-sources from the probe)
 phase 2   5.4 uncap push/pop   -> CLI rewired, same commit   (mechanical)
           5.3 census cadence   -> CLI rewired, same commit   (mechanical)
           5.2 range resolution -> CLI rewired, same commit   (needs media)
