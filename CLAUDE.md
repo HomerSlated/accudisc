@@ -92,9 +92,32 @@ enforce the link: edit once, but commit on both sides.
 > **Editing it is fragile.** Any editor that saves atomically (write temp +
 > rename — most of them, including agent Edit tools) replaces the directory
 > entry with a *new inode* and silently severs the link, leaving the two repos
-> diverged. Either edit in place (`cat new > file`, `sed -i`) or re-link
-> afterwards (`rm A && ln B A`). **Always verify after editing:**
-> `stat -c '%i %h' docs/reference/RECOVERY.md` — link count must be 2.
+> diverged. **`sed -i` does this too** — it renames, it does not edit in place,
+> despite the flag's name (measured: inode moves). Editing in place means a
+> *truncate-and-rewrite* of the existing inode:
+>
+> ```sh
+> sed 's/old/new/' RECOVERY.md > /tmp/x && cat /tmp/x > RECOVERY.md
+> ```
+>
+> **Verify inode identity after every edit by either side — not link count:**
+>
+> ```sh
+> A=docs/reference/RECOVERY.md; B=../cdda2img/docs/reference/RECOVERY.md
+> [ "$(stat -c %i "$A")" = "$(stat -c %i "$B")" ] && cmp -s "$A" "$B" \
+>   && echo OK || echo SEVERED
+> stat -c %h "$A"   # informational; 3 is fine, it means a third name exists
+> ```
+>
+> `links == 2` is the *wrong property* — it counts names rather than testing
+> whether these two names are the same file, so a backup made with `ln` or a
+> third repo taking the document makes a correct link report as severed. Never
+> pin a literal inode number either; it moves on every edit.
+>
+> **To repair, do not `rm A && ln B A`** — that silently destroys whatever was at
+> `A`, which may be the other project's unmerged work. Diff first, merge anything
+> unique, then relink and re-verify. cdda2img's `tools/relink_recovery_md.sh`
+> does exactly this and refuses by default.
 
 ## Build
 
