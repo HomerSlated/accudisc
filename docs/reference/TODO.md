@@ -1281,8 +1281,50 @@ whether the pit is readable, and cdda2img's own five captures already answer it:
 this drive reads 113043 correctly at 24x, 8x and 4x. A second drive would only
 confirm generality. Not worth the time.
 
-**Still unexplained, and do not let the above close it:** the +1 asymmetry. Nine
-of nine flags at N+1, never N−1. None of the speed-stability result touches it.
+**`MAP_OK` on the corrupt sector CONFIRMED 9/9** (cdda2img §94.1): every one of
+the nine reads `0x01` at the corrupt LBA and RECOVERED at LBA+1. Not one carries
+C2, HARD or SUSPECT. The actual errors are all wearing the state that announces
+nothing.
+
+**The +1 adjacency is not small-numbers coincidence** (§94.2): 10 RECOVERED bytes
+in 814,460 map bytes — base rate 1.2e-5 — with nine of them at exactly corrupt+1,
+and per-capture counts tracking (1/1 at 40x and 32x, 2/2 at 8x, 4/4 at 4x, 1/2 at
+24x). **Acceptance test for any eventual explanation: one event, one sector apart,
+direction never varies.**
+
+### 0b. Recovery rereads use the read mode c2lag.c measured as DIFFERENT on this drive — `[P2]`
+
+Found reading two modules against each other; independent of the +1 and of the
+speed result. `consensus()` and `c2_rescue()` both do `cache_defeat(r, lba)` then
+`read_sector(r, lba, ...)` (`engine.c:281-282`, `312-313`) — an **isolated
+single-sector read immediately after a 5000-sector seek**. Meanwhile
+`src/drive/c2lag.c:21-27` states, from live measurement on this same PX-716A:
+
+> Rereads are STREAMING WINDOW reads, not isolated single-sector reads: marginal
+> defects fire C2 while the drive streams and decode cleanly on a careful
+> post-seek single-sector read (verified live on the PX-716A — **a streaming pass
+> flagged ~40 sectors where per-sector rereads of the same LBAs flagged zero**).
+
+c2lag uses `C2LAG_RUNUP` 16 sectors of lead-in specifically to be streaming before
+it crosses the damage. So one module designed around a measured mode difference
+and the recovery path uses the mode it designed around: **delivery is a streaming
+span read, recovery is an isolated post-seek single-sector read**, and we have our
+own live evidence on this drive that the two disagree.
+
+This weakens `consensus()` a second way, on top of the speed issue: it is not only
+resampling the same speed, it is resampling in the *quieter mode* — the one that
+tends not to reproduce the defect. The condition it adjudicates ("did the
+streaming read get this sector right?") is not the condition it measures. Fix
+direction: give the recovery rereads a streaming run-up, as c2lag already does.
+
+**Still unexplained, and do not let any of the above close it:** the +1 asymmetry.
+Nine of nine flags at N+1, never N−1. Neither the speed-stability result nor 0b
+touches the direction. One speculative lead, recorded as speculation only: CIRC
+delay lines spread symbol errors along the direction of travel, so the leading
+sector of an encounter may stay within correction capacity and be silently
+miscorrected while the following one exceeds it and announces itself. **No
+measurement behind that** — testing it needs the F1/F2 frame coordinate, which
+neither side has.
 
 Discriminator requested in §bh.2, costs nothing: a uniform +1 shift never writes
 index 0, so **byte 0 of their five existing map files** decides it — `0x01` (OK)
