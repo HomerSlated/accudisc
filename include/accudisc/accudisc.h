@@ -64,13 +64,20 @@ typedef enum accudisc_err {
     ACCUDISC_ERR_NOTFOUND    = -10, /* requested data legitimately absent
                                       (MCN/ISRC/CD-Text/driver/offset) —
                                       never a transport failure */
-    ACCUDISC_ERR_UNSAFE_COMBINATION = -11 /* the request is self-defeating
+    ACCUDISC_ERR_UNSAFE_COMBINATION = -11, /* the request is self-defeating
                                       against this drive's current state and
                                       would return silently corrupt data.
                                       Never returned for a merely unusual
                                       request — only where the corruption is
                                       known and measured. Overridable per-call
                                       where the request offers a field for it. */
+    ACCUDISC_ERR_ABI         = -12 /* a caller-allocated struct declared a
+                                      `size` this library cannot honour: zero
+                                      (never initialised), or larger than this
+                                      build's, with fields set that this build
+                                      does not know. Distinct from ERR_INVAL
+                                      because it means "rebuild against this
+                                      header", not "fix your arguments". */
 } accudisc_err;
 
 /* Static human-readable name for an accudisc_err value. */
@@ -1087,7 +1094,54 @@ ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
 #define ACCUDISC_SUB_RAW  1 /* raw interleaved P-W, 96 B */
 #define ACCUDISC_SUB_Q    2 /* drive-formatted Q, 16 B */
 
+/* ---- caller-declared struct size (the ABI hazard, API_PLAN §7.1) -----------
+ * accudisc_read_req and accudisc_read_stats are caller-allocated, transparent,
+ * cross an FFI boundary, and have both grown in place — measured across this
+ * repo's own history:
+ *
+ *     accudisc_read_req    32 -> 40 -> 56 bytes
+ *     accudisc_read_stats  80 -> 104 -> 128 bytes
+ *
+ * The CLI never noticed, because it is rebuilt with the library. A binding
+ * compiled against one header and loaded against a different .so would, by
+ * running off the end of a struct — and in the worst case by reading garbage
+ * into `allow_unsafe`, silently disabling a safety guard. Well-formed data,
+ * wrong referent, nothing downstream able to tell.
+ *
+ * So each carries its own size as its first field, and the caller sets it:
+ *
+ *     accudisc_read_req   req = ACCUDISC_READ_REQ_INIT;
+ *     accudisc_read_stats st  = ACCUDISC_READ_STATS_INIT;
+ *
+ * The rules are asymmetric because the direction of the write is:
+ *
+ *   IN  (read_req, library reads): a SMALLER size than this build's is
+ *       accepted and the missing tail is treated as zero — an older caller
+ *       gets older behaviour. A LARGER size is accepted only if every byte
+ *       past this build's end is zero; a nonzero one means the caller is
+ *       asking for a feature this library does not have, and gets ERR_ABI
+ *       rather than silence.
+ *
+ *   OUT (read_stats, library writes): a SMALLER size is honoured by writing
+ *       only that many bytes. A LARGER size is ERR_ABI — the library would
+ *       have to leave counters the caller believes in unfilled, and a zero
+ *       that means "not computed" is indistinguishable from a zero that means
+ *       "none observed".
+ *
+ * A zero size is always ERR_ABI: it is what a caller that forgot the macro
+ * produces, so forgetting fails loudly on the first call instead of scribbling.
+ * The only values with a meaning are sizeof() as some released header saw it.
+ *
+ * Structs NOT carrying a size are frozen: growing one is an soname bump, and
+ * tests/test_abi.c pins their sizes so that growth cannot happen by accident.
+ * accudisc_chunk is the one that matters — the library allocates it and the
+ * sink reads it, so the hazard runs the other way. It has been 32 bytes since
+ * it was introduced. */
+#define ACCUDISC_READ_REQ_INIT   { .size = sizeof(accudisc_read_req) }
+#define ACCUDISC_READ_STATS_INIT { .size = sizeof(accudisc_read_stats) }
+
 typedef struct accudisc_read_req {
+    uint32_t size;     /* = sizeof(accudisc_read_req); see above. NOT optional */
     uint32_t lba;      /* first sector */
     uint32_t count;    /* sectors to read (> 0) */
     uint8_t c2;        /* ACCUDISC_C2_* */
@@ -1154,6 +1208,10 @@ typedef struct accudisc_chunk {
 typedef int (*accudisc_sink_fn)(void *user, const accudisc_chunk *chunk);
 
 typedef struct accudisc_read_stats {
+    uint32_t size;            /* = sizeof(accudisc_read_stats); see above.
+                               * Set it BEFORE the call even though the rest is
+                               * output — it is how the library learns how much
+                               * of your allocation it may write. */
     uint64_t sectors_read;    /* returned by the drive (excludes zero-fills) */
     uint64_t sectors_flagged; /* >= 1 C2 bit set */
     uint64_t c2_bits;         /* total fired C2 bits (real reads only) */

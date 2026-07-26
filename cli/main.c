@@ -1084,7 +1084,7 @@ static void render_map(const uint8_t *map, uint32_t count)
 
 static int cmd_read(accudisc_device *dev, int argc, char **argv)
 {
-    accudisc_read_req req = {0};
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
     struct read_ctx ctx = {0};
     const char *pcm_path = NULL, *c2_path = NULL, *sub_path = NULL;
     const char *cdg_path = NULL;
@@ -1483,7 +1483,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                     uncap_prior ? "on" : "off");
     }
 
-    accudisc_read_stats st;
+    accudisc_read_stats st = ACCUDISC_READ_STATS_INIT;
     double t0 = mono_now();
     int err = accudisc_read_cdda(dev, &req, read_sink, &ctx, &st);
     double secs = mono_now() - t0;

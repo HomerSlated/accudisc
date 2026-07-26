@@ -327,13 +327,13 @@ divergence as it happened rather than a year later.
 **Phase 0 makes the whole job faster,** by converting "re-read everything
 carefully" into "run `ctest`".
 
-## 7. Phases 3–4 — bindings, and the three questions that gate them
+## 7. Phases 3–4 — bindings, and the three questions that gate them — **RESOLVED 2026-07-26**
 
 Previously deferred by explicit decision; reopened by this audit. **Do not start
 either binding until these are settled**, because both bindings inherit the
 answers and fixing a shared design flaw twice is the avoidable cost.
 
-### 7.1 Transparent structs are an ABI hazard
+### 7.1 Transparent structs are an ABI hazard — **RESOLVED: size field, landed**
 
 `accudisc_read_req`, `accudisc_chunk` and `accudisc_read_stats` are
 caller-allocated, transparent, and carry no size or version field.
@@ -348,7 +348,68 @@ Options: leading `size` field, opaque + accessors, or an explicit "rebuild your
 binding on every 0.x bump" policy. **soname is `.so.0`, so breaking this is
 still free. It will not be later.** Decide in this phase or inherit it forever.
 
-### 7.2 The sink callback across the FFI boundary
+**Growth is measured, not assumed** — each historical header compiled and its
+`sizeof` printed:
+
+| struct | first | | | today | direction |
+|---|---|---|---|---|---|
+| `accudisc_read_req` | 32 | 40 | 56 | **56** | caller fills, library reads |
+| `accudisc_read_stats` | 80 | 104 | 128 | **136** | library writes |
+| `accudisc_chunk` | 32 | 32 | 32 | **32** | library allocates, sink reads |
+
+**33 public structs are transparent, and that is the wrong denominator.** The
+hazard needs all three of: caller-allocated, crosses the FFI boundary, *and*
+can grow. Most of the rest are fixed by an external format and cannot grow at
+all — `accudisc_track` (16 B, a Red Book TOC entry), `accudisc_q` (38 B,
+on-disc), `accudisc_sense` (4 B, SCSI), `accudisc_fulltoc_entry` (9 B).
+Widening the question to all 33 turns a decidable problem into an unbounded
+one.
+
+**Resolved: a leading `uint32_t size` on the two that grow.** Implemented in
+this phase rather than deferred to phase 4, because the fact that makes the
+break free is not "we are 0.x" — it is that **nothing outside this repo links
+the library**. cdda2img drives the *binary* (§7.3). That stops being true the
+moment the Python binding ships, and a binding written against the unsized
+struct would then have to be rewritten.
+
+The rules are asymmetric, because the direction of the write is:
+
+- **IN** (`read_req`): short is zero-extended — an older caller gets older
+  behaviour. Long is accepted only if every byte past our end is zero; a set
+  one means the caller is asking for a feature this build does not have, and
+  gets `ACCUDISC_ERR_ABI` instead of silence. (The kernel's
+  `copy_struct_from_user` model.)
+- **OUT** (`read_stats`): short is honoured by writing only that far. Long is
+  refused — the library would leave counters the caller believes in unfilled,
+  and a zero meaning *"never computed"* is indistinguishable from a zero
+  meaning *"none observed"*.
+- **Zero is always refused.** It is what a caller who forgot
+  `ACCUDISC_READ_REQ_INIT` produces, so forgetting fails on the first call.
+
+`ACCUDISC_ERR_ABI` (−12) is deliberately distinct from `ERR_INVAL`: it means
+*"rebuild against this header"*, not *"fix your arguments"* — and it is what
+makes the accept path testable device-free, since an `ERR_INVAL` from
+`accudisc_read_cdda(NULL, &req, …)` is positive evidence that the ABI layer
+accepted the struct and execution reached the checks behind it.
+
+The `size` field cost `read_req` **nothing** — it landed in existing padding,
+still 56 bytes. `read_stats` went 128 → 136.
+
+**Structs without a size field are frozen**, and `tests/test_abi.c` pins them
+with `_Static_assert` so growth is a deliberate act. `accudisc_chunk` is the
+one that matters: the library allocates it and the caller's sink reads it, so
+the hazard runs the other way and a size field would not help. It has been 32
+bytes since it was introduced.
+
+**Version drift, found while resolving this and fixed with it.** `accudisc.h`
+said `0.1.0` (and the binary printed it) while CMake built
+`libaccudisc.so.0.0.1`. A policy of "rebuild on a version bump" is
+unenforceable while a binding can ask two sources and get two answers. CMake
+now parses the version out of the installed header, and `tests/test_version.c`
+asserts the two agree — previously it compared the header's macros against
+themselves, which cannot fail.
+
+### 7.2 The sink callback across the FFI boundary — **RESOLVED: not the cost; lifetime is**
 
 `accudisc_sink_fn` fires per chunk with a pointer valid only during the call.
 
@@ -359,7 +420,38 @@ still free. It will not be later.** Decide in this phase or inherit it forever.
 
 This is the hardest part of both bindings. Prove it once.
 
-### 7.3 What a binding buys over the subprocess path
+**The stated worry is arithmetic, and the arithmetic kills it.** Chunks are
+bounded by `ADSC_MAX_XFER` (65535) and `ADSC_CHUNK_MAX` (32), so the sink fires
+far less often than "per 350k sectors" suggests:
+
+| request | `sector_len` | chunk | sink calls, 79-min disc | delivered |
+|---|---|---|---|---|
+| audio only | 2352 | 27 | 13,167 | 836 MB |
+| audio + C2 | 2646 | 24 | 14,813 | 941 MB |
+| audio + C2 + raw sub | 2742 | 23 | 15,457 | 975 MB |
+
+**10⁴ callbacks, not 10⁵–10⁶.** Against a rip measured in minutes, per-call FFI
+overhead is noise at any plausible per-call cost. No benchmark is needed to
+choose a chunk size, and none was built. The real cost is the ~1 GB that has to
+cross the boundary, which is a copy question, not a call-overhead question.
+
+**So spend the effort on the thing a benchmark cannot find: lifetime.**
+`chunk->data` is valid only during the call. A Python `memoryview` handed to
+user code and retained outlives the buffer and then reads freed memory as
+plausible PCM — well-formed, wrong referent, no exception, no C2 flag. That is
+this project's dominant failure class arriving through the FFI. Decided once,
+for both bindings:
+
+- **Python**: copy by default. Zero-copy behind an explicit opt-in, and the
+  view is *released* on return, so a stored reference raises `ValueError`
+  instead of reading freed memory. A binding that is merely documented as
+  "don't keep the buffer" has no way to enforce it.
+- **Rust**: `catch_unwind` in the `extern "C"` trampoline — unwinding across
+  the boundary is UB — returning nonzero to cancel, which the engine already
+  maps to `ACCUDISC_ERR_CANCELLED`. The borrow checker gives the lifetime rule
+  for free; Python has to be given it.
+
+### 7.3 What a binding buys over the subprocess path — **RESOLVED: streaming API, not a CLI mirror**
 
 Worth writing down, because it decides whether the binding is a thin CLI mirror
 or a richer streaming API. cdda2img drives the binary today
@@ -372,6 +464,21 @@ The genuine wins are: zero-copy PCM instead of a pipe, the status map without a
 backing file, and no line-protocol parsing. Those are real. They are not
 "the subprocess path is a hack".
 
+**Resolved, and it falls out of §7.2 rather than needing its own
+investigation.** The one thing the subprocess path structurally cannot do is
+hand the caller the PCM without copying it through a pipe — ~1 GB per disc.
+That is the binding's reason to exist, so the binding is a **streaming API**
+built around the sink, not a `subprocess.run` replacement that returns a blob.
+
+Concretely, what a binding must NOT do: shell out, re-parse
+`--progress-fd` lines, or reimplement the exit-code mapping. Those are §3
+conventions and reproducing them in-process would be recreating an IPC
+workaround inside one address space. What it MUST do: expose the sink, expose
+the status map as a buffer over `req.status_map`, and surface `accudisc_err`
+as typed exceptions — with `ACCUDISC_ERR_NOTFOUND` mapped as *absence*, never
+as failure (`cli-machine-interface.md`, exit-code table), and
+`accudisc_write`'s **positive** return kept positive.
+
 **Order: Python first, then Rust.** cdda2img is the only consumer that can
 validate parity empirically — same disc, subprocess vs binding, compare bytes.
 
@@ -383,13 +490,36 @@ message when the rewrite lands. Do not dribble it out.
 | # | change | status | breaks a parser? |
 |---|---|---|---|
 | 1 | `toc`: `pregaps=` → `subq_indices=` | **DONE 2026-07-25** | No — nothing consumed it; they derive pregaps from their own subchannel decode (`subchannel.py:673`, `subq_toc.py:106-139`) |
-| 2 | CLI behaviour through the refactor | target: **no change at all** | Must be No — that is the phase-0 test's job |
+| 2a | `pregaps`: rows that decoded before a failed boundary are now **printed** rather than discarded, so **exit 2 can carry usable stdout** | **DONE** `2f9ce4e` | **Yes, additive** — see below |
+| 2b | `cxscan`: the TOC read now precedes arming, so sample 1 no longer includes its own lead-in traffic | **DONE** `c78fd33` | No — same columns; sample 1's counters are lower and more honest |
+| 2c | Everything else through the refactor | **no change**, verified byte-identical for `info disc media features toc fulltoc text scan` | No — that is the phase-0 test's job |
 | 3 | Guard 4.1/4.2 | CLI already interlocks both; no CLI-visible change | No |
-| 4 | Bindings availability + ABI policy | phase 4 | N/A |
+| 3b | Five subcommands (`pregaps`, `c2lag`, `media`, `write`, `disc`) could always exit **3**; the machine-interface doc did not say so | **DONE 2026-07-26** `2618d23` — documented, plus `tests/exit_codes.sh` | No behaviour change — but the **contract** changed |
+| 4 | Bindings availability + ABI policy | §7.1 **resolved and landed 2026-07-26**: `size` field on `read_req`/`read_stats`, `ACCUDISC_ERR_ABI`, version single-sourced | No — library ABI only; they use the binary |
 | 5 | An unknown command exits **2**, not 1 | pinned by `cli_surface.sh`, unchanged | No — but see below |
 
 Anything that lands in this table as "breaks a parser: Yes" needs a decision,
 not just a note.
+
+**Row 2a is that case, and the decision is to keep it.** `cmd_pregaps` used to
+discard the whole scan when a boundary *read* failed; it now prints the rows
+that decoded first, flushes stdout, and still exits **2** via `fail_dev`. So a
+consumer that treats exit 2 as "assume no output" will now discard valid rows,
+and one that treats a row count as a total will under-report. The rows were
+always correct — they were being thrown away — so suppressing them again to
+protect a parser would mean withholding good data to preserve an accident.
+
+What the ledger owes cdda2img is the *pairing*, and it is the part that is easy
+to get wrong: **this is exit 2, not exit 3.** Exit 3 remains the separate
+`pregap_state == UNKNOWN` condition, where the scan completed and a boundary was
+undecodable. Exit 2 now means "these rows, and the scan stopped". A row count
+from a nonzero exit is a floor. Now stated in `cli-machine-interface.md`, which
+is the document a binding actually reads.
+
+**Row 3b is not a behaviour change and still belongs here.** Nothing about the
+binary moved; what moved is what we *promise*. A wrapper that treats any
+undocumented exit 3 as a hard error has been mishandling four commands since
+they were written.
 
 Row 5 is a wart found while writing the phase-0 tests, not a change: `main()`
 opens the device *before* it dispatches, so `accudisc not-a-command` fails with
@@ -581,9 +711,16 @@ phase 2   COMPLETE 2026-07-25. All four rewired the CLI in the same commit.
           5.1 pregap scan      2f9ce4e  (+1 behaviour change: rows that
                                decoded before a failed boundary are now
                                printed rather than discarded)
-phase 2b  doc: exit-code/semantic mapping table
+phase 2b  DONE 2026-07-26  2618d23
+          exit-code/semantic mapping table + tests/exit_codes.sh
           fix CLAUDE.md:56 "thin layer" (see §12)
-phase 3   resolve §7.1-7.3; ONE message to cdda2img (§8)
+phase 3   DONE 2026-07-26.  §7.1-7.3 resolved; §8 sent.
+          §7.1 carried CODE, not just a decision — the `size` field is
+          implemented now because the thing that makes the break free
+          (nothing outside this repo links the library) expires when the
+          Python binding ships.  §7.2/§7.3 are decisions only.
+          Also fixed here: the header/CMake version drift that made any
+          "rebuild on a bump" policy unenforceable.
 phase 4   Python binding, validated A/B against the subprocess path
 phase 5   Rust binding
 ```

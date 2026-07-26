@@ -336,12 +336,33 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                        accudisc_read_stats *stats)
 {
     struct rd r;
+    accudisc_read_req local;
+    size_t stats_bytes = 0;
 
     memset(&r, 0, sizeof(r));
     r.st.first_flagged_lba = -1;
     r.st.last_flagged_lba = -1;
 
-    if (!dev || !req || req->count == 0)
+    if (!req)
+        return ACCUDISC_ERR_INVAL;
+
+    /* Size negotiation before anything else touches the structs, and before the
+     * device check, so a binding with a stale layout is diagnosed as ERR_ABI
+     * ("rebuild") rather than as ERR_INVAL ("fix your arguments") — and so the
+     * whole path is reachable in tests/test_abi.c without a drive. `req` is
+     * only guaranteed to be req->size bytes long, so everything downstream
+     * reads the local copy, never the caller's. */
+    int abi = adsc_abi_import(&local, sizeof(local), req, req->size);
+    if (abi != ACCUDISC_OK)
+        return abi;
+    if (stats) {
+        abi = adsc_abi_export(stats->size, sizeof(*stats), &stats_bytes);
+        if (abi != ACCUDISC_OK)
+            return abi;
+    }
+    req = &local;
+
+    if (!dev || req->count == 0)
         return ACCUDISC_ERR_INVAL;
     if (req->c2 > ACCUDISC_C2_PTRS_BEB || req->sub > ACCUDISC_SUB_Q)
         return ACCUDISC_ERR_INVAL;
@@ -617,7 +638,13 @@ out:
     free(r.flush);
     free(r.scratch);
     free(r.samples);
-    if (stats)
-        *stats = r.st;
+    if (stats) {
+        /* Only as far as the caller said their allocation reaches — a whole
+         * struct assignment here would write sizeof(*stats) bytes into memory
+         * that may be an older, shorter layout. stats_bytes was settled by
+         * adsc_abi_export on the way in. */
+        r.st.size = (uint32_t)stats_bytes;
+        memcpy(stats, &r.st, stats_bytes);
+    }
     return rc;
 }

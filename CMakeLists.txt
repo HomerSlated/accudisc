@@ -1,7 +1,23 @@
 cmake_minimum_required(VERSION 3.16)
 
+# The installed public header is the single source of truth for the version;
+# the .so file version and soname are derived from it. Until 2026-07-26 the two
+# were independent and had drifted: accudisc.h said 0.1.0 (and the binary
+# printed it) while CMake built libaccudisc.so.0.0.1 — two version numbers a
+# binding could reasonably key on, disagreeing about what had bumped. An ABI
+# policy of "rebuild on a version bump" is unenforceable while that is true.
+# tests/test_version.c asserts the two agree, so they cannot drift again.
+file(READ "${CMAKE_CURRENT_LIST_DIR}/include/accudisc/accudisc.h" _adsc_hdr)
+foreach(_part MAJOR MINOR PATCH)
+    if(NOT _adsc_hdr MATCHES "#define ACCUDISC_VERSION_${_part}[ \t]+([0-9]+)")
+        message(FATAL_ERROR "accudisc.h: no ACCUDISC_VERSION_${_part} to read")
+    endif()
+    set(_adsc_${_part} "${CMAKE_MATCH_1}")
+endforeach()
+unset(_adsc_hdr)
+
 project(accudisc
-    VERSION 0.0.1
+    VERSION ${_adsc_MAJOR}.${_adsc_MINOR}.${_adsc_PATCH}
     DESCRIPTION "Precision Red Book CD-DA reader/writer"
     LANGUAGES C
 )

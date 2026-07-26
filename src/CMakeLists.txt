@@ -3,6 +3,7 @@
 
 set(ACCUDISC_SOURCES
     accudisc.c
+    abi.c
     device.c
     transport/sgio.c
     transport/sense.c

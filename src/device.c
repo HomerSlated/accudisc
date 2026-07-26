@@ -74,6 +74,8 @@ const char *accudisc_strerror(int err)
     case ACCUDISC_ERR_UNSAFE_COMBINATION:
                                    return "unsafe request for the drive's "
                                           "current state (would corrupt data)";
+    case ACCUDISC_ERR_ABI:         return "struct size mismatch — rebuild "
+                                          "against this library's header";
     default:                       return "unknown error";
     }
 }

@@ -61,6 +61,7 @@ int accudisc_counter_census(accudisc_device *dev,
         s.count = remain < cadence ? remain : cadence;
 
         memset(&req, 0, sizeof(req));
+        req.size = sizeof(req);
         req.lba = lba;
         req.count = s.count;
         req.retries = 1; /* one attempt: a census maps damage, it does not

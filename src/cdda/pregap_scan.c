@@ -110,6 +110,7 @@ int accudisc_scan_pregaps(accudisc_device *dev, const accudisc_toc *toc,
         memset(buf, 0, (size_t)count * 96);
 
         memset(&req, 0, sizeof req);
+        req.size = sizeof req;
         req.lba = start;
         req.count = count;
         req.sub = ACCUDISC_SUB_RAW;

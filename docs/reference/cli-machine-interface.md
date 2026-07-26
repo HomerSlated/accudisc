@@ -28,6 +28,14 @@ Exit 3 per subcommand:
 - `pregaps`: at least one track boundary decoded as `UNKNOWN` — the approach to
   it was too damaged to place INDEX 00, so the pregap is undetermined rather
   than absent. Every other boundary in the listing is still valid.
+
+  **`pregaps` is also the one place exit 2 can carry usable stdout.** A boundary
+  whose *read* fails (as opposed to decoding as `UNKNOWN`) ends the scan, and
+  since 2026-07-25 the boundaries decoded before it are printed rather than
+  discarded — stdout is flushed ahead of the stderr diagnostic so the ordering
+  is stable. Everywhere else exit 2 means "assume nothing was produced"; here a
+  row count from a nonzero exit is a **floor, not a total**. Parse the rows,
+  then let the exit code decide whether the listing is complete.
 - `c2lag`: the probe ran but was **inconclusive** — either no C2 fired anywhere
   in the span, or too few rereads disagreed to place the lag. Not a failure and
   not a measurement; re-run over a damaged span.

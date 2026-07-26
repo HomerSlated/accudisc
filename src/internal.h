@@ -71,4 +71,26 @@ accudisc_uncap_state adsc_uncap_authoritative(accudisc_device *dev);
 
 void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...);
 
+/* ---- caller-declared struct size (API_PLAN §7.1) ---------------------------
+ * Both are pure — no device, no I/O — so the whole negotiation is testable
+ * without hardware. See src/abi.c and tests/test_abi.c.
+ *
+ * adsc_abi_import: copy a caller's INPUT struct into a local of this build's
+ * layout. src_size is what the caller declared. A short struct is zero-extended
+ * (an older caller gets older behaviour); a long one is accepted only when
+ * every byte past our end is zero. dst's own leading uint32_t size is set to
+ * dst_size on success, so the rest of the library sees a normalised struct.
+ * PRECONDITION: both layouts begin with `uint32_t size`.
+ *
+ * adsc_abi_export: how many bytes of an OUTPUT struct we may write into the
+ * caller's allocation. A short struct is honoured; a long one is refused,
+ * because leaving a counter unfilled would hand back a zero the caller cannot
+ * distinguish from a measured zero.
+ *
+ * Both return ACCUDISC_OK or ACCUDISC_ERR_ABI. A declared size of 0 — what a
+ * caller that forgot ACCUDISC_*_INIT produces — is always refused. */
+int adsc_abi_import(void *dst, size_t dst_size,
+                    const void *src, uint32_t src_size);
+int adsc_abi_export(uint32_t want, size_t have, size_t *n_out);
+
 #endif /* ADSC_INTERNAL_H */
