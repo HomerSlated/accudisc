@@ -683,8 +683,16 @@ read-only open, not a speed matter.
   `ACCUDISC_QMAP_*` set rather than extensions that make the audio encoding
   ambiguous.
 
-- **`speeds`: report min/max as well as the current single figure. [P3],
-  NICETY — Keith 2026-07-26, explicitly "not essential".** Measure each rung at
+- **`speeds`: report min/avg/max as well as the current single figure. RAISED to
+  `[P2]` 2026-07-26 — no longer a nicety.** Keith originally filed it "not
+  essential", but his whole-disc measurement (task 4, §100) makes it the *input the
+  ladder rule needs*: a single mid-disc figure carries a radius term that cannot
+  support a cross-rung comparison, and cdda2img has said they would consume
+  min/avg/max immediately and have cancelled their own gradient instrument in
+  favour of it. Keith's specification is "measure actual throughput at beginning,
+  middle and end, decide which page-2A readings are achievable under the governor,
+  discard duplicates and unachievable rungs". This item is the first clause.
+  Measure each rung at
   the inner ring, the middle and the outer ring instead of one location, so a
   rung reports a range rather than a point. Wanted for its own sake and as a
   **sanity check** that our timing arithmetic and the drive are both behaving.
@@ -1434,7 +1442,55 @@ the strongest claim on being told something is wrong, not the weakest. Sweep
 prefer a machine-readable token over stderr prose — stderr wording is explicitly
 not a stable interface (`cli-machine-interface.md`).
 
-### 4. The phantom 48× ladder rung — `[P2]`, live on both sides
+### 4. The phantom 48× ladder rung — SETTLED 2026-07-26 by whole-disc measurement
+
+**There is no anomaly. 48 and 40 are the same physical read wearing two labels.**
+Keith ran four whole-disc reads (`--start 0 --count 162892`, uncap on, no vendor
+driver) instead of either discriminator — **better than both, because a full-disc
+read covers every radius identically at both settings, so the CAV term cancels
+exactly rather than being modelled**:
+
+| req | seconds | sectors/s | whole-disc avg | C2 sectors | C2 bits |
+|---:|---:|---:|---:|---:|---:|
+| 48 | 91.5 | 1780.3 | **23.74×** | 63 | 1160 |
+| 40 | 89.8 | 1814.1 | **24.19×** | 54 | 1133 |
+| 32 | 113.1 | 1439.8 | 19.20× | 1 | 12 |
+| 24 | 150.2 | 1084.8 | 14.46× | 2 | 24 |
+
+48 vs 40 differ by **0.45×, 1.9%**, with 40 marginally the *faster* — noise. 40 vs
+32 differ by 20.6%, a real rung. The C2 column corroborates independently and was
+not part of the timing. So the residual chased through §97–§99 was ~2%, and the
+mid-disc `speeds` delta of 1.19× was almost entirely the radius term from 4b.
+
+**The collapse rule (`accudisc.h:1036-1038`) is vindicated** — 48/40 is exactly the
+indistinguishable pair it describes. What was wrong was the *input*: mid-disc
+`measured_cx` at per-rung radii cannot support that comparison; whole-disc
+throughput can.
+
+**Page 2A is NOT lying** (Keith, explicitly): it correctly reports the requested
+speed *ceiling* and needs reading in context. Both sides had drifted toward
+treating it as faulty. The ceiling is 48 because the uncap is on; actual CD-DA is
+governed to 40. `speed-uncap off` changes only the data-disc maximum and the
+`speeds` display.
+
+**`speeds` figures vary with disc degradation** — Keith has seen the governor cap at
+32× and as low as 8× on damaged media, with the uncap having zero influence.
+Throttled speeds are real and measurable, not a page-2A artefact.
+
+**Consequence for the recovery side, unexpected and useful:** at 40–48× this disc
+flags 63 and 54 C2 sectors across a ~3,200-sector span; at 32× it flags **one
+sector, 12 bits**. A ~50× reduction in flagged sectors for a 21% throughput cost.
+"Slower is better on damaged media" now has a direct hardware measurement, on the
+same disc where their bench ranked the speed-varying ladder 19/20 against
+`sector-hammer`'s 2/20.
+
+**Neither discriminator will be run** and 4b's instruments are not needed — they
+would characterise a confound the settled method avoids by construction. 4b's
+*contract* findings stand on their own (see below).
+
+<details><summary>Original entry (superseded)</summary>
+
+### 4a. The phantom 48× ladder rung — `[P2]`, live on both sides
 
 API_PLAN §9.3. With the uncap on, page 2A genuinely reports 48, `accudisc speeds`
 genuinely returns `req=48 page2a=48`, and a ladder admitting rungs on the strict
@@ -1469,7 +1525,16 @@ rungs probed at different LBAs are not comparable — geometry will manufacture
 (inner/middle/outer) under "Probes / diagnostics". **See 4b — it is worse than a
 caveat, it operates inside a single table.**
 
+</details>
+
 ### 4b. `speeds` biases every table against its own fast rungs — `[P2]`, OUR DEFECT
+
+**Status after task 4 settled:** the *contract* findings below stand and are still
+worth fixing — cross-rung `measured_cx` carries an undocumented radius term, and a
+second undocumented timed-window-length term. Both are real defects in what the
+header promises. **The discriminator instruments are moot** (whole-disc reads avoid
+the confound by construction) and will not be run. Fix option (c), min/avg/max, is
+now the live one and has been raised to `[P2]` under "Probes / diagnostics".
 
 Found answering cdda2img §97.2. Bare `speeds` probes the **middle half**
 (`cli/main.c:658-662`: `lba = leadout/4`, `count = leadout/2`), so it is *not*
