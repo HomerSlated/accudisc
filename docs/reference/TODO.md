@@ -1,8 +1,11 @@
 # AccuDisc — deferred work
 
 Ideas parked for a later session. Not scheduled; not commitments. Recovery
-methods are considered complete (see `docs/ACCUDISC_RECOVERY.md`); this is
+methods are considered complete (see `docs/reference/RECOVERY.md`); this is
 everything else worth remembering.
+
+Completed work is kept as one- or two-line summaries with any durable lesson
+attached; the blow-by-blow reasoning that produced it is not retained.
 
 ## NEXT SESSION — PLAN (agreed 2026-07-16). Execute Phase 0 first.
 
@@ -33,56 +36,35 @@ values, let the calling app decide.
 negative control for anything that trusts a feature bit over a smoke test).
 
 ### PHASE 0 — fix SET STREAMING so the drive actually accepts it — DONE 2026-07-17
-Two independent bugs, both fixed and hardware-verified on the PX-716A:
+Two bugs fixed, hardware-verified on the PX-716A.
 
-1. **THE showstopper (found this session): CDB Parameter List Length offset.**
-   We wrote the 2-byte length at CDB bytes **8-9** (what I misremembered as the
-   MMC-5 position). It belongs at bytes **9-10** — SET STREAMING is the one MMC
-   command that shifts its length field a byte off the normal Group-5 slot.
-   schily flags it `/* Sz not G5 alike */` (cdrecord/scsi_mmc.c:991). With 8-9
-   the drive reads byte 9 (0x1C) as the length MSB, expects 0x1C00 = 7168 bytes,
-   gets 28, and rejects the whole command with **4/1b (SYNCHRONOUS DATA TRANSFER
-   ERROR)** — which I had mis-diagnosed as "drive doesn't implement 0xB6."
-   `tools/ss_variants.c` proved it: len@8-9 fails, len@9-10 succeeds and drops
-   page 2A 40x -> 8x. This is a portable correctness fix (schily uses 9-10 for
-   ALL drives), NOT a Plextor quirk.
-2. **Descriptor flag bits.** Old code wrote `0x40` (normal) / `0x20` (RDD) —
-   both reserved. Fixed to RA=0x01 / Exact=0x02 / RDD=0x04. Normal ceiling uses
-   0x00 (hardware-verified). NOTE: this PX-716A **rejects RDD 0x04** with
-   5/26/00 (INVALID FIELD IN PARAMETER LIST) — it has no "restore defaults", so
-   Phase 1 restore must set an explicit prior-speed descriptor, never RDD. This
-   also happens to be exactly what the push/pop "restore-to-prior" SOP wants.
+**Durable lessons:**
+1. **SET STREAMING's Parameter List Length lives at CDB bytes 9-10, not 8-9** —
+   it is the one MMC command that shifts its length field off the normal Group-5
+   slot (schily: `/* Sz not G5 alike */`, cdrecord/scsi_mmc.c:991). At 8-9 the
+   drive reads 0x1C00 = 7168 expected bytes, gets 28, and answers **4/1b
+   SYNCHRONOUS DATA TRANSFER ERROR** — which reads exactly like "this drive does
+   not implement 0xB6". Portable correctness fix, not a Plextor quirk.
+2. **Descriptor flag bits are RA=0x01 / Exact=0x02 / RDD=0x04**; a normal ceiling
+   uses 0x00. This PX-716A **rejects RDD** (5/26/00) — it has no "restore
+   defaults", so any restore must set an explicit prior-speed descriptor. That is
+   also what the push/pop restore-to-prior SOP wants.
+3. 0xBB (SET CD SPEED) stays the portable read-speed lever (libcdio uses it);
+   0xB6 adds the LBA-ranged ceiling.
 
-Follow-ups for Phase 1 (not Phase 0):
-- **device.c latch bug**: `accudisc_set_speed` only latches streaming off on
-  ERR_IO or sense key 0x05; a HARDWARE ERROR (key 0x04) never latches. Moot now
-  that 0xB6 works, but fix for robustness on drives that genuinely lack it.
-- The lever the "4x/8x verified" numbers came from last session was the 0xBB
-  fallback (SET CD SPEED). Both work now; re-confirm which device.c prefers.
-- libcdio's `mmc_set_speed` uses **0xBB (SET CD SPEED)**, not 0xB6 — 0xBB stays
-  the portable read-speed lever; 0xB6 adds the LBA-ranged ceiling for Phase 3.
+Follow-up still open: **device.c latch bug** — `accudisc_set_speed` latches
+streaming off only on ERR_IO or sense key 0x05; HARDWARE ERROR (key 0x04) never
+latches. Moot while 0xB6 works, but wrong on drives that genuinely lack it.
 
 ### PHASE 1 — speed + rotation — DONE 2026-07-17 (commits 7e4aced, 702b5ac)
-All hardware-verified on the PX-716A (ZZ Top / empty tray):
-- **GET PERFORMANCE (0xAC)** -> `accudisc_get_performance` + a pure
-  `accudisc_classify_rotation` (CLV/CAV/P-CAV/Z-CLV/UNKNOWN). Discriminator is
-  intra-segment slope, so a Z-CLV step-up is not mistaken for CAV. PX-716A CD
-  curve = 1 rising segment (17x..40x) -> CAV. Unit-tested per shape.
-- **`speed [X] [--exact] [--start L --count N]`** — reports page 2A max/current
-  + nominal curve + rotation; with X sets an Nx ceiling. Whole-disc via
-  accudisc_set_speed (0xB6 else 0xBB fallback); ranged/exact via the new
-  accudisc_set_speed_range (0xB6 ONLY, no downgrade). Standalone set persists.
-  VERIFIED: cap'd `speed 8` uses 0xB6 (no fallback line); `speed 8 --exact`
-  ACCEPTED (drive honours Exact — no Illegal Request); **`speed 24 --start
-  100000 --count 20000` ACCEPTED and page 2A shows 24x = the LBA-ranged ceiling
-  works -> Phase 3 is viable on this drive.** (profile in the output is deferred
-  to Phase 2, which owns the profile->name table.)
-- **`features` split**: --c2 (only flag that gates exit: 0/1/2), --stream,
-  --rotation (disc-free CAV/CLV, no current speed), --all/bare. VERIFIED.
-- **False-negative fixed**: empty-tray `features --c2` now C2_UNVERIFIED (was
-  UNSUPPORTED) — medium-not-present (key 0x02 asc 0x3a) is detected. VERIFIED
-  round-trip (empty=UNVERIFIED, loaded=SUPPORTED).
-- `speed-report` removed. `need_rdwr` untouched (CAP_SYS_RAWIO is the variable).
+Hardware-verified on the PX-716A. Shipped: `accudisc_get_performance` +
+`accudisc_classify_rotation` (CLV/CAV/P-CAV/Z-CLV/UNKNOWN, discriminated on
+intra-segment slope so a Z-CLV step-up is not read as CAV; PX-716A CD curve is
+one rising 17x..40x segment = CAV); the `speed [X] [--exact] [--start L --count
+N]` subcommand over `accudisc_set_speed` (0xB6, 0xBB fallback) and
+`accudisc_set_speed_range` (0xB6 only); the `features` flag split; and the
+empty-tray `features --c2` false negative (now C2_UNVERIFIED, not UNSUPPORTED —
+medium-not-present is sense 0x02/0x3a). `speed-report` removed.
 
 Still open (small, deferred from Phase 1):
 - **--exact discrimination**: it was accepted at 8x, where the drive runs CLV
@@ -94,109 +76,33 @@ Still open (small, deferred from Phase 1):
 - **Re-run the Q-vs-speed sweep** now that cap'd 0xB6 actually commands speed
   (last session's numbers were the 0xBB fallback).
 
-### DISC-KIND GUARD — BUILT 2026-07-22, partially hardware-verified
+### DISC-KIND GUARD — DONE 2026-07-22, fully hardware-verified
 
-Shipped to the locked interface below: `accudisc_probe_disc()` +
-`accudisc_disc_probe` + the `disc` subcommand, verdict logic isolated as the
-pure `adsc_disc_classify()` and unit-tested over synthetic combinations
-(`tests/test_disc.c`, 14/14). Frozen in `cli-machine-interface.md`.
+`accudisc_probe_disc()` + `accudisc_disc_probe` + the `disc` subcommand; verdict
+logic isolated as the pure `adsc_disc_classify()` and unit-tested
+(`tests/test_disc.c`, 14/14). Interface settled with cdda2img (§17.2) and frozen
+in `cli-machine-interface.md`, which is now the reference for the token line,
+the precedence order and the `reason=` slugs.
 
-Scope confirmed with Keith 2026-07-22 — recognise exactly: no medium (tray
-open/closed), CDDA including CD-R/RW CDDA, blank CD-R/RW, and unknown media
-type. Nothing finer. Other media (CD-ROM layouts, Mixed Mode data half, DVD/BD)
-need filesystem support and are deliberately out of scope for now; they all
-land in `NEITHER` with a slug saying which.
+Scope (confirmed 2026-07-22): no medium (tray open/closed), CDDA including
+CD-R/RW CDDA, blank CD-R/RW, unknown media. Nothing finer — CD-ROM layouts, the
+Mixed Mode data half and DVD/BD need filesystem support and all land in
+`NEITHER` with a slug saying which.
 
-Two additions beyond the original locked shape, both additive:
-- `tray=open|closed|unknown` on the `no_medium` branch (sense ASC 0x3A
-  qualifier) — distinguishes "insert a disc" from "close the tray", which
-  cdda2img §26.4 specifically wanted.
-- `disc_status`/`erasable` emit **-1 when not obtainable** rather than 0, since
-  0 means "empty" and would otherwise read as blank.
+All five paths hardware-verified on the PX-716A (audio CD-R, blank CD-R, DVD-R,
+no-medium tray-open, no-medium tray-closed). No open verification items.
 
-**Hardware status (PX-716A, 2026-07-22):**
-
-- ✅ **AUDIO** — Ritek audio CD-R: `kind=AUDIO profile=0x0009 disc_status=2
-  erasable=0 audio_tracks=10 data_tracks=0 reason=audio`, exit 0. Confirms the
-  AUDIO-over-BLANK rule on real media: a CD-R carrying CDDA is rippable.
-- ✅ **no_medium, tray open** — `kind=NEITHER profile=0x0000 disc_status=-1
-  erasable=-1 audio_tracks=0 data_tracks=0 reason=no_medium tray=open`. This is
-  the only path that depends on **sense extraction** (ASC 0x3A + qualifier)
-  rather than command output, and both halves work: the ASCQ resolved to
-  `tray=open`, and `disc_status`/`erasable` correctly reported **-1** rather
-  than a false 0 that would have read as blank.
-- ✅ **not_cd_profile** — DVD-R: `kind=NEITHER profile=0x0011 disc_status=2
-  erasable=0 audio_tracks=0 data_tracks=1 reason=not_cd_profile`.
-- ✅ **no_medium, tray closed** — `... reason=no_medium tray=closed`. Both ASC
-  0x3A qualifiers now confirmed distinct on real hardware (0x02 open / 0x01
-  closed).
-- ✅ **BLANK** — blank CD-R: `kind=BLANK profile=0x0009 disc_status=0
-  erasable=0 audio_tracks=0 data_tracks=0 reason=blank`, exit 0.
-
-**All five paths hardware-verified. No open verification items.**
-
-> **The DVD result validates the precedence order empirically.** Note
-> `data_tracks=1`: the DVD-R **did** answer READ TOC, reporting one data track.
-> So the profile gate is not defensive theatre — without it this disc would have
-> reached the census and classified `data_cd`, and a medium whose CTRL bits
-> happened to read as audio could have classified **AUDIO**, offering a DVD to
-> the CD-DA rip path. Checking the profile *before* the census is what stops
-> that. Keep the order.
-
-### The locked interface (as built)
-The real objective behind deferring Phase 2 (Keith, 2026-07-17). A pre-flight
-guard that answers "which of the two possible operations is legal for the disc
-in the drive", so nothing attempts the impossible:
-  1. **BLANK** — recordable CD-R/RW, no sessions open OR closed -> the BURN path.
-  2. **AUDIO** — CD-DA with audio content present -> the RIP path.
-  3. **NEITHER** — everything else (data CD-ROM, already-recorded/appendable CD-R,
-     DVD/BD, empty tray, unreadable) -> refuse, say why.
-
-**Dependencies: NONE external, NO new opcodes.** Composes three commands the
-library already issues. This is why it's cheap and why it does not carry Phase
-2's "may need additional deps" risk (that risk is Phase 2's filesystem/VRS work,
-which needs a READ(10) path we don't have yet — unrelated to this guard).
-
-Mechanism:
-- **GET CONFIGURATION current profile** (`adsc_mmc_get_configuration`, bytes 6-7):
-  0x08 CD-ROM / 0x09 CD-R / 0x0A CD-RW = a CD; anything else -> NEITHER (not a CD).
-- **READ DISC INFORMATION** (`adsc_mmc_read_disc_info`, already decoded in
-  mediaprobe): disc status (byte 2 bits 1-0) 0=empty, 1=incomplete (open
-  session), 2=complete (closed); erasable bit (byte 2 bit 4) = CD-RW vs CD-R.
-- **READ TOC** (`accudisc_read_toc`): per-track CTRL bit 2 -> audio vs data census.
-
-Verdict logic (evaluate in THIS precedence order — settled with cdda2img
-2026-07-18, §17.2):
-- **AUDIO first** = disc has >=1 audio track (CTRL bit 2 clear). Pure CD-DA = all
-  audio; mixed-mode has audio too and is still rippable-audio for our scope.
-  AUDIO wins over BLANK so a burned audio CD-R classifies AUDIO/rippable, not
-  BLANK.
-- **BLANK** = profile 0x09/0x0A AND disc status 0 (empty). (Status 1 = open
-  session, status 2 = closed -> NOT blank; both are "has sessions".)
-- **NEITHER** otherwise (all-data, non-CD profile, no medium, no TOC, unreadable).
-
-Deliverable — INTERFACE SETTLED with cdda2img (2026-07-18, private/AccuDisc.md
-§17.2); build to this exact shape:
-- Public: `accudisc_disc_kind` enum + `accudisc_disc_probe` struct (profile,
-  erasable, disc_status, audio_tracks, data_tracks, kind) + `accudisc_probe_disc`.
-- CLI subcommand **`disc`** (CONFIRMED with cdda2img 2026-07-18; name == first
-  output token, sibling to `media`/`c2lag`). Machine line — canonical field order
-  matches cdda2img's plan D2 byte-for-byte (token-primary, parse tokens not
-  positions):
-  ```
-  disc kind=<BLANK|AUDIO|NEITHER> profile=0x<nn> disc_status=<0|1|2> erasable=<0|1> \
-       audio_tracks=<n> data_tracks=<n> reason=<slug>
-  ```
-  `erasable` added per §17.2 (burn path cares: BLANK CD-RW reusable vs CD-R
-  one-shot). `reason=` on every line (`audio`/`blank` on the actionable branch;
-  NEITHER slugs: `data_cd`, `closed_data`, `appendable`, `no_medium`,
-  `not_cd_profile`, `unreadable`).
-- Exit codes: **0 = actionable** (BLANK or AUDIO — caller reads `kind=` to branch);
-  **3 = classified-but-not-actionable** (NEITHER; reuses "completed-with-caveats");
-  **2 = could not classify** (transport failure). Token is authoritative; exit is
-  the coarse branch.
-- Unit-test the verdict logic as a pure function over synthetic
-  (profile, status, track-CTRL) inputs, like the rotation classifier.
+**Durable lessons:**
+- **The profile gate must precede the track census.** The DVD-R *did* answer
+  READ TOC, reporting `data_tracks=1`. Without the gate it would have classified
+  from its census, and a medium whose CTRL bits happened to read as audio would
+  have reached the CD-DA rip path. Keep the order.
+- **AUDIO outranks BLANK** so a written-but-appendable audio CD-R classifies
+  rippable, not blank; the reverse would offer to burn over music.
+- **`disc_status`/`erasable` emit -1 when not obtainable**, never 0 — 0 means
+  "empty" and would read as blank.
+- `tray=open|closed|unknown` comes from the ASC 0x3A qualifier and is the only
+  branch depending on sense extraction rather than command output.
 
 ### PHASE 2 — media identification (independent of 0/1/3)
 Two layers; the profile is physical, the logical type is not:
@@ -277,17 +183,14 @@ on single-extent drives). Revisit the ranged feature in a future session.
 
 ### Known bugs to fix along the way
 - ~~Default read range dropped track 1's program-area pregap~~ **FIXED
-  2026-07-23** (cdda2img §30 → §31). Extents were built from INDEX 01 alone, so
-  a first track whose INDEX 01 is past LBA 0 (hidden-track-one audio) left those
-  sectors owned by nobody and the default read started past them — shifting
-  every LBA against the stream and computing a wrong disc ID. ECMA-130 §20 makes
-  a Pause part of the following track; new `accudisc_track.pregap` records it,
-  non-zero only for session 1's first track. `toc` emits `pregap <n>`. ABI:
-  `accudisc_track` 12→16 bytes (appended field, offsets stable).
+  2026-07-23** (cdda2img §30 → §31). **Lesson:** ECMA-130 §20 makes a Pause part
+  of the track that *follows* it, so extents built from INDEX 01 alone leave
+  hidden-track-one audio owned by nobody — the default read started past it,
+  shifting every LBA against the stream and computing a wrong disc ID. New
+  `accudisc_track.pregap` records it (non-zero only for session 1's first
+  track); `toc` emits `pregap <n>`.
 - ~~`features` no-disc false negative (C2_UNSUPPORTED/exit 1) -> UNVERIFIED.~~
-  **DONE** — fixed in the `features` split (see the Phase-1 note above:
-  medium-not-present sense 0x02/0x3a now yields `C2_UNVERIFIED`, verified
-  round-trip empty=UNVERIFIED/loaded=SUPPORTED). This line was a stale duplicate.
+  **DONE** in the Phase-1 `features` split; this line was a stale duplicate.
 - `--speed 16` silently honoured as 8x, unreported. [P1] **BLOCKED on hardware.**
   The honoured rate is not a reliable MMC read-back — the {4,8,24,32} ladder is
   PX-716A-measured, and the only empirical answer is timed streaming reads (what
@@ -295,36 +198,109 @@ on single-extent drives). Revisit the ranged feature in a future session.
   `speed X` / `read --speed X` is therefore a measurement change whose thresholds
   must be validated on the drive; not a safe source-only fix. Do it in a focused
   PX-716A session, reusing `speeds.c`'s timing.
+- **`cdtext` with no FILE reports itself as an unknown command. [P2]** —
+  Keith 2026-07-26: *"If a value is mandatory but not provided, and you continue
+  anyway, that's a silent failure."* `cli/main.c:1686` dispatches on
+  `!strcmp(command, "cdtext") && nrest > 0`, so a missing argument makes the
+  branch fail and control falls through the whole chain to the catch-all at
+  `cli/main.c:1723`, printing `accudisc: unknown command 'cdtext'`.
+  **The exit code (1, usage/argument) is already correct — the defect is the
+  diagnostic.** A known command is reported as unknown, so anyone debugging it
+  hunts for a typo or a version/feature mismatch rather than a missing argument;
+  the device is also opened before dispatch, so the drive spins up only to emit
+  a false message. This is the house failure mode in miniature: well-formed
+  output, right exit code, wrong referent, and nothing downstream can catch it
+  because "unknown command" is exactly what a script expects from an older
+  binary.
+  **Fix:** dispatch on the command name alone, validate the argument inside, and
+  emit e.g. `accudisc: cdtext: FILE argument is required` plus usage; still
+  exit 1. **Name the rule so it is not reintroduced: never fold "missing
+  mandatory argument" into "unknown command".**
+  Scope: `cdtext` is the only instance of this shape — `fulltoc` uses a ternary
+  because its FILE is genuinely optional (bare form runs `cmd_fulltoc_parsed`),
+  and every other command dispatches on the name alone. **Do not disturb** the
+  separate and correct behaviour where a disc carrying no CD-Text writes no file
+  and exits 3 (data absent). While there, disambiguate the usage text at
+  `cli/main.c:25` — "(no file if absent)" reads as if it might mean the FILE
+  argument; it means the disc's CD-Text.
+- **A value-taking option given no value silently consumes the NEXT FLAG as its
+  value. [P1]** — Raised by Keith 2026-07-26 from the man page. Every option in
+  `cmd_read`'s parser (`cli/main.c:1102-1194`) tests
+  `!strcmp(a, "--chunk") && i + 1 < argc`, so:
+  1. **Trailing** (`read --chunk`): the guard fails, control falls to the final
+     `else` at `:1191`, which dumps the whole usage text and exits 1 **with no
+     message naming the offending argument**.
+  2. **Mid-command** (`read --chunk --map`): `i + 1 < argc` is *true*, so `--map`
+     is consumed as the value. `strtol("--map")` returns 0, and **0 is the
+     sentinel for "use the default"** (`accudisc.h:1152`), so the command runs
+     clean, exits 0, and silently (a) does not apply the chunk the user asked
+     for and (b) never renders the map, because `--map` was eaten.
+  **This is the house failure mode in its purest form: a sentinel meaning
+  "default" makes a parse failure indistinguishable from an unset option.**
+  Worst instance is `--progress-fd --map` → fd **0**, i.e. progress tokens
+  written to *stdin*.
+  Affects `--start --count --session --chunk --retries --c2-retries --verify
+  --overlap --speed --progress-fd` and the path-taking options (which at least
+  fail visibly later, on open). **`--tracks` is already correct and is the model
+  for the fix** — it captures `strtol`'s `end` pointer and rejects trailing
+  junk (`cli/main.c:1113-1126`). Fix: a shared helper that requires the next
+  argv, rejects one beginning with `-`, and validates the full parse, emitting
+  `accudisc: --chunk: expected a value` rather than a bare usage dump. Check
+  `cmd_write`, `cmd_speeds`, `cmd_c2lag`, `cmd_cxscan` and `cmd_features` for
+  the same shape.
+- **The man page says `--chunk`/`--retries` are "off by default"; they are
+  always in effect. [P2]** — `docs/man/accudisc.1`, "Accuracy and recovery":
+  *"All of these are off by default"* is true for `--c2-retries` (0 = off),
+  `--verify` (1 = off), `--overlap` (0 = off) and `--ladder` (unset), but
+  **false for `--chunk` and `--retries`**, whose 0 means *use the default*
+  (`engine.c:402`, `:414`), not *disable*. There is no state in which chunking
+  or per-sector retries are off. Split the group, or reword to "these tune a
+  single-pass streaming capture; the last four are off unless set". Keith
+  2026-07-26: as written it reads as a contradiction — a default value on a
+  flag that is simultaneously off.
+- **`cxscan`'s options are undiscoverable. [P3]** — `cmd_cxscan` accepts
+  `--start` and `--speed` (`cli/main.c:189-199`), but the usage line
+  (`cli/main.c:61`) documents none, and any argument it does not recognise falls
+  to `usage(stderr)` + exit 1. So the two supported options exist only in the
+  source. One-line usage fix; also cover them in `docs/man/accudisc.1`.
+- **The `--progress-fd` summary line emits nine keys; two documents say six.
+  [P2]** — `cli/main.c:1537-1549` writes `hard c2 recovered suspect rereads
+  slips subq_total subq_ok subq_bad`. Both the usage text (`cli/main.c:~103`)
+  and `docs/reference/cli-machine-interface.md:109` list only the first six.
+  **Not a contract break** — the keys are additive and the documented rule is
+  token-primary parsing, which cdda2img follows — but
+  `cli-machine-interface.md` declares this format *stable* and is the authority
+  a binding is written against, so the authority is currently behind the code.
+  Fix both, and add the three `subq_*` counter meanings to the existing table.
+- **`ATTRIBUTION.md:25` still calls the DAO write path "upcoming". [P3]** — it
+  shipped and was hardware-verified. Stale in a file the man page's new CREDITS
+  section now mirrors.
 - Logical type must be gated on a CD profile. [P2]
 - `accudisc_eject`/`accudisc_load` header comments describe START STOP UNIT
   (LoEj), but the implementation uses block-layer CDROMEJECT/CDROMCLOSETRAY
   (device.c explains why). One-line comment fix; contract vs implementation.
 - ~~`adsc_toc_parse_cue` directive-injectable through a quoted string~~ **FIXED
-  2026-07-24.** A line-oriented scan that lost quote context let a newline inside
-  a `CD_TEXT TITLE "…"` value spill its tail onto the next physical line, where a
-  column-0 keyword was parsed as a real directive (phantom track + forged ISRC +
-  changed lead-out, all returning `ACCUDISC_OK`). Fix: the line-scan now tracks
-  quotes and rejects an unterminated quote at EOL with `ACCUDISC_ERR_INVAL`
-  (matches cdrdao's flex lexer — a string may not span a line); `parse_qstr`
-  stops at newline too. Regression in `tests/test_tocparse.c`. **Owed: notify
-  cdda2img** — their `escape_toc_string` was our only guard until this landed
-  (RECORDING_PLAN.md §11.9).
+  2026-07-24.** A newline inside a `CD_TEXT TITLE "…"` value spilled its tail
+  onto the next physical line, where a column-0 keyword parsed as a real
+  directive — phantom track, forged ISRC, changed lead-out, all returning
+  `ACCUDISC_OK`. The line-scan now tracks quote context and rejects an
+  unterminated quote at EOL (matching cdrdao's lexer: a string may not span a
+  line). Regression in `tests/test_tocparse.c`. **Owed: notify cdda2img** —
+  their `escape_toc_string` was our only guard until this landed.
 - ~~`toc` reported `leadin_unreadable` on roughly half of all discs~~ **FIXED
-  2026-07-24 (field report).** READ TOC's second transfer was sized straight from
-  the returned data-length header, and a full TOC is `4 + 11*ndesc` bytes with
-  `ndesc = 3 pointers + ntracks` = `37 + 11*ntracks` — **odd on every disc with an
-  EVEN track count**. ATAPI moves 16 bits at a time, so the odd length was
-  rejected by the host adapter before the drive answered: Linux `host_status`
-  **DID_ERROR (0x07)**, no sense, surfacing as a bare `ACCUDISC_ERR_IO` that the
-  TOC path reported as `degrade=leadin_unreadable` — i.e. **as disc damage**.
-  Measured: 11-track disc = 158 B (even) always worked; 12-track disc = 169 B
-  (odd) never did. Fix: shared `adsc_alloc_even()` (`src/mmc/mmc.h`) applied to
-  READ TOC and to `mode_sense10`, which had the identical latent defect.
-  Regression: `tests/test_alloc_even.c`. **Two lessons worth keeping**: an
-  `ACCUDISC_ERR_IO` used to discard `errno`/`host_status`/`driver_status`, which
-  is why this went unattributed for so long (now surfaced via
-  `accudisc_last_io()`); and a *transport* fault was being reported as a *disc
-  health* verdict, which is the more dangerous half — the tool blamed the media.
+  2026-07-24 (field report).** READ TOC's second transfer was sized from the
+  returned data-length header; a full TOC is `37 + 11*ntracks` bytes, i.e. **odd
+  on every disc with an EVEN track count**, and ATAPI moves 16 bits at a time, so
+  the host adapter rejected it before the drive answered. Fix: shared
+  `adsc_alloc_even()` (`src/mmc/mmc.h`), applied to READ TOC and to
+  `mode_sense10`, which had the identical latent defect. Regression:
+  `tests/test_alloc_even.c`.
+  **Two lessons worth keeping.** (1) A *transport* fault was being reported as a
+  *disc health* verdict — the tool blamed the media. That is the dangerous half:
+  the failure was well-formed and pointed at the wrong subject. (2) It went
+  unattributed for months because `ACCUDISC_ERR_IO` discarded
+  `errno`/`host_status`/`driver_status`; there was a bare DID_ERROR (0x07) and no
+  sense to read. Hence `accudisc_last_io()`.
 - **[P2] Parser hostile-input sweep** (RECORDING_PLAN.md §11.9 REVIEW QUESTION,
   adopted from cdda2img §40.3): apply *"what does this accept if the producer is
   hostile, or merely wrong?"* to every parser fed from a boundary we don't
@@ -352,57 +328,31 @@ on single-extent drives). Revisit the ranged feature in a future session.
 Correctness sweep of the whole tree, 7 findings, 0 critical. `rw.c` RS/GF math
 and the pregap/extent/guard interaction both audited **clean**. Top three
 verified against source before recording. **All seven fixed 2026-07-23**, each
-with a regression test; suite clean under ASan+UBSan. History below.
+with a regression test; suite clean under ASan+UBSan.
 
-- **[P1] F-001 SG_IO `resid` never checked — silent corrupt audio. DONE
-  2026-07-23.** `src/transport/sgio.c` treated any GOOD status as full success
-  and never read `io.resid`; a short transfer with GOOD status (marginal USB
-  bridge, drive under-run, end-of-disc) left the chunk buffer's tail holding
-  stale/uninit bytes, which streamed to `--pcm` marked `MAP_OK` with the
-  C2/consensus net never running — the "short read that succeeds" hazard in
-  CLAUDE.md, worst class. Fixed at the correct seam: the transport now *reports*
-  the residual (`cmd->resid`, clamped via `adsc_resid_clamp`) but does not judge
-  it — allocation-length commands (MODE SENSE, READ TOC, GET PERFORMANCE)
-  legitimately transfer short. `adsc_mmc_read_cd`, which alone has an exact
-  expected length, promotes `resid != 0` to `ACCUDISC_ERR_SHORT`
-  (`adsc_exec_check_short`), so `read_span` drops to its existing per-sector
-  fallback rather than trusting the buffer. Both decision helpers are pure and
-  unit-tested (`tests/test_resid.c`) since the ioctl path can't be mocked;
-  hardens the accurate-stream/scan probes too. Deferred nicety: partial-tail
-  recovery (re-read only the missing sectors) rather than the whole span.
-- **[P2] F-002 `accudisc_rw_feed` desyncs the de-interleave if `max < 4`. DONE
-  2026-07-23.** `src/cdda/rw.c`: the `break` on `n >= max` skipped the remaining
-  packs' ring pushes, permanently misaligning the 8-pack de-interleave. Fixed:
-  the loop now always `push_channel_pack`s and gates only emission (`if (n <
-  max)`), and a non-zero `max < ACCUDISC_RW_PACKS_PER_SEC` is rejected up front
-  with `ACCUDISC_ERR_INVAL` (a sink too small to hold a sector's output can
-  never silently drop the tail). `max == 0` prime-only stays valid. Header
-  contract tightened; `tests/test_rw.c` asserts 1..3 reject, 4 passes.
-- **[P2] F-003 DAO cue buffer 32 bytes short. DONE 2026-07-23.**
-  `src/write/burn.c` `cue[99*8*4]`=3168 vs the 3200 worst case (99 tracks ×
-  [ISRC+pregap+track] + MCN×2 + lead-in + lead-out = 400 entries). Bounds-checked
-  so it aborted cleanly, but a full 99-track ISRC+pregap disc could not burn.
-  Fixed: named `ADSC_CUE_MAX_ENTRIES`/`ADSC_CUE_MAX_BYTES` in `write.h`, buffer
-  sized to it; `tests/test_cuesheet.c` builds the 400-entry worst case (OK) and
-  one byte short (clean `ERR_SHORT`).
-- **[P3] F-004 DONE 2026-07-23.** `cmd_read` `--cdg` open failures used bare
-  `return 1` instead of `goto out` (`cli/main.c`), leaking the status map/mmap
-  and any open `--pcm`/`--c2` files; the `out:` cleanup handles cdgf/rw NULL-safe.
-  Both replaced with `goto out`.
-- **[P3] F-005 DONE 2026-07-23.** c2lag `chunk` was sized (24) for the pass-1
-  read alone; the pass-2 window adds `C2LAG_RUNUP` (16), reaching 40 sectors
-  (~105 KB) past `ADSC_MAX_XFER` (65535) and failing on small-`max_sectors`
-  HBAs. `chunk` reduced to 8 → window read (8+16)×2646 = 63504 < 65535; comment
-  corrected to size for the window, not the chunk.
-- **[P3] F-006 DONE 2026-07-23.** `accudisc_q_parse` (`src/cdda/subq.c`) now
-  early-returns `ACCUDISC_ERR_CRC` before decoding any BCD/ISRC payload, so a
-  CRC-failed frame leaves position/MCN/ISRC zeroed (adr/control still set).
-  Header documents fields as valid only on `ACCUDISC_OK`; regression in
-  `tests/test_decode.c`.
-- **[P4] F-007 DONE 2026-07-23.** `accudisc_lba_to_msf` clamps a post-offset
-  negative (LBA < −150, deep lead-in) to 00:00:00 instead of casting a negative
-  quotient to `uint8_t`. Matches the write path's `put_msf`; header documents
-  the clamp; regression in `tests/test_decode.c`.
+| id | defect | where |
+|---|---|---|
+| F-001 [P1] | SG_IO `resid` never checked — silent corrupt audio | `transport/sgio.c` |
+| F-002 [P2] | `accudisc_rw_feed` desynced the de-interleave when `max < 4` | `cdda/rw.c` |
+| F-003 [P2] | DAO cue buffer 32 bytes short of the 400-entry worst case | `write/burn.c` |
+| F-004 [P3] | `--cdg` open failure leaked the status map / open files | `cli/main.c` |
+| F-005 [P3] | c2lag pass-2 window exceeded `ADSC_MAX_XFER` | `drive/c2lag.c` |
+| F-006 [P3] | `accudisc_q_parse` decoded payload before the CRC gate | `cdda/subq.c` |
+| F-007 [P4] | `accudisc_lba_to_msf` cast a negative quotient to `uint8_t` | `cdda/subq.c` |
+
+**Durable lessons:**
+- **F-001 is the worst class: a short read that *succeeds*.** Any GOOD status was
+  treated as a full transfer, so a short one left stale bytes in the chunk tail,
+  streamed to `--pcm` marked `MAP_OK`, with the C2/consensus net never running.
+  Fixed at the correct seam: the transport *reports* the residual and does not
+  judge it (allocation-length commands legitimately transfer short); only
+  `adsc_mmc_read_cd`, which alone knows its exact expected length, promotes
+  `resid != 0` to `ACCUDISC_ERR_SHORT`. Deferred nicety: re-read only the missing
+  tail sectors rather than the whole span.
+- **F-002/F-006: a sink or a decoder must never silently drop or half-decode.**
+  Both were fixed by rejecting the impossible request up front rather than
+  truncating (`max < ACCUDISC_RW_PACKS_PER_SEC` → `ERR_INVAL`; CRC-failed frame
+  → `ERR_CRC` before any BCD/ISRC decode, leaving those fields zeroed).
 
 ### Meta — a caution for next session
 Four confident spec-derived claims were overturned by hardware today: "setcap is
@@ -413,309 +363,209 @@ lever", and "SpeedRead defeats the governor". **Measure first; the drive wins.**
 
 ## (superseded) NEXT SESSION — real read-speed control, then Q-channel preservation
 
-Agreed order (2026-07-15). Speed control gates everything: until we can hold a
-commanded speed mid-disc and prove it, all Q-vs-speed testing is moot.
+Agreed 2026-07-15, executed, and superseded by the plan above. The plan itself is
+gone; what follows is the durable result of running it. Where a finding is still
+open it says so.
 
-### Task 1 — Set read speed via SET STREAMING (0xB6) — DONE + live-verified 2026-07-15
-Implemented and hardware-confirmed: commanded 4x/8x delivered exactly 4.01x/8.01x
-at outer windows (CAV would give ~30x) — a binding ceiling CDROM_SELECT_SPEED
-never could. Details in drivers/plextor/PROTOCOL.md. Original notes kept below.
+### Speed control — DONE + live-verified 2026-07-15
 
-**Found during verification — read-engine throughput cap (follow-up).** The
-recovery `read` engine sustains only ~5x on a *clean* disc where raw streaming
-(`speeds`, bare READ CD) hits ~12–19x at the same radius — ~70 ms/command of
-per-chunk overhead (6000 sectors: read=380 sec/s vs speeds-probe ~19x). Not a
-speed-control bug; a ripping-throughput issue. Investigate: default
-chunk_sectors, per-chunk cache-defeat, status-map write cost, or a synchronous
-stall between commands. Matters because whole-disc Q baselines run through this
-path.
+SET STREAMING (0xB6) works: commanded 4x/8x delivered 4.01x/8.01x at outer
+windows where CAV would give ~30x — a binding ceiling `CDROM_SELECT_SPEED` never
+could. Details in `drivers/plextor/PROTOCOL.md`.
 
-### (original) Task 1 — Set read speed via SET STREAMING (0xB6), the CAV-correct way
-- `CDROM_SELECT_SPEED` / SET CD SPEED (0xBB) — what `accudisc_set_speed` uses
-  today (`device.c:169` → `sgio.c:75`) — is advisory; the PX-716A overrides it
-  with its disc-init hardware governor (the "stuck at 32×/40×" behaviour, which
-  resets on eject; it is NOT a mode we armed).
-- **SET STREAMING (MMC `0xB6`, standard MMC — NOT a Plextor opcode)** hands the
-  drive a performance *contract*: a 28-byte descriptor {Start LBA, End LBA,
-  Read Size, Read Time, …}; speed = Read Size ÷ Read Time scoped to an LBA
-  range → commands the CAV curve directly. This is what PlexTools uses (traced:
-  builder 0x489740, caller 0x49c95e; see drivers/plextor/PROTOCOL.md §session 4).
-- Do it in core `src/mmc/` (pure MMC, not the vendor driver). Route
-  `accudisc_set_speed` through 0xB6, fall back to `CDROM_SELECT_SPEED` on reject.
-- **Verify on hardware** a commanded speed actually holds mid-disc (current
-  failure). Task 1 needs no drive until this verify step.
+**STILL OPEN — read-engine throughput cap.** The recovery `read` engine sustains
+only ~5x on a *clean* disc where raw streaming (`speeds`, bare READ CD) reaches
+~12–19x at the same radius: roughly 70 ms/command of per-chunk overhead. Not a
+speed-control bug, a ripping-throughput one. Suspects: default `chunk_sectors`,
+per-chunk cache-defeat, status-map write cost, a synchronous stall between
+commands. Matters because whole-disc Q baselines run through this path.
 
-### Task 2 progress (2026-07-15)
-- **Q-CRC counters DONE.** `subq_total/subq_ok` in accudisc_read_stats (engine
-  counts extract_q+parse+crc_ok per delivered raw-sub sector); CLI read summary
-  prints `subchannel Q : ok/total CRC-ok (%), bad`; machine mirror adds
-  subq_total/ok/bad. No new signal code — reused stage-3 subq.c.
-- **Clean-disc baseline (ZZ Top, brand new, free-run max ~18.7x w/ sub).**
-  Radius sweep, 3000-sector windows: 0%→99.87, 19%→99.83, 44%→99.97,
-  68%→100.0, 93%→99.93. **Uniform ~99.9%, NO radius dead zone.** Conclusion:
-  max speed does NOT corrupt Q on a clean disc → the earlier dead-zone Q loss
-  and cdda2img's §9 missing pregaps are **damage-driven, not speed-driven**.
-  Validates the hypothesis that damaged discs still HAVE pregaps we're failing
-  to read. ~0.1-0.2% bad frames = noise floor (location not yet recorded).
-- **SET STREAMING = a streaming contract, not a plain speed knob (important).**
-  Setting *any* ceiling (even 40x, above natural) collapses the recovery
-  engine's throughput to ~5x, because the drive tunes for constant-rate
-  delivery and the engine's ~37ms/chunk C2+Q processing reads as "host not
-  consuming" → drive throttles. So: **first-pass = FREE-RUN (no --speed);
-  slow-a-damaged-span = SET STREAMING low (4x/8x were exact).** Do NOT use
-  SET STREAMING to set a high/max ceiling for bursty reads.
-- **Max speed WITH subchannel is ~18.7x** on the PX-716A (drive can't
-  deinterleave subcode faster); 25.9x with C2-but-no-sub, 21.4x audio-only.
-  This is the true "max CDDA speed" for a Q-preserving read.
+### SET STREAMING is a streaming *contract*, not a speed knob
 
-#### Damaged-disc findings (2026-07-16, ABBA Gold, confirmed Q damage)
-Same 19-track disc as the Disc-ID work (leadout 347208). Probed the track 1->2
-boundary (index-1 at LBA 17395). Offline decoder: scratchpad/qdecode.py (ADR-aware:
-only ADR=1 frames are position; ADR=2=MCN, ADR=3=ISRC — critical, or the ~1-per-98
-MCN frames masquerade as index-0 boundaries and manufacture phantom pregaps).
-- **Q vs C2 orthogonality confirmed on real damage:** a 800-sector window read
-  0 C2-flagged sectors but 22 CRC-bad Q frames. Clean audio, dead metadata.
-- **Track 2 pregap IS present and reconstructable:** 50 frames, LBA 17345..17394,
-  countdown rel 00:00:50 -> index-1 at 17395 (matches TOC). Two frames INSIDE the
-  pregap (17346, 17357) are permanently dead, yet zero pregap info is lost — the
-  start frame (rel 50), the index-1 boundary, and the countdown anchors pin it.
-  This is the "9 of 19" mechanism: if the one boundary frame is CRC-bad and no
-  reader interpolates, the pregap looks absent though it is fully there.
-- **TWO failure populations (the key result). 3x cache-defeated re-reads of the
-  same region:** 6 LBAs bad in ALL passes (static physical defect — re-reads never
-  fix), ~6 LBAs bad in only 1-2 passes (transient — recovered by re-read+consensus,
-  exactly the PCM strategy). Neither lever alone suffices: consensus for transient,
-  deterministic-model interpolation for static.
-- **Speed barely affects Q error rate — but ONLY inside the drive's governor
-  envelope (corrected 2026-07-16, see below).** 4x->9 bad, 8x->7 bad,
-  free-run(~2.4x)->7-9 bad on the same window. Every one of those ran at or
-  below the 32x ceiling the drive itself pinned for this disc, so the drive was
-  silently protecting the measurement. Within that envelope: defect-driven, not
-  RPM-driven. OUTSIDE it (SpeedRead/uncap, which defeats the governor) speed
-  matters enormously — that is what the old "40% @ max / 98% @ 24x" measured.
-  Both datasets are correct; they sample different regimes.
-  **Lever = re-reads + model. Never defeat the governor on a damaged disc.**
-  NOTE: these runs used the CDROM_SELECT_SPEED *fallback*, not SET STREAMING —
-  the setcap had evaporated on rebuild and set_speed silently fell back. The
-  commanded speeds are therefore unverified; only the shape is trustworthy.
+Setting *any* ceiling — even 40x, above natural — collapses the recovery engine's
+throughput to ~5x: the drive tunes for constant-rate delivery, and the engine's
+~37 ms/chunk of C2+Q processing reads as "host not consuming", so the drive
+throttles. **Rule: first pass free-runs (no `--speed`); slow a damaged span with
+SET STREAMING low (4x/8x are exact). Never use it to set a high ceiling for a
+bursty read.**
 
-#### The PX-716A disc-init governor — SOLVED (2026-07-16)
-The long-standing "drive stuck at 32x, but 40x when I eject" mystery (see the
-"Investigate how Plextor drives handle speeds" section below) is **not** a mode
-we armed. **The drive profiles the disc at init and pins a quality-appropriate
-ceiling.** Measured, repeatable across eject/load cycles:
-  - ZZ Top (pristine, leadout 204143) -> inits at **40x** (= page 2A max)
-  - ABBA  (scratched, leadout 347208) -> inits at **32x**
-The disc is the only variable; the drive re-evaluates on every media change.
-Consequences:
-- **page 2A was never a placebo.** `current_x` is real, readable state: it
-  tracks SET STREAMING exactly (4x->706, 8x->1411, 24x->4234 kB/s) and reports
-  the governor's init ceiling before we set anything. Earlier "always 40x"
-  readings were because no set had ever *succeeded* (silent fallback).
-- **Free damage triage:** at init, `current_x < max_x` is the DRIVE's own
-  quality verdict on the medium — an absolute, vendor-authored signal costing
-  zero reads. Surface it in `speed` (and consider `media`).
-- **SpeedRead does NOT defeat the governor** (measured both discs, incl. full
-  eject/load re-init with SpeedRead on):
+Ceiling on the PX-716A for a Q-preserving read: **~18.7x with subchannel** (the
+drive cannot deinterleave subcode faster), 25.9x with C2 but no sub, 21.4x
+audio-only.
 
-      disc     condition   governor ceiling   SR max   ceiling after SR+re-init
-      ZZ Top   pristine    40x (CD-DA spec)   48x      40x  (holds)
-      ABBA     scratched   32x (quality)      48x      32x  (holds)
+### The PX-716A disc-init governor — SOLVED (2026-07-16)
 
-  The governor enforces the CD-DA spec limit (40x, per the PX-716 manual) on
-  clean media and throttles BELOW it only when it judges the disc degraded.
-  SpeedRead's raised 48x max is ignored by it. The two act on ORTHOGONAL axes:
-  governor caps DATA RATE; SpeedRead raises RPM (nominal curve scales x1.2,
-  17-40x -> 20-48x, on both discs).
-  **Why Q dies:** at the inner radius under SpeedRead the natural rate (20x) is
-  BELOW the cap, so the cap never binds, the drive spins at full SpeedRead RPM,
-  and Q (no CIRC) fails. At the outer, natural 48x > cap, so RPM is throttled
-  and Q survives. The governor guards the wrong axis; it never protects the
-  inner tracks. Predicts the old dead zone: curve crosses 32x at LBA ~154,300
-  = ~44% into ABBA; measured dead zone was inner 10-60%, outer 70-100% clean.
-  **SpeedRead is a pure liability for CD-DA:** it cannot raise the rate ceiling,
-  so its only headroom is the inner radius (17->20x) — exactly where its RPM
-  kills Q. The recorded whole-disc A/B showed NO throughput gain (both 24.2x)
-  while Q fell 99.2% -> 40.6%. Consider escalating the --uncap+--sub guard to
-  "never for CD-DA reads at all". **Partly landed 2026-07-25:** the library now
-  refuses a subchannel read outright when the uncap is *authoritatively* on
-  (ACCUDISC_ERR_UNSAFE_COMBINATION, overridable via `allow_unsafe`), and warns
-  when it is only inferred. Escalating further — refusing the uncap for any
-  CD-DA read, sub or not — is still open, and would want the "no throughput
-  gain" claim re-measured on a second drive first: it currently rests on one
-  whole-disc A/B on the PX-716A.
-- **Triage caveat:** "current_x < max_x => degraded" only holds with SpeedRead
-  OFF. With it on, a pristine disc reads 40 < 48 and would be falsely flagged.
-  Compare current_x against the CD-DA nominal (40x), or check SpeedRead first.
-  **"Check SpeedRead first" is now possible without a driver attached:**
-  `accudisc_speed_uncap_probe` (landed 2026-07-25, API_PLAN §9.1) answers
-  ON/OFF/LIKELY_ON/UNKNOWN. Note it returns UNKNOWN on any drive whose stock
-  ceiling we have not verified, so triage built on it must handle UNKNOWN as
-  "do not flag" rather than as "SpeedRead is off".
-- **GET PERFORMANCE nominal is RPM-derived, not medium-measured:** identical
-  across no-disc / ABBA (leadout 347208) / ZZ Top (leadout 204143) — end_lba is
-  always 359999, never the real leadout — but it DOES track SpeedRead. Constant
-  across discs, not across drive state. DVD test still pending (medium class?).
-- **Honoured speed ladder is discrete: {4, 8, 24, 32}.** 1-3 -> 4; 6 -> 4;
-  9..23 -> 8; 28 -> 24; 40/48 -> 32. Two disjoint regimes, explained by the
-  nominal CAV curve starting at 17.00x: {4,8} are CLV (a ceiling below 17x
-  binds at every radius => flat), {24,32} are CAV (clamp only the outer region).
-  The 9-23 dead zone is the gap between the top CLV rung and the CAV floor.
-  **Confirms CAV-at-high / CLV-at-low.** 40x is NOT settable — it is only
-  reached by free-running at the outer edge.
-- `speed X` must report what the drive HONOURED, not what we asked: today
-  `--speed 16` silently yields 8x and nothing says so.
+The long-standing "stuck at 32x, but 40x after an eject" mystery is **not** a mode
+we armed: **the drive profiles the disc at init and pins a quality-appropriate
+ceiling.** Repeatable across eject/load cycles — ZZ Top (pristine) inits at 40x
+(= page 2A max), ABBA (scratched) at 32x. The disc is the only variable.
 
-#### Whole-disc pregap census (2026-07-16) — resolves "9 of 19" definitively
-Probed all 19 boundaries (read [i1-400, i1+30] each) + a radius damage sweep.
-scratchpad/pregap.py does the per-boundary analysis.
-- **9 tracks have real pregaps** (t2-t7, t9, t14, t18), 47-50 frames each, plus
-  track 1's 33-frame lead-in gap. Every one has its start frame (rel=len) and
-  index-1 boundary intact; dead frames inside a pregap (e.g. t2: 17346, 17357)
-  are fully covered by surviving countdown anchors -> zero pregap info lost.
-- **The other 9 tracks are genuinely GAPLESS** — index-1 -> index-1 with NO
-  index-0 frames. Confirmed even for the 2 tracks (t16, t19) whose boundary
-  regions were damaged: the surviving CRC-good frames show continuous
-  previous-track index-1 counting UP right to the boundary, no index-0.
-- **Verdict:** the "9 of 19" the good rip found is CORRECT and COMPLETE, not a
-  damage artifact. The starting hypothesis ("all tracks have pregaps, damage
-  hides them") is REFUTED for this disc — it has a gapless master for 9 of its
-  transitions. Where pregaps exist they survive; where they don't, clean frames
-  prove absence.
-- **CRC gate is load-bearing:** rejected frames decoded as abs142:38, index19,
-  adr9 — garbage that a non-CRC-checking reader would splice in as phantom
-  indices. Damage does not just lose Q metadata, it injects false Q metadata;
-  the per-frame CRC-16 is the only thing standing between the two.
-- **Damage is localized, not radius-graded.** Sweep (2000-sector windows):
-  0.6%->100, 11.5%->97.1, 25.9%->100, 40.3%->100, 54.7%->100, 69.1%->99.9,
-  83.5%->100, 97.9%->96.0. Mostly pristine with a few damaged spots (inner
-  ~LBA 40k, outer ~LBA 340k, and pinpoint hits like t16@281733). Surface
-  blemishes at specific spots, NOT an inner dead zone. So this disc needs no
-  Q recovery to get pregaps right — the recovery machinery is for a WORSE disc
-  that loses a boundary anchor entirely.
+- **Page 2A was never a placebo.** `current_x` is real, readable state: it tracks
+  SET STREAMING exactly and reports the governor's init ceiling before we set
+  anything. Earlier "always 40x" readings were because no set had ever *succeeded*
+  (silent fallback to 0xBB).
+- **Free damage triage.** At init, `current_x < max_x` is the drive's own quality
+  verdict on the medium — an absolute, vendor-authored signal costing zero reads.
+  **Caveat:** it only holds with the read-speed uncap OFF, or a pristine disc
+  reads 40 < 48 and is falsely flagged. `accudisc_speed_uncap_probe` (landed
+  2026-07-25) answers ON/OFF/LIKELY_ON/UNKNOWN without a driver attached; triage
+  built on it must treat UNKNOWN as "do not flag", never as "off".
+- **SpeedRead does NOT defeat the governor.** Measured on both discs including a
+  full eject/load re-init with SpeedRead on: the ceiling holds (40x pristine, 32x
+  scratched). The two act on **orthogonal axes** — the governor caps DATA RATE,
+  SpeedRead raises RPM (nominal curve scales ×1.2, 17–40x → 20–48x).
+  **Why Q dies:** at the inner radius the natural rate under SpeedRead (20x) is
+  below the cap, so the cap never binds, the drive spins at full SpeedRead RPM,
+  and Q — which has no CIRC — fails. At the outer radius natural 48x exceeds the
+  cap, RPM is throttled, and Q survives. The governor guards the wrong axis and
+  never protects the inner tracks. This predicts the measured dead zone exactly
+  (curve crosses 32x at ~44% into ABBA; measured inner 10–60% dead, 70–100%
+  clean).
+  **SpeedRead is therefore a pure liability for CD-DA:** it cannot raise the rate
+  ceiling, so its only headroom is the inner radius — exactly where its RPM kills
+  Q. The whole-disc A/B showed no throughput gain at all (both 24.2x) while Q
+  fell 99.2% → 40.6%.
+  **Partly landed 2026-07-25:** the library refuses a subchannel read when the
+  uncap is *authoritatively* on (`ACCUDISC_ERR_UNSAFE_COMBINATION`, overridable
+  via `allow_unsafe`) and warns when it is only inferred. Escalating to "refuse
+  the uncap for any CD-DA read" is still open and would want the "no throughput
+  gain" claim re-measured on a second drive first — it rests on one A/B.
+  (See also item 1 of the 2026-07-26 outstanding list, which directs the guards
+  be removed.)
+- **Honoured speed ladder is discrete: {4, 8, 24, 32}.** 1–3 → 4; 6 → 4; 9–23 →
+  8; 28 → 24; 40/48 → 32. Two disjoint regimes, explained by the nominal CAV
+  curve starting at 17.00x: {4,8} are CLV (a ceiling below 17x binds at every
+  radius, so the curve is flat), {24,32} are CAV (clamping only the outer
+  region). The 9–23 dead zone is the gap between the top CLV rung and the CAV
+  floor. **40x is not settable** — it is only reached by free-running at the outer
+  edge. Still open: `speed X` reports what was asked, not what the drive honoured
+  (see the `--speed 16` item above).
+- **GET PERFORMANCE nominal is RPM-derived, not medium-measured.** Identical
+  across no-disc / ABBA / ZZ Top — `end_lba` is always 359999, never the real
+  lead-out — but it *does* track SpeedRead. Constant across discs, not across
+  drive state. DVD case untested.
 
-#### Index/pregap decoder — DONE (2026-07-16)
-`accudisc_index_map_decode` (src/cdda/index_map.c) + `accudisc pregaps` CLI +
-test_index_map. Consumes a raw-sub scan, CRC-gates every frame, and classifies
-each TOC boundary PRESENT / NONE (gapless) / UNKNOWN / NO_DATA. Key rule: a
-pregap ABUTS index-1, so gaplessness is decided by the boundary-abutting frame
-(walk down from L-1, skip MCN/ISRC), NOT by any bad frame in a wide window —
-that over-flags. Live on ABBA: 9 pregaps (t2-t7,t9,t14,t18, 47-50f), 9 gapless,
-**exactly 1 UNKNOWN (t16)** — the sole boundary whose L-1 frame (281732) is
-physically dead. Correctly separates t16 from t19 (t19's boundary frame
-survived -> gapless), which the manual pass had lumped together.
+### Q subchannel — architecture, findings, and what is left
+
+**Key architecture fact.** C1/C2/CU protect only the main (audio) channel, via
+CIRC Reed-Solomon. The subchannel is **not** inside CIRC: Q's only integrity
+check is one CRC-16/CCITT per frame — **detection, no correction.** So a sector
+can carry pristine audio (0 C2) and a dead Q frame. Confirmed on real damage: an
+800-sector window read 0 C2-flagged sectors and 22 CRC-bad Q frames. **Q and C2
+are orthogonal domains.**
+
+**Q's compensating advantage** is that it is near-deterministic — abs MSF +1 per
+sector, track/index piecewise-constant, rel MSF counting down in a pregap and up
+in a track. Enough CRC-valid *anchors* fit the model and interpolate the gaps.
+The one non-interpolable event is the index 0→1 transition, which needs at least
+one clean anchor near each boundary. **So target re-reads at index boundaries,
+not uniformly.**
+
+**Two failure populations — the key result.** Three cache-defeated re-reads of the
+same region: ~6 LBAs bad in *all* passes (static physical defect; re-reads never
+fix), ~6 bad in only 1–2 passes (transient; recovered by re-read + consensus).
+Neither lever alone suffices — consensus for the transient population,
+deterministic-model interpolation for the static one.
+
+**Speed barely affects the Q error rate inside the drive's governor envelope**
+(4x → 9 bad, 8x → 7, free-run → 7–9 on the same window): defect-driven, not
+RPM-driven. *Outside* the envelope — with the uncap defeating the ceiling — speed
+matters enormously. Both datasets are correct; they sample different regimes.
+**Lever = re-reads + model. Never defeat the governor on a damaged disc.**
+
+**Clean-disc baseline (ZZ Top, new).** Radius sweep, 3000-sector windows:
+uniform ~99.9% Q-CRC-ok at every radius, **no dead zone**. Max speed does not
+corrupt Q on a clean disc, so the dead-zone Q loss and cdda2img's §9 missing
+pregaps are **damage-driven, not speed-driven**.
+
+**Whole-disc pregap census (ABBA, all 19 boundaries) — "9 of 19" RESOLVED.**
+9 tracks have real pregaps (t2–t7, t9, t14, t18) of 47–50 frames, plus track 1's
+33-frame lead-in gap; the other 9 are **genuinely gapless** — index-1 → index-1
+with no index-0 frames, confirmed even where the boundary region was damaged. The
+starting hypothesis ("all tracks have pregaps, damage hides them") is **refuted
+for this disc**. Dead frames *inside* a pregap are fully covered by the surviving
+countdown anchors, so zero pregap information is lost.
+
+**The CRC gate is load-bearing.** Rejected frames decoded as abs142:38, index19,
+adr9 — garbage a non-CRC-checking reader would splice in as phantom indices.
+Damage does not merely lose Q metadata, it **injects false Q metadata**; the
+per-frame CRC-16 is the only thing between the two. (Related: only ADR=1 frames
+are position — ADR=2 is MCN, ADR=3 is ISRC — or the ~1-in-98 MCN frames
+masquerade as index-0 boundaries and manufacture phantom pregaps.)
+
+**Damage is localized, not radius-graded.** Sweep of 2000-sector windows across
+ABBA: 96–100% Q-ok everywhere, with a few damaged spots (inner ~LBA 40k, outer
+~LBA 340k, pinpoint hits such as t16@281733). Surface blemishes at specific
+places, not an inner dead zone. This disc therefore needs no Q recovery to get
+pregaps right — the recovery machinery is for a **worse** disc that loses a
+boundary anchor entirely.
+
+**Index/pregap decoder — DONE 2026-07-16.** `accudisc_index_map_decode`
+(`src/cdda/index_map.c`) + `accudisc pregaps` + `test_index_map`. CRC-gates every
+frame and classifies each TOC boundary PRESENT / NONE / UNKNOWN / NO_DATA.
+**Key rule: a pregap ABUTS index-1**, so gaplessness is decided by the
+boundary-abutting frame (walk down from L-1, skipping MCN/ISRC frames), never by
+any bad frame in a wide window — that over-flags. Live on ABBA: 9 pregaps, 9
+gapless, exactly 1 UNKNOWN (t16, whose L-1 frame 281732 is physically dead),
+correctly separated from t19 which the manual pass had lumped with it.
 `pregaps` exits 3 if any boundary is UNKNOWN.
 
-#### Next build — resolve UNKNOWN boundaries (model reconstruction) + re-read
-The decoder isolates the ONLY thing needing recovery: UNKNOWN boundaries (t16).
-Two levers, in order:
-1. **Model reconstruction across the dead abutting frame.** t16: frames below
-   the bad L-1 are prev-track (t15) index-1 counting up in abs-MSF; the frame
-   above is t16 index-1. If abs-MSF is continuous across the gap (X, [bad], X+2)
-   and no rel-countdown appears, the dead frame was prev-body -> upgrade
-   UNKNOWN->NONE. A rel countdown on either side -> PRESENT. This is pure
-   inference from surviving CRC-good neighbours; no re-read needed.
-2. **Targeted re-read + consensus** for UNKNOWN boundaries whose neighbours are
-   ALSO damaged (not t16's case, but the general one): re-read the boundary
-   window cache-defeated across passes, harvest the transient Q population
-   (proven to exist: ~half the failures cleared on re-read). Unify with C2:
-   a sector fails if C2-dirty OR Q-CRC-bad, both from one READ CD; status map
-   gains a second dimension (audio | Q).
+**Still open — Q recovery.** Same items as "Carried over — Q recovery" above:
+model reconstruction across a dead abutting frame (t16 is the standing test case,
+captured offline as `tests/data/abba_t16_unknown_boundary.sub`, LBA
+281333..281762); targeted re-read + consensus for boundaries whose neighbours are
+also damaged; and the unified re-read predicate — a sector fails if C2-dirty OR
+Q-CRC-bad, both from one READ CD, with the status map gaining a second dimension
+(audio | Q). Q-CRC counters themselves are **done**
+(`subq_total`/`subq_ok` in `accudisc_read_stats`, printed by the read summary and
+mirrored on `--progress-fd`).
 
-### Task 2 — Preserve the Q subchannel (recover pregaps) — after speed is real
-Why it matters: a damaged disc loses metadata (pregap/index/MSF), not just PCM.
-As a full-disc archival tool we must recover it; conventional rippers don't care
-(they only want track files). There is **no AccurateRip/CTDB analog for Q** — no
-external absolute gate — so recovery = blind re-reads + cross-read consensus.
+## Eject feature — DONE
 
-- **Key architecture fact:** C1/C2/CU protect ONLY the main (audio) channel via
-  CIRC Reed-Solomon. The subchannel is NOT inside CIRC — Q's only integrity is a
-  single 16-bit CRC-16/CCITT per frame: **detection, no correction.** Hence a
-  sector can have pristine audio (0 C2) yet a dead Q frame. Orthogonal domains.
-- **Q's compensating advantage:** Q is near-deterministic (abs MSF +1/sector;
-  track/index piecewise-constant; rel MSF counts down in pregap, up in track).
-  So we don't need every frame clean — enough CRC-valid *anchors* let us fit the
-  model and interpolate gaps. The one non-interpolable event is the index 0→1
-  **transition** (pregap boundary): needs ≥1 clean-ish anchor near each boundary.
-  → Target re-reads at index boundaries, not uniformly.
-- Steps:
-  1. Q-CRC counters in the read `summary` (`subq_total/ok/bad`, + per-region so
-     the inner dead-zone shows). Decoder prototyped: `scratchpad/qcrc.py` → port
-     to C in `src/cdda/`. (cdda2img §9.2 asked for this too.)
-  2. Speed sweep with the NOW-WORKING speed control, one variable at a time; map
-     Q-CRC vs speed vs radius. Re-establish the provisional "40% @ max / 98% @
-     24×" numbers cleanly — the old ON/OFF run was confounded (was `--speed 48`
-     vs `40`; then the drive wedged). Trust the *shape* (inner dead zone, clean
-     audio), not the exact %.
-  3. Unified re-read predicate: a sector fails if C2-dirty OR Q-CRC-bad; both
-     acquired in ONE READ CD (0xBE already returns audio+C2+SUB together —
-     `read/engine.c:8`). Status map gains a second per-sector dimension (audio |
-     Q). Acquire fast, re-read Q-failures slow (engine already has a speed
-     ladder).
-- **"9 of 19 tracks have pregaps" suspicion:** unresolved — could be a genuinely
-  gapless master OR damage eating every index-0 frame. Q-CRC counters (step 1)
-  distinguish them: clean index-1 start + zero CRC-valid index-0 frames before it
-  (while neighbours show them) = damage signature, not gapless.
+`accudisc eject` / `accudisc load` ship (block-layer `CDROMEJECT` /
+`CDROMCLOSETRAY`, not START STOP UNIT — see the header-comment item above).
 
-## Eject feature
-- accudisc eject and accudisc load (to me this makes more sense than
-  "eject -t")
+## Investigate how Plextor drives handle speeds — SOLVED
 
-## Investigate how Plextor drives handle speeds.
-- "When a Plextor drive initialises a disc, it determines the optimal read
-  speed and thereby  imposes a limit that you cannot exceed on hardware level
-  which is a good thing."
-  https://hydrogenaudio.org/index.php/topic,28739.0.html
-- Previously reported drive was "permanently stuck on 32x", but when I eject
-  the disc, now I see the speed reported is 40x.
-
-  drdao drive-info --device /dev/sr0
-  /dev/sr0: PLEXTOR DVDR   PX-716A	Rev: 1.11
-  CD-TEXT writing is supported.
-  Using driver: Generic SCSI-3/MMC - Version 2.0 (options 0x0010)
-
-  Maximum reading speed: 7056 kB/s
-  Current reading speed: 7056 kB/s
-
-  accudisc speed-report --driver plextor --drivers-dir /home/kgr/Git/accudisc/build/drivers/
-  accudisc: plextor: 0xEA arm refused
-  accudisc: driver plextor: selftest failed on PLEXTOR DVDR   PX-716A — staying on generic MMC
-  accudisc: using generic MMC
-  speed max_kbps 7056 current_kbps 7056 max_x 40 current_x 40
-
-  I assume "0xEA arm refused" is because you can only request a speed change when the drive
-  knows what kind of disc is loaded.
+The "permanently stuck at 32x, but 40x after an eject" report is the disc-init
+governor, explained in full above. The original hydrogenaudio thread
+(<https://hydrogenaudio.org/index.php/topic,28739.0.html>) had it right: the
+drive determines an optimal read speed at disc init and imposes it in hardware.
+The `0xEA arm refused` seen alongside it was the driver selftest failing on a
+read-only open, not a speed matter.
 
 ## ATIP / media identification
 
-- ~~**Wire the ATIP catalog into a lookup + CLI.**~~ *Done (2026-07-12):*
-  `accudisc media` reads the disc ATIP (READ TOC/PMA/ATIP fmt 4) and returns
-  manufacturer + code + capacity + CD-R/RW. `accudisc_read_atip()` /
-  `accudisc_atip_manufacturer()` in `src/drive/media_db.c`; lookup keys on
-  `sec` + frame-decade (matching resolves 97:24:01 → the 97:24:00 Taiyo Yuden
-  entry; the decade distinguishes makers that share a `sec`). Unit test
-  `tests/test_media.c`; live-verified on a blank Taiyo Yuden (`97:24:01`).
-  *Possible follow-up:* also surface spiral length (record+0xDC) and the
-  ATIP reference-speed/indicative-power fields.
-- **Public ATIP cross-reference pass.** *Largely done (2026-07-12):* diffed
-  against cdrecord's `diskid.c` (independent source; 107/123 agree) and Nero
-  2026 — both carry the same effectively-frozen registry, so "post-2007 gaps"
-  turned out moot. Folded cdrecord's 3 high-confidence uniques into the union
-  (`gen_media_db.py` → 134 codes). *Remaining (optional):* a broader web ATIP
-  database diff to catch any obscure codes none of these three list.
+- ~~**Wire the ATIP catalog into a lookup + CLI.**~~ **DONE 2026-07-12.**
+  `accudisc media` reads the disc ATIP (READ TOC/PMA/ATIP fmt 4) →
+  manufacturer + code + capacity + CD-R/RW; `accudisc_read_atip()` /
+  `accudisc_atip_manufacturer()` in `src/drive/media_db.c`, unit-tested and
+  live-verified on a Taiyo Yuden blank. **Lookup keys on `sec` + frame-decade**,
+  so 97:24:01 resolves the 97:24:00 entry and the decade separates makers
+  sharing a `sec`. *Optional follow-up:* surface spiral length (record+0xDC) and
+  the ATIP reference-speed / indicative-power fields.
+- **Public ATIP cross-reference pass.** *Largely done 2026-07-12:* diffed against
+  cdrecord's `diskid.c` (107/123 agree) and Nero 2026 — both carry the same
+  effectively-frozen registry, so the feared "post-2007 gaps" are moot.
+  cdrecord's 3 high-confidence uniques folded in (`gen_media_db.py` → 134 codes).
+  *Remaining (optional):* a broader web ATIP database diff for obscure codes none
+  of the three list.
 
 ## Recording
 
 - **CD-Text on write — two modes; design of record is `RECORDING_PLAN.md` §11.**
-  The write path does NOT burn CD-Text yet, so a round-tripped disc loses
-  album/track titles/performer. Have: CD-Text *read* (meta/cdtext.c) and the 2448
-  block-type in the write-parameters page (wparams.c `cdtext`).
-  - **v0 — PASS-THROUGH (in progress, first to ship).** `write --cdtext FILE`
-    consumes the raw READ TOC format-0x05 blob byte-for-byte; no encode step.
-    Injects the packs into the SEND CUE SHEET lead-in (dataForm 0x41 + R-W
-    sub-channel packs, ring-filled across the lead-in). Handles re-burns of a
-    captured disc. Steps B1–B5/C/D in §11.
-  - **v1 — AUTHORED (COMMITTED 2026-07-24; the ONLY production path, 2026-07-25).**
+  - **v0 — PASS-THROUGH: SHIPPED 2026-07-24.** `write --cdtext FILE` consumes the
+    raw READ TOC format-0x05 blob byte-for-byte and injects the packs into the
+    SEND CUE SHEET lead-in (dataForm 0x41 + R-W subchannel packs, ring-filled).
+    No encode step, so it handles re-burns of a captured disc. Verified on CDEmu
+    (§11.7) and on physical media (§11.8, PX-716A + Taiyo Yuden): 760 bytes in,
+    760 out, `cmp` identical, alongside 19 correct ISRCs and the MCN.
+    **Lesson from the first, failed attempt: one wrong byte in the cue sheet
+    produced perfect audio/MCN/ISRC and *no CD-Text at all*, with every command
+    returning success.** A byte-for-byte read-back compare is the only assertion
+    that catches that class; decoding for a human diagnostic is not.
+  - **v1 — AUTHORED (design settled 2026-07-24; NOT IMPLEMENTED — `adsc_toc_parse_cue`
+    still ignores `CD_TEXT`, and there is no strings→packs encoder in the tree).**
     strings / `.toc` `CD_TEXT` blocks → 18-byte packs → the blob v0 already knows
     how to lay down.
     **INPUT SURFACE IS SETTLED, and it is the `.toc`.** An extracted RBI holds one
@@ -790,6 +640,107 @@ external absolute gate — so recovery = blind re-reads + cross-read consensus.
 
 ## Probes / diagnostics
 
+- **A per-sector Q-CRC map, alongside the audio one. [P3], NICETY — Keith
+  2026-07-26, "just a nicety, if possible, not an absolute necessity".** Today
+  `--map`/`--map-file` cover audio only; Q health is reported solely as the
+  `subq_total`/`subq_ok`/`subq_bad` summary. Wanted: the same per-sector picture
+  for Q.
+
+  **Possible, and cheaper than it looks — the verdict already exists and is
+  discarded.** `src/read/engine.c:569-580` runs
+  `accudisc_sub_extract_q` → `accudisc_q_parse` per delivered sector and
+  collapses `qd.crc_ok` straight into the counters. This is a *store*, not a new
+  measurement: no extra drive I/O, no second pass. It is also the "status map
+  gains a second dimension (audio | Q)" line already promised under the unified
+  re-read predicate — building it here would discharge that.
+
+  **Four design points, each with a trap:**
+  1. **Do NOT pack Q into the existing map byte.** A sector can be audio-clean
+     *and* Q-dead at once — that orthogonality is the core Q finding (CIRC
+     protects the main channel; Q has only a CRC-16, detection without
+     correction), and the byte holds one state, so the two dimensions would
+     compete for one slot. Use a second byte array mirroring `--map-file`'s
+     existing contract (one byte per sector, mmap-able, `--qmap-file`).
+     Incidentally there IS room in the byte — low-nibble states 6..15 are
+     unused (`accudisc.h:1072-1077`) — which is the tempting wrong answer.
+  2. **"Q ok" must mean CRC-valid, not "position present".** ADR alternates
+     1=position / 2=MCN / 3=ISRC, roughly one MCN frame per 98. A CRC-good
+     ADR=2 frame is healthy but carries no position; treating it as missing
+     position is precisely the bug that manufactured phantom pregaps in the
+     early ABBA analysis. Encode ADR as well as CRC state — the second nibble
+     is the natural home.
+  3. **"Not captured" needs a state distinct from "ok".** Q is only meaningful
+     with `--sub raw`; the engine's own comment notes `SUB_Q` is CRC-gated
+     inside the drive, so there is no verdict to report on that path. Without a
+     distinct value, absence renders as health — the same defect as
+     `disc_status` returning 0 instead of -1 when unobtainable.
+  4. **`--map` rendering needs its own legend**, reusing the worst-state-in-
+     bucket condensation. Do not reuse the audio glyphs for different meanings.
+
+  Interface note: `--qmap-file` is purely additive, so
+  `cli-machine-interface.md`'s stability guarantee is untroubled. The public
+  `ACCUDISC_MAP_*` constants stay as they are; a Q map wants its own
+  `ACCUDISC_QMAP_*` set rather than extensions that make the audio encoding
+  ambiguous.
+
+- **`speeds`: report min/max as well as the current single figure. [P3],
+  NICETY — Keith 2026-07-26, explicitly "not essential".** Measure each rung at
+  the inner ring, the middle and the outer ring instead of one location, so a
+  rung reports a range rather than a point. Wanted for its own sake and as a
+  **sanity check** that our timing arithmetic and the drive are both behaving.
+
+  **It is a good check, and here is why it works:** on a CAV drive the spread
+  *is* the CAV curve — inner slow, outer fast — so a rung with no spread on a
+  CAV drive means our timing is wrong, the cache is serving us, or the rung is
+  actually clamped. Conversely the {4,8} rungs are CLV (a ceiling below the
+  17.00x curve floor binds at every radius) and **must come out flat**, while
+  {24,32} are CAV and must spread. That makes this an independent cross-check on
+  `accudisc_classify_rotation` and on the GET PERFORMANCE nominal curve, which
+  today are the only things asserting rotation mode.
+
+  **Four confounds must be controlled or the instrument reports the wrong
+  thing** — this is a measurement, so it inherits every lesson the Q work
+  learned:
+  1. **The disc-init governor** pins a per-disc ceiling at load (clean 40x,
+     scratched 32x). A damaged disc's spread reflects the governor, not
+     geometry.
+  2. **SpeedRead / the uncap** scales the nominal curve x1.2 and is persistent
+     drive state a previous session may have left on. Record its state with the
+     result.
+  3. **Drive contention** — another process on the same device collapses
+     measurements. Take `flock /var/tmp/sr0.lock` and write `/var/tmp/sr0.owner`.
+  4. **Media dependence**, which Keith raised: the curve is per-medium. A figure
+     is only comparable against another run on the *same disc*.
+
+  **Two design decisions, both with a trap:**
+
+  - **DO NOT rename `measured=` to `avg=`.** `cli-machine-interface.md:176`
+    declares the `speeds` line stable and token-primary, and explicitly permits
+    *appending* new keys — appending `min=`/`max=` is therefore free, but a
+    rename breaks any parser keyed on `measured`. cdda2img is on our live tree,
+    so a rename additionally owes an API_PLAN §8 ledger row *before* the commit.
+    Separately, **"avg" would be a false label**: the mean of three spot samples
+    is not the disc average, and naming it so claims more than the measurement
+    supports. Keep `measured=` as the existing single-window figure, append
+    `min=`/`max=`, and document all three.
+  - **`accudisc_speed_rung` is a caller-allocated transparent OUT struct with no
+    size field** (`include/accudisc/accudisc.h:1041`; `{requested_x,
+    reported_x, measured_cx}`, 6 bytes, filled through `out`). Adding
+    `min_cx`/`max_cx` grows it — **exactly the API_PLAN §7.1 hazard**, on a
+    struct that never got the `uint32_t size` treatment `read_req`/`read_stats`
+    did. Either give it a size field in the same change, or take the break
+    knowingly while nothing outside this repo links the library — and note that
+    window **closes when the Python binding ships** (§7.1's own reasoning).
+
+  **Implementation notes:** cost is 3x the timed windows per rung (default
+  ladder is up to 8 rungs after page-2A filtering). Each of the three locations
+  needs its *own* cache-fresh window per rung, so the window allocator must not
+  collide across rungs *or* radii — the existing guarantee is only per-rung.
+  Prefer keeping the current single-location behaviour as the default and
+  putting the three-point sweep behind an opt-in flag, so the default output and
+  probe time are unchanged; `--start` then keeps its present meaning instead of
+  being silently reinterpreted as a centre point.
+
 - **Timed-read cache detection.** Borrowed from libcdio-paranoia
   (`cdrom_cache_handler`): a re-read that returns implausibly fast was
   served from the drive's cache, not the platter. Paranoia flags a backseek
@@ -804,171 +755,100 @@ external absolute gate — so recovery = blind re-reads + cross-read consensus.
 
 ## TOC reading
 
-### Full-TOC → TOC automatic fallback — PHASE A DONE + HARDWARE-VERIFIED 2026-07-21
+### Full-TOC → TOC automatic fallback — DONE + HARDWARE-VERIFIED 2026-07-21/22
 
-`accudisc fulltoc` (READ TOC format 0x02) reads the *raw lead-in Q-channel*; on
-a marginal CD-R lead-in the drive can fail that command (transport error, exit
-2) while the cooked TOC (format 0x00) reads perfectly — observed on the PX-716A
-with an MPO CD-R, 2026-07-21, and *not* on a Ritek CD-R in the same session, so
-it is that disc, not CD-R as a class. The CDB is correct (session 1, MSF bit,
-per redumper); a drive+media quirk, not a defect.
+`accudisc_read_toc_src()` prefers READ TOC format 0x02 (the raw lead-in
+Q-channel, which carries session structure) and degrades to format 0x00,
+reporting `source=` and `degrade=` (`none` / `leadin_unreadable` /
+`leadin_absent` / `leadin_malformed`). `toc` exits **0** on a degrade — the
+command promises track geometry and a degrade still delivers it in full; failing
+would regress exactly the discs the fallback exists to serve. Frozen in
+`cli-machine-interface.md`; the pure conversion `adsc_toc_from_fulltoc()` is
+unit-tested (`tests/test_tocsrc.c`, 13/13). Both paths hardware-proven on the
+PX-716A, and the degrade path's geometry cross-validated **byte-identical**
+against the drive's own cooked format-0x00 answer — two independent decodes
+agreeing on the MSF→LBA arithmetic, track slotting and extents.
 
-**Shipped (Phase A):** `accudisc_read_toc_src()` prefers 0x02 and degrades to
-0x00, reporting `source=` and `degrade=` (`none` / `leadin_unreadable` /
-`leadin_absent` / `leadin_malformed`). `toc` emits a token line and exits **0**
-on a degrade — the command promises geometry and still delivers it; failing
-would regress the very discs the fallback serves. Frozen in
-`cli-machine-interface.md`. Pure conversion `adsc_toc_from_fulltoc()` unit-tested
-(`tests/test_tocsrc.c`, 13/13).
+**Durable lessons:**
+- **Format 0x02 does NOT carry INDEX 00 / pregap data.** The lead-in TOC holds
+  track *starts* (INDEX 01), A0/A1/A2 and session structure, nothing more.
+  Pregaps exist solely in the program-area Q subchannel, so a successful 0x02
+  supplies no more pregap data than a degraded 0x00 — the degrade costs only
+  session structure. Both an earlier note of ours and cdda2img's §26.2 assumed
+  otherwise. **Proven empirically, not just read off the spec:** on an MPO CD-R
+  whose lead-in is completely unreadable, `pregaps` still recovered all 11
+  pregaps (tracks 2–12, every one 149f) with near-perfect Q CRC.
+- **A failing lead-in on a healthy program area is a real disc-health signal**,
+  and it is disc-specific rather than a CD-R class property (the same session's
+  Ritek CD-R read 0x02 clean). That is what `degrade=` exists to carry; callers
+  archiving provenance should record it.
+- **Cost:** preferring 0x02 is free when it succeeds (~5 ms either way) and costs
+  ~166 ms only on a degrade — the drive giving up on the lead-in. Trivial once,
+  significant for a caller polling `toc` in a loop on a degraded disc.
 
-> **Correction worth keeping.** Format 0x02 does **not** carry INDEX 00/pregap
-> data — the lead-in TOC holds track *starts* (INDEX 01), A0/A1/A2 and session
-> structure only. Pregaps exist solely in the program-area Q subchannel. So a
-> successful 0x02 supplies no more pregap data than a degraded 0x00, and the
-> degrade costs only session structure. Both an earlier note of ours and
-> cdda2img's §26.2 assumed otherwise.
-
-**Hardware verification — MPO CD-R (Paul Weller, *Stanley Road*), PX-716A fw
-1.11, 2026-07-21.** All three wanted results confirmed:
-
-- `fulltoc` reproduces the original failure exactly: `transport I/O failure`,
-  exit 2.
-- `toc` emits `source=toc degrade=leadin_unreadable pregaps=none`, exit **0**,
-  with all 12 tracks and lead-out 236435.
-- Geometry is **byte-identical** to the pre-change binary (847b10a built in a
-  scratch worktree and diffed): no regression.
-- Measured cost of the degrade: ~5 ms → ~172 ms (3 runs each, tight spread).
-  The ~166 ms is the drive giving up on the lead-in. Recorded in
-  `cli-machine-interface.md`.
-
-**The correction is now empirically proven, not just read off the spec.** On
-this disc the lead-in is *completely unreadable*, yet `pregaps` recovers all 11
-pregaps (tracks 2–12, every one 149f) with near-perfect Q CRC — mostly
-`[150 ok, 0 bad]`, worst `[147 ok, 3 bad]`. Pregap data therefore cannot be
-coming from the lead-in; it is program-area Q, exactly as the descriptor layout
-says. A natural experiment we could not have staged deliberately. It also
-demonstrates the degradation pattern the `degrade=` signal exists to catch: the
-lead-in has died while the program area is still healthy.
-
-**Success path verified — Ritek CD-R (10 tracks), same drive, 2026-07-22.**
-`fulltoc` reads clean; `toc` reports
-`source=fulltoc degrade=none pregaps=none sessions=1..1 disc_type=0x00`, exit 0.
-
-**The conversion is cross-validated against an independent decode.** This disc
-provided the test the MPO one could not: there, both binaries used format 0x00,
-so identical output proved little. Here the new binary derives geometry from the
-lead-in through `adsc_toc_from_fulltoc()` while 847b10a uses the drive's own
-cooked format-0x00 answer — two independent decodes of the same disc. Output is
-**byte-identical** across all 10 tracks and lead-out (253937), so the MSF→LBA
-arithmetic (including the −150 offset), the track slotting and the extent
-computation all agree with the drive's firmware.
-
-**Preferring 0x02 is free when it succeeds:** ~5 ms before and after on this
-disc (3 runs each). The ~166 ms penalty is paid only on a degrade. Both figures
-are in `cli-machine-interface.md`.
-
-Both paths are now hardware-proven. No open verification items.
-- **Phase B (`toc --pregaps`) — DROPPED 2026-07-22, at the requester's request.**
-  cdda2img §26.2 originally asked for Q-derived pregaps folded into `toc`; their
-  §27 audit withdrew it. Their pregaps come from the Q stream and never from a
-  TOC (`subq_toc.build_rip_info` → `_derive_layout` → `derive_track_layout`,
-  Q-only; `track_starts` supplies boundaries only), and their rip path always
-  captures `--sub raw`, so `toc --pregaps` would be a second program-area pass
-  over data they already hold. No other consumer wants it. `pregaps` stays the
-  standalone diagnostic — which is what proved the point on Stanley Road. The
-  token still ships (always `none`) so a future value is additive; it was
-  **renamed `pregaps=` → `subq_indices=` on 2026-07-25** because the old
-  spelling collided with the per-track `pregap <n>` field. Verification
-  transcripts above quote the pre-rename output verbatim and are left as the
-  dated record. **Do not build this without a new requester.**
+- **Phase B (`toc --pregaps`) — DROPPED 2026-07-22 at the requester's request.**
+  cdda2img §27 withdrew the ask: their pregaps come from the Q stream and never
+  from a TOC, and their rip path always captures `--sub raw`, so this would be a
+  second program-area pass over data they already hold. No other consumer wants
+  it; `pregaps` stays the standalone diagnostic. The token still ships (always
+  `none`), **renamed `pregaps=` → `subq_indices=` on 2026-07-25** because the old
+  spelling collided with the per-track `pregap <n>` field and real output read as
+  a self-contradiction. **Do not build this without a new requester.**
 - **Phase C (retry counter) — WITHDRAWN 2026-07-22 by the requester.** cdda2img
-  §26.5 assumed a retry loop existed in the 0x02 path. It does not — there is no
-  retry logic anywhere in `src/mmc/` or `src/transport/`. On being told, they
-  withdrew the ask and argued the current behaviour is *better*: a single-attempt
-  failure means one specific thing, whereas "failed after N tries" blurs it, and
-  retries would cost time on exactly the discs already failing. **Do not add
-  retries to make a counter possible.** If retry *behaviour* is ever wanted, that
-  is a separate, deliberate decision.
-- **[P1] Emit a session COUNT on the degrade path** (cdda2img §28). Their
-  archival policy is session-1-only, and `sessions=1..1` is necessarily absent
-  when 0x02 fails. Their mitigation is to refuse a degrade carrying any data
-  track — sound for Enhanced CD, whose session 2 is always data — but it leaves
-  one hole: a **multi-session all-audio** disc passes their "all audio ⇒ safe"
-  test while format 0x00 hands back the *last* session's lead-out, not session
-  1's. Wrong lead-out, wrong disc ID, silently.
+  §26.5 assumed a retry loop existed in the 0x02 path; there is none anywhere in
+  `src/mmc/` or `src/transport/`. They then argued the current behaviour is
+  *better*: a single-attempt failure means one specific thing, "failed after N
+  tries" blurs it, and retries cost time on exactly the discs already failing.
+  **Do not add retries to make a counter possible.** Retry *behaviour*, if ever
+  wanted, is a separate deliberate decision.
 
-  Fix is cheap and needs no new opcode: **READ DISC INFORMATION carries the
-  session count independently of the lead-in TOC** — already decoded at
-  `src/write/discinfo.c:32` (`buf[4]`), and the `disc` guard already issues the
-  command. Emit `sessions=<n>` (a count, distinct from the fulltoc line's
-  `sessions=<a>..<b>` range) on the degrade path so a caller can refuse
-  multi-session degrades outright rather than inferring session structure from
-  a track census that cannot see it. Confirm on hardware that the count is
-  still valid when the lead-in is unreadable — plausible, since the drive
-  answers this from its own disc model, but the Stanley Road disc exists to
-  test it.
+- ~~**[P1] Emit a session COUNT on the degrade path**~~ (cdda2img §28) — **DONE
+  and hardware-verified 2026-07-22.** `accudisc_toc_info.session_count` /
+  `accudisc_toc.sessions_total`, emitted as `session_count=<n>` on the `toc` line.
 
-  **DONE 2026-07-22.** `accudisc_toc_info.session_count` and
-  `accudisc_toc.sessions_total`; `session_count=<n>` on the `toc` line. Three
-  behaviours now, where there was one: a count of **1** is fully
-  reconstructible (one session owns every track and format 0's lead-out IS its
-  lead-out), so the model is synthesised and a dead-lead-in disc stays wholly
-  rippable; a count **> 1** refuses with `session_unmapped` — the seams are
-  known to exist and their positions are not; a count of **0** falls back to
-  the conservative all-audio walk.
+  **Why it was needed:** a **multi-session all-audio** disc is otherwise
+  undetectable. It passes an "all audio ⇒ safe" test while format 0x00 hands back
+  the *last* session's lead-out rather than session 1's — wrong lead-out, wrong
+  disc ID, silently. A track census provably cannot see session boundaries.
 
-  **VERIFIED on hardware 2026-07-22** (PX-716A, MPO CD-R — the disc whose
-  lead-in does not read). `accudisc toc` returned
-  `source=toc degrade=leadin_unreadable ... session_count=1`: the count came
-  through while the lead-in was failing, which is exactly the premise — the
-  drive answers from its own disc model, not the groove.
+  **Why it works:** READ DISC INFORMATION answers from the drive's own disc
+  model, not by re-reading the groove, so it still speaks when the lead-in will
+  not. Confirmed on the MPO CD-R whose lead-in does not read
+  (`degrade=leadin_unreadable ... session_count=1`), and the count corroborated
+  three independent ways: READ DISC INFORMATION byte 4 (sessions = 1), byte 5
+  (first track in last session = 1), and libcdio `cd-info`'s
+  `Last CD Session LSN: 0` — a different tool issuing a different command.
 
-  That the count is *correct* is confirmed three ways, independently:
-    - READ DISC INFORMATION byte 4 (number of sessions) = 1 — the field we ship.
-    - READ DISC INFORMATION byte 5 (first track in the LAST session) = 1. A
-      different field in the same response: if the last session starts at track
-      1, there is only one. Byte 6 = 12, matching the 12 tracks.
-    - libcdio `cd-info` reports `Last CD Session LSN: 0` — a different tool
-      issuing a different command, agreeing the last session starts at LBA 0.
-      Its lead-out (236435) matches ours exactly.
+  Three behaviours where there was one: **1** = fully reconstructible (one
+  session owns every track and format 0's lead-out *is* its lead-out), so the
+  model is synthesised and a dead-lead-in disc stays wholly rippable — exercised
+  end to end, `read` resolving `session 1, lba 0 count 236435`; **>1** refuses
+  with `session_unmapped` (the seams are known to exist, their positions are
+  not); **0** falls back to the conservative all-audio walk.
 
-  The count==1 reconstruction then fired end to end: a session table was
-  synthesised on a `source=toc` line (`session 1 tracks 1-12 audio 12 data 0
-  leadout 236435`), and `read` resolved `session 1, lba 0 count 236435`. A disc
-  with a dead lead-in is now fully rippable through the validated path rather
-  than a flat fallback.
-
-- **[P1] Mixed Mode: session selection is too coarse** — a gap opened by
-  35ba94c and **CLOSED 2026-07-22**. On a Mixed Mode CD one session holds a data
-  track (first, where a filesystem is expected) followed by audio tracks. Every
-  step was individually right — the default audio session *is* session 1, its
-  whole-session range *does* start at LBA 0, and the guard *does* correctly
-  refuse a range containing a data track — and the outcome was that
-  `accudisc read` with no arguments failed on the format.
+- ~~**[P1] Mixed Mode: session selection is too coarse**~~ — **CLOSED
+  2026-07-22.** On a Mixed Mode CD one session holds a data track first, then
+  audio. Every step was individually right — the default audio session *is*
+  session 1, its whole-session range *does* start at LBA 0, and the guard *does*
+  correctly refuse a range containing a data track — and the outcome was that
+  `accudisc read` with no arguments failed on the format. **Lesson: correct
+  components can compose into a wrong behaviour; the defect was in the seam, not
+  in any of the parts.**
 
   Fix: `accudisc_toc_session_audio_range()` narrows the default to the session's
   **audio tracks**, plus `accudisc_toc_track_range()` and `--track N` /
-  `--tracks A-B` for explicit selection. The guard was **not** relaxed.
-
-  **VERIFIED on hardware 2026-07-22** (PX-716A, Taiyo Yuden CD-R: data track 1
-  of 138230 sectors, audio tracks 2-11, one session, lead-out 342197).
-
-    - Before: `refusing lba 0 count 342197: data_track at lba 0 (track 1)`.
-    - After: `session 1, lba 138230 count 203967`, and 138230+203967 = 342197,
-      exactly the lead-out.
-    - `--tracks 2-11` resolves to the *identical* range — independent
-      confirmation the default picks the right thing rather than one code path
-      agreeing with itself.
-    - Full rip of that range: **479,730,384 bytes = 203967 × 2352 exactly**,
-      0 C2-flagged sectors, exit 0.
-    - Still refused, correctly: `--track 1` and `--tracks 1-11` (`data_track`),
-      and `--tracks 13-14` on the Enhanced CD (different sessions — a span
-      across the seam would swallow 11,400 dead sectors).
+  `--tracks A-B`. **The guard was not relaxed.** Verified on hardware (PX-716A,
+  Taiyo Yuden CD-R: data track 1 of 138230 sectors, audio 2–11, lead-out 342197):
+  the default resolves to `lba 138230 count 203967`, `--tracks 2-11` resolves
+  identically (independent confirmation, not one code path agreeing with itself),
+  and the full rip produced 203967 × 2352 bytes exactly with 0 C2-flagged
+  sectors. Still correctly refused: `--track 1`, `--tracks 1-11` (`data_track`),
+  and a cross-session span.
 
   One case is **refused rather than solved**: audio tracks either side of a data
   track within one session cannot be expressed as a single range, so
   `ACCUDISC_ERR_UNSUPPORTED` is returned and the caller must name tracks. Legal
-  on the wire, unit-tested, **never observed on real media**.
+  on the wire, unit-tested, never observed on real media.
 
 - **[P3]** Bindings (`bindings/python`, `bindings/rust`) do not yet expose
   `accudisc_read_toc_src` or `accudisc_probe_disc`; they are generated against
@@ -979,50 +859,40 @@ Both paths are now hardware-proven. No open verification items.
 - ~~**[P2] CD+G capture and pack extraction**~~ — **DONE 2026-07-22.**
   `src/cdda/rw.c`, public API `accudisc_rw_*`, CLI `read --cdg FILE`.
 
-  Built against the normative spec (Philips/Sony *Subcode/Control and Display
-  System — Channels R-W*, Nov 1991, `private/research/`), which had already
-  corrected two errors in the earlier version of this entry: the pack/packet
-  nesting was inverted, and R-W is Reed-Solomon protected where I had claimed
-  it was not. Structure, per §5.1: 6 bits = SYMBOL, 24 symbols = PACK, 4 packs
-  = PACKET, so one packet per sector, 75 packets/s and **300 packs/s**. The
-  `.cdg` format is the 24-byte **pack** stream.
+  Built against the normative Philips/Sony *Subcode/Control and Display System —
+  Channels R-W* (Nov 1991). Structure per §5.1: 6 bits = SYMBOL, 24 symbols =
+  PACK, 4 packs = PACKET, so one packet per sector, 75 packets/s and **300
+  packs/s**; `.cdg` is the 24-byte **pack** stream. Three stages: extract R-W as
+  the low 6 bits of each subcode byte; undo the 8-pack convolutional interleave
+  and its position permutation (transpositions (1,18), (2,5), (3,23)); RS-decode
+  over GF(2^6), `P(X)=X^6+X+1`. Both codes are conventional RS with consecutive
+  roots, so one routine serves both parameterised by length and parity count —
+  (24,20) across the pack correcting 2, (4,2) over symbols 0–3 correcting 1.
 
-  Three stages: extract R-W as the low 6 bits of each subcode byte; undo the
-  8-pack convolutional interleave plus its position permutation (three
-  transpositions — (1,18), (2,5), (3,23) — read directly off spec Figures
-  5.3/5.4, which are images and needed rendering rather than text extraction);
-  then Reed-Solomon decode over GF(2^6), `P(X)=X^6+X+1`. Both codes are
-  conventional RS with consecutive roots a^0.., so **one routine serves both**
-  parameterised by length and parity count: (24,20) across the pack correcting
-  2 symbols, (4,2) over symbols 0-3 correcting 1.
+  **Two corrections the spec forced on an earlier version of this entry:** the
+  pack/packet nesting was inverted, and R-W *is* Reed-Solomon protected where it
+  had been claimed not to be.
 
-  **Verification, with no CD+G disc available.** Correctness rests on a round
-  trip against an INDEPENDENT encoder in `tests/test_rw.c`, deliberately built
-  by a different method — the encoder solves H*V=0 by Gaussian elimination, the
-  decoder works from syndromes — so a shared mistake is unlikely to cancel out.
-  Covers: clean round trip, exact-count single-error repair, 2-error repair,
-  an 8-symbol channel burst (which the interleave scatters across 8 logical
-  packs), beyond-capacity damage reported rather than silently miscorrected,
-  and an all-zero stream reading as MODE ZERO.
+  **Findings worth keeping:**
+  - **The stray-symbol count VARIES between reads of the same sectors** (39, 66,
+    48 on three passes). R-W gets no C1/C2 correction from the drive, so these
+    are transient channel errors, not pressed-in bits — which is the empirical
+    argument for doing the RS decode at all. Without it every rip of the same
+    disc would differ.
+  - Measured on a Mixed Mode CD-R with **no** CD+G (still a real test): 1000
+    sectors → 3993 packs (= 4n−7, the de-interleave span costing 7 at the tail),
+    95,832 bytes exactly, all MODE ZERO. In one read capturing `--subf` and
+    `--cdg` together the raw subchannel held 48 stray symbols and the P code
+    repaired exactly 48 across 47 packs, one of which had two — so the t=2 path
+    fired on real data.
+  - Verification is a round trip against an **independent** encoder built by a
+    different method (the encoder solves H*V=0 by Gaussian elimination, the
+    decoder works from syndromes), so a shared mistake is unlikely to cancel out.
 
-  **Hardware behaviour, measured on the Taiyo Yuden Mixed Mode CD-R** (a disc
-  with NO CD+G, which is still a real test): 1000 sectors gave 3993 packs
-  (= 4n-7, the 8-pack de-interleave span costing 7 at the tail), 95,832 bytes
-  = 3993 x 24 exactly, all MODE ZERO, output entirely zero. In a single read
-  capturing both `--subf` and `--cdg`, the raw subchannel held **48 stray R-W
-  symbols and the P code repaired exactly 48**, across 47 packs — one of which
-  had two strays, so the t=2 path fired on real data.
-
-  **A finding worth keeping:** the stray count VARIES between reads of the same
-  sectors (39, 66, 48 on three passes). R-W gets no C1/C2 correction from the
-  drive, so these are transient channel errors, not pressed-in bits. That is
-  the empirical argument for doing the RS decode at all — without it every rip
-  of the same disc would differ.
-
-  Still open: **end-to-end verification needs an actual CD+G disc.** What is
-  unproven is only the assumption that the drive returns the 96 subcode bytes
-  in the order assumed; that rests on the Q path in subq.c, which reads bit 6
-  of the same bytes and is hardware-verified. Worth acquiring a karaoke disc.
+  **Still open: end-to-end verification needs an actual CD+G disc.** The one
+  unproven assumption is the order in which the drive returns the 96 subcode
+  bytes; that rests on the Q path in `subq.c`, which reads bit 6 of the same
+  bytes and is hardware-verified. Worth acquiring a karaoke disc.
 
   Scope line with cdda2img holds: we deinterleave, RS-correct and emit packs;
   they render. RS correction recovers recorded bits rather than interpreting
@@ -1036,12 +906,11 @@ Both paths are now hardware-proven. No open verification items.
   Recorded here so the question is not reopened.
 
 - ~~**[P3] Obtain the Orange Book**~~ — **DONE 2026-07-22.** Orange Book Part II
-  (CD-R) Vols 1–2 and Part III (CD-RW) Vol 1 are in `private/research/`, along
-  with the Multisession CD spec, Enhanced Music CD spec, R–W subcode spec, CD
-  Text Mode, CD-ROM XA, MMC-3, SCSI-2, the SACD specs and *The CD Family*.
-  **Public** ECMA-130 / ECMA-394 / ECMA-395 are cited but deliberately **not
-  committed** (`docs/research/.gitignore` excludes `*.pdf`) — ECMA publishes
-  them for free download, so a citation beats megabytes of permanent history.
+  (CD-R) Vols 1–2 and Part III (CD-RW) Vol 1 acquired, with the Multisession CD,
+  Enhanced Music CD, R–W subcode, CD Text Mode, CD-ROM XA, MMC-3, SCSI-2 and SACD
+  specs. **Public** ECMA-130 / ECMA-394 / ECMA-395 are cited but deliberately
+  **not committed** — ECMA publishes them for free download, so a citation beats
+  megabytes of permanent history.
 
   All four session-overhead constants are now confirmed:
 
@@ -1065,50 +934,40 @@ Both paths are now hardware-proven. No open verification items.
   pass over `adsc_toc_from_fulltoc()`**~~ — **BOTH DONE 2026-07-22.** Taxonomy
   and findings in `docs/research/disc-formats.md` §11.
 
-  The audit found **one real hole, and it was not a crash.** Memory safety was
-  already sound (every index bounds-checked; the suite now runs clean under
-  ASan + UBSan with `-fno-sanitize-recover=all` against a hostile-input test
-  file, `tests/test_toc_hostile.c`). The defect was the third failure mode —
-  silently normalising a contradictory TOC into a plausible-looking one.
+  **The audit found one real hole, and it was not a crash.** Memory safety was
+  already sound (the suite runs clean under ASan + UBSan with
+  `-fno-sanitize-recover=all` against `tests/test_toc_hostile.c`). The defect was
+  the third failure mode — **silently normalising a contradictory TOC into a
+  plausible-looking one.** `toc_fill_extents()` walked tracks in *track-number*
+  order and treated that as *address* order; Kaspersky ch. 6's "Incorrect
+  Starting Address for the Track" exists to break that coincidence. When it did,
+  the out-of-order data track's extent collapsed to zero — invisible to the map —
+  while its neighbour's stretched over the region it vacated, and
+  `accudisc_check_audio_range()` returned **ok** for a span covering a data
+  track.
 
-  `toc_fill_extents()` walked tracks in **track-number** order and treated that
-  as **address** order. Kaspersky ch. 6's "Incorrect Starting Address for the
-  Track" exists to break that coincidence. When it did, the out-of-order data
-  track's extent collapsed to zero — so it owned no sector and became
-  **invisible** to the map — while its neighbour's extent stretched over the
-  region it vacated. `accudisc_check_audio_range()` then returned **ok** for a
-  span covering a data track. Measured before and after on a synthetic TOC.
+  **Fixed two ways, deliberately keeping both.** Extents are computed in
+  *address* order (`next_by_address()`) — not a hardening measure but the correct
+  definition, identical on honest media; and `accudisc_toc.anomalies` records
+  structural defects, the three meaning the map cannot be believed (`lba_order`,
+  `overlap`, `leadout_before`) making the guard refuse with `toc_untrusted`.
+  **The first defence is only as good as our imagination about which orderings
+  can be violated; the second does not depend on having predicted the trick.**
+  Six further flags are reported only — their discs are still described
+  correctly, and over-refusing would break media that reads fine.
 
-  Fixed two ways, deliberately keeping both:
-    - extents are computed in **address** order (`next_by_address()`) — not a
-      hardening measure but the correct definition, and identical on honest
-      media;
-    - `accudisc_toc.anomalies` records structural defects, and the three that
-      mean the map cannot be believed (`lba_order`, `overlap`,
-      `leadout_before`) make the guard refuse outright with `toc_untrusted`.
+  **Deliberately not defended against: "Data Track Disguised as Audio".** CTRL is
+  the TOC's only statement about track type; if it lies, no self-consistency
+  check catches it. It surfaces at read time as sense key 5 / ASC 0x64, which the
+  read engine already stops on. Recorded so nobody later "fixes" it with a
+  heuristic that guesses track type from content — that is analysis (out of scope
+  per CLAUDE.md), and it would be guessing besides.
 
-  The first defence is only as good as our imagination about which orderings
-  can be violated; the second does not depend on having predicted the trick.
-
-  Six further flags (`past_leadout`, `empty_track`, `negative_lba`,
-  `bad_track_num`, `range_mismatch`, `bad_session`) are **reported only** —
-  their discs are still described correctly, and over-refusing would break media
-  that reads fine. Surfaced as `anomalies=` on the `toc` line, absent entirely
-  on a well-formed disc.
-
-  **Deliberately not defended against:** "Data Track Disguised as Audio". CTRL
-  is the TOC's only statement about track type; if it lies, no self-consistency
-  check catches it. It surfaces at read time as sense key 5 / ASC 0x64, which
-  the read engine already stops on. Recorded so nobody later "fixes" this with a
-  heuristic that guesses track type from content — that is analysis (out of
-  scope per CLAUDE.md) and it would be guessing besides.
-
-  Two of his observations worth carrying forward: a drive may **remap
-  non-standard point numbers into the legal range** (he cites an NEC unit
-  reporting `0xAB` as `0x6F`), so an in-range track number is not proof it was
-  recorded that way; and non-standard points are **invisible to READ TOC
-  entirely**, including format 2 — reaching them needs subchannel reads of a
-  later session's lead-in, which bounds what our parser can ever see.
+  Two observations bounding what our parser can ever see: a drive may **remap
+  non-standard point numbers into the legal range** (an NEC unit reporting `0xAB`
+  as `0x6F`), so an in-range track number is not proof it was recorded that way;
+  and non-standard points are **invisible to READ TOC entirely**, format 2
+  included — reaching them needs subchannel reads of a later session's lead-in.
 
 - **[P2] Acquire copy-protected test discs.** Also on cdda2img's TODO; recorded
   here because the need is ours first — the §11 hardening is verified only
@@ -1288,6 +1147,63 @@ Headline items, for grep:
 
 ## Outstanding — carried from 2026-07-26 (phase 3 landed; these did not)
 
+### 0. RECOVERED sectors were returned WRONG, 9/9 — `[P1]`, cdda2img §89.5, NOT DIAGNOSED
+
+**The most serious open claim against the read engine.** Keith ran five
+whole-disc reads of Tracy at 40/32/24/8/4 (`--retries 3 --c2-retries 4
+--verify 1 --overlap 2 --ladder 40,32,24,8,4 --driver plextor`, each with
+`--pcm --c2f --sub raw --map-file`), diffed against a CTDB-repaired reference
+that then verified 11/11 AccurateRip at confidence 200. Result: **nine corrupt
+sectors, ten flagged map bytes, every flag state 4 = RECOVERED, and every flag
+sits at exactly corrupt_LBA + 1** — never 0, −1, or +2. At documented indexing
+recall is 0/9; shifted one, 9/9 with precision 9/10. All five `.c2f` files are
+47,890,248 bytes of **zeros**, so C2 was silent throughout.
+
+Mechanisms, none excluded yet:
+
+- **H1 — storage off by one.** Byte for sector *N* written at *N*+1.
+- **H2 — indexing correct, RECOVERED is simply false.** *N*+1 really was
+  recovered and *N* was mis-delivered carrying no flag. Requires the recovered
+  neighbour to land at +1 nine times running; cdda2img calls that a stretch.
+- **H3 — units mismatch at the boundary.** We never apply the read offset
+  (`cli/main.c:679`), so our PCM and map are both raw drive-space. If their
+  artefact was offset-corrected for CTDB, "corrupt LBA" and "flagged LBA" are
+  different coordinate systems. Does not obviously give a clean +1 nine times.
+
+**Checked and correct as written** (so H1 is not where it would obviously be):
+`src/read/engine.c:554-556` computes `idx = cur - req->lba`; `cli/main.c:1376,
+1382,1396` does `ftruncate(count)` / `mmap(count)` / `req.status_map = map` with
+no header or padding. **Not yet audited:** `read_sector`, and `read_span`'s
+per-sector fallback loop which derives its own `cur = lba + s`.
+
+Discriminator requested in §bh.2, costs nothing: a uniform +1 shift never writes
+index 0, so **byte 0 of their five existing map files** decides it — `0x01` (OK)
+excludes whole-array H1, `0x00` (PENDING) on a capture that read sector 0 fine
+confirms it. Byte `count-1` is the same test at the far end.
+
+Independent of the +1, the semantic defect is real and ours: `consensus()`
+(`engine.c:317-323`) returns 1 on the first byte-for-byte agreement between any
+two reads. **That is a stability test, not a correctness test** — two reads can
+agree on the same wrong bytes — yet `ACCUDISC_MAP_RECOVERED` is documented as
+"problem seen, clean/agreeing copy won", which reads as fidelity. Header text to
+be fixed regardless of how the +1 resolves.
+
+Next experiment (needs the drive, Tracy loaded, Keith's call): re-read one of the
+nine LBAs and compare delivered bytes against the CTDB reference. Clean ⇒ the
+consensus is unstable rather than wrong, a different defect with a different fix.
+
+**Also fixed en route:** §89.6 asserted our span-finder shares
+`MAP_NEEDS_RECOVERY = {0x2,0x3,0x5}` (0x4 excluded). **We have no span-finder** —
+`recovery_bench.py` is in their tree. Our only map consumer is the CLI glyph
+table (`cli/main.c:1049-1054`), where RECOVERED already ranks above OK and
+renders `r`. Corrected in §bh.4.
+
+Severity is **not comparable across states** and this should be documented:
+C2 = `log2(fired bits)` (`engine.c:50`), SUSPECT = `log2(differing bytes)`
+(`engine.c:62`), RECOVERED = raw **attempt count** (`engine.c:57`). That last one
+explains §89.5's "unexplained" asymmetry — 40x sev 1 vs 32x sev 3 on the same LBA
+with byte-identical PCM is expected, not anomalous.
+
 ### 1. Remove all SpeedRead guards — `[P1]`, USER-DIRECTED, NOT STARTED
 
 **Keith's ruling 2026-07-26: "Remove all guards for SpeedRead. CDDA is
@@ -1376,9 +1292,45 @@ CD-RW audio disc would report 32 against a stock 40, and `adsc_uncap_classify`
 must decide whether 32 < 40 means OFF or means "a class this table does not
 model". If `max_x` is media-invariant the question evaporates.
 
-Two-minute check with a CD-RW audio disc in the tray; cdda2img offered to run it.
+**Sharpened 2026-07-26 (reply §bg).** The low reading they framed it around is
+the *benign* branch: 32 < 40 resolves to OFF and the uncap really is off. Two
+worse branches, both untested, both invisible so far because every page-2A
+reading either side has taken was with an **audio disc loaded**:
+
+- **False negative.** One observation (40 off / 48 on, audio media) fits two
+  mechanisms. **A:** the uncap reports the *data* ceiling regardless of media →
+  CD-RW audio goes to 48, `48 > 40`, `LIKELY_ON`, row is fine. **B:** the uncap
+  lifts the media ceiling by one class → CD-RW audio goes to 40, and `uncap.c:83`
+  uses strict `>`, so equality returns `ACCUDISC_UNCAP_OFF` **while the uncap is
+  on**. Our data cannot separate A from B.
+- **False positive, on a stock drive.** Uncap OFF + a **data** disc: if `max_x`
+  is media-derived it reads the data figure, `> 40`, → `LIKELY_ON` on a drive
+  nobody touched. cdda2img refuses on `LIKELY_ON`.
+
+Discriminator asked for in §bg.4 — page-2A `max_x`, uncap off, under three tray
+states: audio / data / **empty** (no media class to derive from, so it is
+diagnostic alone). Same number under all three ⇒ media-invariant, close this.
+Their CD-RW audio disc then settles A vs B. Not run by us: it needs disc swaps
+and Tracy is loaded for their §9.3 ladder work.
+
 **Only matters if the classifier survives task 1** — if the whole inference path
-goes with the guards, close this as moot.
+goes with the guards, close this as moot. Note the *reporting* path plausibly
+survives even so, since task 1 removes enforcement only.
+
+### 5b. `ACCUDISC_UNCAP_OFF` is labelled authoritative but source 3 infers it — `[P3]`
+
+Found while writing §bg. `adsc_uncap_classify` (`src/drive/uncap.c:83`) returns
+`LIKELY_ON` **or** `OFF` from the same speed comparison, but only one branch
+carries the hedge: `accudisc.h:319` documents `ACCUDISC_UNCAP_OFF = 0` as
+*authoritative*, and sources 1–2 do produce it authoritatively. A consumer cannot
+tell a driver-confirmed off from a speed-inferred off — they collapse to one
+value, and there is no `LIKELY_OFF`. Independent of the media-class question
+above; the asymmetry exists even if `max_x` turns out media-invariant.
+
+Cheapest fix is a fourth enum value; that is an ABI addition, so it wants the
+same treatment as any other (existing consumers must keep compiling, and
+`LIKELY_OFF` must not silently read as `OFF = 0`). cdda2img told not to build on
+the distinction yet.
 
 ### 6. Phase 4 — the Python binding — `[P2]`
 
@@ -1390,10 +1342,13 @@ reads freed memory as plausible PCM. `ERR_NOTFOUND` is absence, not failure;
 ~13–15 k times per whole disc, so per-call FFI cost is a non-issue — the ~1 GB
 copy is the real cost.
 
-### 7. cdda2img §88 is unanswered
+### 7. cdda2img §88 — ANSWERED 2026-07-26 (§bg)
 
-Their §88.2 media-class question (task 5) and their offer to test it. Outbox is
-`cdda2img/private/AccuDisc.md`; last sent was §be2.
+Premise conceded (we quoted the manual's three ceilings in our own §au.1 and
+then built a one-row table), the question sharpened into the A/B discriminator
+and the false-positive direction, and the three-tray-state measurement requested.
+**Waiting on them** for the readings — see task 5. Outbox
+`cdda2img/private/AccuDisc.md`; last sent §bg.
 
 ### 8. Their binary depends on our `build/` existing — `[P3]`, note only
 
@@ -1409,5 +1364,16 @@ Installing properly (task 2) would fix both.
 - Python / Rust bindings (generated against `include/accudisc/*.h` only).
   **Reopened 2026-07-25** — see "Library API completion" above for the
   prerequisites.
-- Man page (must mirror `docs/ATTRIBUTION.md`).
+- Man page (must mirror `docs/reference/ATTRIBUTION.md`).
+  **No longer deferred — first cut written 2026-07-26:** `docs/man/accudisc.1`
+  (CLI) and `docs/man/accudisc.8` (library/API). Both are untracked and neither
+  is installed by CMake yet. **Outstanding against this entry:** the pages do not
+  yet mirror `ATTRIBUTION.md` — they credit nothing beyond the MIT statement, so
+  the reference-source credits still need adding.
 - Write / burn (DAO) path — paused; do not start without direction.
+  **This line is stale as written.** The DAO path shipped and is
+  hardware-verified (`src/write/`, `RECORDING_PLAN.md` §9 phases 1–2 and §11.7/
+  §11.8). Left in place rather than deleted because the *decision* it records —
+  do not extend the write path without direction — still stands, and RECORDING_
+  PLAN §9 phases 3–5 (`--sub` passthrough, vendor write features) are genuinely
+  not started.

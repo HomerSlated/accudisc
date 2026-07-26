@@ -3,7 +3,8 @@
 Low-level Red Book CD-DA read/write tool: a C shared library (`libaccudisc`),
 a CLI (`accudisc`), and language bindings (Python, Rust). Think "a far more
 advanced cdrdao", scoped strictly to CD-DA — audio CDs and the audio portion
-of Mixed Mode discs. No ISO9660/CD-ROM data processing, no DVD/BD.
+of Mixed Mode discs. No ISO9660/CD-ROM data processing, and no DVD/BD *today* —
+but that boundary is current rather than permanent; see "Non-CD media" below.
 
 ## Scope
 
@@ -15,6 +16,22 @@ of Mixed Mode discs. No ISO9660/CD-ROM data processing, no DVD/BD.
   it at all. (The known rips came from specific Blu-ray players, never a PC
   drive.) A *hybrid* SACD's CD layer is ordinary Red Book and already reads
   as CD-DA — that is the whole of our SACD story.
+- **Non-CD media (DVD/BD) — NOT in scope today, but a *possible* future
+  addition rather than a refusal.** Nothing outside CD-DA is implemented or
+  planned for the current phases and no work may assume it; do not start any of
+  it without direction. This differs from SA-CD above **in kind**: SACD is
+  physically unreachable by a PC drive, whereas DVD/BD are ordinary media this
+  drive class already addresses, so the boundary here is a scoping decision that
+  can be revisited. Candidate directions: DVD ripping, and the live one —
+  **Keith's own HD audio disc format**, still under exploration. Design notes:
+  `docs/research/hires-backward-compatible-audio.md`, whose current landing point
+  (§9) is a personal archival container — FLAC at native depth/rate on a **UDF
+  disc at DVD density**, backward compatibility deliberately abandoned. Note what
+  links the two halves of this bullet: if AccuDisc ever becomes the carriage tool
+  for that format, it needs a DVD **write** path, i.e. exactly the non-CD
+  functionality above. That note's own framing still stands as the design of
+  record — AccuDisc supplies **carriage only**, never codec design, and the
+  format itself is likely a separate repo.
 - **Write** Red Book CD-R/RW (DAO).
 - **No post-processing, no lookups** — no CDDB/MusicBrainz, no analysis;
   AccuDisc only moves bits. Reads (whole disc / track / TOC / subchannel /

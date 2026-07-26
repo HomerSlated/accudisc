@@ -29,9 +29,88 @@ set(CMAKE_C_EXTENSIONS ON) # SG_IO / ioctl need _GNU_SOURCE-adjacent APIs
 option(ACCUDISC_BUILD_CLI "Build the accudisc command-line tool" ON)
 option(ACCUDISC_BUILD_TESTS "Build tests" ON)
 
+# Post-link steps. Both default OFF: a build that needs privilege, or that
+# throws away symbols, is a bad default for CI, packagers, and anyone building
+# this who is not Keith. Enable per build tree:
+#
+#   cmake -B build -DACCUDISC_STRIP_BINARIES=ON -DACCUDISC_SETCAP_AFTER_BUILD=ON
+#
+# ON by default (Keith, 2026-07-26) — but see the build-type guard below: this
+# is forced OFF for Debug and RelWithDebInfo, so "non-debug targets" is
+# structural, not a convention someone has to remember.
+option(ACCUDISC_STRIP_BINARIES
+    "strip --strip-unneeded the CLI and shared library after each link" ON)
+# ON by default (Keith, 2026-07-26): the tool has limited functionality
+# without it — every vendor opcode and the whole burn path need CAP_SYS_RAWIO,
+# and the capability binds to the inode, so each relink silently disarms the
+# binary. Defaulting this ON makes "armed" the normal state instead of a step
+# someone has to remember after every build.
+#
+# This has NO effect on distribution: file capabilities do not survive a
+# tarball, a package, or a copy to another machine. It is purely a local
+# development convenience.
+#
+# CONSEQUENCE, stated plainly: on a host with no passwordless rule for
+# ACCUDISC_SETCAP_COMMAND the post-link step FAILS, and the build fails with
+# it. That is deliberate — see cli/CMakeLists.txt — but it means anyone
+# building this who is not us wants:
+#
+#   cmake -B build -DACCUDISC_SETCAP_AFTER_BUILD=OFF
+#
+option(ACCUDISC_SETCAP_AFTER_BUILD
+    "re-apply cap_sys_rawio to the CLI after each link (needs a passwordless \
+privilege rule for setcap; see ACCUDISC_SETCAP_COMMAND)" ON)
+
+# The privileged setcap invocation, as a list. NOTE THE ABSOLUTE PATH: doas
+# matches the command string as *written*, not the resolved binary. On this
+# host `command -v setcap` reports /bin/setcap, which is the same inode as
+# /usr/bin/setcap under usrmerge but does NOT match a doas rule keyed on the
+# latter — it falls through to a rule wanting a password and fails with
+# "doas: Authentication failed". So do not substitute ${SETCAP_EXECUTABLE}
+# here; that variable is precisely the wrong thing to hand to doas.
+set(ACCUDISC_SETCAP_COMMAND doas /usr/bin/setcap CACHE STRING
+    "privileged setcap invocation (e.g. 'sudo;/usr/sbin/setcap')")
+
 add_compile_options(-Wall -Wextra)
 
 include(GNUInstallDirs)
+
+# Resolve the strip decision BEFORE the subdirectories, because
+# add_custom_command(TARGET ...) may only be called in the directory that
+# created the target — so src/ and cli/ each attach their own, and both read
+# ACCUDISC_STRIP_EFFECTIVE from here.
+#
+# Debug and RelWithDebInfo are never stripped, whatever the option says: the
+# symbols are the entire point of that build tree. Keep a second directory for
+# debugging and it is un-strippable by construction —
+#
+#   cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug
+#
+set(ACCUDISC_STRIP_EFFECTIVE ${ACCUDISC_STRIP_BINARIES})
+set(_adsc_nostrip_why "")
+if(CMAKE_BUILD_TYPE MATCHES "^([Dd]ebug|RelWithDebInfo)$")
+    set(_adsc_nostrip_why "CMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}")
+# The sanitizer builds this project actually uses do NOT set CMAKE_BUILD_TYPE
+# — they pass flags directly:
+#
+#   cmake -B build-asan -DCMAKE_C_COMPILER=clang \
+#         -DCMAKE_C_FLAGS="-fsanitize=address,undefined"
+#
+# Stripping those destroys symbolized traces, i.e. the entire value of the
+# run, and the build type guard above would never have caught it. Detect the
+# flags themselves, not the label someone remembered to set.
+elseif(CMAKE_C_FLAGS MATCHES "-fsanitize|(^| )-g([0-9]|gdb)?( |$)")
+    set(_adsc_nostrip_why "debug/sanitizer flags in CMAKE_C_FLAGS")
+endif()
+if(_adsc_nostrip_why)
+    if(ACCUDISC_STRIP_BINARIES)
+        message(STATUS "accudisc: ${_adsc_nostrip_why} — not stripping")
+    endif()
+    set(ACCUDISC_STRIP_EFFECTIVE OFF)
+endif()
+if(ACCUDISC_STRIP_EFFECTIVE)
+    find_program(STRIP_EXECUTABLE strip REQUIRED)
+endif()
 
 add_subdirectory(src)
 add_subdirectory(drivers)
@@ -60,6 +139,10 @@ if(ACCUDISC_BUILD_CLI)
             COMMENT "setcap cap_sys_rawio+ep on the built accudisc (needs privilege; re-run after each rebuild)"
             VERBATIM)
     endif()
+
+    # The automatic post-link strip/setcap steps live in cli/CMakeLists.txt —
+    # add_custom_command(TARGET ...) must be issued where the target was
+    # created. See there for the ordering constraint.
 endif()
 
 if(ACCUDISC_BUILD_TESTS)

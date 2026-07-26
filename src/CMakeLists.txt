@@ -70,3 +70,16 @@ install(TARGETS accudisc accudisc_static
 install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/accudisc
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
+
+# Opt-in post-link strip (see ACCUDISC_STRIP_BINARIES in ../CMakeLists.txt).
+# The SHARED library only — libaccudisc.a is deliberately left alone, because
+# a static archive's symbol table IS its linking interface and
+# --strip-unneeded there would break every static link against it. Only
+# --strip-debug is ever safe on an archive, and we do not need it. The shared
+# object keeps .dynsym, so linking and dlopen are unaffected; what goes is
+# .symtab, i.e. backtrace quality — hence the Debug/RelWithDebInfo exemption.
+if(ACCUDISC_STRIP_EFFECTIVE)
+    add_custom_command(TARGET accudisc POST_BUILD
+        COMMAND ${STRIP_EXECUTABLE} --strip-unneeded $<TARGET_FILE:accudisc>
+        COMMENT "strip --strip-unneeded libaccudisc" VERBATIM)
+endif()

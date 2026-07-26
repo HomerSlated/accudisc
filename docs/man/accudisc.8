@@ -1,0 +1,762 @@
+'\" t
+.\" SPDX-License-Identifier: MIT
+.\" Manual page for libaccudisc, the AccuDisc public C API.
+.\" Requires the tbl(1) preprocessor (see the '\" t line above).
+.TH ACCUDISC 8 "2026-07-26" "AccuDisc 0.2.0" "AccuDisc Library Reference"
+.SH NAME
+libaccudisc, accudisc \- AccuDisc CD\-DA capture and recording library
+.SH SYNOPSIS
+.nf
+.B #include <accudisc/accudisc.h>
+.B #include <accudisc/driver.h>
+.PP
+.B cc \fIfile.c\fB $(pkg\-config \-\-cflags \-\-libs accudisc)
+.fi
+.SH DESCRIPTION
+.B libaccudisc
+is a C shared library for low-level Red Book CD\-DA capture and Disc\-At\-Once
+recording. It is the engine behind
+.BR accudisc (1),
+and the interface a front-end application is expected to use directly.
+.PP
+The public header
+.I include/accudisc/accudisc.h
+is the
+.B contract.
+Nothing under
+.I src/
+is part of the interface, and bindings are written against the header
+exclusively. Every identifier is prefixed
+.B accudisc_
+or
+.BR ACCUDISC_ ,
+device handles are opaque, and no libc types leak into the ABI where that is
+avoidable.
+.PP
+The library only moves bits. It performs no post-processing, no metadata
+lookups, no encoding and no analysis; those belong to the calling application,
+as do the absolute verification gates (AccurateRip, CTDB).
+.SH VERSIONING
+.nf
+.B #define ACCUDISC_VERSION_MAJOR 0
+.B #define ACCUDISC_VERSION_MINOR 2
+.B #define ACCUDISC_VERSION_PATCH 0
+.PP
+.B const char *accudisc_version_string(void);
+.B void accudisc_version(int *major, int *minor, int *patch);
+.fi
+.PP
+The macros describe the header a caller compiled against; the functions report
+the library actually linked. Comparing them detects header/library skew. The
+current version is 0.2.0 and the soname remains
+.IR libaccudisc.so.0 .
+.SH ERROR MODEL
+Every fallible function returns
+.B ACCUDISC_OK
+(0) or a negative
+.BR accudisc_err .
+.BR accudisc_strerror (3)-style
+naming is provided by
+.B accudisc_strerror(int)
+which returns a static string.
+.TS
+lb lb lb
+l l l.
+value	name	meaning
+0	ACCUDISC_OK	success
+\-1	ACCUDISC_ERR_INVAL	invalid argument
+\-2	ACCUDISC_ERR_NOMEM	allocation failure
+\-3	ACCUDISC_ERR_OPEN	device would not open
+\-4	ACCUDISC_ERR_IO	transport/driver failure
+\-5	ACCUDISC_ERR_SENSE	drive: CHECK CONDITION
+\-6	ACCUDISC_ERR_SHORT	response too short
+\-7	ACCUDISC_ERR_UNSUPPORTED	drive or build lacks it
+\-8	ACCUDISC_ERR_CANCELLED	cancelled by flag or sink
+\-9	ACCUDISC_ERR_CRC	checksum failed
+\-10	ACCUDISC_ERR_NOTFOUND	data legitimately absent
+\-11	ACCUDISC_ERR_UNSAFE_COMBINATION	self-defeating request
+\-12	ACCUDISC_ERR_ABI	bad struct \fBsize\fR
+.TE
+.PP
+Three of these carry meaning a caller must not flatten.
+.TP
+.B ACCUDISC_ERR_NOTFOUND
+The drive answered and the data legitimately is not there \(em no CD\-Text on
+this disc, no ISRC on this track, no ATIP, no driver file. A drive that
+.I rejects
+the command returns
+.B ACCUDISC_ERR_SENSE
+instead. Conflating them turns
+.RI \(lq "this disc has no CD\-Text" \(rq
+into
+.RI \(lq "this drive cannot read CD\-Text" \(rq,
+and a binding that maps every non-OK value onto one exception loses exactly
+that distinction.
+.TP
+.B ACCUDISC_ERR_UNSAFE_COMBINATION
+The request would return silently corrupt data given the drive's current
+state. It is never returned for a merely unusual request \(em only where the
+corruption is known and measured. Today the one case is capturing subchannel
+while the vendor read-speed uncap is authoritatively on. Where the request
+struct offers an override field, the caller may proceed deliberately.
+.TP
+.B ACCUDISC_ERR_ABI
+A caller-allocated struct declared a
+.B size
+this build cannot honour. It means
+.RI \(lq "rebuild against this header" \(rq,
+not
+.RI \(lq "fix your arguments" \(rq,
+which is why it is distinct from
+.BR ACCUDISC_ERR_INVAL .
+See
+.B ABI SIZE NEGOTIATION
+below.
+.PP
+.B ACCUDISC_WROTE_WITH_CAVEATS
+(the value 1) is a
+.B positive
+return from
+.BR accudisc_write ,
+not an error: the burn
+.I completed
+but a caveat was logged. Test with
+.RB \(lq "rc > 0" \(rq,
+never
+.RB \(lq "rc != ACCUDISC_OK" \(rq.
+A caller testing
+.RB \(lq "if (rc)" \(rq
+treats a successful burn as a failure; one testing
+.RB \(lq "if (rc < 0)" \(rq
+silently drops the caveat. Both compile and neither is caught by a type check.
+.PP
+After a failure,
+.B accudisc_last_sense()
+returns the decoded SCSI sense (key, ASC, ASCQ, plus a
+.I valid
+flag), and
+.B accudisc_last_io()
+returns a short human string explaining the most recent
+.B ACCUDISC_ERR_IO
+\(em an I/O failure carries no sense data, so without it a transport failure
+cannot be attributed after the fact. The string is owned by the device and is
+valid only until the next command.
+.SH OBJECT MODEL
+.SS Device handles
+.nf
+.B typedef struct accudisc_device accudisc_device;
+.PP
+.B #define ACCUDISC_OPEN_RDWR 0x1u
+.PP
+.B accudisc_device *accudisc_open(const char *path, unsigned flags, int *err);
+.B void accudisc_close(accudisc_device *dev);
+.fi
+.PP
+.B accudisc_open()
+returns NULL on failure and, when
+.I err
+is non-NULL, stores the
+.B accudisc_err
+cause there.
+.B ACCUDISC_OPEN_RDWR
+is required for vendor opcodes, MODE SELECT and writing, because the kernel's
+unprivileged SG_IO command filter blocks those on a read-only descriptor. Plain
+reading should not set it \(em least privilege.
+.PP
+.B accudisc_set_log(dev, fn, user)
+installs an optional sink for library and driver diagnostics. The default is to
+discard them. It is the only channel on which some information (for example the
+specific write caveat) is reported at all.
+.SS Buffer ownership
+Buffers the library allocates for the caller \(em the raw TOC, full TOC and
+CD\-Text blobs, and the decoded
+.B accudisc_cdtext
+\(em must be released with
+.BR accudisc_free() ,
+not with the caller's runtime free. Everything else is caller-allocated.
+.SH ABI SIZE NEGOTIATION
+.B accudisc_read_req
+and
+.B accudisc_read_stats
+are caller-allocated, transparent, cross FFI boundaries, and have both grown in
+place across this project's history (the request 32 \(-> 40 \(-> 56 bytes, the
+stats 80 \(-> 104 \(-> 128). The CLI never noticed, because it is rebuilt with
+the library. A binding compiled against one header and loaded against a
+different shared object would have run off the end of a struct \(em in the worst
+case reading garbage into a safety flag, producing well-formed data with the
+wrong referent and nothing downstream able to tell.
+.PP
+So each carries its own size as its first field, and the caller sets it:
+.PP
+.RS 4
+.nf
+.B accudisc_read_req   req = ACCUDISC_READ_REQ_INIT;
+.B accudisc_read_stats st  = ACCUDISC_READ_STATS_INIT;
+.fi
+.RE
+.PP
+The two initialiser macros expand to a designated initialiser setting
+.B .size
+to
+.BR sizeof() .
+The rules are asymmetric because the direction of the write is:
+.TP
+.B IN (accudisc_read_req \(em the library reads it)
+A
+.B smaller
+size than this build's is accepted and the missing tail is treated as zero, so
+an older caller gets older behaviour. A
+.B larger
+size is accepted only if every byte past this build's end is zero; a nonzero
+one means the caller is asking for a feature this library does not have, and
+gets
+.B ACCUDISC_ERR_ABI
+rather than silence.
+.TP
+.B OUT (accudisc_read_stats \(em the library writes it)
+A
+.B smaller
+size is honoured by writing only that many bytes. A
+.B larger
+size is
+.BR ACCUDISC_ERR_ABI :
+the library would otherwise leave counters the caller believes in unfilled, and
+a zero meaning
+.RI \(lq "not computed" \(rq
+is indistinguishable from a zero meaning
+.RI \(lq "none observed" \(rq.
+.PP
+A
+.B zero
+size is always
+.BR ACCUDISC_ERR_ABI .
+It is what a caller that forgot the macro produces, so forgetting fails loudly
+on the first call instead of scribbling. The only values with a meaning are
+.B sizeof()
+as some released header saw it.
+.PP
+Structs that do
+.I not
+carry a size are frozen: growing one is a soname bump, and the test suite pins
+their sizes so that growth cannot happen by accident.
+.B accudisc_chunk
+is the one that matters, because there the hazard runs the other way \(em the
+library allocates it and the sink reads it. It has been 32 bytes since it was
+introduced.
+.SH READING
+.nf
+.B int accudisc_read_cdda(accudisc_device *dev,
+.B "                       const accudisc_read_req *req,"
+.B "                       accudisc_sink_fn sink, void *user,"
+.B "                       accudisc_read_stats *stats);"
+.fi
+.PP
+Blocking. Streams
+.I req\->count
+sectors starting at
+.I req\->lba
+to
+.IR sink ,
+which may be NULL to read for status and statistics only.
+.I stats
+may be NULL.
+.PP
+The caller says
+.I what
+(the range),
+.I with what companions
+(C2 via
+.BR ACCUDISC_C2_NONE / _PTRS / _PTRS_BEB ,
+subchannel via
+.BR ACCUDISC_SUB_NONE / _RAW / _Q )
+and
+.I how
+(chunking, retries, speed, and the accuracy strategy:
+.IR c2_retries ,
+.IR verify_passes ,
+.IR overlap_sectors ,
+.IR speed_ladder ).
+With every accuracy field zero the read is a single-pass fast capture.
+.PP
+Audio, C2 and subchannel for a given sector always come from the
+.B same READ CD transfer.
+That single-read alignment is the property C2-guided recovery depends on, and
+it is why a rescued sector is replaced whole rather than field by field.
+.PP
+.I req\->status_map,
+when non-NULL, must point at
+.I count
+bytes and receives one status byte per sector, updated in place as the read
+proceeds. The encoding is
+.BR ACCUDISC_MAP_STATE() " / " ACCUDISC_MAP_SEVERITY()
+over the
+.B ACCUDISC_MAP_*
+constants; see
+.BR accudisc (1)
+for the table. Reading the map from another thread while the device is being
+driven is safe and is the intended progress-tracking pattern.
+.PP
+.I req\->cancel,
+when non-NULL, is polled between chunks; a nonzero value aborts the read with
+.BR ACCUDISC_ERR_CANCELLED .
+.SS The sink callback
+.nf
+.B typedef struct accudisc_chunk {
+.B "    uint32_t lba;"
+.B "    uint32_t nsec;"
+.B "    const uint8_t *data;"
+.B "    uint32_t sector_len;"
+.B "    uint32_t audio_len;"
+.B "    uint32_t c2_len;"
+.B "    uint32_t sub_len;"
+.B "} accudisc_chunk;"
+.PP
+.B typedef int (*accudisc_sink_fn)(void *user, const accudisc_chunk *chunk);
+.fi
+.PP
+.I data
+holds
+.I nsec
+consecutive sectors of
+.I sector_len
+bytes each, laid out AUDIO
+.RI ( audio_len )
+then C2
+.RI ( c2_len )
+then SUB
+.RI ( sub_len ).
+Hard-unreadable sectors arrive zero-filled with an all-ones C2 bitmap, so the
+streams never desync and the delivered sector count always equals the requested
+one.
+.PP
+.B The buffer is library-owned and valid only for the duration of the call.
+A pointer retained past the callback's return reads freed memory. Copy what you
+need, or consume it in place.
+.PP
+Returning 0 continues the read; any nonzero value cancels it and
+.B accudisc_read_cdda()
+returns
+.BR ACCUDISC_ERR_CANCELLED .
+.SS Statistics
+.B accudisc_read_stats
+reports totals over the completed read: sectors read, C2-flagged sectors and
+total fired C2 bits, hard errors broken down by sense key, the first and last
+flagged LBA (\-1 when none), the consensus outcomes
+.RI ( sectors_recovered ,
+.IR sectors_suspect ,
+.IR rereads ),
+.I slips
+(disagreements that were a pure positional shift \(em the C2-invisible slip
+class; a nonzero count says use overlap checking on this drive), and the
+Q-subchannel CRC census
+.RI ( subq_total ,
+.IR subq_ok ),
+counted only for raw-subchannel reads. The subchannel has no CIRC protection;
+its per-frame CRC\-16 is its only integrity check and it fails independently of
+the audio C2 figures.
+.SH DEVICE AND DISC INTERROGATION
+Selected calls; the header is the full list and carries the per-call semantics.
+.TP
+.B accudisc_drive_identify()
+INQUIRY vendor/product/revision, space-trimmed.
+.TP
+.B accudisc_read_offset()
+The drive's manufacturing read offset in samples from the built-in table;
+.B ACCUDISC_ERR_NOTFOUND
+when the model is unknown.
+.TP
+.BR accudisc_read_toc() ", " accudisc_read_toc_src()
+READ TOC format 0, parsed. The
+.I _src
+form additionally reports which physical operation answered and, on a fallback,
+why \(em format 2 (the lead-in, carrying session structure) and format 0 (the
+drive's decoded descriptors) are different operations, not two views of one
+thing, and a marginal lead-in can fail one while the other answers perfectly.
+.TP
+.BR accudisc_read_full_toc() ", " accudisc_fulltoc_parse()
+The raw format-2 blob and its parser.
+.TP
+.BR accudisc_read_cdtext() ", " accudisc_cdtext_decode()
+The raw format-5 pack blob and its decoder. Decoding covers block 0, the first
+language, single-byte character packs, and the title / performer / songwriter /
+UPC\-ISRC types. Bytes are copied through verbatim with no character-set
+conversion, so UTF\-8-authored discs pass through undamaged and the caller
+interprets.
+.TP
+.B accudisc_probe_disc()
+The pre-flight disc-kind guard behind
+.BR "accudisc disc" .
+Composes GET CONFIGURATION, READ DISC INFORMATION and the track census; the
+profile gate precedes the census deliberately, so a non-CD medium cannot be
+promoted by its track counts.
+.TP
+.BR accudisc_probe_features() ", " accudisc_probe_accurate_stream() ", " accudisc_probe_c2_lag() ", " accudisc_probe_speed_ladder()
+Capability and behaviour probes. The speed-ladder probe is the only ground
+truth for what a rung actually delivers: mode page 2A reports the
+.IR setting ,
+not reality.
+.TP
+.BR accudisc_read_atip() ", " accudisc_atip_manufacturer()
+Recordable-media identification. All fields are reported raw as the disc
+encodes them.
+.TP
+.BR accudisc_scan_mcn() ", " accudisc_scan_isrc() ", " accudisc_scan_pregaps()
+Q-subchannel metadata. The pregap scan's window and its one-read-per-boundary
+rule live in the library so that every binding scans identically.
+.TP
+.BR accudisc_check_audio_range() ", " accudisc_plan_read_range()
+The range guard and the request planner. Both are pure functions over a TOC, so
+a caller can vet a range without touching the drive. Every refusal returns the
+same error code and the detail is in the reason field \(em message selection
+belongs to the front end, not the library.
+.SH WRITING
+.nf
+.B int accudisc_write(accudisc_device *dev, const char *toc_path,
+.B "                   const char *bin_path,"
+.B "                   const accudisc_write_opts *opts,"
+.B "                   void (*progress)(void *user, uint32_t done,"
+.B "                                    uint32_t total),"
+.B "                   void *user);"
+.fi
+.PP
+Burns one audio session Disc\-At\-Once from a cdrdao
+.I .toc
+and the raw s16 audio image it names. Requires a blank disc and an
+.B ACCUDISC_OPEN_RDWR
+handle.
+.B accudisc_write_opts
+carries
+.IR simulate ,
+.I byteswap
+and
+.IR speed ,
+plus
+.I cdtext_path
+\(em a raw READ TOC format-0x05 blob laid into the lead-in verbatim, byte-for-byte
+as
+.B accudisc_read_cdtext()
+emits it.
+.PP
+Return values:
+.B ACCUDISC_OK
+for a clean burn or clean simulate;
+.B ACCUDISC_WROTE_WITH_CAVEATS
+when the burn completed but see the log;
+.B ACCUDISC_ERR_UNSUPPORTED
+when the disc is not blank, in which case
+.I nothing
+was written; any other negative
+.B ACCUDISC_ERR_*
+for a transport, parse or local error. A negative return means the burn did not
+complete; a non-negative return means it did.
+.PP
+This API is marked provisional in the header: the write engine is young and its
+options struct may grow.
+.SH VENDOR DRIVERS
+.B libaccudisc
+itself is pure MMC/SG. No proprietary opcode is ever compiled into the core.
+Hardware-specific features live in external shared objects named
+.IR accudisc\-drv\- NAME .so ,
+loaded at runtime only when the calling application permits it \(em
+.B calling
+.B accudisc_driver_attach() IS the permission grant.
+Without it a device never issues a vendor opcode.
+.PP
+.nf
+.B int accudisc_driver_attach(accudisc_device *dev, const char *name,
+.B "                           const char *dir);"
+.B void accudisc_driver_detach(accudisc_device *dev);
+.B const char *accudisc_access_method(accudisc_device *dev);
+.fi
+.PP
+.I name
+requests a specific driver, or NULL auto-matches the identified drive.
+.I dir
+overrides the search directory, or NULL uses
+.B $ACCUDISC_DRIVER_DIR
+falling back to the installed default. The attach order is enforced by the
+library:
+.RS 4
+.IP 1. 4
+the drive is identified (INQUIRY);
+.IP 2. 4
+a driver is located, by explicit name or by matching the drive ID;
+.IP 3. 4
+the calling application's permission is implied by the attach call itself;
+.IP 4. 4
+.B selftest()
+must demonstrate that the opcode path genuinely works on this drive, by
+reading, setting and re-reading real device state;
+.IP 5. 4
+on any failure the device silently remains generic MMC/SG, fully usable.
+.RE
+.PP
+.B accudisc_driver_attach()
+returns
+.B ACCUDISC_OK
+when attached,
+.B ACCUDISC_ERR_NOTFOUND
+when no driver file matched (a warn-only situation), or
+.B ACCUDISC_ERR_UNSUPPORTED
+when a driver was found but its selftest failed.
+.B accudisc_access_method()
+returns a never-NULL human string \(em
+.RI \(lq "generic MMC" \(rq
+or
+.RI \(lq "driver <name> (<description>)" \(rq
+\(em so an application can log which path it is on. Vendor opcodes need the
+kernel's full SG_IO command set, so the device must be opened with
+.B ACCUDISC_OPEN_RDWR
+or the selftest will fail.
+.SS Driver capabilities exposed today
+.TP
+.B Hardware error counters
+.BR accudisc_counter_scan_begin() ,
+.BR accudisc_counter_scan_read() ,
+.BR accudisc_counter_scan_end() ,
+and the composed
+.B accudisc_counter_census()
+which arms, scans a span sampling every
+.B ACCUDISC_CENSUS_CADENCE
+(75) sectors, and disarms on every exit path \(em which is the reason it exists
+as one call rather than three. 75 sectors is one second of audio, and that is
+why the reported figures are comparable with other C1/C2 tools.
+.TP
+.B Read-speed uncap
+.BR accudisc_speed_uncap_get() " / " accudisc_speed_uncap_set()
+toggle it;
+.B accudisc_speed_uncap_probe()
+reports it as
+.BR ACCUDISC_UNCAP_OFF ", " ACCUDISC_UNCAP_ON
+(both authoritative),
+.B ACCUDISC_UNCAP_LIKELY_ON
+(inferred from the drive's reported maximum exceeding this model's known stock
+ceiling) or
+.B ACCUDISC_UNCAP_UNKNOWN
+(no driver, and the model's stock ceiling has not been verified \(em which is
+not
+.RI \(lq off \(rq).
+The library refuses a read only on the authoritative values, because refusing
+on a guess would leave a caller unable to capture subchannel at all on a drive
+we merely fail to recognise.
+.IP
+The setting is
+.B persistent drive state:
+it survives the handle and the process.
+.BR accudisc_speed_uncap_push() " / " accudisc_speed_uncap_pop()
+are the scoped form \(em push reads the prior value first and does not attempt
+the set if that read fails, and stores \-1 in
+.I *prior_out
+when there is nothing to restore, so pop can be called unconditionally on every
+exit path including error paths.
+.SS Writing a driver
+.I include/accudisc/driver.h
+is the SDK. A driver never links against
+.BR libaccudisc :
+it receives an
+.B accudisc_host
+(callbacks for raw command execution and logging) and returns a static
+.B accudisc_driver
+descriptor from its single exported entry point,
+.PP
+.RS 4
+.B const accudisc_driver *accudisc_driver_entry(void);
+.RE
+.PP
+The descriptor's
+.IR abi ", " name ", " match " and " selftest
+are mandatory;
+.I abi
+must equal
+.B ACCUDISC_DRIVER_ABI
+(currently 2) or the library refuses the module. Capability slots may be NULL,
+meaning not offered.
+.PP
+The bundled
+.B plextor
+driver implements exactly two capabilities \(em the C1/C2/CU error-counter scan
+and the read-speed uncap. Other Plextor features have been reverse-engineered
+and pinned but are
+.B not
+reachable through this API; see
+.I drivers/plextor/FEATURES.md
+for the distinction between an opcode exchange verified on hardware and a
+feature wired into the driver.
+.SH THREADING AND DEVICE SHARING
+Device handles are
+.B not thread-safe.
+Use one handle per thread, or serialise access externally. Reading a status map
+while another thread drives the same device is safe, and is the intended
+progress-tracking pattern.
+.PP
+Beyond a single process, an optical drive is a single shared resource with
+.B persistent state:
+the read-speed setting, the vendor uncap, and the drive's own error counters
+all outlive a handle. Two processes driving one drive concurrently will
+interfere in ways that look like a bad disc rather than like contention. Take an
+external lock around the device node.
+.PP
+Setting a read-speed ceiling through SET STREAMING requires
+.BR CAP_SYS_RAWIO ;
+without it the library falls back to the unprivileged CDROM_SELECT_SPEED path,
+which drives treat as advisory.
+.SH EXAMPLES
+Open a device, identify it, and report the access method:
+.PP
+.RS 4
+.nf
+.B #include <accudisc/accudisc.h>
+.B #include <stdio.h>
+.PP
+.B "int err = 0;"
+.B "accudisc_device *dev = accudisc_open(\(dq/dev/sr0\(dq, 0, &err);"
+.PP
+.B "if (!dev) {"
+.B "        fprintf(stderr, \(dqopen: %s\en\(dq, accudisc_strerror(err));"
+.B "        return 2;"
+.B "}"
+.PP
+.B "accudisc_drive_id id;"
+.PP
+.B "if (accudisc_drive_identify(dev, &id) == ACCUDISC_OK)"
+.B "        printf(\(dq%s %s %s via %s\en\(dq, id.vendor, id.product,"
+.B "               id.revision, accudisc_access_method(dev));"
+.B "accudisc_close(dev);"
+.fi
+.RE
+.PP
+Read the TOC and print the audio tracks:
+.PP
+.RS 4
+.nf
+.B "accudisc_toc toc;"
+.PP
+.B "if (accudisc_read_toc(dev, &toc) == ACCUDISC_OK)"
+.B "        for (uint8_t i = 0; i < toc.track_count; i++) {"
+.B "                const accudisc_track *t = &toc.tracks[i];"
+.PP
+.B "                if (!ACCUDISC_TRACK_IS_AUDIO(t))"
+.B "                        continue;"
+.B "                printf(\(dqtrack %u lba %u\en\(dq, t->number, t->lba);"
+.B "        }"
+.fi
+.RE
+.PP
+A capture with a sink callback and a status map. Note the size macros, and that
+the chunk buffer is only valid inside the callback:
+.PP
+.RS 4
+.nf
+.B "static int sink(void *user, const accudisc_chunk *c)"
+.B "{"
+.B "        FILE *pcm = user;"
+.PP
+.B "        for (uint32_t s = 0; s < c->nsec; s++)"
+.B "                fwrite(c->data + (size_t)s * c->sector_len, 1,"
+.B "                       c->audio_len, pcm);"
+.B "        return 0;   /* nonzero cancels the read */"
+.B "}"
+.PP
+.B "accudisc_read_req   req = ACCUDISC_READ_REQ_INIT;"
+.B "accudisc_read_stats st  = ACCUDISC_READ_STATS_INIT;"
+.B "uint8_t *map = calloc(count, 1);"
+.PP
+.B "req.lba = start;"
+.B "req.count = count;"
+.B "req.c2 = ACCUDISC_C2_PTRS;"
+.B "req.sub = ACCUDISC_SUB_RAW;"
+.B "req.c2_retries = 8;"
+.B "req.verify_passes = 2;"
+.B "req.status_map = map;"
+.PP
+.B "int rc = accudisc_read_cdda(dev, &req, sink, pcm, &st);"
+.PP
+.B "if (rc == ACCUDISC_ERR_ABI)"
+.B "        fprintf(stderr, \(dqrebuild against this accudisc.h\en\(dq);"
+.B "else if (rc == ACCUDISC_OK && (st.hard_errors || st.sectors_suspect))"
+.B "        fprintf(stderr, \(dqdelivered, but degraded\en\(dq);"
+.fi
+.RE
+.SH LANGUAGE BINDINGS
+Python and Rust bindings are
+.B work in progress.
+.I bindings/python/
+and
+.I bindings/rust/
+exist as placeholders; nothing is implemented yet. The design is settled: a
+streaming API layered over the sink callback, generated against this header
+\(em never a subprocess wrapper around
+.BR accudisc (1),
+and never written against
+.IR src/ .
+.PP
+A binding reproduces the
+.I semantics
+of the CLI's process conventions (exit codes,
+.BR \-\-progress\-fd ,
+terminal rendering), not their mechanism. The mapping from each exit code to
+the library values that encode the same decision is tabulated in
+.IR docs/reference/cli\-machine\-interface.md .
+.PP
+Two binding-specific hazards are worth repeating: buffers the library allocated
+must be released through
+.BR accudisc_free() ,
+not the runtime's own allocator; and every
+.B accudisc_read_req
+/
+.B accudisc_read_stats
+must have its
+.B size
+field set, or the first call fails with
+.BR ACCUDISC_ERR_ABI .
+.SH ENVIRONMENT
+.TP
+.B ACCUDISC_DRIVER_DIR
+Directory searched for vendor driver modules when
+.B accudisc_driver_attach()
+is passed a NULL
+.IR dir .
+If unset, the installed driver directory compiled into the library is used.
+.SH FILES
+.TP
+.I include/accudisc/accudisc.h
+The public API contract.
+.TP
+.I include/accudisc/driver.h
+The vendor-driver SDK.
+.TP
+.IR <libdir> /accudisc/drivers/
+Installed vendor driver modules.
+.SH CREDITS
+The library's code is original, but knowledge in it was learned from prior art:
+the drive read-offset table is factual data from the
+.B REDUMP Disc Preservation Project
+(<https://redump.org>); command layouts and drive quirks were documented by
+.BR redumper ", " cdrtools ", " cdrdao " and " libcdio\-paranoia ;
+and the Plextor vendor command set used by the bundled driver is documented in
+.B QPxTool
+(GPL-2.0), credited as a courtesy reference \(em no source is copied, and every
+command was independently verified on hardware. The full record, which this
+summarises, is
+.IR docs/reference/ATTRIBUTION.md .
+See
+.BR accudisc (1)
+for the expanded version.
+.SH SEE ALSO
+.BR accudisc (1),
+.BR sg_raw (8),
+.BR mmap (2)
+.PP
+.IR docs/reference/cli\-machine\-interface.md " \(em the stable machine interface and its library equivalents."
+.br
+.IR docs/reference/RECOVERY.md " \(em recovery design; relative checks never outrank absolute gates."
+.br
+.IR docs/reference/RECORDING_PLAN.md " \(em the write path's design of record."
+.br
+.IR drivers/README.md " \(em vendor driver architecture and licensing."
+.SH AUTHORS
+The AccuDisc Authors.
+.SH LICENSE
+MIT. See the
+.I LICENSE
+file in the distribution.

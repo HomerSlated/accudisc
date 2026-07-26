@@ -1,0 +1,968 @@
+'\" t
+.\" SPDX-License-Identifier: MIT
+.\" Manual page for the accudisc command-line tool.
+.\" Requires the tbl(1) preprocessor (see the '\" t line above).
+.TH ACCUDISC 1 "2026-07-26" "AccuDisc 0.2.0" "User Commands"
+.SH NAME
+accudisc \- precision Red Book CD\-DA reader and writer
+.SH SYNOPSIS
+.B accudisc
+.RB [ \-\-device
+.IR DEV ]
+.RB [ \-\-driver
+.IR auto | NAME ]
+.RB [ \-\-drivers\-dir
+.IR DIR ]
+.I command
+.RI [ options ]
+.br
+.B accudisc
+.BR \-\-help | \-h
+.br
+.B accudisc
+.BR \-\-version | \-V
+.SH DESCRIPTION
+.B accudisc
+is the command-line front end to
+.BR accudisc (8),
+a low-level Red Book CD\-DA capture and recording library. It reads audio CDs
+\(em and the audio portion of Mixed Mode discs \(em together with the full range
+of data and metadata the format carries: TOC and session structure, the P\(enW
+subchannel, C2 error pointers, CD\-Text, ISRC, MCN, pregaps and indices. It also
+burns a single audio session Disc\-At\-Once to CD\-R/RW.
+.PP
+.B accudisc
+moves bits and reports what it saw. It performs no post-processing: no
+tagging, no encoding, no database lookups (CDDB, MusicBrainz), no audio
+analysis. That is a deliberate scope boundary; those tasks belong to the
+calling application.
+.PP
+The tool is designed to be driven by a front-end application as much as by a
+person. Machine-readable output \(em the token lines on stdout, the
+.B \-\-progress\-fd
+channel, the
+.B \-\-map\-file
+status map and the exit codes \(em is a stable contract, specified in
+.IR docs/reference/cli\-machine\-interface.md .
+Human-readable stderr output (the progress line, the summary block, log
+messages) is
+.B not
+stable and must not be parsed.
+.SS Global options
+These are accepted anywhere on the command line; the first bare word is the
+command and everything else is passed to it.
+.TP
+.BI \-\-device " DEV"
+Optical device to operate on. Default
+.IR /dev/sr0 .
+.TP
+.BI \-\-driver " auto" | NAME
+Permit loading a vendor driver.
+.I auto
+matches the driver to the identified drive;
+.I NAME
+requests a specific one (for example
+.IR plextor ).
+Without this option no vendor opcode is ever issued. A missing or
+non-matching driver is not fatal: a warning is logged and the device stays on
+generic MMC/SG. Because vendor opcodes need the kernel's full SG_IO command
+set, passing this option opens the device read-write.
+.TP
+.BI \-\-drivers\-dir " DIR"
+Where to look for driver modules. Default:
+.BR $ACCUDISC_DRIVER_DIR ,
+falling back to the installed driver directory.
+.TP
+.BR \-\-help ", " \-h
+Print the usage text on stdout and exit 0.
+.TP
+.BR \-\-version ", " \-V
+Print the library version and exit 0. Equivalent to the
+.B version
+command.
+.SH COMMANDS
+.SS info
+Identify the drive (INQUIRY). Prints
+.IR vendor ", " product ", " revision ,
+the manufacturing
+.I read_offset
+in samples from the built-in offset table (or
+.IR unknown ),
+and the
+.I access
+method in use \(em
+.RI \(lq "generic MMC" \(rq
+or the attached driver's name and description.
+.SS disc
+Pre-flight guard: classify the loaded disc as rippable audio, a blank to burn,
+or neither. One token line on stdout:
+.PP
+.RS 4
+.nf
+disc kind=<BLANK|AUDIO|NEITHER> profile=0x<nnnn> \\
+     disc_status=<0|1|2|\-1> erasable=<0|1|\-1> \\
+     audio_tracks=<n> data_tracks=<n> reason=<slug> [tray=<state>]
+.fi
+.RE
+.PP
+.I profile
+is the MMC current-profile code (0x08 CD\-ROM, 0x09 CD\-R, 0x0A CD\-RW);
+.I disc_status
+is 0 empty / 1 incomplete / 2 complete, and
+.I erasable
+is 1 for CD\-RW \(em both are
+.B \-1
+when not obtainable, never silently 0.
+.I tray
+is emitted only with
+.IR reason=no_medium .
+Exit 3 means the disc was classified successfully but neither ripping nor
+burning is legal for it. Parse tokens, not positions; new keys may be
+appended.
+.SS toc
+List tracks. Prefers READ TOC format 2 (the lead-in, which carries session
+structure) and degrades automatically to format 0 on an unreadable lead-in,
+reporting which path answered on the final
+.I source=
+/
+.I degrade=
+line. A degrade does
+.B not
+change the exit code: this command promises track geometry and a degrade still
+delivers it in full.
+.SS fulltoc [\fIFILE\fR]
+With no argument, print the parsed session structure (sessions, first/last
+track, lead-out, per-track LBA and CTRL). With
+.IR FILE ,
+dump the raw READ TOC format 2 response to that file instead.
+.SS cdtext \fIFILE\fR
+Dump the raw CD\-Text packs (READ TOC format 5) to
+.IR FILE .
+.I FILE
+is mandatory; without it the command is not recognised. If the disc carries no
+CD\-Text, no file is written and the exit code is 3.
+.SS text
+Decode and print CD\-Text from block 0: album title, performer and UPC, then
+per-track title, performer, songwriter and ISRC. Only fields actually present
+are printed.
+.SS scan
+Read the MCN and the per-track ISRCs from the Q subchannel. Prints
+.RI \(lq mcn\ <n> \(rq
+or
+.RI \(lq "mcn absent" \(rq,
+then one line per audio track. Exit 3 when neither an MCN nor any ISRC was
+found.
+.SS pregaps
+Per-track index and pregap map decoded from the Q subchannel, CRC-gated. One
+row per track boundary reporting
+.IR pregap\ Nf ,
+.I gapless
+or
+.IR UNKNOWN ,
+with the CRC-ok/bad counts behind the verdict, and a
+.RI \(lq [!]\ Q\ index1 \(rq
+note where the subchannel disagrees with the TOC. Exit 3 when at least one
+boundary decoded as
+.IR UNKNOWN .
+A boundary whose
+.I read
+fails ends the scan with exit 2 \(em but the rows decoded before it are still
+printed, and stdout is flushed ahead of the stderr diagnostic. This is the one
+command where a nonzero exit can carry usable stdout, so treat the row count
+as a floor rather than a total.
+.SS features [\fIFLAG\fR]
+Probe drive capability. Flags may be combined; a bare invocation is equivalent
+to
+.BR \-\-all .
+.RS 4
+.TP
+.B \-\-c2
+The C2 boolean question. Prints the CD Read feature descriptor, one
+.RI \(lq combo\ <name>\ ok|failed \(rq
+line for each of
+.IR c2 ,
+.IR sub_raw ,
+.IR sub_q ,
+.I c2+sub_raw
+and
+.IR c2+sub_q ,
+and a
+.I verdict
+of
+.BR C2_SUPPORTED ,
+.B C2_UNVERIFIED
+or
+.BR C2_UNSUPPORTED .
+This is the only flag that gates the exit code.
+.TP
+.B \-\-stream
+Accurate Stream / positional determinism, probed mid-disc. Prints
+.IR "accurate_stream yes|no|unknown" .
+Informational.
+.TP
+.B \-\-rotation
+Drive rotation type (CLV, CAV, P\-CAV, Z\-CLV) classified from the nominal
+RPM-derived performance curve. Disc-independent, so it answers
+.RI \(lq "is this a CAV drive" \(rq
+and not
+.RI \(lq "what will it do with this disc" \(rq;
+it deliberately does not print the current speed.
+.TP
+.B \-\-all
+Everything above, informational, exit 0.
+.RE
+.SS speed [\fIX\fR]
+Report the drive's read-speed state: the mode page 2A maximum and current
+speeds, the rotation classification, and each nominal performance curve
+segment. With
+.IR X ,
+set an
+.RI N x
+ceiling first, preferring SET STREAMING and falling back to SET CD SPEED.
+.RS 4
+.TP
+.B \-\-exact
+Pin the rate rather than setting a ceiling (CLV). Requires
+.IR X .
+The drive may refuse; an Illegal Request here is the answer, and is reported
+as such before the command exits nonzero.
+.TP
+.BI \-\-start " LBA"
+.TQ
+.BI \-\-count " N"
+Request the ceiling for that LBA range only. Requires
+.IR X ;
+.B \-\-count
+requires
+.BR \-\-start .
+Locality is drive-dependent \(em a performance hint, honoured whole-disc on
+every drive tested so far. These three options route through SET STREAMING
+only, with no SET CD SPEED fallback.
+.RE
+.PP
+A bare
+.B speed
+.I X
+is a request for that end state and therefore
+.BR persists ;
+it is not restored on exit.
+.SS speed\-uncap [on|off]
+Report or set the vendor read-speed uncap (Plextor: SpeedRead), which lifts the
+firmware's CD read-speed ceiling. Requires
+.BR \-\-driver .
+With no argument it reports only. Prints
+.PP
+.RS 4
+speed\-uncap <on|off> max_kbps <n> max_x <n>
+.RE
+.PP
+The mode page 2A ceiling is printed alongside because that is the observable
+the setting moves. This is
+.B persistent drive state:
+it survives the process and the handle, and is only changed by setting it again
+or power-cycling the drive. Exit 2 when no attached driver offers the
+capability.
+.SS media
+Identify recordable media from its ATIP. One line:
+.PP
+.RS 4
+.nf
+atip leadin=<mm:ss:ff> leadout=<mm:ss:ff> \\
+     type=<CD\-R|CD\-RW> manufacturer=<name>
+.fi
+.RE
+.PP
+.I leadin
+is the ATIP lead-in start, which doubles as the manufacturer identification
+code;
+.I leadout
+is the last-possible lead-out start, i.e. capacity.
+.B manufacturer=
+is deliberately last because its value may contain spaces \(em parse it as
+rest-of-line. It is empty when the code is not in the built-in catalogue. A
+disc with no ATIP (a pressed CD, or no recordable medium) prints
+.I atip absent
+and exits 3.
+.SS speeds
+Probe which speed settings the drive really honours, by timed streaming reads
+at each rung. One line per candidate:
+.PP
+.RS 4
+speed req=<x> page2a=<x> measured=<x.xx>
+.RE
+.PP
+.I measured
+is ground truth;
+.I page2a
+is shown so quantization and clamping are visible. Each rung gets its own
+cache-fresh window. On a CAV drive the measured rate is radius-dependent, so
+the default probe location is the middle half of the disc. The drive is left at
+the last candidate tested.
+.RS 4
+.TP
+.BI \-\-start " LBA"
+Where to probe. Default: one quarter of the way into the disc.
+.TP
+.BI \-\-ladder " LIST"
+Comma-separated candidate speeds, at most 16, e.g.
+.IR 32,16,8,4 .
+Default: 52,48,40,32,24,16,8,4 filtered to those at or below the drive's page
+2A maximum.
+.RE
+.SS c2lag
+Probe the drive's C2-bitmap-to-audio alignment. Report-only: AccuDisc never
+applies the lag to delivered bitmaps. On success:
+.PP
+.RS 4
+c2lag pairs=<L> peak=<milli> runner=<milli> flags=<n> diffs=<n> active=<n>
+.RE
+.PP
+.I pairs
+is the lag in sample pairs; a fired bit at bitmap position
+.I i
+describes audio byte
+.IR i\ \-\ 4*pairs .
+Point this at a
+.B damaged
+span \(em C2 must actually fire for the measurement to exist. Exit 3 means
+inconclusive, and the stderr message distinguishes
+.RI \(lq "no C2 fired in the span" \(rq
+from
+.RI \(lq "C2 seen but the evidence is too thin" \(rq.
+.RS 4
+.TP
+.BI \-\-start " LBA"
+First sector. Default 0.
+.TP
+.BI \-\-count " N"
+Sectors to scan. Default: to the lead-out.
+.TP
+.BI \-\-speed " X"
+Set the read speed first. A higher speed can be what makes marginal defects
+fire C2 at all.
+.RE
+.SS stop
+Spin the spindle down. Does not eject.
+.SS eject
+Open the tray / unload the disc.
+.SS load
+Close the tray / load the disc.
+.SS read
+Read CD\-DA sectors. See
+.B READ OPTIONS
+below.
+.SS write
+Burn one audio session Disc\-At\-Once from a cdrdao
+.I .toc
+plus the raw audio BIN it names. Requires a blank disc, and opens the device
+read-write. Prints
+.I write done sectors=<n> mode=<simulate|burn>
+on completion, with
+.I caveats=1
+appended when the burn completed but a caveat was logged.
+.RS 4
+.TP
+.BI \-\-toc " FILE"
+The cdrdao
+.I .toc
+describing the layout. Mandatory.
+.TP
+.BI \-\-bin " FILE"
+The raw s16le audio image it references, 2352 bytes per sector \(em exactly the
+read path's
+.B \-\-pcm
+output. Mandatory.
+.TP
+.BI \-\-cdtext " FILE"
+A raw READ TOC format-0x05 blob, byte-for-byte as
+.B read \-\-cdtext
+emits it, laid into the lead-in verbatim.
+.TP
+.B \-\-simulate
+Test-write: run the whole path with the laser off.
+.TP
+.B \-\-byteswap
+Swap each 16-bit audio sample before writing. Audio byte order is
+drive-specific; settle it empirically by read-back before trusting a real burn.
+.TP
+.BI \-\-speed " X"
+Write speed. 0 or absent leaves the drive's current setting.
+.TP
+.BI \-\-progress\-fd " N"
+Machine progress and summary on fd
+.IR N ;
+see
+.B MACHINE OUTPUT
+below.
+.RE
+.SS cxscan
+Hardware C1/C2/CU error census, using the drive's own error counters (Plextor:
+Q\-Check). Requires
+.BR \-\-driver .
+The TOC is read before the counters are armed, so lead-in traffic never lands
+in the first sample's interval. One line per sample on stdout:
+.PP
+.RS 4
+cx <lba> <c1> <c2> <cu>
+.RE
+.PP
+followed by a totals-and-peaks summary on stderr. The default sample cadence is
+75 sectors \(em one second of audio, which is what makes the figures comparable
+with other C1/C2 tools. A failed read does not stop the census; it is reported
+on stderr and the scan continues. Exit 2 when no attached driver offers the
+capability.
+.RS 4
+.TP
+.BI \-\-start " LBA"
+First sector. Default 0. The scan always runs to the lead-out.
+.TP
+.BI \-\-speed " X"
+Set the read speed before scanning.
+.RE
+.PP
+Note that
+.B \-\-start
+and
+.B \-\-speed
+are accepted here although the built-in usage text does not list them.
+.SS version
+Print the library version and exit 0.
+.SH READ OPTIONS
+Options to the
+.B read
+command.
+.SS Range selection
+.B read
+reads the
+.B audio tracks of one session
+\(em not the whole disc and not the whole session. With none of the options
+below it resolves the session automatically: the single session containing
+audio, or exit 1 with the sessions listed if more than one does. The range then
+runs from the first audio track's start (including its pregap, so on session 1
+it begins at LBA 0 and captures hidden-track-one audio) to the end of the last.
+.TP
+.BI \-\-start " LBA"
+First sector. Default: the start of the audio session.
+.TP
+.BI \-\-count " N"
+Sectors to read. Default: to that session's lead-out.
+.TP
+.BI \-\-session " N"
+Which session to read. Required when more than one session has audio.
+.TP
+.BI \-\-track " N"
+.TQ
+.BI \-\-tracks " A\-B"
+Read track
+.I N
+alone, or tracks
+.I A
+through
+.I B
+inclusive. Both spellings accept both forms. Selection is by track
+.B number,
+not index, and overrides
+.BR \-\-session .
+Both tracks must be in the same session: a span across a session seam would
+include the lead-out and lead-in between them, and is refused with exit 1.
+.TP
+.B \-\-force
+Bypass the audio-range guard \(em data tracks, session seams, untrusted TOC
+geometry. The drive will still reject what it cannot read. Deliberately
+separate from
+.BR \-\-any .
+.SS Capture content
+.TP
+.B \-\-no\-c2
+Do not request C2 error pointers. They are requested by default and ride the
+same READ CD transfer as the audio, so they are effectively free.
+.TP
+.B \-\-c2beb
+Request the 296-byte C2 + block-error-bits variant instead of the 294-byte
+pointer bitmap.
+.TP
+.BI \-\-sub " raw" | q
+Also capture the subchannel: 96-byte raw interleaved P\(enW, or the drive's
+16-byte formatted Q block.
+.TP
+.B \-\-any
+Set the READ CD expected sector type to ANY rather than CD\-DA. This selects
+the command's type field only; it is not an override of the range guard.
+.SS Output files
+.TP
+.BI \-\-pcm " FILE"
+Raw s16le PCM, 2352 bytes per sector, no offset correction applied.
+.TP
+.BI \-\-c2f " FILE"
+The C2 bitmap stream, passed through from the drive untouched. Requires C2, so
+it conflicts with
+.BR \-\-no\-c2 .
+.TP
+.BI \-\-subf " FILE"
+The subchannel stream. Requires
+.BR \-\-sub .
+.TP
+.BI \-\-cdg " FILE"
+CD+G packs: the R\(enW channels de-interleaved and Reed\-Solomon corrected, 24
+bytes per pack, which is the
+.I .cdg
+file format. Requires
+.BR "\-\-sub raw" ,
+since the formatted Q form has already discarded those channels. Pack count is
+.IR 4*sectors\ \-\ 7 ;
+the convolutional de-interleave has an 8-pack span, so the loss lands at the
+tail of the stream and emitted pack
+.I k
+is logical pack
+.IR k .
+An ordinary audio CD yields all MODE 0 (no R\(enW data recorded), and the
+summary says so rather than leaving zero graphics packs to look like a decoder
+fault.
+.TP
+.BI \-\-fulltoc " FILE"
+Also dump the raw full TOC in the same invocation, so a complete capture is one
+spin-up rather than three.
+.TP
+.BI \-\-cdtext " FILE"
+Also dump the raw CD\-Text packs. Absence is noted on stderr and no file is
+written; it does not affect the read's exit code.
+.PP
+Hard-unreadable sectors are zero-filled in every stream (PCM 0, C2 all-ones,
+SUB 0), so all outputs stay exactly
+.I count
+sectors and never desync.
+.SS Accuracy and recovery
+All of these are off by default; with none of them set,
+.B read
+is a single-pass streaming capture.
+.TP
+.BI \-\-chunk " N"
+Sectors per READ CD command. Default: the maximum that fits under 64 KiB.
+.TP
+.BI \-\-retries " K"
+Per-sector attempts after a chunk read fails. Default 2.
+.TP
+.BI \-\-c2\-retries " N"
+Hunt a C2-clean copy of each flagged sector with up to
+.I N
+cache-defeated rereads. The best read wins and the whole sector is replaced, so
+audio, C2 and subchannel stay single-read aligned. Requires C2. Default 0 (off).
+.TP
+.BI \-\-verify " P"
+Read everything
+.I P
+times with cache defeat and compare. Sectors whose reads disagree are resolved
+by consensus (any two identical independent reads) or delivered best-effort and
+marked SUSPECT. Default 1 (off).
+.TP
+.BI \-\-overlap " K"
+Boundary overlap check: extend each chunk by
+.I K
+trailing sectors and verify the seam against the next chunk's head. Catches
+drive slips at chunk boundaries that back-to-back reads cannot see; mismatches
+go to consensus. Default 0 (off), clamped to 8.
+.TP
+.BI \-\-ladder " LIST"
+Speed ladder for problem-sector rereads, at most 8 rungs, e.g.
+.IR 32,16,8,4 .
+Rescue attempt
+.I n
+runs at the
+.IR n -th
+rung, descending toward slow careful reads; the pass speed is restored before
+the next streaming chunk. Pick rungs that differ from
+.BR \-\-speed :
+consensus votes must be speed-diverse, because a drive can misread the same way
+at the same speed every time. Verify passes themselves stream at the pass speed
+\(em drives recalibrate on every speed change, so per-chunk switching thrashes.
+.TP
+.BI \-\-speed " X"
+Set the drive read speed to
+.RI X x
+before reading. Best-effort, and never auto-restored afterwards.
+.TP
+.B \-\-uncap
+Lift the vendor read-speed cap for this read only, restoring the drive's prior
+setting on every exit path. Requires
+.BR \-\-driver .
+.B Cannot be combined with
+.BR \-\-sub :
+the uncap pins the drive's CAV RPM to its outer-edge target across the whole
+disc, and the subchannel channel-clock cannot track that on inner and mid
+tracks, so Q decodes to garbage while the audio stays clean. The combination is
+refused with exit 1. If the uncap merely
+.I appears
+to be on already \(em persistent state left by an earlier session \(em a
+subchannel read warns loudly on stderr and proceeds.
+.SS Progress and status
+.TP
+.B \-\-map
+Render a condensed per-sector disc map on stderr when the read finishes. Each
+cell is the worst state in its bucket:
+.B .
+ok,
+.B r
+recovered,
+.B !
+C2,
+.B ?
+suspect,
+.B X
+hard,
+.RB \(lq \ \(rq
+pending.
+.TP
+.BI \-\-map\-file " F"
+Live status map.
+.I F
+is created and truncated to exactly
+.I count
+bytes, one status byte per sector in span order (byte
+.I i
+is LBA
+.IR start+i );
+there is no header. The engine updates the bytes in place through a
+.B MAP_SHARED
+mapping, so another process can
+.BR mmap (2)
+the file read-only and watch the rip live. The file persists after exit for
+post-mortem reads. See
+.B STATUS MAP ENCODING
+below.
+.TP
+.BI \-\-progress\-fd " N"
+Machine-readable progress and summary on caller-supplied fd
+.IR N .
+Not muted by
+.BR \-q .
+.TP
+.B \-q
+Quiet: suppress the human progress line, the resolved-range echo and the CD+G
+summary. The machine channel is unaffected.
+.SH STATUS MAP ENCODING
+One byte per sector. The low nibble is the state, the high nibble a severity;
+the encoding is the public ABI in
+.I accudisc.h
+and is read with the
+.B ACCUDISC_MAP_STATE()
+and
+.B ACCUDISC_MAP_SEVERITY()
+macros.
+.TS
+lb lb lb
+l l l.
+value	name	meaning
+0x0	ACCUDISC_MAP_PENDING	not yet attempted
+0x1	ACCUDISC_MAP_OK	read clean
+0x2	ACCUDISC_MAP_C2	delivered with fired C2 pointer(s)
+0x3	ACCUDISC_MAP_HARD	unreadable \(em zero-filled in the output
+0x4	ACCUDISC_MAP_RECOVERED	problem seen, clean/agreeing copy won
+0x5	ACCUDISC_MAP_SUSPECT	reads disagree \(em best-effort delivered
+.TE
+.PP
+The severity nibble carries approximately log2 of the fired C2 bit count for
+.BR C2 ,
+the number of extra reads it took for
+.BR RECOVERED ,
+approximately log2 of the disagreeing byte count for
+.BR SUSPECT ,
+and 0 otherwise.
+.PP
+Every state is a
+.B relative
+claim \(em stable, clean or unstable across the reads of
+.I this run
+\(em never verification against the pressing's canonical bytes. A drive that
+misreads deterministically passes every relative check. Absolute gates
+(AccurateRip, CTDB) are the calling application's job and always outrank
+anything recorded here.
+.SH MACHINE OUTPUT
+Newline-delimited tokens on the fd given to
+.BR \-\-progress\-fd ,
+unaffected by
+.BR \-q .
+For
+.BR read :
+.PP
+.RS 4
+.nf
+progress <done> <total>
+summary hard=<n> c2=<n> recovered=<n> suspect=<n> rereads=<n> slips=<n> \\
+        subq_total=<n> subq_ok=<n> subq_bad=<n>
+.fi
+.RE
+.PP
+.I progress
+lines are throttled to roughly four per second and the final one always reports
+.IR "<total> <total>" .
+.I summary
+is emitted exactly once, after a completed read, clean or degraded; a read that
+dies or exits 2 emits none.
+.I hard
+counts zero-filled unreadable sectors,
+.I c2
+sectors whose delivered copy still carries fired C2 bits,
+.I recovered
+and
+.I suspect
+the consensus outcomes,
+.I rereads
+extra per-sector reads issued,
+.I slips
+positioning-slip detections, and the
+.I subq_*
+triple the Q-frame CRC census over
+.B \-\-sub raw
+reads. New key=value pairs may be appended; parse the line as tokens, not
+positionally.
+.PP
+For
+.BR write :
+.PP
+.RS 4
+.nf
+progress <done> <total>
+summary sectors=<n> mode=<simulate|burn> result=<ok|caveats|not_blank|error>
+.fi
+.RE
+.PP
+Unlike
+.BR read ,
+the
+.I write
+summary is emitted on
+.B every
+outcome, so a caller can key on
+.I result=
+instead of the exit code. That matters because exit 2 covers both
+.I not_blank
+and other failures and the exit code alone cannot separate them.
+.SH EXIT STATUS
+.TP
+.B 0
+Completed, no caveats.
+.TP
+.B 1
+Usage, argument, or local file error.
+.TP
+.B 2
+Fatal: the device, the transport, or the command could not complete.
+.TP
+.B 3
+Completed with caveats.
+.PP
+Exit 3 by command:
+.RS 4
+.IP \(bu 2
+.BR read :
+the image was delivered in full, but hard errors, suspect sectors, or
+C2-flagged sectors remain after recovery. Exit 0 means no
+.I relative
+signal fired; it is not verification.
+.IP \(bu 2
+.BR cdtext ", " fulltoc :
+the drive answered but the disc carries no data of that format, and no output
+file was written. A drive that
+.I rejects
+the request is exit 2 \(em deliberately not conflated with absence.
+.IP \(bu 2
+.BR scan :
+neither an MCN nor any ISRC was found.
+.IP \(bu 2
+.BR pregaps :
+at least one track boundary decoded as UNKNOWN.
+.IP \(bu 2
+.BR c2lag :
+the probe ran but was inconclusive.
+.IP \(bu 2
+.BR media :
+the disc carries no ATIP.
+.IP \(bu 2
+.BR disc :
+the disc was classified successfully and
+.I kind=NEITHER
+\(em refusing is a
+.I successful
+classification, which is why it is 3 and not 2.
+.IP \(bu 2
+.BR write :
+the burn completed but a caveat was logged \(em today, a CD\-Text SIZE_INFO
+pack whose declared track range disagrees with the
+.IR .toc .
+The disc
+.B was
+written.
+.RE
+.PP
+Exception:
+.B features
+keeps its frozen contract \(em exit
+.B 0
+if and only if C2 is clearly usable (verdict
+.BR C2_SUPPORTED ),
+1 otherwise, 2 on a probe error. The other
+.B features
+flags never gate the exit code.
+.PP
+Note also that
+.B write
+uses exit
+.B 2
+for a disc that is not blank: nothing was written, so the precondition could
+not be met. Use
+.I result=not_blank
+on the machine channel to distinguish it from a transport failure.
+.SH ENVIRONMENT
+.TP
+.B ACCUDISC_DRIVER_DIR
+Directory searched for vendor driver modules
+.RI ( accudisc\-drv\- NAME .so )
+when
+.B \-\-drivers\-dir
+is not given. If unset, the installed driver directory is used.
+.SH FILES
+.TP
+.I /dev/sr0
+Default optical device.
+.TP
+.IR <libdir> /accudisc/drivers/
+Installed vendor driver modules.
+.TP
+.I docs/reference/cli\-machine\-interface.md
+The authoritative specification of every machine-readable output format and
+exit code this page summarises.
+.SH EXAMPLES
+Check what is in the drive before doing anything else:
+.PP
+.RS 4
+.nf
+accudisc \-\-device /dev/sr0 disc
+.fi
+.RE
+.PP
+Full capture of an audio CD with all its metadata, in one spin-up:
+.PP
+.RS 4
+.nf
+accudisc read \-\-sub raw \-\-pcm disc.pcm \-\-c2f disc.c2 \\
+    \-\-subf disc.sub \-\-fulltoc disc.toc.bin \-\-cdtext disc.cdt \-\-map
+.fi
+.RE
+.PP
+Test a recovery strategy against a known-damaged span:
+.PP
+.RS 4
+.nf
+accudisc read \-\-start 128000 \-\-count 4000 \-\-verify 3 \\
+    \-\-c2\-retries 8 \-\-overlap 4 \-\-ladder 16,8,4 \-\-pcm span.pcm
+.fi
+.RE
+.PP
+Characterise an unknown drive:
+.PP
+.RS 4
+.nf
+accudisc features \-\-all
+accudisc speeds \-\-ladder 40,32,24,16,8,4
+accudisc c2lag \-\-start 100000 \-\-count 20000 \-\-speed 32
+.fi
+.RE
+.PP
+Watch a rip live from another process:
+.PP
+.RS 4
+.nf
+accudisc read \-\-map\-file status.map \-\-progress\-fd 3 \-q \\
+    \-\-pcm disc.pcm 3>progress.fifo
+.fi
+.RE
+.PP
+Hardware error census with the vendor driver:
+.PP
+.RS 4
+.nf
+accudisc \-\-driver auto cxscan \-\-speed 8
+.fi
+.RE
+.PP
+Burn an audio session, simulating first:
+.PP
+.RS 4
+.nf
+accudisc write \-\-toc disc.toc \-\-bin disc.bin \-\-simulate
+accudisc write \-\-toc disc.toc \-\-bin disc.bin \-\-cdtext disc.cdt
+.fi
+.RE
+.SH NOTES
+Setting a read-speed ceiling through SET STREAMING needs
+.BR CAP_SYS_RAWIO ;
+without it the library falls back to the unprivileged CDROM_SELECT_SPEED path,
+which the drive treats as advisory.
+.PP
+.B \-\-speed
+is never auto-restored between invocations, and neither is a bare
+.B speed
+.IR X .
+The vendor read-speed uncap is persistent drive state and is only scoped to one
+operation by
+.BR "read \-\-uncap" .
+.SH CREDITS
+AccuDisc's code is original, but several kinds of
+.I knowledge
+in it were learned from prior art. The full record is
+.IR docs/reference/ATTRIBUTION.md ;
+this is the summary it requires here.
+.TP
+.B Data
+The drive read-offset table holds user-submitted factual offset measurements
+collected by the
+.B REDUMP Disc Preservation Project
+(<https://redump.org>), converted from the table shipped with redumper. The ATIP
+media catalogue behind
+.B media
+compiles public ATIP manufacturer codes, informed by the PlexTools Professional
+XL catalogue and cross-validated against cdrecord's
+.I diskid.c
+table.
+.TP
+.B Techniques and command knowledge
+Implementations are original; these projects documented behaviours, command
+layouts and hardware quirks AccuDisc relies on \(em
+.B redumper
+(READ CD CDB layout, DATA_C2_SUB sector ordering, full-TOC session semantics);
+.B cdrtools
+(readcd/cdrecord) by J\(:org Schilling (cache-defeat reread pattern, mode
+page 01 error-recovery handling, and the original documentation of the
+Plextor C1/C2/CU scan opcodes);
+.B cdrdao
+(mode page 2A speed-field offsets, the DAO writing model);
+.B libcdio\-paranoia
+(verification and reread strategy background); and
+.BR BinaryObjectScanner " and " DRML
+by Matt Nadareski, consulted for documented facts about commercial CD-DA
+copy-protection schemes and the pressings carrying them.
+.TP
+.B Vendor drivers
+.B QPxTool
+(<https://qpxtool.sourceforge.io>, GPL-2.0) is a reference where the Plextor
+vendor command set is documented \(em 0xE9 MODE pages, GET/SET direction bits,
+per-feature CDB framing, and the SpeedRead and error-scan commands. Those
+commands are functional hardware identifiers, no QPxTool source is copied, and
+every command was independently verified by raw SG_IO on the maintainer's own
+PX-716A. QPxTool is credited as a courtesy reference; the driver is MIT.
+.SH SEE ALSO
+.BR accudisc (8),
+.BR cdrdao (1),
+.BR sg_raw (8)
+.PP
+.IR docs/reference/cli\-machine\-interface.md " \(em the stable output contract."
+.br
+.IR docs/reference/RECOVERY.md " \(em recovery design and the relative/absolute gate rule."
+.br
+.IR drivers/README.md " \(em the vendor driver architecture."
+.SH AUTHORS
+The AccuDisc Authors.
+.SH LICENSE
+MIT. See the
+.I LICENSE
+file in the distribution.
