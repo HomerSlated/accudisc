@@ -16,7 +16,8 @@ extern "C" {
 #endif
 
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 1
+#define ACCUDISC_VERSION_MINOR 2 /* 0.2.0: read_req/read_stats layout changed
+                                 * (API_PLAN §7.1). soname stays .so.0. */
 #define ACCUDISC_VERSION_PATCH 0
 
 #if defined(_WIN32)

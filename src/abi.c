@@ -29,6 +29,26 @@ int adsc_abi_import(void *dst, size_t dst_size,
     if (src_size < sizeof(uint32_t))
         return ACCUDISC_ERR_ABI;
 
+    /* Bound it BEFORE the tail scan below, which is the only place this
+     * function reads memory the caller did not necessarily allocate.
+     *
+     * src_size is the caller's *claim* about their own allocation, and an
+     * uninitialised `accudisc_read_req req;` leaves stack garbage in it —
+     * routinely a large number. Unbounded, the loop that exists to stop the
+     * library running off the end of a struct would itself run off the end of
+     * that struct, by megabytes. Refusing an implausible growth first turns the
+     * worst case from a fault into an ERR_ABI.
+     *
+     * This narrows the hole rather than closing it: a garbage value landing
+     * inside the accepted window still permits a short overread, because the
+     * size field is a claim and an in-process callee has no way to verify a
+     * caller's allocation. What it removes is the unbounded case, which is the
+     * one that faults. The only values with a meaning are sizeof() as some
+     * released header saw it, so the window only has to admit real growth —
+     * read_req took 24 bytes over its entire history to date. */
+    if (src_size > dst_size + ADSC_ABI_GROWTH_MAX)
+        return ACCUDISC_ERR_ABI;
+
     memset(dst, 0, dst_size);
 
     if (src_size > dst_size) {

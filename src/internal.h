@@ -89,6 +89,13 @@ void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...);
  *
  * Both return ACCUDISC_OK or ACCUDISC_ERR_ABI. A declared size of 0 — what a
  * caller that forgot ACCUDISC_*_INIT produces — is always refused. */
+/* How far past this build's layout a caller's declared size may reach before it
+ * is refused outright. Not a compatibility limit — it is the bound on how far
+ * adsc_abi_import will read looking for set fields it cannot honour, and it
+ * exists because that size is a *claim* that may be uninitialised stack. For
+ * scale: accudisc_read_req grew 24 bytes in total across its whole history. */
+#define ADSC_ABI_GROWTH_MAX 256u
+
 int adsc_abi_import(void *dst, size_t dst_size,
                     const void *src, uint32_t src_size);
 int adsc_abi_export(uint32_t want, size_t have, size_t *n_out);

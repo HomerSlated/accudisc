@@ -395,6 +395,26 @@ accepted the struct and execution reached the checks behind it.
 The `size` field cost `read_req` **nothing** — it landed in existing padding,
 still 56 bytes. `read_stats` went 128 → 136.
 
+**The first version of the guard had the bug it was written to prevent.** The
+long-struct path scans the caller's bytes past our end looking for fields we
+cannot honour — and `src_size` is the caller's *claim*, unbounded, straight out
+of caller memory. An uninitialised `accudisc_read_req req;` leaves stack garbage
+there, routinely large, so the loop that exists to stop the library running off
+the end of a struct ran off the end of that struct by megabytes. Confirmed by
+removing the fix and rebuilding under ASan: `stack-buffer-overflow, READ of size
+1`. `ADSC_ABI_GROWTH_MAX` (256 bytes) now bounds it before the scan.
+
+Stated honestly, because it narrows the hole rather than closing it: a garbage
+value landing *inside* the accepted window still permits a short overread. An
+in-process callee cannot verify a caller's allocation — the size field is a
+claim either way. What the bound removes is the unbounded case, which is the one
+that faults.
+
+**The layout change bumped the version to 0.2.0.** Every `read_req` field moved
+4 bytes and `read_stats` grew 8, so leaving the number at 0.1.0 would have made
+the version useless as exactly the pin marker cdda2img said (§80.4) they intend
+to use it as. soname stays `.so.0`.
+
 **Structs without a size field are frozen**, and `tests/test_abi.c` pins them
 with `_Static_assert` so growth is a deliberate act. `accudisc_chunk` is the
 one that matters: the library allocates it and the caller's sink reads it, so

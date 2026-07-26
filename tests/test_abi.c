@@ -30,17 +30,25 @@ static void ck(int cond, const char *what)
         fails++;
 }
 
-/* Frozen layouts. A struct without a size field cannot negotiate, so growing
- * one is an soname bump — these assertions make that a deliberate act rather
- * than something a new field does quietly. accudisc_chunk is the one that
- * matters: the library allocates it and the caller's sink reads it, so the
- * hazard runs the opposite way from read_req and a size field would not help.
- * LP64 only — the pointer members make these numbers model-dependent, and a
- * wrong-for-this-model assertion is worse than none. */
+/* LP64 only, for both groups below — the pointer members make these numbers
+ * model-dependent, and a wrong-for-this-model assertion is worse than none. */
 #if defined(__LP64__) || defined(_LP64)
+
+/* FROZEN. accudisc_chunk carries no size field and cannot negotiate, because
+ * the library allocates it and the caller's sink reads it — the hazard runs the
+ * opposite way from read_req, and a size field would not help. Growing it is an
+ * soname bump, so this assertion exists to make that a deliberate act rather
+ * than something a new field does quietly. */
 _Static_assert(sizeof(accudisc_chunk) == 32, "accudisc_chunk grew: soname bump");
-_Static_assert(sizeof(accudisc_read_req) == 56, "read_req size changed");
-_Static_assert(sizeof(accudisc_read_stats) == 136, "read_stats size changed");
+
+/* NOT frozen — these two are allowed to grow; that is what the size field is
+ * for. Pinned only so that growing them is *noticed*: a new field here means
+ * updating the number below, bumping ACCUDISC_VERSION_MINOR so the .so version
+ * moves with the layout, and adding a row to API_PLAN §8. Tripping these is a
+ * reminder, not a defect. */
+_Static_assert(sizeof(accudisc_read_req) == 56, "read_req grew — see above");
+_Static_assert(sizeof(accudisc_read_stats) == 136, "read_stats grew — see above");
+
 #endif
 
 int main(void)
@@ -125,6 +133,37 @@ int main(void)
         rc = adsc_abi_import(&dst, sizeof dst, src, longlen);
         ck(rc == ACCUDISC_ERR_ABI,
            "import: long struct with a SET tail field is refused, not dropped");
+    }
+
+    /* ---- import: an ABSURD size must be refused BEFORE the tail is scanned.
+     * This is the case an uninitialised `accudisc_read_req req;` produces —
+     * stack garbage in the size field, routinely a large number. Without a
+     * bound, the loop that exists to stop the library reading past the end of
+     * a caller's struct reads a megabyte past the end of a 56-byte one. Run
+     * this under ASan: unbounded it faults, bounded it returns ERR_ABI having
+     * dereferenced nothing beyond the struct. ---- */
+    {
+        static const uint32_t absurd[] = {
+            (uint32_t)sizeof(accudisc_read_req) + ADSC_ABI_GROWTH_MAX + 1,
+            0x100000u,     /* plausible-looking stack garbage */
+            0xFFFFFFFFu,   /* the whole address space */
+        };
+        int all = 1;
+        for (size_t i = 0; i < sizeof absurd / sizeof absurd[0]; i++) {
+            memset(src, 0, sizeof src);
+            memcpy(src, &absurd[i], sizeof absurd[i]);
+            if (adsc_abi_import(&dst, sizeof dst, src, absurd[i]) !=
+                ACCUDISC_ERR_ABI)
+                all = 0;
+        }
+        ck(all, "import: an absurd size is refused before anything is read");
+
+        accudisc_read_req garbage = ACCUDISC_READ_REQ_INIT;
+        garbage.count = 10;
+        garbage.size = 0x100000u; /* as if never initialised */
+        ck(accudisc_read_cdda(NULL, &garbage, NULL, NULL, NULL) ==
+               ACCUDISC_ERR_ABI,
+           "read_cdda: uninitialised-looking size is ERR_ABI, not a fault");
     }
 
     /* ---- export ---- */
