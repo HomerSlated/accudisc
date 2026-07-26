@@ -1282,7 +1282,28 @@ binary. Evidence a monotonicity rule would need: a `speeds` table at three passe
 with the uncap on — which the SpeedRead discriminator would produce as a
 by-product if it ever runs.
 
-### 5. Stock-ceiling table: keyed on (model), drive is keyed on (model × media) — `[P3]`
+### 5. Stock-ceiling table keyed on (model) — CLOSED 2026-07-26, MEASURED, no change needed
+
+**RESOLVED: `max_x` is media-invariant on the PX-716A.** cdda2img ran the §bg.4
+discriminator with the uncap **off** in all three tray states and page-2A `max_x`
+read **40** every time — audio disc (Tracy), data disc (closed CD-R, Taiyo Yuden,
+profile 0x0009), and **empty tray**. Consequences, all measured rather than
+argued:
+
+- One row per model is **correct**; keep `(model)` as the key.
+- **Mechanism B is refuted** without needing a CD-RW audio disc: B requires
+  `max_x` to *be* the media ceiling with the uncap off, which predicts 48 for the
+  data disc. It read 40. Mechanism A stands, so `48 > 40` holds for every medium.
+- **The §bg.3 false-ON does not exist.** The predicted "data disc on a stock drive
+  reads 48 → `LIKELY_ON`" measured 40; `adsc_uncap_classify` returns `OFF`,
+  correctly.
+
+Caveat recorded honestly: one drive, three tray states, uncap-off only. No
+uncap-**on** reading was taken (the refutation does not need one).
+
+Task 5b below is **not** closed by this — it is independent of media class.
+
+<details><summary>Original open question (superseded)</summary>
 
 cdda2img §88.2, open question, **not a known defect**. `stock_ceilings[]`
 (`src/drive/uncap.c:43-48`) has one row, PX-716A → 40, derived from observed
@@ -1316,6 +1337,40 @@ and Tracy is loaded for their §9.3 ladder work.
 **Only matters if the classifier survives task 1** — if the whole inference path
 goes with the guards, close this as moot. Note the *reporting* path plausibly
 survives even so, since task 1 removes enforcement only.
+
+</details>
+
+### 5c. The "--driver auto" advice contradicts itself when a driver WAS named — `[P2]`
+
+cdda2img §91.2, reproduced on an empty tray with `--driver plextor` passed
+explicitly:
+
+```
+accudisc: driver plextor: selftest failed on PLEXTOR DVDR   PX-716A — staying on generic MMC
+accudisc: using generic MMC
+accudisc: read-speed uncap unsupported via generic MMC — a vendor driver is required (--driver auto)
+```
+
+Line 1 says the driver was found, attempted, and failed its selftest. Line 3 tells
+the user to pass `--driver auto` — a flag they have already superseded by naming
+the driver, and which cannot help, because the driver was never missing. The
+advice is hard-coded and does not distinguish **"no driver permitted"** (where
+`--driver auto` is the right fix) from **"driver attempted and failed"** (where it
+is noise). Four identical sites: `cli/main.c:216, 841, 852, 1467`.
+
+Fix: make the suffix conditional on whether a driver was permitted/attempted this
+invocation. When one was attempted and failed, say so and name the reason instead
+of suggesting a flag.
+
+### 5d. `speed-uncap` needs a disc; `speed` does not — undocumented envelope split — `[P3]`
+
+Also §91.2. The Plextor selftest issues a real vendor opcode, which requires a
+medium, so **`speed-uncap` — report *or* set — is unavailable on an empty drive**.
+`accudisc speed` reads mode page 2A directly, needs no vendor driver, and answered
+the same question (`page2A max 40x`) with an empty tray. The two subcommands
+report overlapping numbers with **different availability envelopes** and nothing
+says so. Document in `accudisc.1` and the header; note that anything assuming it
+can query uncap state before a disc is loaded cannot.
 
 ### 5b. `ACCUDISC_UNCAP_OFF` is labelled authoritative but source 3 infers it — `[P3]`
 
