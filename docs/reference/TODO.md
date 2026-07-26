@@ -1202,15 +1202,69 @@ originate:** `adsc_mmc_read_cd` and the SG_IO layer under it. Start there.
   offset is a poor proxy for physical position. Do not bank this negative. The
   sharp version needs the F1/F2 frame index, which neither side has.
 
-**INDEPENDENT FINDING, outlives the whole +1 question (§92.3): the delivered
-error is REPRODUCIBLE.** 113043 returns the same 22 differing bytes in the same
-1298–1698 range at both 40x and 32x, with byte-identical delivered copies;
-112765 gives the same extent at 8x and 4x. So `consensus()` is not optimistic,
-it is **structurally blind** — its predicate is agreement, and a deterministic
-defect guarantees agreement. No retry count, ladder, or consensus width can help;
-they all sample the same function. This is RECOVERY.md's invariant demonstrated:
-relative checks must never outrank absolute gates, and the absolute gate is the
-caller's layer.
+**INDEPENDENT FINDING, outlives the whole +1 question — and the ROOT CAUSE of the
+data loss, even though it does not explain the +1.**
+
+*Corrected 2026-07-26 by cdda2img §93, which retracted their own §92.3; the
+earlier "reproducible across a 10x speed range" reading in this entry was wrong
+and is replaced.* The error is stable **per speed**, not per defect:
+
+| LBA | 40x | 32x | 24x | 8x | 4x |
+|---|---|---|---|---|---|
+| 112612 / 112737 / 112751 | OK | OK | OK | OK | **WRONG** |
+| 112765 | OK | OK | OK | **WRONG** | **WRONG** |
+| 113043 | **WRONG** | **WRONG** | OK | OK | OK |
+| 113056 | OK | OK | **WRONG** | OK | OK |
+| 113057 | OK | OK | OK | **WRONG** | OK |
+
+**No sector is wrong at all five speeds**, the failing speeds differ per sector,
+and "slower is better" is false at sector granularity. (Caveat: `disc40.pcm` and
+`disc32.pcm` are byte-identical disc-wide, so those two requests likely landed on
+one rung — the quantised-rung problem. The only clean two-speed case is 112765.)
+A plain per-sector **majority vote across the five captures reconstructs all seven
+sectors correctly** — no parity, no CTDB, no AccurateRip.
+
+**So the pit is readable and this drive can get the bits.** The failure is
+entirely recovery *policy*. `consensus()` is blind not because the damage is
+irreducible but because **it resamples the same deterministic function**: at a
+fixed speed the drive returns the same wrong bytes, so agreement is guaranteed and
+carries no information.
+
+**Why the `--ladder` did not save it (answered from source, §bl.1).** Speed varies
+only inside the per-sector rereads — `ladder_speed` is called at exactly two
+sites, `engine.c:280` (`c2_rescue`) and `engine.c:311` (`consensus`). Every
+whole-span read is preceded by `ladder_restore` (`engine.c:461` primary,
+`engine.c:520` every verify pass), which sets `req->speed_x`
+(`engine.c:191-197`). For a silently-wrong sector: no C2 fires so `c2_rescue` is
+skipped; the verify pass re-reads at the *same* speed, gets identical bytes,
+`diff == 0`, and takes the "confirmed" `continue` at `engine.c:531-532`.
+**`consensus()` is never called — the ladder is unreachable.** The one mechanism
+that would catch this is gated behind the symptom it removes.
+
+**The comment at `engine.c:510-518` is itself a defect.** It claims "speed
+diversity against persistent same-speed misreads (RECOVERY_STRATEGY R6) comes from
+the consensus/rescue rereads". False for this failure class — those rereads are
+unreachable when the misread is silent; the claim holds only for sectors that
+already announced themselves. Its *other* claim, that whole-range speed-diverse
+sweeps are the caller's layer, is **confirmed** by the 7/7 majority vote. The
+split of responsibilities is right; the coverage claim inside it is wrong, and it
+currently tells the next reader the hole is covered.
+
+This is RECOVERY.md's invariant demonstrated: relative checks must never outrank
+absolute gates, and the absolute gate is the caller's layer.
+
+**`ACCUDISC_MAP_OK` is the worse lie, ahead of `RECOVERED`.** A sector confirmed by
+N same-speed passes is marked identically to one that was right first time — every
+one of the seven corrupt sectors is `OK` in some capture. Fix candidates, in
+order: correct the `510-518` comment; make `MAP_OK` distinguish "confirmed by
+same-speed passes" from "clean"; consider **one final verify pass at a different
+ladder rung** (per-chunk speed switching is rejected by the recalibration-thrash
+objection in that same comment, which is real and presumably measured).
+
+Cross-check from their side: `sector-hammer` (repeat at one setting, max retries)
+scored 2/20 while the speed-varying ladder scored 19/20. §93.2 supplies the
+mechanism that ranking was missing — repetition at a fixed speed samples a
+constant.
 
 **Candidate mechanism for H2, with a known hole.** Sector N holds a *stable*
 concealed error → the verify pass sees `diff == 0`, takes the "confirmed"
@@ -1222,11 +1276,13 @@ the lower-numbered one** (9/9 at +1, never −1). CIRC delay-line directionality
 the place to look; it is not an explanation we have. H1-local stays open beside
 it.
 
-**Next real discriminator (needs a second drive, Keith's):** if another model
-reads 113043 correctly, the pit is readable and the PX-716A's consensus is the
-failure. If every drive returns the same 22 bytes, the pit is gone, CIRC is
-concealing an unrecoverable defect, and `RECOVERED` is the wrong *label* rather
-than a wrong answer. Different fixes either way.
+**The second-drive test is SETTLED and withdrawn** — it was going to decide
+whether the pit is readable, and cdda2img's own five captures already answer it:
+this drive reads 113043 correctly at 24x, 8x and 4x. A second drive would only
+confirm generality. Not worth the time.
+
+**Still unexplained, and do not let the above close it:** the +1 asymmetry. Nine
+of nine flags at N+1, never N−1. None of the speed-stability result touches it.
 
 Discriminator requested in §bh.2, costs nothing: a uniform +1 shift never writes
 index 0, so **byte 0 of their five existing map files** decides it — `0x01` (OK)
