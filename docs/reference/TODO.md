@@ -1465,8 +1465,51 @@ measuring ~21× is exactly that case.
 **Confound to carry into any such rule** (`accudisc.h:1034-1036`): `measured_cx` is
 the achieved rate **at this radius**, and CAV drives read outer tracks faster, so
 rungs probed at different LBAs are not comparable — geometry will manufacture
-"violations". Probe mid-disc. This is the same confound behind the `speeds`
-min/max item (inner/middle/outer) under "Probes / diagnostics".
+"violations". This is the same confound behind the `speeds` min/max item
+(inner/middle/outer) under "Probes / diagnostics". **See 4b — it is worse than a
+caveat, it operates inside a single table.**
+
+### 4b. `speeds` biases every table against its own fast rungs — `[P2]`, OUR DEFECT
+
+Found answering cdda2img §97.2. Bare `speeds` probes the **middle half**
+(`cli/main.c:658-662`: `lba = leadout/4`, `count = leadout/2`), so it is *not*
+inner-disc — that part of their hypothesis fails. But each rung gets its own
+window and **the windows march outward**:
+
+```c
+/* src/drive/speeds.c:56, 66 */
+uint32_t stride = count / ncand;
+uint32_t wlba = lba + (uint32_t)i * stride;
+```
+
+The default candidate list is **descending** (`cli/main.c:647`,
+`{52,48,40,32,24,16,8,4}`), so **the fastest rungs are measured at the innermost
+radii and the slowest at the outermost** — a systematic bias against fast rungs, on
+a CAV drive, in exactly the direction of the task-4 phantom rung.
+
+Worked example, their uncap-on run (leadout ≈ 162,892, so ncand 7, stride ≈
+11,635): the 48 rung is measured at LBA 40,723 and the 40 rung at 52,358 — **11,635
+sectors further out**. Against the drive's own curve (`0..359,997 → 20.0x..48.0x`)
+that gap is worth **0.90×** linear-in-LBA or **1.13×** under a radius model
+(speed ∝ r, LBA ∝ area). Their observed gap is 1.84×. **So geometry accounts for
+~half to two-thirds of the "faster setting measures slower" anomaly**, and a
+residual of ~0.7–0.9× survives and may be real. The bias has the same sign as the
+effect, which is the worst arrangement for judging it.
+
+**Contract defect, not just a docs gap.** `accudisc.h:1036-1038`'s collapse rule
+compares `measured_cx` across rungs, and `accudisc.h:1030-1032` explains the
+per-rung window (cache freshness — a sound reason) without ever stating that the
+consequence is a radius term in every cross-rung comparison. Fix options: (a) say
+so in the header; (b) interleave windows so the bias cancels; (c) the
+inner/middle/outer item, which reports the gradient instead of hiding it — best of
+the three.
+
+**Zero-build discriminators** (`--ladder` preserves order, no sort, no dedup —
+`cli/main.c:622-630`): `--ladder 48,40` vs `--ladder 40,48` shows whether the
+anomaly follows list position or speed; **`--ladder 48,48,48,48`** measures the
+radius gradient directly with speed held constant, and yields the correction factor
+for every table taken at the default. Within-rung repeats are safe today;
+cross-rung `measured_cx` is not.
 
 ### 5. Stock-ceiling table — PARTLY closed. The A-vs-B discriminator is REOPENED `[P3]`
 
