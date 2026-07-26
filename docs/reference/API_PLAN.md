@@ -5,10 +5,30 @@ an audit asking whether `libaccudisc` has parity with the `accudisc` binary.
 Answer: **yes at the ABI level, no at the policy level.** This document is the
 design for closing that gap and then building the bindings on top of it.
 
-cdda2img is **pinned to a snapshot fork of the binary** (on `$PATH`, symlinked
-where cdda2img expects it) for the duration of this work, so nothing here can
-break it mid-flight. Every observable change accumulates in §8, the
-communication ledger, and goes to them in one message when the rewrite lands.
+cdda2img was **pinned to a snapshot fork of the binary** (on `$PATH`, symlinked
+where cdda2img expects it) for the duration of this work, so nothing here could
+break it mid-flight. Every observable change accumulated in §8, the
+communication ledger, and went to them in one message when the rewrite landed
+(2026-07-26, §ay; verified inert item-by-item in their §80).
+
+**The pin was retired 2026-07-26**, phases 0–3 complete: the symlinks
+(`~/.local/bin/accudisc` and `cdda2img/tools/accudisc/accudisc`) point back at
+this tree's `build/cli/accudisc`, as they did before the rewrite. Two standing
+consequences, neither of which existed while the pin held:
+
+- **§8 is now a live obligation, not an accumulating one.** Any CLI-surface
+  change reaches cdda2img on our next build. The ledger stops being a document
+  we hand over at the end and becomes something to write *before* the commit.
+- **A rebuild swaps their engine mid-run.** They invoke per command, so
+  rebuilding during one of their multi-hour bench runs changes the binary
+  between invocations *within* a single run, and their `# engine:` sha256 line
+  is captured at the header and would not notice. Same class as the shared-drive
+  problem in §8.1, one layer up — and the same protocol covers it:
+  `/var/tmp/sr0.owner` already says when a long run is in flight, so read it
+  before `cmake --build`, not only before touching `/dev/sr0`.
+
+Also note `setcap` now disarms *their* binary on every rebuild of ours, which is
+the second reason to cap the installed copy rather than the build-tree one.
 
 ## 1. What the audit measured
 
