@@ -1505,11 +1505,31 @@ inner/middle/outer item, which reports the gradient instead of hiding it — bes
 the three.
 
 **Zero-build discriminators** (`--ladder` preserves order, no sort, no dedup —
-`cli/main.c:622-630`): `--ladder 48,40` vs `--ladder 40,48` shows whether the
-anomaly follows list position or speed; **`--ladder 48,48,48,48`** measures the
-radius gradient directly with speed held constant, and yields the correction factor
-for every table taken at the default. Within-rung repeats are safe today;
-cross-rung `measured_cx` is not.
+`cli/main.c:622-630`). Cross-rung `measured_cx` is not safe today.
+
+- **`--ladder 48,48,48,48`** — the good one. Windows at 40,723 / 61,084 / 81,445 /
+  101,806 (61,083-sector span, nominal gradient **4.75×**), and all four time the
+  *same* window length, since `want = req*75` clamps to `SPEEDS_MAX_SECTORS` 2250
+  (`speeds.c:70-73`) and 48×75 = 3600 clamps. Speed, length and candidate held
+  constant, only radius varies → the correction curve for every default-start
+  table.
+- **`--ladder 48,40,48,40`** — interleaved, a *within-run* control: a 48 on each
+  side of a 40, so the trend differences out instead of needing a model.
+- **NOT `--ladder 48,40`** — corrected 2026-07-26, this was wrong when first
+  written here. `stride = count/ncand`, so **fewer rungs spreads the windows
+  further**: a 2-rung ladder puts them 40,723 apart, a **+3.17× bias — larger than
+  the entire 1.84× anomaly**. It would look like a spectacular confirmation of the
+  effect while measuring only geometry.
+- **`--passes` does not exist.** `cmd_speeds` accepts `--start` and `--ladder` and
+  nothing else (`cli/main.c:620-636`); anything else prints usage and returns 1.
+  Repeat by re-running the command.
+
+**Second, uncharacterised confound: timed window LENGTH also varies by rung.**
+`want = req * 75` clamped to [150, 2250] (`speeds.c:70-73`) gives 2250 sectors for
+every rung at 32× and above, but 1800 at 24×, 1200 at 16×, 600 at 8×, 300 at 4×.
+So 48-vs-40 is length-clean (radius is the whole confound there, which is why the
+correction above is complete), but **any rule spanning 48 down to 4 compares rungs
+differing in radius *and* in timed span**, and the second effect is unmeasured.
 
 ### 5. Stock-ceiling table — PARTLY closed. The A-vs-B discriminator is REOPENED `[P3]`
 
