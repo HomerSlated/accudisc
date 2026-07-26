@@ -1264,18 +1264,145 @@ here; that document is the source of record.
 
 Headline items, for grep:
 
-- `[P1]` Two silent-failure guards must move INTO the library: the SpeedRead +
-  subchannel interlock (`cli/main.c:1543`) and the read-only-fd vendor-opcode
-  check (`cli/main.c:1762`). Both currently exist only in the CLI, so a library
-  caller gets corrupt Q data or obscure failures with a success return.
+- ~~`[P1]` Two silent-failure guards must move INTO the library~~ — **DONE
+  2026-07-25, and the SpeedRead half is now being REMOVED entirely** by Keith's
+  2026-07-26 ruling (see "Outstanding" task 1 below). The read-only-fd
+  vendor-opcode diagnosis stays: it reports a condition rather than predicting a
+  failure, and is correct under both the setcap and default regimes.
 - `[P2]` Promote four acquisition strategies to public API — **and rewrite the
   CLI onto them in the same commit**, or the policy exists three times (CLI,
   Python, Rust) and drifts.
 - `[P2]` Do NOT promote exit codes, `--progress-fd`, or `render_map` — those are
   process conventions, not library concerns. Document the mapping instead.
-- `[P3]` Bindings: settle the transparent-struct ABI hazard and the FFI callback
-  design first. soname is `.so.0`, so breaking ABI is free now and not later.
-- cdda2img is pinned to a snapshot fork of the binary for the duration.
+- ~~`[P3]` Bindings: settle the transparent-struct ABI hazard and the FFI
+  callback design first.~~ **DONE 2026-07-26** (API_PLAN §7.1-7.3, commits
+  `638db16` / `41591a9`): `uint32_t size` on `read_req`/`read_stats`,
+  `ACCUDISC_ERR_ABI`, `accudisc_chunk` frozen, version single-sourced from the
+  header. Note the free-to-break window is now narrower than "soname is `.so.0`"
+  suggests — what actually made it free is that **nothing outside this repo
+  links the library**, and that expires when the Python binding ships.
+- ~~cdda2img is pinned to a snapshot fork of the binary for the duration.~~
+  **Pin retired 2026-07-26** — both symlinks point at this tree's
+  `build/cli/accudisc` again, so §8 is a *live* obligation: write the ledger row
+  before the commit, not at the end of a phase.
+
+## Outstanding — carried from 2026-07-26 (phase 3 landed; these did not)
+
+### 1. Remove all SpeedRead guards — `[P1]`, USER-DIRECTED, NOT STARTED
+
+**Keith's ruling 2026-07-26: "Remove all guards for SpeedRead. CDDA is
+completely unaffected by it. Those guards have no reason to exist."**
+Manual-backed — `private/drives/Plextor/Plextor-716.pdf` **p.15** publishes three
+ceilings for this model by media class: DATA (CD-ROM/CD-RW/CD-R) 48×, **CD-DA
+and CD-R audio 40×**, CD-RW audio 32×. The 48× the uncap exposes into page 2A is
+a *data-media* figure, so the uncap cannot make an audio disc spin above 40× and
+the throughput half of the hypothesis is closed.
+
+Scope agreed before stopping: remove **enforcement only**. Keep
+`accudisc_speed_uncap_set/get/push/pop`, the `speed-uncap` subcommand, the
+`--uncap` flag and the plextor driver — a queryable state is not a guard, and the
+standing goal is 100 % Plextor feature coverage.
+
+Inventory, already built — every site:
+
+| remove | where |
+|---|---|
+| the refusal block + `adsc_uncap_authoritative` call | `src/read/engine.c:370-391` |
+| `allow_unsafe` field | `include/accudisc/accudisc.h:1189` (+ the §7.1 comment at :1109) |
+| `ACCUDISC_ERR_UNSAFE_COMBINATION` | `include/accudisc/accudisc.h:68` |
+| its `strerror` case | `src/device.c:74` |
+| the `--uncap` + `--sub` interlock | `cli/main.c` (~1502 pre-edit numbering) |
+| the `LIKELY_ON` pre-read warning | `cli/main.c:1444-1457` |
+| guard-specific assertions | `tests/test_uncap.c:96, 226-245` |
+| `allow_unsafe` references | `tests/test_abi.c:85, 109-110` |
+
+Notes for whoever does it:
+
+- **`allow_unsafe` sits in existing padding**, so removing it leaves
+  `sizeof(accudisc_read_req) == 56` unchanged — but `tests/test_abi.c`'s
+  `_Static_assert` and the short-struct case both name that field, so they need
+  re-pointing at another field rather than deleting.
+- It is still a **public API removal** (a field and an error code), so bump
+  `ACCUDISC_VERSION_MINOR` to 3. CMake derives the `.so` version from the header.
+- **cdda2img is on our live tree now** — write the API_PLAN §8 ledger row
+  *before* the commit, per §8's post-relink discipline, not after.
+- `drivers/plextor/FEATURES.md:18` still documents the refuted *mechanism*. Fix
+  it with this change. **Keep the observation** — a real ABBA A/B, 40.6 % Q with
+  SpeedRead on vs 99.2 % off, 0 % across the 10–60 % radius band — recorded as
+  unexplained data with its confounds named (n=1 per arm, damaged media, taken
+  before drive contention was known to produce the same signature). Removing a
+  guard is not a reason to delete a measurement.
+
+### 2. `setcap` the INSTALLED binary, not the build-tree one — `[P1]`
+
+`CMakeLists.txt:34-38` already documents this and we have not been doing it. The
+capability binds to the **inode**, so every rebuild that relinks the CLI drops
+it. Three independent reasons now, the third new:
+
+1. It interrupts Keith on every rebuild.
+2. It silently disarms the vendor path mid-session (four occurrences).
+3. **Since the 2026-07-26 relink, cdda2img executes the same inode**, so our
+   rebuild drops the capability from *their* binary too.
+
+### 3. Audit `if (!quiet)` around anything that is not progress — `[P2]`
+
+cdda2img passes `-q` on all three read paths (`accudisc_reader.py:335`, `:439`,
+`tools/recovery_bench.py:777`), and the pre-read uncap warning was gated on
+`!ctx.quiet` — so the flag that makes a caller a *machine* consumer suppressed
+the notice written for machine consumers. The specific warning goes away with
+task 1; **the pattern is the task**. Quiet means "no human is watching", which is
+the strongest claim on being told something is wrong, not the weakest. Sweep
+`cli/main.c` for any other data-integrity notice behind a verbosity flag, and
+prefer a machine-readable token over stderr prose — stderr wording is explicitly
+not a stable interface (`cli-machine-interface.md`).
+
+### 4. The phantom 48× ladder rung — `[P2]`, live on both sides
+
+API_PLAN §9.3. With the uncap on, page 2A genuinely reports 48, `accudisc speeds`
+genuinely returns `req=48 page2a=48`, and a ladder admitting rungs on the strict
+`req == page2a` rule carries a 48 label over a measured ~21×. The premise that
+retired this ("we cannot set the uncap") died when the capability landed on the
+binary. Evidence a monotonicity rule would need: a `speeds` table at three passes
+with the uncap on — which the SpeedRead discriminator would produce as a
+by-product if it ever runs.
+
+### 5. Stock-ceiling table: keyed on (model), drive is keyed on (model × media) — `[P3]`
+
+cdda2img §88.2, open question, **not a known defect**. `stock_ceilings[]`
+(`src/drive/uncap.c:43-48`) has one row, PX-716A → 40, derived from observed
+ON/OFF transitions on audio media. The manual publishes three ceilings for the
+same model by media class. If page-2A `max_x` tracks the loaded media class, a
+CD-RW audio disc would report 32 against a stock 40, and `adsc_uncap_classify`
+must decide whether 32 < 40 means OFF or means "a class this table does not
+model". If `max_x` is media-invariant the question evaporates.
+
+Two-minute check with a CD-RW audio disc in the tray; cdda2img offered to run it.
+**Only matters if the classifier survives task 1** — if the whole inference path
+goes with the guards, close this as moot.
+
+### 6. Phase 4 — the Python binding — `[P2]`
+
+API_PLAN §7.2/§7.3 already fixed its shape: a **streaming API over the sink**,
+not a subprocess replacement. Copy by default; zero-copy behind an explicit
+opt-in with the view **released on return**, because a retained `memoryview`
+reads freed memory as plausible PCM. `ERR_NOTFOUND` is absence, not failure;
+`accudisc_write`'s caveat is a **positive** return. The sink fires only
+~13–15 k times per whole disc, so per-call FFI cost is a non-issue — the ~1 GB
+copy is the real cost.
+
+### 7. cdda2img §88 is unanswered
+
+Their §88.2 media-class question (task 5) and their offer to test it. Outbox is
+`cdda2img/private/AccuDisc.md`; last sent was §be2.
+
+### 8. Their binary depends on our `build/` existing — `[P3]`, note only
+
+The CLI **dynamically** links `libaccudisc.so.0` (`cli/CMakeLists.txt:3` links
+the SHARED target) with `RUNPATH` pointing into `build/src`. Since the relink,
+`rm -rf build` on our side leaves cdda2img's `accudisc` unable to start, and a
+rebuild has a window where the `.so` is being replaced. Their end-of-run engine
+re-hash catches the mixed-build case; nothing catches the missing-`.so` case.
+Installing properly (task 2) would fix both.
 
 ## Deferred (explicitly, by user decision)
 
