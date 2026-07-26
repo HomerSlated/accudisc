@@ -1170,11 +1170,63 @@ Mechanisms, none excluded yet:
   artefact was offset-corrected for CTDB, "corrupt LBA" and "flagged LBA" are
   different coordinate systems. Does not obviously give a clean +1 nine times.
 
-**Checked and correct as written** (so H1 is not where it would obviously be):
-`src/read/engine.c:554-556` computes `idx = cur - req->lba`; `cli/main.c:1376,
-1382,1396` does `ftruncate(count)` / `mmap(count)` / `req.status_map = map` with
-no header or padding. **Not yet audited:** `read_sector`, and `read_span`'s
-per-sector fallback loop which derives its own `cur = lba + s`.
+**AUDITED 2026-07-26 — no index error found anywhere in the recovery path.**
+Every site checked and correct as written: the classify/publish loop
+(`engine.c:554-556`, `idx = cur - req->lba`), the map file
+(`cli/main.c:1376,1382,1396` — `ftruncate(count)` / `mmap(count)`, no header or
+padding), `read_span`'s per-sector fallback (`engine.c:243-251`, `sec` and `cur`
+both derived from the same `s`), `read_sector` (`engine.c:211-215`, a thin
+wrapper with no arithmetic), both consensus write-backs (`engine.c:288, 321`),
+the seam stash (`engine.c:623-627`) and the chunk advance (`engine.c:629`,
+`lba += n`, so the extension is genuinely re-read rather than skipped).
+
+**Still unexamined, and now the only place a whole-sector displacement could
+originate:** `adsc_mmc_read_cd` and the SG_IO layer under it. Start there.
+
+**Excluded by measurement, not by argument:**
+
+- *Chunk geometry, the whole family.* A seam-misattribution mechanism was
+  constructed and refuted: `sector_len` 2742 → `65535/2742` = 23, capped at 32,
+  minus overlap 2 → **chunk 21**, and the corrupt LBAs scatter across residues
+  0, 2, 9, 10, 13, 14, 16 mod 21. No C in 2..32 puts them at one residue. The
+  adjacent pair 113056/113057 rules it out structurally too. Anything tied to
+  chunk position — the seam check, `prev_ext`, the overlap extension — predicts a
+  signature that is absent.
+- *C2 lag.* 2 sample pairs = 8 bytes (`accudisc.h:987`) against a 2352-byte
+  displacement, and it is **report-only by contract** (`accudisc.h:1004`), not an
+  omission. Do not re-chase this.
+- *Straddle H2* (one defect across the N/N+1 seam, C2 firing above and CIRC
+  miscorrecting below) failed the in-sector-position test — 8 of 9 end 582–1776
+  bytes short of the boundary. **But the test is weak** (cdda2img §92.2, conceded
+  in §bk): CIRC interleave delocalizes a defect across ~100 frames, so byte
+  offset is a poor proxy for physical position. Do not bank this negative. The
+  sharp version needs the F1/F2 frame index, which neither side has.
+
+**INDEPENDENT FINDING, outlives the whole +1 question (§92.3): the delivered
+error is REPRODUCIBLE.** 113043 returns the same 22 differing bytes in the same
+1298–1698 range at both 40x and 32x, with byte-identical delivered copies;
+112765 gives the same extent at 8x and 4x. So `consensus()` is not optimistic,
+it is **structurally blind** — its predicate is agreement, and a deterministic
+defect guarantees agreement. No retry count, ladder, or consensus width can help;
+they all sample the same function. This is RECOVERY.md's invariant demonstrated:
+relative checks must never outrank absolute gates, and the absolute gate is the
+caller's layer.
+
+**Candidate mechanism for H2, with a known hole.** Sector N holds a *stable*
+concealed error → the verify pass sees `diff == 0`, takes the "confirmed"
+`continue` at `engine.c:531-532`, and writes `MAP_OK`. Sector N+1 holds a
+*marginal* defect from the same damage region → unstable → `consensus()` fires →
+`RECOVERED`. One damage region, two sides of the stability threshold, no
+off-by-one required. **Hole: it does not explain why the stable sector is always
+the lower-numbered one** (9/9 at +1, never −1). CIRC delay-line directionality is
+the place to look; it is not an explanation we have. H1-local stays open beside
+it.
+
+**Next real discriminator (needs a second drive, Keith's):** if another model
+reads 113043 correctly, the pit is readable and the PX-716A's consensus is the
+failure. If every drive returns the same 22 bytes, the pit is gone, CIRC is
+concealing an unrecoverable defect, and `RECOVERED` is the wrong *label* rather
+than a wrong answer. Different fixes either way.
 
 Discriminator requested in §bh.2, costs nothing: a uniform +1 shift never writes
 index 0, so **byte 0 of their five existing map files** decides it — `0x01` (OK)
