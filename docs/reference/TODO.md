@@ -1334,9 +1334,21 @@ confirms it. Byte `count-1` is the same test at the far end.
 Independent of the +1, the semantic defect is real and ours: `consensus()`
 (`engine.c:317-323`) returns 1 on the first byte-for-byte agreement between any
 two reads. **That is a stability test, not a correctness test** — two reads can
-agree on the same wrong bytes — yet `ACCUDISC_MAP_RECOVERED` is documented as
-"problem seen, clean/agreeing copy won", which reads as fidelity. Header text to
-be fixed regardless of how the +1 resolves.
+agree on the same wrong bytes.
+
+**Scope of the doc fix, corrected 2026-07-26 — it is NARROWER than first
+recorded.** The block contract at `accudisc.h:1061-1065` already says the right
+thing and always did: "Every state below is a RELATIVE claim … **A drive that
+misreads deterministically passes every relative check**; absolute gates
+(AccurateRip, CTDB) are the calling application's job and always outrank anything
+recorded here." That is cdda2img's entire finding, written down before they
+measured it. So the contract does **not** need rewriting — only the per-state
+one-liner for `ACCUDISC_MAP_RECOVERED` ("problem seen, clean/agreeing copy won"),
+which reads as fidelity and contradicts the block six lines above it.
+
+The real gap was never documentation: `consensus()` implements precisely the thing
+the block comment tells consumers not to trust, and we labelled its output as
+though the comment did not exist.
 
 Next experiment (needs the drive, Tracy loaded, Keith's call): re-read one of the
 nine LBAs and compare delivered bytes against the CTDB reference. Clean ⇒ the
@@ -1432,26 +1444,74 @@ binary. Evidence a monotonicity rule would need: a `speeds` table at three passe
 with the uncap on — which the SpeedRead discriminator would produce as a
 by-product if it ever runs.
 
-### 5. Stock-ceiling table keyed on (model) — CLOSED 2026-07-26, MEASURED, no change needed
+**Mechanism, from Keith 2026-07-26 (cdda2img §96.2) — this is UNDETECTABLE from
+the bus, by construction.** Keith, on the drive he owns: *"the drive governor will
+cap the speed at 40x for a healthy disc, or less for an unhealthy one. Nothing
+anyone does in software alone can ever force a CDDA to read at 48x… That is a
+function of the drive which is not exposed via MMC/SG."* So with the uncap on,
+`req=48 page2a=48` has **both operands derived from the same advertised ceiling**,
+agreeing with each other and both wrong about what the drive will do. **`req ==
+page2a` cross-checks the quantiser, never the ceiling**, and no MMC field exposes
+the gap.
 
-**RESOLVED: `max_x` is media-invariant on the PX-716A.** cdda2img ran the §bg.4
-discriminator with the uncap **off** in all three tray states and page-2A `max_x`
-read **40** every time — audio disc (Tracy), data disc (closed CD-R, Taiyo Yuden,
-profile 0x0009), and **empty tray**. Consequences, all measured rather than
-argued:
+**Our side needs no change — the field and the rule already ship**, and this is
+what to tell anyone who asks: `accudisc_speed_rung.measured_cx`
+(`accudisc.h:1043`, a *timed streaming read*, not a report) is emitted per rung by
+`cli/main.c:672`. And `accudisc.h:1036-1038` already states the rule: "rungs whose
+`measured_cx` collapse to the same value are indistinguishable on this rig (bus or
+firmware limited) and one of them suffices in a recovery ladder." A 48 rung
+measuring ~21× is exactly that case.
 
-- One row per model is **correct**; keep `(model)` as the key.
-- **Mechanism B is refuted** without needing a CD-RW audio disc: B requires
-  `max_x` to *be* the media ceiling with the uncap off, which predicts 48 for the
-  data disc. It read 40. Mechanism A stands, so `48 > 40` holds for every medium.
-- **The §bg.3 false-ON does not exist.** The predicted "data disc on a stock drive
-  reads 48 → `LIKELY_ON`" measured 40; `adsc_uncap_classify` returns `OFF`,
-  correctly.
+**Confound to carry into any such rule** (`accudisc.h:1034-1036`): `measured_cx` is
+the achieved rate **at this radius**, and CAV drives read outer tracks faster, so
+rungs probed at different LBAs are not comparable — geometry will manufacture
+"violations". Probe mid-disc. This is the same confound behind the `speeds`
+min/max item (inner/middle/outer) under "Probes / diagnostics".
 
-Caveat recorded honestly: one drive, three tray states, uncap-off only. No
-uncap-**on** reading was taken (the refutation does not need one).
+### 5. Stock-ceiling table — PARTLY closed. The A-vs-B discriminator is REOPENED `[P3]`
 
-Task 5b below is **not** closed by this — it is independent of media class.
+**REOPENED 2026-07-26 (Keith caught it; cdda2img §95 retracts their §91.1).** This
+entry briefly recorded mechanism B as refuted. **It is not**, and the CD-RW audio
+disc is still the only discriminator. Do not close this again without that disc.
+
+*The invalid step, kept as a worked example of the house failure mode:* all the
+measurements were taken with the uncap **OFF**, and a conclusion was drawn about
+what the uncap **DOES**. B is defined (§bg.2) as "the uncap lifts the media ceiling
+by one class" — a claim about the *transformation*, carrying no commitment about
+the uncap-off reading. B is perfectly consistent with "stock 40 whatever is loaded;
+uncapped, media ceiling + one class". A prediction B never made was refuted.
+*Accepted uncritically on this side too* (§bj.1 called their reasoning right), so
+the fault is not theirs alone: a well-formed measurement answering a different
+question than the one asked.
+
+**SURVIVES — genuinely settled, all uncap-OFF questions:**
+
+- `max_x` is media-invariant **with the uncap off**: 40 across audio (Tracy), data
+  (closed CD-R, Taiyo Yuden, profile 0x0009) and **empty tray**.
+- `stock_ceilings[]` records the **stock** ceiling, which *is* the uncap-off value,
+  so **one row per model is correct and `(model)` stays the key**. No code change.
+- **§bg.3's false-ON is empty.** It needs a stock drive (uncap off); data disc,
+  uncap off, `max_x` 40 → `OFF`, correct.
+
+**STILL OPEN — A vs B, and the hazard is a silent false negative:** with the uncap
+**on**, Keith measured the data disc going 40 → 48, so the uncap does move `max_x`.
+But data is already the top class, so A and B agree on every medium touched so far:
+
+| medium, uncap ON | A: reports data ceiling | B: media ceiling + one class | observed |
+|---|---|---|---|
+| data disc | 48 | 48 (already top) | **48** |
+| audio disc | 48 | 40 → 48 | **48** (§au.1) |
+| **CD-RW audio** | **48** | **32 → 40** | **NOT MEASURED** |
+
+Under B that disc yields `max_x` 40, `40 > 40` is false at `uncap.c:83`'s strict
+`>`, and `adsc_uncap_classify` returns `ACCUDISC_UNCAP_OFF` **while the uncap is
+on** — the silent false negative on the safety value. Live and unmeasured.
+
+Task 5b below is independent of all of this and unaffected.
+
+**Drive state changed (§95.4):** Keith has left SpeedRead **ON** (page 2A now
+`48x (8467 kB/s)`, curve `20.0x..48.0x`) with the Taiyo Yuden CD-R reloaded. Any
+`speeds` table taken from now on is an uncapped reading.
 
 <details><summary>Original open question (superseded)</summary>
 
