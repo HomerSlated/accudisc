@@ -1196,6 +1196,26 @@ the seam stash (`engine.c:623-627`) and the chunk advance (`engine.c:629`,
 **Still unexamined, and now the only place a whole-sector displacement could
 originate:** `adsc_mmc_read_cd` and the SG_IO layer under it. Start there.
 
+**New evidence 2026-07-27 (cdda2img §102.2, then measured properly in §103), and
+it sharpens the claim rather than weakening it.** Their A/B control read the
+damaged region (LBA 112500 +700) twice through the *same* transport and got **36
+differing sectors**; a follow-up four-reads-per-condition run confirmed
+fixed-speed determinism is false (3/4 pinned reads distinct, 1–4 sectors apart —
+full table and its unseparated confound under "the pit is readable" above).
+So same-speed reads on this disc are not generally stable —
+which is what makes the 9 corrupt sectors a different phenomenon rather than
+more of the same. Where the disc is merely jittery the reads disagree and a
+verify pass would flag SUSPECT; the 9 were **stably wrong**, agreed with
+themselves, and took the `diff == 0` "confirmed" early-out. The unreachable-
+ladder root cause is unaffected — a disagreement is exactly what would have
+reached `consensus()` — but "the drive misreads the same way every time" is now
+known to be true *of those sectors*, not of the drive.
+
+It also closes off an instrument: byte-level differential comparison cannot
+adjudicate anything in a damaged region, because nothing there agrees with
+itself. Absolute gates only — the RECOVERY.md invariant, reconfirmed from a new
+direction.
+
 **Excluded by measurement, not by argument:**
 
 - *Chunk geometry, the whole family.* A seam-misattribution mechanism was
@@ -1238,10 +1258,38 @@ A plain per-sector **majority vote across the five captures reconstructs all sev
 sectors correctly** — no parity, no CTDB, no AccurateRip.
 
 **So the pit is readable and this drive can get the bits.** The failure is
-entirely recovery *policy*. `consensus()` is blind not because the damage is
-irreducible but because **it resamples the same deterministic function**: at a
-fixed speed the drive returns the same wrong bytes, so agreement is guaranteed and
-carries no information.
+entirely recovery *policy*. `consensus()` is blind because **it largely resamples
+the same function**: at a fixed speed the drive mostly returns the same wrong
+bytes, so agreement is cheap and carries little information.
+
+> **Weakened 2026-07-27 by measurement (cdda2img §103, retracting their own
+> §102.2 gloss).** This paragraph used to say agreement at a fixed speed was
+> *guaranteed* and the resampled function *deterministic*. Measured on the
+> damaged span (LBA 112500 +700, four reads per condition, PX-716A):
+>
+> | condition | distinct results | pairwise sectors differing |
+> |---|---|---|
+> | unpinned | **4/4** | 31, 32, 35, 35, 42, 43 |
+> | pinned `--speed 8` | **3/4** | 1, 1, 3, 3, 4 (one identical pair) |
+>
+> So: **speed is the dominant variable** — pinning drops divergence by roughly an
+> order of magnitude, which supports the directional part of §93/§94 from a
+> second angle — but **fixed-speed determinism is FALSE**. Repetition at one rung
+> has a small non-zero yield, so "more retries only deliver the wrong answer with
+> more confidence" was too strong.
+>
+> **Do not lift that table without its confound**, which cdda2img stated before
+> anyone could: a slower rung produces fewer wrong sectors to begin with, so
+> "fewer differ at 8x" is what you would see even if erroring sectors were
+> equally random at both speeds. Divergence and error rate are not separable from
+> these two conditions alone — it needs an AccurateRip/CTDB reference to express
+> divergence as a fraction of sectors *wrong at all*. Not done, not claimed.
+>
+> **None of this moves the root cause.** The ladder is unreachable for structural
+> reasons (below), not because rereads are information-free — and the nine
+> corrupt sectors still agreed with themselves and took the `diff == 0` early-out,
+> which now reads as a sharper anomaly rather than a vaguer one, since same-speed
+> reads on this disc are *not* generally stable.
 
 **Why the `--ladder` did not save it (answered from source, §bl.1).** Speed varies
 only inside the per-sector rereads — `ladder_speed` is called at exactly two
@@ -1781,10 +1829,29 @@ zero-copy opt-in.
   with cdda2img (§101.6): probes → `read_span` → status map → whole-disc (if at
   all) → `write` last, only after the read path is A/B'd on real media. It will
   need the `summary … result=` token and the positive-return rule.
-- **No hardware validation yet.** 33 green device-free tests are zero evidence
-  the binding reads a disc correctly. The acceptance instrument is cdda2img's
-  A/B — same disc, subprocess vs binding, byte-compare — which needs their
-  corpus, not our one drive.
+- ~~**No hardware validation yet.**~~ **VALIDATED 2026-07-27 (cdda2img §102).**
+  Their `tools/binding_ab.py` on the PX-716A with Tracy: **3/3 spans
+  byte-identical** subprocess vs binding (inner LBA 300, middle 72415, outer
+  162092 — sampled across radius deliberately, since the §9.3 phantom rung was a
+  CAV radius term), and every compared TOC field agrees (11 track LSNs,
+  `disc_last_lsn`, source, degrade, trusted, anomaly set, data_tracks,
+  session_count). Reproduced after a harness refactor.
+
+  **Read the scope precisely — the pass is narrower than "it works".** Each span
+  is read three times (subprocess, subprocess, binding) and scored only if the
+  two subprocess reads agree. On the damaged region (LBA 112500 +700) that
+  control **fired**: two consecutive reads of the same span by the same
+  transport differed in **36 sectors**. Without the control that would have been
+  reported as "the binding differs in 36 sectors" — well-formed, reproducible-
+  looking, wrong referent.
+
+  So: the binding agrees with the subprocess path **where the disc reads
+  deterministically**, and has not been shown to agree on a damaged region
+  because nothing agrees with itself there. **Consequence for us:** byte-level
+  A/B is not available as a check on recovery behaviour, and any future claim
+  about the binding's recovery path needs an absolute gate (AccurateRip/CTDB),
+  never a differential one. That is the RECOVERY.md invariant arriving from a
+  new direction.
 - Packaging is a **source package requiring a built libaccudisc**, not a wheel;
   a wheel wants task 2 (install properly) first. The pin is
   `accudisc_version_string()`; `pyproject.toml`'s version is checked against the
@@ -1799,6 +1866,17 @@ zero-copy opt-in.
   could resolve to the wrong one. Build-from-source-per-environment until
   discovery goes through `pkg-config accudisc`. cdda2img told (§bt.1) before
   they wrote CI against the looser claim in §bs.4.
+- **The `toc` line has no token for `sessions_total` or the mapped-session
+  count** — `[P3]`, raised by cdda2img §102.5. Confirmed there that
+  `cli/format.c:47` prints `info->session_count`, i.e. the READ DISC INFORMATION
+  count, so their `session_safe` gate was reading the right measurement all
+  along — no bug. But the state we called the dangerous one,
+  `sessions_total > mapped_session_count` (seams known to exist, not locatable),
+  is **invisible to a subprocess consumer**: there is no token for either
+  number, so no CLI caller can refuse on it. The binding can express it. Two
+  more tokens on the `toc` acquisition line would close it for everyone.
+  cdda2img is migrating and explicitly did not ask; recorded because the gap is
+  real rather than cosmetic.
 - **`accudisc_toc` is not pinned in `tests/test_abi.c`** — `[P3]`. It has no
   `size` field, so a field added in C arrives in a binding as zero with nothing
   complaining, and the pure guards (`check_audio_range` and friends) would then

@@ -107,6 +107,43 @@ compares three different quantities. And every state is a *relative* claim —
 absolute verification (AccurateRip, CTDB) is the calling application's job and
 always outranks anything in the map.
 
+## Integrating behind a transport switch
+
+`AbiMismatch` is its own exception type so a consumer can catch exactly the
+"stale extension against a newer `.so`" case and fall back, rather than failing
+a rip. It needs **two** blocks, not one:
+
+```python
+try:
+    import accudisc
+except ImportError:
+    transport = Subprocess()
+else:
+    try:
+        transport = Binding()          # constructs a Device
+    except accudisc.AbiMismatch:
+        transport = Subprocess()
+```
+
+Collapsing that into `except (ImportError, accudisc.AbiMismatch)` looks tidier
+and is broken: if the *import* is what failed, the name `accudisc` is unbound
+when the exception tuple is evaluated, so you get a `NameError` naming the wrong
+problem entirely.
+
+**Running under `uv`:** build the extension for the interpreter you are about to
+use, and pass `--no-project`.
+
+```sh
+ACCUDISC_INCLUDE_DIR=…/accudisc/include ACCUDISC_LIB_DIR=…/accudisc/build/src \
+uv run --no-project --python 3.14 --with cffi --with …/accudisc/bindings/python \
+    python your_script.py
+```
+
+Without `--no-project`, `uv run --python 3.14` **deletes and recreates the
+surrounding project's `.venv`** at that version, and the next `uv run` silently
+uses a different interpreter than the one you thought you pinned. (Found the
+hard way by cdda2img, not by us.)
+
 ## What is deliberately absent
 
 * **No subprocess, no `--progress-fd` parsing, no exit codes.** Those are
