@@ -1790,6 +1790,21 @@ zero-copy opt-in.
   `accudisc_version_string()`; `pyproject.toml`'s version is checked against the
   loaded library by a test that fails on drift, and `Device()` refuses on
   compiled-vs-loaded major/minor skew with `AbiMismatch`.
+- **`pip install .` works but the result is NOT relocatable** — `[P2]`, and it
+  is another argument for task 2. Verified into a clean venv: it installs,
+  imports, and raises correctly. But linked against an *uninstalled* library the
+  extension carries an absolute `RUNPATH` to this build tree
+  (`readelf -d …/_accudisc*.so` → `/home/kgr/Git/accudisc/build/src`). Correct
+  here, meaningless elsewhere, and on a machine with some *other* libaccudisc it
+  could resolve to the wrong one. Build-from-source-per-environment until
+  discovery goes through `pkg-config accudisc`. cdda2img told (§bt.1) before
+  they wrote CI against the looser claim in §bs.4.
+- **`accudisc_toc` is not pinned in `tests/test_abi.c`** — `[P3]`. It has no
+  `size` field, so a field added in C arrives in a binding as zero with nothing
+  complaining, and the pure guards (`check_audio_range` and friends) would then
+  answer about a TOC that is not the disc's. The Python suite now pins
+  `sizeof(accudisc_toc)`; the C side arguably should too, since API_PLAN §7.1
+  claims size-less structs are pinned there and this one is not.
 
 ### 7. cdda2img §88 — ANSWERED 2026-07-26 (§bg)
 

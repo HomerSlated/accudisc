@@ -1,5 +1,8 @@
 [build-system]
-requires = ["setuptools>=64", "cffi>=1.15"]
+# setuptools>=77 for PEP 639 `license = "MIT"` as a plain string; on older
+# setuptools that form is not understood and the metadata is wrong rather than
+# rejected, which is the failure mode worth avoiding.
+requires = ["setuptools>=77", "cffi>=1.15"]
 build-backend = "setuptools.build_meta"
 
 [project]

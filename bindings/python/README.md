@@ -21,6 +21,21 @@ Header and library discovery, in order: `ACCUDISC_INCLUDE_DIR` /
 installed yet; an RPATH is set so `libaccudisc.so.0` is found without
 `LD_LIBRARY_PATH`.
 
+`pip install .` works and was verified into a clean venv — but note **what the
+RPATH means for distribution**. Built against an uninstalled tree, the
+extension carries an *absolute* `RUNPATH` to that build directory:
+
+```
+$ readelf -d …/site-packages/accudisc/_accudisc*.so | grep RUNPATH
+  RUNPATH  [/home/kgr/Git/accudisc/build/src]
+```
+
+That is correct for this machine and meaningless anywhere else. So the install
+is not relocatable until the library is installed properly and found via
+`pkg-config` (repo TODO task 2). For CI, build the C library in the same job
+and install the binding from source; do not copy the built package between
+machines.
+
 ## Why API mode
 
 `ffi.set_source` with a real `#include`, never `ffi.dlopen`. In ABI mode every

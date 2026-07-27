@@ -234,6 +234,30 @@ def test_sink_zero_copy_retained_slice_is_a_KNOWN_HOLE():
         "good news, tighten the guard")
 
 
+def test_read_to_file_slicing_pattern_is_not_flagged():
+    """read_to_file slices the zero-copy view — assert it does not self-trip.
+
+    Its sink writes ``chunk.data[base:base+audio_len]`` per sector, which is a
+    memoryview slice handed to a buffered writer. If the writer still held one
+    when the view is released, read_to_file would raise on its own code path
+    and be broken outright.
+    """
+    import io
+
+    out = io.BytesIO()
+
+    def slicing_sink(ch):
+        for i in range(ch.nsec):
+            base = i * ch.sector_len
+            out.write(ch.data[base:base + ch.audio_len])
+
+    tramp = ad._SinkTrampoline(slicing_sink, copy=False)
+    c, _keep = _fake_chunk(nsec=2, sector_len=2352)
+    assert tramp.cffi_callback(ffi.NULL, c) == 0
+    assert tramp.error is None, f"read_to_file's own pattern tripped: {tramp.error!r}"
+    assert out.tell() == 2 * 2352
+
+
 def test_sink_zero_copy_clean_use_is_not_flagged():
     """The guard must not fire on correct code — otherwise it is unusable."""
     total = []
@@ -307,6 +331,64 @@ def _enhanced_cd() -> ad.Toc:
         ad.Session(2, 3, 3, 0, 1, 36400),
     )
     return ad.Toc(1, 3, tracks, sessions, 36400, ad.Anomaly(0), 2)
+
+
+def test_toc_roundtrip_is_byte_faithful():
+    """Every pure guard answers about a RECONSTRUCTED struct, not the library's.
+
+    ``_toc_to_c`` rebuilds an ``accudisc_toc`` from the Python dataclass so the
+    pure guards can be called. If it dropped a field, the guard would return a
+    well-formed verdict about a TOC that is not the disc's — this project's
+    named failure class, sitting inside a safety gate.
+
+    ``ffi.new`` zero-fills, including padding, so a bytewise compare of the
+    original against the round-trip is exact.
+    """
+    src = ffi.new("accudisc_toc*")
+    src.first_track = 1
+    src.last_track = 3
+    src.track_count = 3
+    src.leadout_lba = 36400
+    src.anomalies = int(ad.Anomaly.PAST_LEADOUT | ad.Anomaly.EMPTY_TRACK)
+    src.sessions_total = 2
+    src.session_count = 2
+    for i, (num, ctrl, sess, lba, sec, pre) in enumerate((
+            (1, 0x10, 1, 0, 10000, 0),
+            (2, 0x10, 1, 10000, 10000, 150),
+            (3, 0x14, 2, 31400, 5000, 0))):
+        src.tracks[i].number = num
+        src.tracks[i].adr_ctrl = ctrl
+        src.tracks[i].session = sess
+        src.tracks[i].lba = lba
+        src.tracks[i].sectors = sec
+        src.tracks[i].pregap = pre
+    for i, (num, ft, lt, at, dt, lo) in enumerate((
+            (1, 1, 2, 2, 0, 20000),
+            (2, 3, 3, 0, 1, 36400))):
+        src.sessions[i].number = num
+        src.sessions[i].first_track = ft
+        src.sessions[i].last_track = lt
+        src.sessions[i].audio_tracks = at
+        src.sessions[i].data_tracks = dt
+        src.sessions[i].leadout_lba = lo
+
+    back = ad._toc_to_c(ad._toc_from_c(src))
+    n = ffi.sizeof("accudisc_toc")
+    assert bytes(ffi.buffer(back, n)) == bytes(ffi.buffer(src, n)), (
+        "_toc_to_c lost a field on the way through the Python model")
+
+
+def test_toc_struct_size_is_pinned():
+    """accudisc_toc has no `size` field, so growth must be a deliberate act.
+
+    tests/test_abi.c does NOT pin this one (checked 2026-07-27). If a field is
+    added in C, the binding would carry it as zero through _toc_to_c and the
+    guards would silently answer about the wrong TOC. This makes that growth
+    fail here instead.
+    """
+    assert ffi.sizeof("accudisc_toc") == 2788, (
+        "accudisc_toc changed size — re-check every field _toc_to_c copies, "
+        "then update this pin")
 
 
 def test_track_audio_data_classification():
@@ -406,6 +488,55 @@ def test_cancel_flag_roundtrips():
     assert not c.cancelled
     c.cancel()
     assert c.cancelled
+
+
+def _null_device() -> ad.Device:
+    """A Device whose handle is the NULL pointer.
+
+    ``_handle`` rejects ``None``, and ``ffi.NULL`` is not ``None``, so a call
+    marshals its arguments all the way into ``accudisc_read_cdda(NULL, ...)``
+    and comes back ``ERR_INVAL``. That makes the whole argument-marshalling
+    path testable with no drive.
+    """
+    d = ad.Device.__new__(ad.Device)
+    d._dev = ffi.NULL
+    d._path = "<null>"
+    d._log_cb = None
+    return d
+
+
+def test_read_marshals_every_optional_argument():
+    """Covers the fields that only a real read would otherwise touch.
+
+    ``req.cancel`` in particular assigns an ``int*`` into a
+    ``const volatile int *`` field; if cffi rejected that qualifier mismatch,
+    ``cancel=`` would raise TypeError on first use — on the drive.
+    """
+    dev = _null_device()
+    flag = ad.Cancel()
+    try:
+        dev.read(0, 10, sink=None, c2=ad.C2.PTRS, sub=ad.Sub.RAW,
+                 speed_ladder=[32, 16, 8], status_map=True, cancel=flag,
+                 retries=3, c2_retries=4, verify_passes=2, overlap_sectors=2,
+                 chunk_sectors=16, speed_x=8, any_type=True, allow_unsafe=True)
+    except ad.InvalidArgument:
+        pass  # reached the library with every field set: the point of the test
+    except Exception as exc:  # noqa: BLE001
+        raise AssertionError(
+            f"marshalling failed before reaching the library: "
+            f"{type(exc).__name__}: {exc}") from exc
+    else:
+        raise AssertionError("a NULL device must not succeed")
+
+
+def test_read_rejects_a_zero_count():
+    dev = _null_device()
+    try:
+        dev.read(0, 0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("count must be > 0")
 
 
 def test_read_span_refuses_over_the_ceiling():

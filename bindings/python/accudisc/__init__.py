@@ -1265,6 +1265,17 @@ class Device:
 
         def collect(chunk: Chunk) -> None:
             nonlocal pos
+            # _sector_len() is our PREDICTION of a number the library REPORTS.
+            # Slice assignment into a bytearray silently resizes it, so a wrong
+            # prediction would yield a plausible buffer of the wrong length
+            # rather than an error. Check it instead of trusting it.
+            if chunk.sector_len != sector_len:
+                raise AccuDiscError(
+                    lib.ACCUDISC_ERR_INVAL,
+                    f"sector_len mismatch: predicted {sector_len}, library "
+                    f"delivered {chunk.sector_len} — the c2/sub layout "
+                    f"assumption is wrong, refusing to reassemble the span"
+                )
             n = chunk.nsec * chunk.sector_len
             buf[pos:pos + n] = chunk.data
             pos += n
