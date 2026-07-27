@@ -41,6 +41,9 @@ __pycache__/
 bindings/python/accudisc/_accudisc.c
 bindings/python/accudisc/*.o
 bindings/python/accudisc/*.so
+# `pip` here is uv-backed and drops a lockfile on install; it locks only cffi
+# and is an artifact of whoever last ran it, not a project input.
+bindings/python/uv.lock
 
 # Session history, agent definitions, remember system. Local tooling and
 # personal config — never pushed. .claude/agents/ is backed up via
