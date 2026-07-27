@@ -28,6 +28,30 @@ from accudisc._accudisc import ffi, lib
 # ---------------------------------------------------------------------------
 
 
+def test_imported_package_is_the_binding_not_a_namespace_phantom():
+    """`import accudisc` can succeed and yield something that is not us.
+
+    A *directory* named `accudisc` anywhere on sys.path is recorded as a PEP 420
+    namespace portion: the import completes, `__file__` is None, and there is no
+    `Device`. Nothing raises, so `except ImportError` cannot see it and the
+    failure surfaces at the first attribute access, arbitrarily far away.
+
+    The case that bites is our own repo root — measured, from its parent:
+
+        $ cd ~/Git && python3 -c "import accudisc; print(accudisc)"
+        <module 'accudisc' (namespace) from ['/home/kgr/Git/accudisc']>
+
+    A real package later on the path does win the scan (also measured), which is
+    why this passes here and why the hazard is invisible until it isn't. Found
+    by cdda2img (§104.1), whose harness had reasoned the phantom harmless.
+    """
+    assert ad.__file__ is not None, (
+        "imported a PEP 420 namespace portion, not the binding: "
+        f"__path__={list(getattr(ad, '__path__', []))}")
+    for name in ("Device", "AccuDiscError", "AbiMismatch"):
+        assert hasattr(ad, name), f"module lacks {name}; not the binding"
+
+
 def test_version_agrees_with_loaded_library():
     """Header macros vs the .so. CMake single-sources these; a mismatch is skew."""
     assert ad.version == ad.library_version()

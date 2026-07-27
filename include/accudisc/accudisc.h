@@ -1150,7 +1150,14 @@ typedef struct accudisc_read_req {
     uint8_t any_type;  /* 0: expected type CD-DA; 1: any (mixed-mode spans) */
     uint8_t retries;   /* per-sector attempts after a chunk fails; 0 = 2 */
     uint16_t chunk_sectors; /* per READ CD command; 0 = max under 64 KiB */
-    uint16_t speed_x;  /* set read speed first; 0 = leave as-is */
+    uint16_t speed_x;  /* set read speed first; 0 = leave as-is. NOT restored on
+                        * exit: the drive is left at speed_x (or, if a ladder
+                        * rung fired while speed_x == 0, at the drive's own
+                        * management) — never at whatever the caller had set
+                        * before the call. Deliberate: a recovery loop steps
+                        * rungs without re-spinning, and restores once itself
+                        * afterwards. Contrast accudisc_pregap_scan_opts.speed_x,
+                        * which does restore on every exit path. */
     /* accuracy strategy (all off = single-pass fast read): */
     uint8_t c2_retries;    /* cache-defeated rereads hunting a C2-clean copy
                             * of each flagged sector (requires c2 != NONE);

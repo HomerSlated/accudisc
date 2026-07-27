@@ -9,7 +9,7 @@ The C library must be built first; the binding links it.
 ```sh
 cmake -B build && cmake --build build          # from the repo root
 cd bindings/python && python3 build_accudisc.py
-PYTHONPATH=. python3 tests/test_binding.py      # 33 tests, no drive needed
+PYTHONPATH=. python3 tests/test_binding.py      # 39 tests, no drive needed
 ```
 
 `ctest -R python_binding` does all of that as part of the normal test run, and
@@ -111,24 +111,52 @@ always outranks anything in the map.
 
 `AbiMismatch` is its own exception type so a consumer can catch exactly the
 "stale extension against a newer `.so`" case and fall back, rather than failing
-a rip. It needs **two** blocks, not one:
+a rip. There are **three** ways to not have a usable binding, not one, and the
+middle one does not raise anything at all:
 
 ```python
 try:
     import accudisc
 except ImportError:
-    transport = Subprocess()
+    transport = Subprocess()            # 1. genuinely absent
 else:
-    try:
-        transport = Binding()          # constructs a Device
-    except accudisc.AbiMismatch:
-        transport = Subprocess()
+    if not all(hasattr(accudisc, n) for n in ("Device", "AbiMismatch")):
+        transport = Subprocess()        # 2. imported, but not us — see below
+    else:
+        try:
+            transport = Binding()       # constructs a Device
+        except accudisc.AbiMismatch:
+            transport = Subprocess()    # 3. stale extension vs newer .so
 ```
 
-Collapsing that into `except (ImportError, accudisc.AbiMismatch)` looks tidier
-and is broken: if the *import* is what failed, the name `accudisc` is unbound
-when the exception tuple is evaluated, so you get a `NameError` naming the wrong
-problem entirely.
+Every branch assigns `transport`, and `accudisc` is only read on the path where
+the import actually succeeded. Both matter:
+
+**Do not collapse it into `except (ImportError, accudisc.AbiMismatch)`.** If the
+*import* is what failed, the name `accudisc` is unbound when the exception tuple
+is evaluated, so you get a `NameError` naming the wrong problem entirely — in
+exactly the situation the handler was written for.
+
+**`import accudisc` can succeed and give you something that is not the
+binding.** A *directory* named `accudisc` anywhere on `sys.path` is recorded as
+a PEP 420 namespace portion: the import completes, `__file__` is `None`, and
+there is no `Device`. Nothing raises, so no `except` clause can see it, and the
+failure surfaces at the first attribute access arbitrarily far from the import.
+The case that bites is **this repository's own root**, from its parent
+directory:
+
+```
+$ cd ~/Git && python3 -c "import accudisc; print(accudisc)"
+<module 'accudisc' (namespace) from ['/home/kgr/Git/accudisc']>
+```
+
+A real package later on `sys.path` does win the scan, so a correct environment
+never sees this — which is precisely why the hazard stays invisible until an
+interpreter without the binding installed hits it. Hence step 2: an *identity*
+check, not a version check. Version skew is what `AbiMismatch` is for, and it
+cannot fire on an object that has no `Device` to call. (Reported by cdda2img,
+whose own harness had reasoned the phantom harmless; pinned here by
+`test_imported_package_is_the_binding_not_a_namespace_phantom`.)
 
 **Running under `uv`:** build the extension for the interpreter you are about to
 use, and pass `--no-project`.
