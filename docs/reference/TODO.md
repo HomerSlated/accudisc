@@ -1901,6 +1901,78 @@ rebuild has a window where the `.so` is being replaced. Their end-of-run engine
 re-hash catches the mixed-build case; nothing catches the missing-`.so` case.
 Installing properly (task 2) would fix both.
 
+### 9. cdda2img §106 — the CLI is **not** retired; cdda2img's *use* of it is deprecated — `[P2]`
+
+> **SETTLED BY KEITH 2026-07-27, and it is not what §106.2 relayed.** cdda2img
+> reported "the CLI is retired", subprocess and fallback gone. The actual
+> decision is narrower and points the other way: **the CLI stays. What is
+> deprecated is cdda2img's use of it.** Verbatim: *"The whole purpose of the API
+> is that all consumers use it exclusively. The CLI is our consumer of the API.
+> Everyone else creates their own. There's little point in having an API if
+> nobody uses it."*
+>
+> So the CLI is the **reference consumer** — our own proof that the public
+> header is sufficient — not a supported integration surface for other tools.
+> This *strengthens* `CLAUDE.md`'s existing line (the CLI uses the public header
+> only, and its exit codes / `--progress-fd` / stderr conventions stay there by
+> design, API_PLAN §3) rather than overturning it.
+>
+> **What actually changes:** binding the last three calls is required work —
+> cdda2img can no longer shell out. **What does not:** the CLI is not going
+> away, so their §106.5 fear is unfounded. `binding_ab.py`'s A side survives as
+> a *test* instrument even once production use is deprecated; byte-level
+> cross-transport comparison is theirs to keep or spend deliberately, not
+> something removal takes from them.
+
+Answered from source as §by; all three folded into their plan (§107.2).
+
+- **The `speeds` span** they must reproduce is `cli/main.c:659-664` — `lba =
+  leadout_lba / 4`, `count` clamped to `leadout_lba / 2` (middle half,
+  representative CAV radius), clamp skipped when `--start` is explicit; rungs
+  `{52,48,40,32,24,16,8,4}` filtered to the page-2A max. It is **derived per
+  disc**; they had half-decided to record a constant from one Tracy run, which
+  would silently mean a different radius on every disc of another length.
+
+- **`ACCUDISC_ERR_NOT_BLANK = -13` — `[P2]`, agreed, not landed.** Today
+  `ACCUDISC_ERR_UNSUPPORTED` doubles as "disc is not blank". Verified this is
+  *exact*: `src/write/burn.c:155` is the only `ERR_UNSUPPORTED` reachable from
+  `accudisc_write`, and `src/write/` calls nothing from the driver/plan/session
+  layers where the others live. But it is exact **by census, not by
+  construction** — any future `ERR_UNSUPPORTED` under `adsc_write_run` silently
+  joins "not blank", and the failure is well-formed on both sides: we would tell
+  a user to insert a blank disc they are already holding, and neither suite would
+  catch it. `-12` is `ERR_ABI`, so `-13` is free. Touches three places:
+  `burn.c:155`, the CLI branch at `cli/main.c:946`, the contract at
+  `accudisc.h:194`. Their `write_disc` is last in their own ordering, so this is
+  not on the critical path.
+
+- **`read_to_file`'s docstring now gives advice its own audience may not take —
+  `[P3]`, ours.** It says that for a whole disc "the CLI's `--pcm` path remains
+  the better transport", because the CLI writes the file inside the library's
+  address space while `read_to_file` routes every sector through Python. The
+  comparison is still *true*; it is the recommendation that is now wrong, since
+  the only reader of that docstring is a binding consumer — precisely the party
+  told to use the API exclusively. Rewrite as a cost statement, not a redirect.
+  Whether a library-side whole-disc-to-file entry point gets built is a separate
+  question and stays open: cdda2img will rip both ways and send a wall-clock
+  number first (§106.4). Build nothing on the guess that one memcpy per chunk is
+  noise — that is an expectation, and this correspondence keeps proving those
+  insufficient.
+
+- **The single-spin sequence test — `[P2]`, THEY ASKED FOR IT (§107.2), NOT
+  BUILT.** Q3 dissolved: there is no cross-call lead-in cache *and no inline
+  mechanism to lose*. `--fulltoc`'s "single-spin capture" is two ordinary public
+  calls (`accudisc_read_full_toc`, `accudisc_read_cdtext`) made before
+  `accudisc_read` on the same open handle (`cli/main.c:1354-1368`); the "one
+  spin-up instead of three" is a property of **one process holding the handle
+  open**, not of anything the library combines. `Device.__init__` calls
+  `accudisc_open` and nothing else (verified), so a binding consumer holding one
+  `Device` across the same three calls in the same order issues an identical
+  command sequence. What the test must pin is the property that **has no other
+  way to fail**: a consumer that opens/closes between the calls gets every byte
+  correct and three spin-ups, and nothing on either side goes red. Assert the
+  command sequence on one handle, lead-in before audio.
+
 ## Deferred (explicitly, by user decision)
 
 - Python / Rust bindings (generated against `include/accudisc/*.h` only).
