@@ -35,6 +35,12 @@ bindings/rust/target/
 bindings/python/dist/
 bindings/python/*.egg-info/
 __pycache__/
+# cffi API mode generates a C file and compiles it in place; both are outputs
+# of build_accudisc.py and must never be committed — a stale checked-in
+# _accudisc.c would be built against a header it no longer matches.
+bindings/python/accudisc/_accudisc.c
+bindings/python/accudisc/*.o
+bindings/python/accudisc/*.so
 
 # Session history, agent definitions, remember system. Local tooling and
 # personal config — never pushed. .claude/agents/ is backed up via

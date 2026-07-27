@@ -740,6 +740,11 @@ read-only open, not a speed matter.
     knowingly while nothing outside this repo links the library — and note that
     window **closes when the Python binding ships** (§7.1's own reasoning).
 
+    **Status 2026-07-27: the window is still open, deliberately.** The Python
+    binding landed but `accudisc_probe_speed_ladder` was left unbound precisely
+    to keep it open (task 6). So this change is still free — but only until the
+    probe is bound, and cdda2img is waiting on the probe. **Land this first.**
+
   **Implementation notes:** cost is 3x the timed windows per rung (default
   ladder is up to 8 rungs after page-2A filtering). Each of the three locations
   needs its *own* cache-fresh window per rung, so the window allocator must not
@@ -1725,15 +1730,66 @@ same treatment as any other (existing consumers must keep compiling, and
 `LIKELY_OFF` must not silently read as `OFF = 0`). cdda2img told not to build on
 the distinction yet.
 
-### 6. Phase 4 — the Python binding — `[P2]`
+### 6. Phase 4 — the Python binding — FIRST CUT LANDED 2026-07-27
 
-API_PLAN §7.2/§7.3 already fixed its shape: a **streaming API over the sink**,
-not a subprocess replacement. Copy by default; zero-copy behind an explicit
-opt-in with the view **released on return**, because a retained `memoryview`
-reads freed memory as plausible PCM. `ERR_NOTFOUND` is absence, not failure;
-`accudisc_write`'s caveat is a **positive** return. The sink fires only
-~13–15 k times per whole disc, so per-call FFI cost is a non-issue — the ~1 GB
-copy is the real cost.
+`bindings/python/`: cffi **API mode** (`build_accudisc.py`), the wrapper in
+`accudisc/__init__.py`, 33 device-free tests wired in as ctest
+`test_python_binding` (skips on missing python3/cffi, never fails silently).
+
+**API_PLAN §7.3's central premise was wrong and is superseded.** It justified
+"streaming API over the sink" with the claim that the subprocess path
+"structurally cannot hand the caller the PCM without copying it through a pipe".
+No such pipe exists: `--pcm FILE` has the CLI write the file itself. cdda2img
+caught this (§101.2) and they are right. The corrected shape:
+
+- **`read_span()` returns `bytes`** — bounded, no sink, no temp file. This is
+  the call that earns the binding, because the subprocess path forces a
+  write-file/read-back/unlink round-trip *per recovery attempt*
+  (`passes x rungs` per failed track).
+- **Whole-disc reads stay file-based.** `read_to_file` exists but is not the
+  recommended path. Measured, so the recommendation is not folklore: the
+  per-chunk Python copy is 0.02 s cache-warm over 0.941 GB, and copy + write +
+  fsync of the whole ~1 GB is 0.51 s — negligible against a multi-minute rip.
+  Keep the file path for simplicity and because the downstream wants a path,
+  **not** because the copy is expensive.
+
+Held as they were: `ERR_NOTFOUND` is absence (returns `None`), `accudisc_write`'s
+caveat is a **positive** return (`_check` tests `rc < 0`), copy by default with
+zero-copy opt-in.
+
+**Two Python-specific hazards §7.2 did not cover, both measured:**
+
+1. cffi's default callback returns **0** when the Python sink raises — and 0 is
+   what the engine reads as *continue*. A sink bug would have produced a
+   completed rip and a traceback on stderr. Fixed with `error=1` + `onerror=`,
+   re-raising the cause out of `read()`.
+2. "View released on return" does **not** reach a *slice* the sink took — a
+   memoryview slice re-exports from the underlying buffer, so the parent's
+   release misses it. A refcount detector for this was built and **withdrawn**:
+   it read differently per calling frame and flagged correct code. Documented
+   limit + `copy=True` default instead, with a test pinning that the hole
+   exists so a future CPython closing it is noticed.
+
+**Still to do on this entry:**
+
+- **`accudisc_probe_speed_ladder` is deliberately NOT bound** — `[P2]`, and it
+  gates on the `speeds` min/avg/max item. `accudisc_speed_rung` has no `size`
+  field; min/avg/max grows it; §7.1 says the free-to-break window is open only
+  while nothing outside this repo links the library, and the binding shipping is
+  what closes it. Land min/avg/max **first**, then bind the probe.
+- **`accudisc_write` is NOT bound** — the one destructive path. Order agreed
+  with cdda2img (§101.6): probes → `read_span` → status map → whole-disc (if at
+  all) → `write` last, only after the read path is A/B'd on real media. It will
+  need the `summary … result=` token and the positive-return rule.
+- **No hardware validation yet.** 33 green device-free tests are zero evidence
+  the binding reads a disc correctly. The acceptance instrument is cdda2img's
+  A/B — same disc, subprocess vs binding, byte-compare — which needs their
+  corpus, not our one drive.
+- Packaging is a **source package requiring a built libaccudisc**, not a wheel;
+  a wheel wants task 2 (install properly) first. The pin is
+  `accudisc_version_string()`; `pyproject.toml`'s version is checked against the
+  loaded library by a test that fails on drift, and `Device()` refuses on
+  compiled-vs-loaded major/minor skew with `AbiMismatch`.
 
 ### 7. cdda2img §88 — ANSWERED 2026-07-26 (§bg)
 
@@ -1756,7 +1812,10 @@ Installing properly (task 2) would fix both.
 
 - Python / Rust bindings (generated against `include/accudisc/*.h` only).
   **Reopened 2026-07-25** — see "Library API completion" above for the
-  prerequisites.
+  prerequisites. **No longer deferred as of 2026-07-27: the Python binding is
+  built** (task 6 above). Rust is still deferred and inherits the Python
+  answers, per §7.3's "Python first, then Rust" — including the two hazards
+  §7.2 missed, of which one (`catch_unwind` across `extern "C"`) it did name.
 - Man page (must mirror `docs/reference/ATTRIBUTION.md`).
   **No longer deferred — first cut written 2026-07-26:** `docs/man/accudisc.1`
   (CLI) and `docs/man/accudisc.8` (library/API). Both are untracked and neither

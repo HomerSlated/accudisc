@@ -48,3 +48,14 @@ add_test(NAME test_policy_constants
 add_test(NAME test_exit_codes
          COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/exit_codes.sh
                  ${PROJECT_SOURCE_DIR})
+
+# The Python binding, built against THIS tree and exercised device-free. It is
+# reachable without hardware because the ABI size rules answer through a NULL
+# device, and because a cffi callback can be invoked directly — so the sink
+# trampoline's cancel-on-exception and buffer-lifetime behaviour are testable
+# with no drive. Skips (77) when python3/cffi are absent, never on a failure.
+add_test(NAME test_python_binding
+         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/python_binding.sh
+                 ${PROJECT_SOURCE_DIR}
+                 $<TARGET_FILE_DIR:accudisc>)
+set_tests_properties(test_python_binding PROPERTIES SKIP_RETURN_CODE 77)

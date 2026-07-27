@@ -522,6 +522,31 @@ as failure (`cli-machine-interface.md`, exit-code table), and
 **Order: Python first, then Rust.** cdda2img is the only consumer that can
 validate parity empirically — same disc, subprocess vs binding, compare bytes.
 
+> **CORRECTION 2026-07-27 — the premise above is false, and the conclusion it
+> supports is wrong in its emphasis.** "The one thing the subprocess path
+> structurally cannot do is hand the caller the PCM without copying it through
+> a pipe" describes a transport nobody uses: `accudisc read --pcm FILE` has the
+> CLI write the file, and the consumer never touches the bytes. cdda2img raised
+> this (§101.2) with their call sites, and they are right.
+>
+> What actually justifies the binding is the **small, repeated** read, not the
+> big one: a bounded span today requires writing a temp file and reading it
+> straight back, and their AR-recovery ladder does that `passes x rungs` times
+> **per failed track**. So `read_span() -> bytes` is the binding's reason to
+> exist, and whole-disc reads stay file-based.
+>
+> The measurement that settles the whole-disc half, taken 2026-07-27 at
+> cdda2img's own chunk figures (14,813 x 24 x 2646 B = 0.941 GB): the per-chunk
+> Python copy costs 0.02 s cache-warm, and copy + write + fsync of the full
+> ~1 GB costs 0.51 s. Sub-second against a multi-minute rip. The file path wins
+> on simplicity and on what the downstream wants, **not** on copy cost — and
+> saying so keeps the next person from "optimising" it back.
+>
+> §7.2's lifetime conclusions are unaffected and survived contact. Two hazards
+> it did not cover are recorded in TODO task 6: cffi's default callback returns
+> 0 (== continue) when a sink raises, and "released on return" does not reach a
+> memoryview *slice*.
+
 ## 8. Communication ledger — everything cdda2img must be told
 
 They are pinned to a snapshot fork, so this accumulates and goes in **one**
