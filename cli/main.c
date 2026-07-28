@@ -46,8 +46,8 @@ static void usage(FILE *to)
         "  speeds         probe which speed settings the drive really\n"
         "                 honours: [--start L] [--ladder LIST] [--sweep]\n"
         "                 — timed streaming reads per rung; page 2A vs\n"
-        "                 measured. --sweep times each rung at the inner,\n"
-        "                 middle and outer disc and adds min=/max=\n"
+        "                 measured. --sweep times each rung in each third\n"
+        "                 of the span (whole disc) and adds min=/max=\n"
         "  c2lag          probe the drive's C2-bitmap/audio alignment\n"
         "                 [--start L] [--count N] [--speed X] — point it at\n"
         "                 a DAMAGED span (C2 must fire); report-only\n"
@@ -673,14 +673,24 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
     if (!sweep && count > toc.leadout_lba / 2 && start < 0)
         count = toc.leadout_lba / 2;
 
-    /* Three bands = inner/middle/outer. Deliberately a statement rather
-     * than a conditional expression: tests/exit_codes.sh scans this file
-     * for exit-code ternaries by shape, and a ternary yielding 3 here is
+    /* Three bands. Deliberately a statement rather than a conditional
+     * expression: tests/exit_codes.sh scans this file for exit-code
+     * ternaries by shape, and a ternary yielding 3 here is
      * indistinguishable from one no matter what it means. Keeping the
      * band count out of that shape keeps the scan honest. */
     uint8_t points = 1;
     if (sweep)
         points = 3;
+
+    /* The bands are inner/middle/outer of the PROBED SPAN, which is the
+     * whole disc only by default. --start narrows it, and three bands of
+     * the last sixth of a disc are still three well-formed numbers with
+     * nothing to mark them as local — so say what was actually measured
+     * rather than let the word "outer" stand unqualified. */
+    if (sweep && start >= 0)
+        fprintf(stderr, "accudisc: speeds: --sweep bands are thirds of the "
+                        "probed span (LBA %u..%u), not of the disc\n",
+                lba, lba + count);
 
     accudisc_speed_rung rungs[16];
     err = accudisc_probe_speed_ladder(dev, lba, count, cand, ncand, points,

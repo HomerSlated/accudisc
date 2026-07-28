@@ -317,12 +317,16 @@ Default: 52,48,40,32,24,16,8,4 filtered to those at or below the drive's page
 2A maximum.
 .TP
 .B \-\-sweep
-Time every rung three times \(em at the inner, middle and outer disc \(em and
+Time every rung three times \(em once in each third of the probed span \(em and
 append
 .I min
 and
 .I max
-to each line.
+to each line. The span defaults to the whole disc under this flag, which is what
+makes the three bands inner, middle and outer;
+.B \-\-start
+narrows it, and the bands are then thirds of whatever was probed, which is
+noted on stderr.
 .I measured
 continues to report the middle band, so it is the same quantity with or without
 this flag. Unlike the cross-rung comparison above, the spread

@@ -189,8 +189,11 @@ left at the last candidate tested. Rungs with equal `measured` are one
 rung for ladder purposes.
 
 `min`/`max` are appended by `--sweep` (added 2026-07-28), which times each
-rung at the inner, middle and outer disc instead of once. Three points that
-parsers must not get wrong:
+rung once in each third of the probed span instead of once overall. Under
+this flag the span defaults to the whole disc, which is what makes those
+thirds inner/middle/outer; `--start` narrows it and the bands become thirds
+of the narrowed span, noted on stderr. Three points that parsers must not
+get wrong:
 
 - **`measured` is unchanged, in both senses.** Under `--sweep` it reports
   the *middle* band — the same quantity it has always reported, not the

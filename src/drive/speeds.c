@@ -107,6 +107,9 @@ int accudisc_probe_speed_ladder(accudisc_device *dev, uint32_t lba,
             want = SPEEDS_MIN_SECTORS;
         if (want > SPEEDS_MAX_SECTORS)
             want = SPEEDS_MAX_SECTORS;
+        /* No underflow: adsc_speeds_layout is the only writer of `slot`
+         * and floors it at SPEEDS_MIN_SECTORS + SPEEDS_CHUNK, so this
+         * subtraction is a consequence of that guard, not a coincidence. */
         if (want > slot - SPEEDS_CHUNK)
             want = slot - SPEEDS_CHUNK;
         /* `want` is now fixed for this rung and used unchanged in every
