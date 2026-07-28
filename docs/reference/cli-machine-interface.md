@@ -215,6 +215,37 @@ span large enough for every rung in every band; too many rungs in too small
 a span exits 2 with a stderr message rather than measuring overlapping
 windows.
 
+### The admitted ladder (`--sweep` only, added 2026-07-28)
+
+`--sweep` also appends `verdict=` per rung and emits one summary line:
+
+```
+speed req=<x> … verdict=admitted
+speed req=<x> … verdict=duplicate:<x>
+speed req=<x> … verdict=quantized:<x>
+ladder admitted=<x>,<x>,…
+```
+
+Page 2A advertises *settings*; this says which of them are real, distinct
+rungs on this drive **and this disc**. `quantized:N` means the drive itself
+reported a lower speed than requested (page 2A came back at N) — exact, no
+measurement involved. `duplicate:N` means the rung measured no faster than
+admitted rung N once the radius term is discounted. `admitted` means it
+measured materially faster than the next lower admitted rung.
+
+- **`ladder admitted=` is the line to consume.** Same order as the input
+  ladder, so the default comes back fastest-first, ready to step down. It
+  prints `none` if nothing was admitted; it is **absent entirely** without
+  `--sweep`, as are all `verdict=` tokens, because a verdict from point
+  samples is a guess. Do not treat a missing ladder line as an empty ladder.
+- **Verdicts are per disc, not per drive.** A rung admitted on a short disc
+  may be unreachable on a longer one, and media whose rate falls off toward
+  the outer edge (observed on a CD-R here) can invalidate a rung admitted
+  mid-disc. Probe every disc; never cache a ladder across discs.
+- **Report-only.** All candidate rungs are still printed in the order given,
+  including duplicates and quantized ones. AccuDisc never rewrites a
+  caller's ladder from this — `accudisc_read_req.speed_ladder` is untouched.
+
 ## `write` output
 
 DAO audio burn from a cdrdao `.toc` + raw BIN. `--simulate` runs the whole path

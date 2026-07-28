@@ -15,6 +15,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 
 #include "internal.h"
 
@@ -72,6 +73,170 @@ static void check_disjoint(uint32_t count, uint8_t ncand, uint8_t points,
                     check(o0 >= a1 || o0 + slot <= a0, msg);
                 }
         }
+}
+
+/* ---- the admitted ladder ---------------------------------------------
+ *
+ * The vector below is a REAL run, not a construction: PX-716A rev 1.11,
+ * Tracy (leadout 162892, clean), 2026-07-28, uncap ON, under flock. Using
+ * recorded hardware output matters here — the rule's whole difficulty is
+ * the cross-rung radius term, and invented numbers would let a rule that
+ * ignores it pass.
+ */
+static accudisc_speed_rung tracy[] = {
+    /* req  page2a  measured  min    max  */
+    { 48, 48, 2301, 1715, 2767, 0, 0 },
+    { 40, 40, 2373, 1808, 2828, 0, 0 },
+    { 32, 32, 1955, 1514, 2309, 0, 0 },
+    { 24, 24, 1498, 1175, 1757, 0, 0 },
+    { 16,  8,  801,  801,  801, 0, 0 },
+    {  8,  8,  801,  800,  801, 0, 0 },
+    {  4,  4,  401,  401,  401, 0, 0 },
+};
+#define TRACY_N ((uint8_t)(sizeof tracy / sizeof tracy[0]))
+
+static const char *vname(uint8_t v)
+{
+    switch (v) {
+    case ACCUDISC_RUNG_ADMITTED:  return "admitted";
+    case ACCUDISC_RUNG_DUPLICATE: return "duplicate";
+    case ACCUDISC_RUNG_QUANTIZED: return "quantized";
+    default:                      return "unknown";
+    }
+}
+
+/* Render the admitted ladder as "40,32,24,8,4" for comparison. */
+static void ladder_str(const accudisc_speed_rung *r, uint8_t n, char *out,
+                       size_t cap)
+{
+    size_t len = 0;
+
+    out[0] = '\0';
+    for (uint8_t i = 0; i < n; i++)
+        if (r[i].verdict == ACCUDISC_RUNG_ADMITTED)
+            len += (size_t)snprintf(out + len, cap - len, "%s%u",
+                                    len ? "," : "", r[i].requested_x);
+}
+
+static void admit_checks(void)
+{
+    accudisc_speed_rung r[TRACY_N];
+    char got[64];
+    char msg[256];
+
+    /* --- the headline: the rule reproduces the hand-derived ladder --- */
+    memcpy(r, tracy, sizeof tracy);
+    adsc_speeds_admit(r, TRACY_N, 3, 3);
+    ladder_str(r, TRACY_N, got, sizeof got);
+    snprintf(msg, sizeof msg,
+             "admitted ladder on the recorded PX-716A run: got \"%s\", "
+             "wanted \"40,32,24,8,4\"", got);
+    check(!strcmp(got, "40,32,24,8,4"), msg);
+
+    /* Each verdict individually, so a wrong ladder says which rung moved. */
+    static const struct { uint16_t req; uint8_t v; uint16_t eq; } want[] = {
+        { 48, ACCUDISC_RUNG_DUPLICATE, 40 }, /* 1.0 radius-steps from 40 */
+        { 40, ACCUDISC_RUNG_ADMITTED,   0 },
+        { 32, ACCUDISC_RUNG_ADMITTED,   0 },
+        { 24, ACCUDISC_RUNG_ADMITTED,   0 },
+        { 16, ACCUDISC_RUNG_QUANTIZED,  8 }, /* the drive said so */
+        {  8, ACCUDISC_RUNG_ADMITTED,   0 },
+        {  4, ACCUDISC_RUNG_ADMITTED,   0 },
+    };
+    for (uint8_t i = 0; i < TRACY_N; i++) {
+        snprintf(msg, sizeof msg, "req=%u: verdict %s (equiv %u), wanted %s "
+                 "(equiv %u)", r[i].requested_x, vname(r[i].verdict),
+                 r[i].equiv_x, vname(want[i].v), want[i].eq);
+        check(r[i].verdict == want[i].v && r[i].equiv_x == want[i].eq, msg);
+    }
+
+    /* --- points == 1 must refuse, not guess -------------------------- */
+    /* The same rungs with no interval. A rule willing to judge on
+     * measured_cx alone would happily return a ladder here, and it would
+     * be the confident wrong answer the sweep exists to prevent. */
+    accudisc_speed_rung flat[TRACY_N];
+
+    memcpy(flat, tracy, sizeof tracy);
+    for (uint8_t i = 0; i < TRACY_N; i++)
+        flat[i].min_cx = flat[i].max_cx = 0;
+    adsc_speeds_admit(flat, TRACY_N, 1, 3);
+    for (uint8_t i = 0; i < TRACY_N; i++) {
+        snprintf(msg, sizeof msg,
+                 "req=%u with points=1 must be UNKNOWN, got %s — a verdict "
+                 "without an interval is a guess", flat[i].requested_x,
+                 vname(flat[i].verdict));
+        check(flat[i].verdict == ACCUDISC_RUNG_UNKNOWN, msg);
+    }
+    ladder_str(flat, TRACY_N, got, sizeof got);
+    check(got[0] == '\0', "points=1 must admit no rungs at all");
+
+    /* --- a rung that did not measure is UNKNOWN, never admitted ------ */
+    accudisc_speed_rung dead[TRACY_N];
+
+    memcpy(dead, tracy, sizeof tracy);
+    dead[3].measured_cx = 0;  /* the 24 rung failed to time */
+    adsc_speeds_admit(dead, TRACY_N, 3, 3);
+    check(dead[3].verdict == ACCUDISC_RUNG_UNKNOWN,
+          "a rung with no measurement must be UNKNOWN, not admitted");
+
+    /* --- QUANTIZED needs no measurement and no comparison ------------ */
+    /* page2a below the request is the drive's own statement. It must win
+     * even when the measured rate would otherwise look admissible. */
+    accudisc_speed_rung snap[2] = {
+        {  8,  8,  801,  800,  801, 0, 0 },
+        { 40,  8, 2373, 1808, 2828, 0, 0 }, /* absurd, but page2a says 8 */
+    };
+    adsc_speeds_admit(snap, 2, 3, 3);
+    check(snap[1].verdict == ACCUDISC_RUNG_QUANTIZED && snap[1].equiv_x == 8,
+          "page2a below the request must give QUANTIZED regardless of the "
+          "measured rate — the drive's own report outranks our timing");
+
+    /* --- THE STABILITY CHECK ----------------------------------------- */
+    /* A rule tuned until it matches one disc is a census, not a rule. K is
+     * a parameter solely so this can sweep it. K's real job is not to
+     * create duplicates — req=48 is caught by measuring slower than req=40
+     * and never consults the margin — but to avoid collapsing rungs that
+     * are genuinely distinct. The binding constraint is the closest genuine
+     * pair, 40-vs-32: a 4.18x gap against a 0.72x radius-step, so anything
+     * below K=5.8 keeps it. */
+    for (uint32_t k = 1; k <= 5; k++) {
+        accudisc_speed_rung w[TRACY_N];
+
+        memcpy(w, tracy, sizeof tracy);
+        adsc_speeds_admit(w, TRACY_N, 3, k);
+        ladder_str(w, TRACY_N, got, sizeof got);
+        snprintf(msg, sizeof msg,
+                 "ladder must not depend on the exact threshold: K=%u gave "
+                 "\"%s\", wanted \"40,32,24,8,4\"", k, got);
+        check(!strcmp(got, "40,32,24,8,4"), msg);
+    }
+
+    /* And the sweep must be capable of a DIFFERENT answer, or it proves
+     * nothing about K — it would only show the rule ignores K. Past the
+     * separation the ladder does move: at K=6 the margin (0.72 x 6 = 4.32x)
+     * finally exceeds the 40-vs-32 gap of 4.18x and eats a real rung. */
+    {
+        accudisc_speed_rung w[TRACY_N];
+
+        memcpy(w, tracy, sizeof tracy);
+        adsc_speeds_admit(w, TRACY_N, 3, 6);
+        ladder_str(w, TRACY_N, got, sizeof got);
+        snprintf(msg, sizeof msg,
+                 "K=6 must NOT give the stable ladder — if every K agrees, "
+                 "the sweep above is vacuous (got \"%s\")", got);
+        check(strcmp(got, "40,32,24,8,4") != 0, msg);
+    }
+
+    /* And the rule must still be ABLE to say duplicate — a check that can
+     * only ever pass is worthless. Two rungs at genuinely the same rate. */
+    accudisc_speed_rung same[2] = {
+        { 32, 32, 1955, 1514, 2309, 0, 0 },
+        { 40, 40, 1960, 1519, 2314, 0, 0 }, /* +0.05x: nothing */
+    };
+    adsc_speeds_admit(same, 2, 3, 3);
+    check(same[1].verdict == ACCUDISC_RUNG_DUPLICATE && same[1].equiv_x == 32,
+          "two rungs at the same rate must collapse — if this passes only "
+          "because nothing is ever a duplicate, the rule is vacuous");
 }
 
 int main(void)
@@ -144,9 +309,11 @@ int main(void)
     check_disjoint(400000, 16, 3, "16 rungs (the CLI's --ladder maximum)");
     check_disjoint(5000, 1, 3, "single rung");
 
+    admit_checks();
+
     if (fails)
         printf("%d FAILED\n", fails);
     else
-        printf("all speed-layout checks passed\n");
+        printf("all speed-layout and admission checks passed\n");
     return fails ? 1 : 0;
 }

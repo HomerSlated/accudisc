@@ -714,6 +714,38 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
             printf(" min=%u.%02u max=%u.%02u",
                    rungs[i].min_cx / 100, rungs[i].min_cx % 100,
                    rungs[i].max_cx / 100, rungs[i].max_cx % 100);
+        switch (rungs[i].verdict) {
+        case ACCUDISC_RUNG_ADMITTED:
+            printf(" verdict=admitted");
+            break;
+        case ACCUDISC_RUNG_DUPLICATE:
+            printf(" verdict=duplicate:%u", rungs[i].equiv_x);
+            break;
+        case ACCUDISC_RUNG_QUANTIZED:
+            printf(" verdict=quantized:%u", rungs[i].equiv_x);
+            break;
+        default:
+            break; /* UNKNOWN prints no token — see below */
+        }
+        putchar('\n');
+    }
+
+    /* The point of the whole exercise: the settings that are actually
+     * distinct rungs on this drive AND this disc, in the order they were
+     * given — so the default ladder comes back fastest-first, ready to be
+     * stepped down. Printed only when there is a verdict to print:
+     * without --sweep there is no interval to judge on, and a ladder
+     * derived from point samples is the confident wrong answer this is
+     * built to avoid. */
+    if (points > 1) {
+        int shown = 0;
+
+        printf("ladder admitted=");
+        for (uint8_t i = 0; i < ncand; i++)
+            if (rungs[i].verdict == ACCUDISC_RUNG_ADMITTED)
+                printf("%s%u", shown++ ? "," : "", rungs[i].requested_x);
+        if (!shown)
+            printf("none");
         putchar('\n');
     }
     return 0;

@@ -79,6 +79,123 @@ int adsc_speeds_layout(uint32_t count, uint8_t ncand, uint8_t points,
     return ACCUDISC_OK;
 }
 
+/* How many radius-steps a rate gap must exceed before it counts as a real
+ * difference rather than the cross-rung radius term.
+ *
+ * Its job is narrower than it looks, and worth stating exactly because the
+ * obvious reading is wrong. K does NOT manufacture duplicates: a rung that
+ * buys nothing usually fails the "faster than the rung below" test outright
+ * — on the validating run (PX-716A, 2026-07-28) req=48 measured SLOWER than
+ * req=40 (23.01 vs 23.73), the radius bias made visible, and lands on
+ * DUPLICATE without the margin being consulted at all. K's only load-bearing
+ * job is the other direction: not collapsing rungs that are genuinely
+ * distinct. On that run the closest genuine pair is 40-vs-32, a gap of 4.18x
+ * against a radius-step of 0.72x, so any K below 5.8 keeps it. K from 1 to 5
+ * gives an identical ladder and 6 starts eating real rungs; 3 sits in the
+ * middle with room either side. tests/test_speeds.c sweeps it. */
+#define SPEEDS_ADMIT_K 3
+/* Floor, in centi-x, below which a gap is noise whatever the geometry says.
+ * Needed because a CLV-clamped rung has ZERO spread, which would otherwise
+ * make its radius-step 0 and admit any difference at all. 50 comes from the
+ * measured run-to-run spread on that same run: the largest difference
+ * between two identical repeats was 0.40x. */
+#define SPEEDS_ADMIT_NOISE_CX 50
+
+/* Rate difference attributable to radius alone between two ADJACENT rungs.
+ *
+ * A rung's max_cx - min_cx is the change across the whole probed span,
+ * which is (points - 1) band-widths; a band is ncand windows; adjacent
+ * rungs are one window apart. So the per-neighbour radius effect is the
+ * full spread divided by (points - 1) * ncand. Self-calibrating — it is
+ * measured from this disc and this drive rather than modelled. */
+static uint32_t radius_step_cx(const accudisc_speed_rung *r, uint8_t n,
+                               uint8_t points)
+{
+    if (points < 2 || n == 0 || r->max_cx <= r->min_cx)
+        return 0;
+    return (uint32_t)(r->max_cx - r->min_cx) / ((uint32_t)(points - 1) * n);
+}
+
+void adsc_speeds_admit(accudisc_speed_rung *rungs, uint8_t n, uint8_t points,
+                       uint32_t k)
+{
+    if (!rungs || n == 0)
+        return;
+
+    for (uint8_t i = 0; i < n; i++) {
+        rungs[i].verdict = ACCUDISC_RUNG_UNKNOWN;
+        rungs[i].equiv_x = 0;
+    }
+    /* Without the sweep there is no interval, and a verdict off point
+     * samples is exactly the confident-but-wrong answer this item exists
+     * to avoid. Leave every rung UNKNOWN. */
+    if (points < 2)
+        return;
+
+    /* Walk slowest first, so the LOWEST setting achieving a given rate is
+     * the one admitted and the faster setting that buys nothing is the one
+     * marked. The caller's order is arbitrary, so find each next-slowest
+     * by scan rather than assuming the array is sorted. */
+    uint8_t done = 0;
+    const accudisc_speed_rung *best = NULL; /* fastest admitted so far */
+
+    while (done < n) {
+        int pick = -1;
+
+        for (uint8_t i = 0; i < n; i++) {
+            if (rungs[i].verdict != ACCUDISC_RUNG_UNKNOWN || rungs[i].equiv_x)
+                continue; /* already settled this pass */
+            if (pick < 0 || rungs[i].requested_x < rungs[pick].requested_x)
+                pick = i;
+        }
+        if (pick < 0)
+            break;
+
+        accudisc_speed_rung *r = &rungs[pick];
+
+        /* Mark it settled for the scan above by giving it a verdict; the
+         * branches below decide which. */
+        if (r->measured_cx == 0) {
+            r->verdict = ACCUDISC_RUNG_UNKNOWN;
+            r->equiv_x = 0xffff; /* scan sentinel, cleared below */
+        } else if (r->reported_x && r->reported_x < r->requested_x) {
+            /* Clause 1, and the only exact one: the drive reported a lower
+             * speed than asked for. No measurement, no comparison, no
+             * radius term — it told us. */
+            r->verdict = ACCUDISC_RUNG_QUANTIZED;
+            r->equiv_x = r->reported_x;
+        } else if (!best) {
+            r->verdict = ACCUDISC_RUNG_ADMITTED;
+        } else {
+            uint32_t step = radius_step_cx(r, n, points);
+            uint32_t other = radius_step_cx(best, n, points);
+            uint32_t margin;
+
+            if (other > step)
+                step = other; /* the more radius-sensitive of the pair */
+            margin = step * k;
+            if (margin < SPEEDS_ADMIT_NOISE_CX)
+                margin = SPEEDS_ADMIT_NOISE_CX;
+
+            if (r->measured_cx > best->measured_cx
+                && (uint32_t)(r->measured_cx - best->measured_cx) > margin) {
+                r->verdict = ACCUDISC_RUNG_ADMITTED;
+            } else {
+                r->verdict = ACCUDISC_RUNG_DUPLICATE;
+                r->equiv_x = best->requested_x;
+            }
+        }
+
+        if (r->verdict == ACCUDISC_RUNG_ADMITTED)
+            best = r;
+        done++;
+    }
+
+    for (uint8_t i = 0; i < n; i++)
+        if (rungs[i].equiv_x == 0xffff)
+            rungs[i].equiv_x = 0;
+}
+
 int accudisc_probe_speed_ladder(accudisc_device *dev, uint32_t lba,
                                 uint32_t count, const uint16_t *candidates,
                                 uint8_t ncand, uint8_t points,
@@ -180,5 +297,6 @@ int accudisc_probe_speed_ladder(accudisc_device *dev, uint32_t lba,
     }
 
     free(buf);
+    adsc_speeds_admit(out, ncand, points, SPEEDS_ADMIT_K);
     return ACCUDISC_OK;
 }

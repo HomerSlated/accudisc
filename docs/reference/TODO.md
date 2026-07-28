@@ -719,12 +719,54 @@ read-only open, not a speed matter.
     between bands would have cancelled the bias in the *mean* — but we do not
     report a mean, so it would have bought nothing.
 
-  Original specification and reasoning, retained because the acceptance test
-  comes from it — Keith's is "measure actual throughput at beginning,
-  middle and end, decide which page-2A readings are achievable under the
-  governor, discard duplicates and unachievable rungs". **Only the first
-  clause is implemented.** Deciding and discarding is a later clause and was
-  deliberately not built: the probe stays report-only, like `c2lag`.
+  **ALL THREE CLAUSES NOW IMPLEMENTED (2026-07-28).** Keith restated the
+  full specification — "read the page 2a settings on the ladder, look at the
+  actual throughput at all 3 sections of the disc, then decide which of the
+  page 2a readings represent real, actual speeds that are achievable under
+  the many conditions that influence the governor's choice, discard the
+  readings that are obvious duplicates/unachievable, then use the remaining
+  settings as the *real* speed ladder" — and the deciding half landed too.
+
+  **Where the verdict lives, decided by Keith:** the library decides and
+  reports; the read engine does **not** apply it. `accudisc_speed_rung`
+  gains `verdict` + `equiv_x` (ADMITTED / DUPLICATE / QUANTIZED / UNKNOWN),
+  the CLI prints `verdict=` per rung plus a `ladder admitted=` line, and
+  `accudisc_read_req.speed_ladder` is never rewritten. Rationale: putting it
+  in the library is what stops every consumer reimplementing the rule —
+  `RECOVERY.md:196`'s `drive_speed.admitted_ladder` on cdda2img's side is
+  now redundant, which is the reference-consumer principle working.
+
+  **How the rule survives the cross-rung radius term**, which was the real
+  design problem: it never compares raw rates against a modelled curve. A
+  rung's own `max_cx - min_cx` is the speed change across the whole span,
+  and adjacent rungs sit exactly one window apart, so that spread *measures*
+  the per-neighbour radius effect on this disc — self-calibrating. A gap
+  must beat `K` radius-steps to count. **This is what min/max are for
+  beyond reporting, and why clause 1 had to land first.**
+
+  Three findings worth keeping, all from making the test fail:
+  - **`K` does not manufacture duplicates.** The obvious reading is wrong.
+    `req=48` measured *slower* than `req=40` (23.01 vs 23.73) — the radius
+    bias made directly visible — so it fails "faster than the rung below"
+    outright and never consults the margin. `K`'s only load-bearing job is
+    the other direction: not collapsing genuinely distinct rungs.
+  - **`K` is therefore uncritical, and that is asserted, not asserted-about.**
+    The binding constraint is the closest genuine pair (40-vs-32: 4.18x gap
+    against a 0.72x radius-step), so any `K` below 5.8 keeps it. The test
+    sweeps `K` 1..5 for an identical ladder **and requires `K=6` to differ**,
+    so the sweep cannot pass by the rule ignoring `K`.
+  - **A first version of the stability check was wrong.** It widened the
+    intervals rather than varying `K` — which fabricates a disc with twice
+    the gradient, where adjacent rungs genuinely *are* less distinguishable.
+    Correct physics, wrong test. `K` was made a parameter of the internal
+    entry point precisely so the sweep tests the threshold itself.
+
+  `points == 1` yields UNKNOWN for every rung and no ladder line, rather
+  than judging on point samples — the refuse-don't-narrow rule.
+
+  Verified against the recorded PX-716A run as a test vector (not invented
+  numbers, since the difficulty is exactly the radius term): admitted ladder
+  **`40,32,24,8,4`**, with 48 duplicate:40 and 16 quantized:8.
   Measure each rung at
   the inner ring, the middle and the outer ring instead of one location, so a
   rung reports a range rather than a point. Wanted for its own sake and as a

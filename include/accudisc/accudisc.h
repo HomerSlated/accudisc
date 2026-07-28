@@ -1073,10 +1073,54 @@ ACCUDISC_API int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba,
  *   indistinguishable on this rig (bus or firmware limited) and one of
  *   them suffices in a recovery ladder.
  *
- * Report-only, like the other probes: this never discards rungs, never
- * rewrites the ladder, and never applies a correction. The drive is LEFT
- * at the last candidate tested (speed is never auto-restored, as with
- * reads). */
+ * THE ADMITTED LADDER (`verdict`). Page 2A advertises settings, not
+ * rungs: a drive will accept a speed it cannot deliver, and will deliver
+ * the same rate for two different settings. With points == 3 each rung is
+ * judged and marked, so a caller can build a recovery ladder out of the
+ * settings that are actually distinct on this drive AND this disc:
+ *
+ *   QUANTIZED  page 2A came back BELOW the request. The drive itself said
+ *              it snapped (e.g. req 16 answered as 8), so this needs no
+ *              measurement and no comparison — it is exact.
+ *   DUPLICATE  measures no faster than the next lower admitted rung.
+ *   ADMITTED   measures materially faster than it. Rungs are walked from
+ *              slowest to fastest, so the LOWEST setting achieving a given
+ *              rate is the one kept — the faster setting that buys nothing
+ *              is the one discarded.
+ *
+ * How this survives the radius term above: it does not compare raw rates.
+ * A rung's own max_cx - min_cx is the speed change across the whole span,
+ * and adjacent rungs sit exactly one window apart, so that spread yields
+ * the rate difference attributable to RADIUS ALONE between neighbours.
+ * A gap must beat that by a margin before it counts as a real difference.
+ * This is what min_cx/max_cx are for beyond reporting, and it is why no
+ * verdict is possible without them: with points == 1 every rung comes
+ * back ACCUDISC_RUNG_UNKNOWN rather than being judged on point samples.
+ *
+ * The verdict is about THIS disc. A rung admitted on a short disc may be
+ * unreachable on a longer one (more radius, higher speeds), and media
+ * whose achievable rate falls off toward the outer edge — observed, not
+ * hypothetical — can invalidate a rung admitted mid-disc. Probe per disc;
+ * never cache a ladder across discs.
+ *
+ * Report-only, like the other probes: this marks rungs but never discards
+ * them (all ncand entries are filled, in the order given), never rewrites
+ * a caller's accudisc_read_req.speed_ladder, and never applies a
+ * correction. The drive is LEFT at the last candidate tested (speed is
+ * never auto-restored, as with reads). */
+/* Per-rung verdict: is this setting a REAL rung of this drive's ladder on
+ * this disc? Report-only — the library never rewrites a caller's
+ * accudisc_read_req.speed_ladder from it. */
+#define ACCUDISC_RUNG_UNKNOWN   0 /* no verdict: points == 1 (no interval to
+                                   * judge), or the rung did not measure */
+#define ACCUDISC_RUNG_ADMITTED  1 /* delivers materially more than the next
+                                   * lower admitted rung */
+#define ACCUDISC_RUNG_DUPLICATE 2 /* delivers no more than equiv_x, after
+                                   * discounting the radius term */
+#define ACCUDISC_RUNG_QUANTIZED 3 /* the DRIVE said so: page 2A came back
+                                   * below the requested speed (equiv_x is
+                                   * what it snapped to) */
+
 typedef struct accudisc_speed_rung {
     uint16_t requested_x;  /* the candidate passed in */
     uint16_t reported_x;   /* page 2A current speed after the set (0 = n/a) */
@@ -1087,6 +1131,9 @@ typedef struct accudisc_speed_rung {
                             * Both are 0 when points == 1 — "no gradient
                             * was measured", which is deliberately NOT the
                             * same as a measured gradient of zero. */
+    uint16_t equiv_x;      /* for DUPLICATE/QUANTIZED: the rung this one
+                            * collapses onto. 0 otherwise. */
+    uint8_t  verdict;      /* ACCUDISC_RUNG_* */
 } accudisc_speed_rung;
 
 ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,

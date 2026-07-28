@@ -563,6 +563,7 @@ message when the rewrite lands. Do not dribble it out.
 | 4 | Bindings availability + ABI policy | §7.1 **resolved and landed 2026-07-26**: `size` field on `read_req`/`read_stats`, `ACCUDISC_ERR_ABI`, version single-sourced | No — library ABI only; they use the binary |
 | 5 | An unknown command exits **2**, not 1 | pinned by `cli_surface.sh`, unchanged | No — but see below |
 | 6 | `speeds --sweep`: appends `min=`/`max=` per rung; `accudisc_speed_rung` grows 6 → 10 bytes and `accudisc_probe_speed_ladder` takes a new `points` argument | **DONE 2026-07-28** | No — keys are appended, `measured=` unchanged (see below) |
+| 6b | `speeds --sweep` also appends `verdict=` per rung and a `ladder admitted=` line; `accudisc_speed_rung` grows 10 → 14 bytes (`equiv_x`, `verdict`) | **DONE 2026-07-28** | No — additive, and both are absent without `--sweep`. **But it makes their `drive_speed.admitted_ladder` redundant** |
 
 **Row 6 is an ABI break taken knowingly, and the last free one on that
 struct.** `accudisc_speed_rung` gained `min_cx`/`max_cx` without a `size`

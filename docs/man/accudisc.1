@@ -342,7 +342,28 @@ than measured with overlapping windows. Absent
 and
 .I max
 on a line mean no gradient was obtained for that rung, which is not the same as
-a gradient of zero. Report-only: rungs are never discarded or reordered.
+a gradient of zero.
+.IP
+This flag also decides which settings are
+.I real
+rungs, appending
+.I verdict=admitted
+,
+.IR verdict=duplicate: N
+or
+.IR verdict=quantized: N
+per line and a final
+.RI "\fBladder admitted=\fP" x , x ,...
+line.
+.I quantized
+means the drive itself reported a lower speed than requested;
+.I duplicate
+means the rung measured no faster than a lower admitted one once the radius
+term is discounted;
+.I admitted
+means it measured materially faster. Verdicts hold for this disc, not this
+drive \(em probe each disc. Report-only: every candidate is still listed and
+AccuDisc never rewrites a caller's ladder from it.
 .RE
 .SS c2lag
 Probe the drive's C2-bitmap-to-audio alignment. Report-only: AccuDisc never

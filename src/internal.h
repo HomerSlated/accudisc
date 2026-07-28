@@ -82,6 +82,19 @@ accudisc_uncap_state adsc_uncap_authoritative(accudisc_device *dev);
 int adsc_speeds_layout(uint32_t count, uint8_t ncand, uint8_t points,
                        uint32_t *slot, uint32_t *band);
 
+/* Fill in `verdict`/`equiv_x` for a measured ladder (see accudisc.h for what
+ * the verdicts mean). Pure — no device, no I/O — so the whole admission rule
+ * is testable against recorded measurements. `rungs` must be in the order
+ * probed; `points` is what the probe ran with.
+ *
+ * `k` is the margin, in radius-steps, a rate gap must beat to count as a real
+ * difference. The public entry point passes SPEEDS_ADMIT_K; it is a parameter
+ * ONLY so tests can sweep it and show the ladder does not depend on the exact
+ * value — a rule tuned until it matches one disc is a census, not a rule.
+ * See src/drive/speeds.c. */
+void adsc_speeds_admit(accudisc_speed_rung *rungs, uint8_t n, uint8_t points,
+                       uint32_t k);
+
 void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...);
 
 /* ---- caller-declared struct size (API_PLAN §7.1) ---------------------------
