@@ -562,6 +562,22 @@ message when the rewrite lands. Do not dribble it out.
 | 3b | Five subcommands (`pregaps`, `c2lag`, `media`, `write`, `disc`) could always exit **3**; the machine-interface doc did not say so | **DONE 2026-07-26** `2618d23` — documented, plus `tests/exit_codes.sh` | No behaviour change — but the **contract** changed |
 | 4 | Bindings availability + ABI policy | §7.1 **resolved and landed 2026-07-26**: `size` field on `read_req`/`read_stats`, `ACCUDISC_ERR_ABI`, version single-sourced | No — library ABI only; they use the binary |
 | 5 | An unknown command exits **2**, not 1 | pinned by `cli_surface.sh`, unchanged | No — but see below |
+| 6 | `speeds --sweep`: appends `min=`/`max=` per rung; `accudisc_speed_rung` grows 6 → 10 bytes and `accudisc_probe_speed_ladder` takes a new `points` argument | **DONE 2026-07-28** | No — keys are appended, `measured=` unchanged (see below) |
+
+**Row 6 is an ABI break taken knowingly, and the last free one on that
+struct.** `accudisc_speed_rung` gained `min_cx`/`max_cx` without a `size`
+field: a per-element size on an OUT *array* would mean trusting N separate
+caller claims, which is not what §7.1's OUT rule says, and §7.1 warns
+against widening the guarded set. It was free because nothing outside this
+repo linked the library and the probe was still unbound in the Python
+binding — held unbound for exactly this. **Binding the probe closes it.**
+
+The parser answer is No, and the reason matters more than the answer:
+`measured=` still reports a single band — the *middle* one under `--sweep`.
+It would have been easy to make it the mean of three, which every existing
+parser would have kept reading without complaint while the quantity changed
+underneath. `min`/`max` are also **per line, optional**: a rung whose bands
+did not all measure omits them rather than printing `0.00`.
 
 Anything that lands in this table as "breaks a parser: Yes" needs a decision,
 not just a note.

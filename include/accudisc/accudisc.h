@@ -1028,25 +1028,71 @@ ACCUDISC_API int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba,
  * for what a rung delivers is a timed streaming read. For each candidate
  * speed this sets it, lets the drive settle with a warm-up read, then
  * times a streaming read (~1 second's worth of audio at the requested
- * speed) in a fresh window inside [lba, lba+count) — each rung gets its
- * own window so the drive cache can never serve a remeasure.
+ * speed) in a fresh window inside [lba, lba+count). Every window of every
+ * rung is disjoint from every other, so the drive cache can never serve a
+ * remeasure.
  *
- * Interpretation notes: measured_cx is achieved rate at THIS radius (CAV
- * drives read outer tracks faster — probe mid-disc for a representative
- * figure); rungs whose measured_cx collapse to the same value are
- * indistinguishable on this rig (bus or firmware limited) and one of them
- * suffices in a recovery ladder. The drive is LEFT at the last candidate
- * tested (speed is never auto-restored, as with reads). */
+ * `points` selects how many radii each rung is measured at:
+ *   1  one window per rung, inside [lba, lba+count) — the original
+ *      behaviour, and what a caller wants when the span is already a
+ *      chosen radius.
+ *   3  the span is cut into three equal bands and each rung is measured
+ *      once in each, giving the rung a RANGE instead of a point. Pass a
+ *      whole-disc span for this to mean inner/middle/outer.
+ * 0 is accepted as 1. Any other value is ACCUDISC_ERR_INVAL.
+ *
+ * A LARGER span is needed as `points` rises: every one of the
+ * points * ncand windows must fit, or the probe returns
+ * ACCUDISC_ERR_INVAL rather than overlapping them. This refusal matters
+ * more than it looks — overlapping windows would be cache-served and
+ * would report a rung as perfectly FLAT across radii, which is also the
+ * signature of a genuinely CLV-clamped rung.
+ *
+ * Interpretation notes, in the order they bite:
+ *
+ * - measured_cx is the achieved rate at ONE radius: the band containing
+ *   it is [lba, lba+count/points) for points == 1 and the MIDDLE band for
+ *   points == 3. It is the same quantity in both cases, and the same
+ *   quantity it has always been.
+ *
+ * - CROSS-RUNG COMPARISON CARRIES A RADIUS TERM. Rungs are laid out along
+ *   the span, so rung i and rung j are measured at different radii, and on
+ *   a CAV drive radius alone changes the rate. With the conventional
+ *   descending candidate list the fast rungs land innermost — a bias
+ *   AGAINST them. Treat a modest cross-rung inversion as unproven, not as
+ *   a measured fact about the rungs.
+ *
+ * - WITHIN a rung, min_cx/max_cx are sound: the three bands are a fixed
+ *   distance apart whichever rung it is, the timed length is identical
+ *   across them, and one speed setting covers all three. That is the
+ *   comparison to trust — and on a CAV rung the spread IS the CAV curve,
+ *   so a rung that comes out flat is either clamped (CLV) or not being
+ *   measured properly.
+ *
+ * - Rungs whose measured_cx collapse to the same value are
+ *   indistinguishable on this rig (bus or firmware limited) and one of
+ *   them suffices in a recovery ladder.
+ *
+ * Report-only, like the other probes: this never discards rungs, never
+ * rewrites the ladder, and never applies a correction. The drive is LEFT
+ * at the last candidate tested (speed is never auto-restored, as with
+ * reads). */
 typedef struct accudisc_speed_rung {
     uint16_t requested_x;  /* the candidate passed in */
     uint16_t reported_x;   /* page 2A current speed after the set (0 = n/a) */
-    uint16_t measured_cx;  /* timed streaming rate, centi-x (531 = 5.31x) */
+    uint16_t measured_cx;  /* timed streaming rate, centi-x (531 = 5.31x);
+                            * points == 3 reports the MIDDLE band here */
+    uint16_t min_cx;       /* slowest band for this rung, centi-x */
+    uint16_t max_cx;       /* fastest band for this rung, centi-x.
+                            * Both are 0 when points == 1 — "no gradient
+                            * was measured", which is deliberately NOT the
+                            * same as a measured gradient of zero. */
 } accudisc_speed_rung;
 
 ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
                                              uint32_t lba, uint32_t count,
                                              const uint16_t *candidates,
-                                             uint8_t ncand,
+                                             uint8_t ncand, uint8_t points,
                                              accudisc_speed_rung *out);
 
 /* ---- status map ------------------------------------------------------------

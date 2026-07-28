@@ -29,8 +29,10 @@ commands:
   media          identify recordable media from ATIP:
                  manufacturer, ATIP code, capacity, CD-R/RW
   speeds         probe which speed settings the drive really
-                 honours: [--start L] [--ladder LIST] — timed
-                 streaming reads per rung; page 2A vs measured
+                 honours: [--start L] [--ladder LIST] [--sweep]
+                 — timed streaming reads per rung; page 2A vs
+                 measured. --sweep times each rung at the inner,
+                 middle and outer disc and adds min=/max=
   c2lag          probe the drive's C2-bitmap/audio alignment
                  [--start L] [--count N] [--speed X] — point it at
                  a DAMAGED span (C2 must fire); report-only

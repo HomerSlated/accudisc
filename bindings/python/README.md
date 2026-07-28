@@ -180,8 +180,11 @@ hard way by cdda2img, not by us.)
 * **No whole-disc-to-file fast path.** `read_to_file` exists, but for a whole
   disc the CLI's `--pcm` writes the file inside the library's own address
   space, which this cannot beat — it routes every sector through Python first.
-* **`accudisc_probe_speed_ladder` is not bound yet**, on purpose:
-  `accudisc_speed_rung` has no `size` field and a pending change grows it. See
-  `docs/reference/TODO.md`.
+* **`accudisc_probe_speed_ladder` is not bound yet** — but the reason is now
+  spent, not pending. It was held back so `accudisc_speed_rung` could grow
+  without a `size` field while nothing outside this repo linked the library;
+  that growth landed 2026-07-28 (`min_cx`/`max_cx`, 6 → 10 bytes). Binding it
+  is the next step, and doing so makes any further growth of that struct a
+  real version break. See `docs/reference/TODO.md`.
 * **`accudisc_write` is not bound yet** — the one destructive path, and it
   should not ride along with a freshly written read path.

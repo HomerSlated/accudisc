@@ -288,26 +288,57 @@ Probe which speed settings the drive really honours, by timed streaming reads
 at each rung. One line per candidate:
 .PP
 .RS 4
-speed req=<x> page2a=<x> measured=<x.xx>
+speed req=<x> page2a=<x> measured=<x.xx> [min=<x.xx> max=<x.xx>]
 .RE
 .PP
 .I measured
 is ground truth;
 .I page2a
-is shown so quantization and clamping are visible. Each rung gets its own
-cache-fresh window. On a CAV drive the measured rate is radius-dependent, so
-the default probe location is the middle half of the disc. The drive is left at
-the last candidate tested.
+is shown so quantization and clamping are visible. Every rung gets its own
+cache-fresh window, disjoint from every other. On a CAV drive the measured rate
+is radius-dependent, so the default probe location is the middle half of the
+disc. The drive is left at the last candidate tested.
+.PP
+Because the rungs are laid out along the probed span, a comparison
+.I between
+rungs carries a radius term: with the default descending ladder the fast rungs
+are measured innermost, which biases against them. Treat a modest cross-rung
+inversion as unproven rather than measured.
 .RS 4
 .TP
 .BI \-\-start " LBA"
-Where to probe. Default: one quarter of the way into the disc.
+Where to probe. Default: one quarter of the way into the disc, or 0 under
+.BR \-\-sweep .
 .TP
 .BI \-\-ladder " LIST"
 Comma-separated candidate speeds, at most 16, e.g.
 .IR 32,16,8,4 .
 Default: 52,48,40,32,24,16,8,4 filtered to those at or below the drive's page
 2A maximum.
+.TP
+.B \-\-sweep
+Time every rung three times \(em at the inner, middle and outer disc \(em and
+append
+.I min
+and
+.I max
+to each line.
+.I measured
+continues to report the middle band, so it is the same quantity with or without
+this flag. Unlike the cross-rung comparison above, the spread
+.I within
+a rung is sound: the three bands are equally spaced for every rung, the timed
+length is identical across them, and one speed setting covers all three. On a
+CAV rung that spread is the CAV curve itself, so a rung that comes out flat is
+either clamped to CLV or is not being measured properly. Costs three times the
+probe time, widens the span to the whole disc, and needs room for every
+rung in every band \(em too many rungs in too small a span is refused rather
+than measured with overlapping windows. Absent
+.I min
+and
+.I max
+on a line mean no gradient was obtained for that rung, which is not the same as
+a gradient of zero. Report-only: rungs are never discarded or reordered.
 .RE
 .SS c2lag
 Probe the drive's C2-bitmap-to-audio alignment. Report-only: AccuDisc never

@@ -44,8 +44,10 @@ static void usage(FILE *to)
         "  media          identify recordable media from ATIP:\n"
         "                 manufacturer, ATIP code, capacity, CD-R/RW\n"
         "  speeds         probe which speed settings the drive really\n"
-        "                 honours: [--start L] [--ladder LIST] — timed\n"
-        "                 streaming reads per rung; page 2A vs measured\n"
+        "                 honours: [--start L] [--ladder LIST] [--sweep]\n"
+        "                 — timed streaming reads per rung; page 2A vs\n"
+        "                 measured. --sweep times each rung at the inner,\n"
+        "                 middle and outer disc and adds min=/max=\n"
         "  c2lag          probe the drive's C2-bitmap/audio alignment\n"
         "                 [--start L] [--count N] [--speed X] — point it at\n"
         "                 a DAMAGED span (C2 must fire); report-only\n"
@@ -616,10 +618,13 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
     uint16_t cand[16];
     uint8_t ncand = 0;
     long start = -1;
+    int sweep = 0;
 
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--start") && i + 1 < argc)
             start = strtol(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--sweep"))
+            sweep = 1;
         else if (!strcmp(argv[i], "--ladder") && i + 1 < argc) {
             char *p = argv[++i];
             while (*p && ncand < 16) {
@@ -656,22 +661,51 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
             cand[ncand++] = (uint16_t)(max_x ? max_x : 1);
     }
 
-    /* Middle half of the disc: representative CAV radius, headroom for
-     * one fresh window per rung. */
-    uint32_t lba = start >= 0 ? (uint32_t)start : toc.leadout_lba / 4;
+    /* Default span. Without --sweep: the middle half of the disc — a
+     * representative CAV radius, with headroom for one fresh window per
+     * rung. With --sweep the bands ARE the point, so the span opens out
+     * to the whole disc to make them inner/middle/outer rather than three
+     * samples of the same neighbourhood. --start overrides the start in
+     * both cases and keeps its existing meaning (the start of the probed
+     * span, never a centre point). */
+    uint32_t lba = start >= 0 ? (uint32_t)start : (sweep ? 0 : toc.leadout_lba / 4);
     uint32_t count = toc.leadout_lba > lba ? toc.leadout_lba - lba : 0;
-    if (count > toc.leadout_lba / 2 && start < 0)
+    if (!sweep && count > toc.leadout_lba / 2 && start < 0)
         count = toc.leadout_lba / 2;
 
+    /* Three bands = inner/middle/outer. Deliberately a statement rather
+     * than a conditional expression: tests/exit_codes.sh scans this file
+     * for exit-code ternaries by shape, and a ternary yielding 3 here is
+     * indistinguishable from one no matter what it means. Keeping the
+     * band count out of that shape keeps the scan honest. */
+    uint8_t points = 1;
+    if (sweep)
+        points = 3;
+
     accudisc_speed_rung rungs[16];
-    err = accudisc_probe_speed_ladder(dev, lba, count, cand, ncand, rungs);
+    err = accudisc_probe_speed_ladder(dev, lba, count, cand, ncand, points,
+                                      rungs);
+    if (err == ACCUDISC_ERR_INVAL && sweep)
+        fprintf(stderr, "accudisc: speeds: --sweep needs a larger span — "
+                        "%u rungs x 3 bands do not fit in %u sectors "
+                        "(drop rungs with --ladder, or widen with "
+                        "--start)\n", ncand, count);
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "speed probe", err);
 
-    for (uint8_t i = 0; i < ncand; i++)
-        printf("speed req=%u page2a=%u measured=%u.%02u\n",
+    for (uint8_t i = 0; i < ncand; i++) {
+        printf("speed req=%u page2a=%u measured=%u.%02u",
                rungs[i].requested_x, rungs[i].reported_x,
                rungs[i].measured_cx / 100, rungs[i].measured_cx % 100);
+        /* min/max are printed only when a gradient was actually
+         * measured. Their absence says "not measured", which a printed
+         * 0.00 would not — it would read as a rung that stalled. */
+        if (rungs[i].min_cx || rungs[i].max_cx)
+            printf(" min=%u.%02u max=%u.%02u",
+                   rungs[i].min_cx / 100, rungs[i].min_cx % 100,
+                   rungs[i].max_cx / 100, rungs[i].max_cx % 100);
+        putchar('\n');
+    }
     return 0;
 }
 

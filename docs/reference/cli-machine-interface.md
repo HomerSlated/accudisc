@@ -176,7 +176,7 @@ measurement of the same drive by cdda2img.
 One line per candidate rung (tokens; new keys may be appended):
 
 ```
-speed req=<x> page2a=<x> measured=<x.xx>
+speed req=<x> page2a=<x> measured=<x.xx> [min=<x.xx> max=<x.xx>]
 ```
 
 `req` = the setting asked for, `page2a` = what mode page 2A reports after
@@ -187,6 +187,30 @@ a drive snapping req=16 to 8). Measured rates are radius-dependent on CAV
 drives (default probe location: the middle half of the disc). The drive is
 left at the last candidate tested. Rungs with equal `measured` are one
 rung for ladder purposes.
+
+`min`/`max` are appended by `--sweep` (added 2026-07-28), which times each
+rung at the inner, middle and outer disc instead of once. Three points that
+parsers must not get wrong:
+
+- **`measured` is unchanged, in both senses.** Under `--sweep` it reports
+  the *middle* band — the same quantity it has always reported, not the
+  mean of the three. Appending keys is within this document's stability
+  guarantee; silently redefining `measured` would not be, so it was not
+  done.
+- **`min`/`max` appear per line, not per invocation.** A rung whose bands
+  did not all produce a measurement omits them. Absence means "no gradient
+  obtained", which a printed `0.00` would have made indistinguishable from
+  a stalled rung. Parse them as optional.
+- **Compare `min`/`max` within a rung, never across rungs.** The rungs sit
+  at different radii, so cross-rung comparison carries a radius term that
+  runs against the fast rungs under the default descending ladder. The
+  within-rung spread is the sound one: equal band spacing, identical timed
+  length, one speed setting.
+
+Exit status is unaffected. `--sweep` costs 3x the probe time and needs a
+span large enough for every rung in every band; too many rungs in too small
+a span exits 2 with a stderr message rather than measuring overlapping
+windows.
 
 ## `write` output
 

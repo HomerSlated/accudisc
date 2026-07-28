@@ -69,6 +69,19 @@ accudisc_uncap_state adsc_uncap_classify(const char *vendor,
  * SENSE, so the read engine can consult it per read; the full probe cannot. */
 accudisc_uncap_state adsc_uncap_authoritative(accudisc_device *dev);
 
+/* The device-free half of accudisc_probe_speed_ladder: the window layout.
+ * Rung i's window in band b begins at lba + b*(*band) + i*(*slot), and all
+ * points*ncand of them are disjoint — which is the whole cache-freshness
+ * guarantee. Returns ACCUDISC_ERR_INVAL when they would not all fit in
+ * `count`, or when `points` is not 1 or 3.
+ *
+ * Split out because overlapping windows do not fail loudly: they would be
+ * served from the drive cache and report the rung as FLAT across radii,
+ * which is also what a genuinely CLV-clamped rung looks like. The guard
+ * has to be testable without a disc. See src/drive/speeds.c. */
+int adsc_speeds_layout(uint32_t count, uint8_t ncand, uint8_t points,
+                       uint32_t *slot, uint32_t *band);
+
 void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...);
 
 /* ---- caller-declared struct size (API_PLAN §7.1) ---------------------------

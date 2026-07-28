@@ -683,15 +683,48 @@ read-only open, not a speed matter.
   `ACCUDISC_QMAP_*` set rather than extensions that make the audio encoding
   ambiguous.
 
-- **`speeds`: report min/avg/max as well as the current single figure. RAISED to
-  `[P2]` 2026-07-26 — no longer a nicety.** Keith originally filed it "not
-  essential", but his whole-disc measurement (task 4, §100) makes it the *input the
-  ladder rule needs*: a single mid-disc figure carries a radius term that cannot
-  support a cross-rung comparison, and cdda2img has said they would consume
-  min/avg/max immediately and have cancelled their own gradient instrument in
-  favour of it. Keith's specification is "measure actual throughput at beginning,
-  middle and end, decide which page-2A readings are achievable under the governor,
-  discard duplicates and unachievable rungs". This item is the first clause.
+- ~~**`speeds`: report min/avg/max as well as the current single figure.**~~ —
+  **CODE DONE 2026-07-28, NOT YET HARDWARE-VALIDATED.** `--sweep` /
+  `points=3` landed: each rung timed at inner, middle and outer, `min=`/`max=`
+  appended, `measured=` kept as the middle band. **The acceptance test has not
+  been run** — see "What is still owed" at the end of this item. Three
+  numbers appearing is not evidence the instrument measures what it claims.
+
+  Decisions taken, with the reasoning, since each closed off an alternative:
+
+  - **`measured=` is the MIDDLE band, not the mean of three.** The token is
+    declared stable in `cli-machine-interface.md`; a mean would have kept
+    every parser working while changing the quantity underneath it — the
+    referent-drift class, arriving through the exact door the "do not rename
+    to `avg=`" trap was built to guard. Consequently there is no `avg=` key
+    at all, and the item's own title is now a slight misnomer.
+  - **No `size` field on `accudisc_speed_rung`; the break was taken instead.**
+    6 → 10 bytes (measured, both compiled). A per-element `size` on an OUT
+    *array* is structurally wrong under API_PLAN §7.1's own OUT rule — it
+    means trusting N independent caller claims — and §7.1 explicitly warns
+    that widening the guarded set "turns a decidable problem into an
+    unbounded one". `points` is a plain parameter, so this is one deliberate
+    break rather than two. **The window is now spent**; see task 6.
+  - **Windows are laid out by `adsc_speeds_layout` (`src/internal.h`), which
+    is pure and tested device-free** (`tests/test_speeds.c`, 33rd test).
+    Extracted precisely because the failure is silent: a guard that did not
+    scale with `points` would overlap the bands, the re-reads would be
+    cache-served, and every rung would report a FLAT gradient — which is
+    also the signature of a genuinely CLV-clamped rung. The bug would have
+    presented as the instrument's own diagnostic firing correctly. The test
+    was verified by injecting that exact bug (guard left at `count/ncand`):
+    69 failures, including the named case.
+  - **Cross-rung radius bias is now documented rather than fixed** (item 4b's
+    option (a), header + man + machine interface). Reversing the rung order
+    between bands would have cancelled the bias in the *mean* — but we do not
+    report a mean, so it would have bought nothing.
+
+  Original specification and reasoning, retained because the acceptance test
+  comes from it — Keith's is "measure actual throughput at beginning,
+  middle and end, decide which page-2A readings are achievable under the
+  governor, discard duplicates and unachievable rungs". **Only the first
+  clause is implemented.** Deciding and discarding is a later clause and was
+  deliberately not built: the probe stays report-only, like `c2lag`.
   Measure each rung at
   the inner ring, the middle and the outer ring instead of one location, so a
   rung reports a range rather than a point. Wanted for its own sake and as a
@@ -740,10 +773,11 @@ read-only open, not a speed matter.
     knowingly while nothing outside this repo links the library — and note that
     window **closes when the Python binding ships** (§7.1's own reasoning).
 
-    **Status 2026-07-27: the window is still open, deliberately.** The Python
-    binding landed but `accudisc_probe_speed_ladder` was left unbound precisely
-    to keep it open (task 6). So this change is still free — but only until the
-    probe is bound, and cdda2img is waiting on the probe. **Land this first.**
+    **Status 2026-07-28: SPENT.** The break was taken; the struct is 10 bytes
+    and carries no size field. Nothing outside this repo linked the library at
+    the time, and `accudisc_probe_speed_ladder` was still unbound. It is now
+    free to bind — and binding it is what makes the next growth of this struct
+    a real version break rather than a free one.
 
   **Implementation notes:** cost is 3x the timed windows per rung (default
   ladder is up to 8 rungs after page-2A filtering). Each of the three locations
@@ -753,6 +787,25 @@ read-only open, not a speed matter.
   putting the three-point sweep behind an opt-in flag, so the default output and
   probe time are unchanged; `--start` then keeps its present meaning instead of
   being silently reinterpreted as a centre point.
+
+  **As built** (all of the above honoured): opt-in `--sweep`, default path and
+  its probe time untouched, `--start` unchanged. Windows are indexed
+  `band*ncand + rung` over the span, so all `points*ncand` are disjoint across
+  rungs *and* radii; the fit guard scales with `points` and refuses rather
+  than overlapping. `--sweep` widens the default span from the middle half to
+  the whole disc, since three bands of the middle half would be three samples
+  of the same neighbourhood rather than inner/middle/outer.
+
+  **What is still owed — the acceptance test, on hardware `[P2]`:** the
+  cross-check this item was half-justified by has NOT been run. Per the
+  reasoning above, `{4,8}` are CLV and **must come out flat**, `{24,32}` are
+  CAV and **must spread**. That is the test of whether the instrument
+  measures geometry or measures our arithmetic, and until it runs, three
+  plausible numbers per rung are not evidence of anything. Run it under
+  `flock /var/tmp/sr0.lock` with `/var/tmp/sr0.owner` written, on a clean
+  disc, recording SpeedRead state and the four confounds above. Note the
+  guard makes a *flat* result the ambiguous one — if every rung comes out
+  flat, suspect the layout before believing the drive.
 
 - **Timed-read cache detection.** Borrowed from libcdio-paranoia
   (`cdrom_cache_handler`): a re-read that returns implausibly fast was
@@ -1820,11 +1873,25 @@ zero-copy opt-in.
 
 **Still to do on this entry:**
 
-- **`accudisc_probe_speed_ladder` is deliberately NOT bound** — `[P2]`, and it
-  gates on the `speeds` min/avg/max item. `accudisc_speed_rung` has no `size`
-  field; min/avg/max grows it; §7.1 says the free-to-break window is open only
-  while nothing outside this repo links the library, and the binding shipping is
-  what closes it. Land min/avg/max **first**, then bind the probe.
+- **`accudisc_probe_speed_ladder` is NOT bound — but the reason it was held
+  back is gone `[P2]`.** It gated on the `speeds` min/avg/max item, which
+  landed 2026-07-28 and spent the ABI window: `accudisc_speed_rung` is now
+  10 bytes (`requested_x`, `reported_x`, `measured_cx`, `min_cx`, `max_cx`)
+  and still has no `size` field, deliberately. **Binding it is now the next
+  step, and it is what makes any further growth of that struct a real
+  version break.** So bind the struct as it is, or decide the size field is
+  wanted, before writing the cdef — not after.
+
+  Two things the binding must carry across, both of which are silent if
+  missed: `points` is 1 or 3 and *nothing else* (2 is `ERR_INVAL`, not a
+  round-down), and `min_cx`/`max_cx` of 0 mean "no gradient measured", not
+  "measured zero" — a binding that surfaces them as plain ints hands the
+  consumer a number that reads as a stalled rung.
+
+  **cdda2img is waiting on this and will not infer it.** They keep their
+  `speeds` regex until we send an explicit sentence saying it can go
+  (§ca.4). Do not send that sentence when the code lands — send it when the
+  probe is *bound* and they can read the numbers from the struct.
 - **`accudisc_write` is NOT bound** — the one destructive path. Order agreed
   with cdda2img (§101.6): probes → `read_span` → status map → whole-disc (if at
   all) → `write` last, only after the read path is A/B'd on real media. It will
@@ -1972,6 +2039,74 @@ Answered from source as §by; all three folded into their plan (§107.2).
   way to fail**: a consumer that opens/closes between the calls gets every byte
   correct and three spin-ups, and nothing on either side goes red. Assert the
   command sequence on one handle, lead-in before audio.
+
+  **§109.4 confirms they want it and are pinning the other half.** They will
+  pin the one-`Device` discipline on their side; we pin the command sequence
+  on ours. Their framing is worth keeping: the restructuring of
+  `read_disc_c2` from one CLI call into three binding calls *is* the
+  migration, and it is the one part where getting it wrong "produces a
+  correct image, three spin-ups and nothing red".
+
+### 10. cdda2img §109 — `accudisc_write_opts` has the same defect, older and on the destructive path — `[P2]`, NOT STARTED
+
+Raised by cdda2img while reading our tree, and it is a fair catch. We held
+`accudisc_probe_speed_ladder` unbound to keep the `accudisc_speed_rung` ABI
+window open (task 6, spent 2026-07-28) — and while in the header they
+checked which structs carry the §7.1 `size` guard:
+
+| struct | `size` field | direction |
+|---|---|---|
+| `accudisc_read_req` | yes | caller → library |
+| `accudisc_read_stats` | yes | library → caller |
+| `accudisc_speed_rung` | **no** | library → caller |
+| `accudisc_write_opts` | **no** | caller → library |
+
+**The two unguarded ones fail differently, and `write_opts` is the worse.**
+`speed_rung` is an OUT array — a stride mismatch corrupts everything past
+element 0, loudly and probably immediately. `write_opts` is an IN struct:
+growing it means the library reads *past the end* of a short struct the
+caller passed. Quiet, and on the burn path.
+
+Their case, checked against our header and correct on both points:
+`accudisc_write_opts` is labelled *"Provisional API — the write engine is
+young; fields may grow"*, and **it has already grown once** — `cdtext_path`
+was appended, its safety resting on "zero-init callers get NULL and the
+prior behaviour unchanged". That reassurance holds only while every consumer
+recompiles against the current header, and a Python binding shipping a built
+`.so` is precisely the consumer for whom it stops holding. It is also last
+in the binding queue, so on current sequencing the unguarded struct sits
+exposed longest while the one guarded by omission got fixed first.
+
+**Their ask: add `uint32_t size` to `accudisc_write_opts` before
+`accudisc_write` is bound.** Same one-line fix already applied twice
+(`src/abi.c`, IN rule: short zero-extends, long accepted only if every byte
+past our end is zero, zero always refused). Measured today at 24 bytes;
+check whether the field lands in existing padding as it did for `read_req`.
+
+Not done here because it is a separate change from the `speeds` work and
+deserves its own commit and its own device-free accept/refuse test — but it
+is genuinely inside the same window, and the window is closing.
+
+- **Also from §109, no action needed, worth keeping:** their general rule for
+  the rest of the migration — *"where the CLI publishes a scalar, ask what
+  struct it was computed from, because the binding consumer gets the
+  struct."* Derived from finding that `read`'s exit 3 is not carried by the
+  library at all but computed by the CLI from `accudisc_read_stats`
+  (`hard_errors || sectors_suspect || sectors_flagged`), so there is nothing
+  for us to surface. Same shape as §by.1's `speeds` span being a function of
+  `leadout_lba` rather than a constant — twice in one migration.
+- **§109.3 corrects our `read_to_file` docstring on the facts, not just the
+  advice** — folded into the `[P3]` item in task 9. The docstring says the
+  CLI "writes the file inside the library's address space"; `read_sink()`
+  (`cli/main.c:1000`) also loops per sector and `fwrite`s, so the library
+  never writes the file either way. The real delta is a C callback versus a
+  Python callback per chunk — bounded, not architectural. Verify before
+  rewriting.
+- **The wall-clock number will arrive as A/B/A on one disc**, not one rip
+  each, with engine-reported throughput alongside wall clock. Their
+  reasoning: two ~95 s whole-disc rips vary run-to-run by more than the
+  quantity being measured. Still the gate on any library-side whole-disc
+  entry point — build nothing before it lands.
 
 ## Deferred (explicitly, by user decision)
 
