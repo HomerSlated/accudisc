@@ -796,16 +796,55 @@ read-only open, not a speed matter.
   the whole disc, since three bands of the middle half would be three samples
   of the same neighbourhood rather than inner/middle/outer.
 
-  **What is still owed — the acceptance test, on hardware `[P2]`:** the
-  cross-check this item was half-justified by has NOT been run. Per the
-  reasoning above, `{4,8}` are CLV and **must come out flat**, `{24,32}` are
-  CAV and **must spread**. That is the test of whether the instrument
-  measures geometry or measures our arithmetic, and until it runs, three
-  plausible numbers per rung are not evidence of anything. Run it under
-  `flock /var/tmp/sr0.lock` with `/var/tmp/sr0.owner` written, on a clean
-  disc, recording SpeedRead state and the four confounds above. Note the
-  guard makes a *flat* result the ambiguous one — if every rung comes out
-  flat, suspect the layout before believing the drive.
+  **HARDWARE-VALIDATED 2026-07-28 — the acceptance test PASSED.** PX-716A
+  rev 1.11, Tracy (11 audio tracks, leadout 162892, clean), under
+  `flock /var/tmp/sr0.lock`. Confounds recorded: governor NOT pinned below
+  max (page 2A `max 48x / current 48x` at init — the
+  [[plextor-speedread-subq]] triage signal is `current < max`, absent here);
+  SpeedRead uncap found ON and left ON; single-agent, lock held; same disc
+  throughout.
+
+  The CLV/CAV discriminator came out exactly as the reasoning above
+  required, and it is the whole point of the item:
+
+  | req | page2a | measured | min | max | spread |
+  |---|---|---|---|---|---|
+  | 48 | 48 | 23.01 | 17.15 | 27.67 | **10.52** |
+  | 40 | 40 | 23.73 | 18.08 | 28.28 | **10.20** |
+  | 32 | 32 | 19.55 | 15.14 | 23.09 | **7.95** |
+  | 24 | 24 | 14.98 | 11.75 | 17.57 | **5.82** |
+  | 16 | **8** | 8.01 | 8.01 | 8.01 | **0.00** |
+  | 8 | 8 | 8.01 | 8.00 | 8.01 | **0.01** |
+  | 4 | 4 | 4.01 | 4.01 | 4.01 | **0.00** |
+
+  The CAV rungs spread by 5.8–10.5x; the CLV-clamped rungs are flat to
+  within 0.01x. **A flat result was the ambiguous one** — it is equally the
+  signature of an overlapping-window bug — so the fact that flatness appears
+  *only* on the rungs independently predicted to be clamped, and never on
+  the CAV rungs, is what makes this a pass rather than three plausible
+  numbers. `req=16` snapping to `page2a=8` is the drive quantizing, which is
+  exactly what the `page2a` token exists to expose.
+
+  **The uncap does not affect it on this disc, measured A/B/A rather than
+  assumed** (Keith's prediction, confirmed). Matched ladder
+  `40,32,24,16,8,4` so `ncand` — and therefore the window layout — is
+  identical across states; without pinning it the uncap changes the
+  page-2A max, filters the 48 rung out, and silently re-lays every window.
+  Largest ON-vs-ON difference (run-to-run noise) **0.40x**; largest
+  OFF-vs-mean-ON difference (the effect) **0.21x**; ratio **0.53**, i.e.
+  the effect is half the noise. **The robust reason is that nothing in this
+  run came near either ceiling** — the fastest single measurement anywhere
+  was 28.28x, so 40x versus 48x cannot bind whatever the limiter is. That
+  statement does not depend on knowing *why* we top out at ~28x, which is
+  the honest position: the nominal curve predicts ~32.7x at this lead-out,
+  we measured below it, and whether the shortfall is geometry or a separate
+  CD-DA read cap is a further question (Keith's `readcd` data-disc test).
+  **Do not generalise to a full-length disc** either way — an 80-minute
+  disc runs further out the curve.
+
+  Not re-run under `--sub`: [[plextor-speedread-subq]] applies unchanged and
+  this probe reads audio-only (`ACCUDISC_SUB_NONE`, `speeds.c`), so the Q
+  cliff is out of its path by construction.
 
 - **Timed-read cache detection.** Borrowed from libcdio-paranoia
   (`cdrom_cache_handler`): a re-read that returns implausibly fast was
