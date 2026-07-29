@@ -575,6 +575,129 @@ def test_read_span_refuses_over_the_ceiling():
 
 
 # ---------------------------------------------------------------------------
+# speed ladder
+# ---------------------------------------------------------------------------
+
+
+def _rung(req, rep, measured, mn, mx, equiv, verdict):
+    """A C rung row, built in C memory so _rung_from_c sees the real layout."""
+    r = ffi.new("accudisc_speed_rung*")
+    r.requested_x, r.reported_x, r.measured_cx = req, rep, measured
+    r.min_cx, r.max_cx, r.equiv_x, r.verdict = mn, mx, equiv, verdict
+    return r[0]
+
+
+def test_speed_rung_struct_size_is_pinned():
+    """An OUT ARRAY with no `size` field: the stride is the whole contract.
+
+    A mismatch between the header this was compiled against and the loaded
+    library does not corrupt one field, it corrupts every element past the
+    first. There is nothing at runtime to catch that, so it is pinned here.
+    Binding the probe is what made this a real version break (API_PLAN §8
+    row 6) — growing it now costs a soname bump.
+    """
+    assert ffi.sizeof("accudisc_speed_rung") == 14, (
+        "accudisc_speed_rung changed size — this is no longer a free ABI "
+        "break; bump the version and tell cdda2img before updating this pin"
+    )
+
+
+def test_unmeasured_gradient_is_none_not_zero():
+    """The named hazard: 0 means "not measured", and 0.00 reads as "stalled"."""
+    r = ad._rung_from_c(_rung(8, 8, 801, 0, 0, 0, 0))
+    assert r.min_cx is None and r.max_cx is None
+    assert r.min_x is None and r.max_x is None
+    assert r.spread_cx is None, "an unmeasured gradient must not spread to 0"
+    assert r.measured_x == 8.01, "measured_cx is still a real number"
+
+
+def test_a_measured_gradient_survives():
+    """The complement — without it, a wrapper returning None always passes."""
+    r = ad._rung_from_c(_rung(40, 40, 2369, 1805, 2822, 0, 1))
+    assert (r.min_cx, r.max_cx) == (1805, 2822)
+    assert r.min_x == 18.05 and r.max_x == 28.22
+    assert r.spread_cx == 1017
+    assert r.verdict is ad.Verdict.ADMITTED
+
+
+def test_points_two_is_refused_not_rounded_down():
+    """`points=2` is a request the library cannot honour, not a request for 1.
+
+    Checked without a device: the guard is in the wrapper and must fire before
+    anything is opened, so a caller cannot discover it only on hardware.
+    """
+    d = object.__new__(ad.Device)
+    for bad in (2, 4, 5, -1):
+        try:
+            ad.Device.probe_speed_ladder(d, points=bad)
+        except ad.InvalidArgument as exc:
+            assert "rather than rounding it down" in str(exc), (
+                f"points={bad} was refused, but not for the documented reason: "
+                f"{exc}")
+        else:
+            raise AssertionError(f"points={bad} was accepted")
+
+    # The complement. Without it, a wrapper that refused EVERY value would
+    # pass the loop above — and points=3 is the only value that yields a
+    # verdict at all, so refusing it would be silent and total.
+    for good in (0, 1, 3):
+        try:
+            ad.Device.probe_speed_ladder(d, points=good)
+        except ad.InvalidArgument as exc:
+            raise AssertionError(f"points={good} must be accepted: {exc}")
+        except ValueError as exc:
+            # Reached _handle on a never-opened Device: past the guard, which
+            # is the whole assertion. Anything else propagates.
+            assert "closed" in str(exc), exc
+
+
+def test_admitted_ladder_reproduces_the_cli_line():
+    """The recorded PX-716A run: 48 duplicates onto 40, 16 quantizes onto 8."""
+    rows = [
+        _rung(48, 48, 2296, 1664, 2762, 40, 2),
+        _rung(40, 40, 2369, 1805, 2822, 0, 1),
+        _rung(32, 32, 1944, 1499, 2297, 0, 1),
+        _rung(24, 24, 1492, 1176, 1749, 0, 1),
+        _rung(16, 8, 801, 800, 801, 8, 3),
+        _rung(8, 8, 800, 800, 802, 0, 1),
+        _rung(4, 4, 401, 401, 401, 0, 1),
+    ]
+    rungs = [ad._rung_from_c(r) for r in rows]
+    assert ad.Device.admitted_ladder(rungs) == (40, 32, 24, 8, 4)
+
+
+def test_an_empty_ladder_is_not_the_same_as_no_ladder():
+    """points == 1 yields UNKNOWN everywhere, so admitted_ladder() is empty.
+
+    The CLI distinguishes these by printing no line at all. A caller that only
+    looks at the tuple cannot, which is why the docstring says to test the
+    verdicts — pinned here so the ambiguity stays documented rather than
+    becoming a surprise.
+    """
+    rungs = [ad._rung_from_c(_rung(40, 40, 2369, 0, 0, 0, 0)),
+             ad._rung_from_c(_rung(8, 8, 801, 0, 0, 0, 0))]
+    assert ad.Device.admitted_ladder(rungs) == ()
+    assert all(r.verdict is ad.Verdict.UNKNOWN for r in rungs)
+
+
+def test_verdict_tokens_match_the_cli_and_unknown_has_none():
+    assert ad.Verdict.ADMITTED.token == "admitted"
+    assert ad.Verdict.DUPLICATE.token == "duplicate"
+    assert ad.Verdict.QUANTIZED.token == "quantized"
+    assert ad.Verdict.UNKNOWN.token == "", (
+        "UNKNOWN prints no token on the CLI; inventing one here would let a "
+        "caller reconstruct a line the CLI never emits"
+    )
+
+
+def test_verdict_values_match_the_c_constants():
+    assert ad.Verdict.UNKNOWN == lib.ACCUDISC_RUNG_UNKNOWN
+    assert ad.Verdict.ADMITTED == lib.ACCUDISC_RUNG_ADMITTED
+    assert ad.Verdict.DUPLICATE == lib.ACCUDISC_RUNG_DUPLICATE
+    assert ad.Verdict.QUANTIZED == lib.ACCUDISC_RUNG_QUANTIZED
+
+
+# ---------------------------------------------------------------------------
 # standalone runner (no pytest required)
 # ---------------------------------------------------------------------------
 

@@ -37,7 +37,7 @@ from __future__ import annotations
 import enum
 import os
 from dataclasses import dataclass, field
-from typing import Callable, Sequence
+from typing import Callable, Iterable, Sequence
 
 from ._accudisc import ffi, lib
 
@@ -46,8 +46,9 @@ __all__ = [
     "SenseError", "ShortResponse", "Unsupported", "Cancelled", "CrcError",
     "NotFound", "UnsafeCombination", "AbiMismatch", "RetainedBufferError",
     "C2", "Sub", "MapState", "Anomaly", "TocSource", "TocDegrade", "C2Verdict",
+    "Verdict",
     "Sense", "DriveId", "Track", "Session", "Toc", "TocInfo", "Features",
-    "Chunk", "ReadStats", "ReadResult", "Cancel", "Device", "Q",
+    "SpeedRung", "Chunk", "ReadStats", "ReadResult", "Cancel", "Device", "Q",
     "version", "library_version", "map_state", "map_severity", "anomaly_token",
     "msf_to_lba", "lba_to_msf", "parse_q", "extract_q",
     "MAX_SPAN_BYTES", "UNTRUSTED_GEOMETRY",
@@ -369,6 +370,37 @@ class C2Verdict(enum.IntEnum):
     UNVERIFIED = lib.ACCUDISC_C2_UNVERIFIED
 
 
+class Verdict(enum.IntEnum):
+    """Is a page-2A speed setting a REAL rung of this drive's ladder?
+
+    Report-only. The library never rewrites a caller's ``speed_ladder`` from
+    this, and neither does the binding.
+
+    ``UNKNOWN`` is not a failure — it is what every rung gets when
+    ``points == 1``, because a verdict needs an interval and point samples
+    cannot supply one. Do not treat it as "no ladder"; treat it as "you did
+    not ask for one".
+    """
+
+    UNKNOWN = lib.ACCUDISC_RUNG_UNKNOWN
+    ADMITTED = lib.ACCUDISC_RUNG_ADMITTED
+    DUPLICATE = lib.ACCUDISC_RUNG_DUPLICATE
+    QUANTIZED = lib.ACCUDISC_RUNG_QUANTIZED
+
+    @property
+    def token(self) -> str:
+        """The token the CLI prints for this verdict (``verdict=admitted``).
+
+        ``UNKNOWN`` prints nothing at all on the CLI, so it has no token and
+        this returns ``""`` — matching absence, not inventing a word for it.
+        """
+        return {
+            Verdict.ADMITTED: "admitted",
+            Verdict.DUPLICATE: "duplicate",
+            Verdict.QUANTIZED: "quantized",
+        }.get(self, "")
+
+
 # ---------------------------------------------------------------------------
 # value types
 # ---------------------------------------------------------------------------
@@ -560,6 +592,57 @@ class Features:
             "c2_sub_raw": self.ok_c2_sub_raw,
             "c2_sub_q": self.ok_c2_sub_q,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class SpeedRung:
+    """One candidate speed setting, and what it actually delivered.
+
+    Rates are in **x** (float), converted from the library's centi-x. The
+    C struct's integer centi-x is preserved in the ``*_cx`` fields for anyone
+    who wants exact comparisons without float equality.
+
+    ``min_x``/``max_x`` are ``None`` when no gradient was measured — which is
+    every rung at ``points == 1``, and a rung that failed to measure at any
+    ``points``. This is the whole reason they are not plain floats: the C
+    struct signals "not measured" with a 0, and a 0.00 handed to a caller
+    reads as a rung that stalled. The CLI solves the same problem by omitting
+    the ``min=``/``max=`` tokens entirely.
+    """
+
+    requested_x: int
+    reported_x: int          #: page 2A after the set; 0 = not available
+    measured_cx: int         #: centi-x at ONE radius (the MIDDLE band if points == 3)
+    min_cx: int | None
+    max_cx: int | None
+    equiv_x: int             #: for DUPLICATE/QUANTIZED, the rung this collapses onto
+    verdict: Verdict
+
+    @property
+    def measured_x(self) -> float:
+        return self.measured_cx / 100.0
+
+    @property
+    def min_x(self) -> float | None:
+        return None if self.min_cx is None else self.min_cx / 100.0
+
+    @property
+    def max_x(self) -> float | None:
+        return None if self.max_cx is None else self.max_cx / 100.0
+
+    @property
+    def spread_cx(self) -> int | None:
+        """``max_cx - min_cx`` — the rate change across the whole probed span.
+
+        ``None`` when no gradient was measured. This is the quantity the
+        admission rule calibrates against: it is the radius term measured on
+        THIS disc, so a flat rung is either CLV-clamped or not being measured
+        properly, and cross-rung rate comparisons are only meaningful once
+        discounted by it.
+        """
+        if self.min_cx is None or self.max_cx is None:
+            return None
+        return self.max_cx - self.min_cx
 
 
 @dataclass(frozen=True, slots=True)
@@ -1051,6 +1134,123 @@ class Device:
         _check(lib.accudisc_probe_accurate_stream(self._handle, lba, out), self)
         return bool(out[0])
 
+    #: The CLI's default candidate ladder, before the page-2A cap is applied
+    #: (``cli/main.c`` ``cmd_speeds``). Fastest-first, so the returned rows and
+    #: :meth:`admitted_ladder` come back ready to be stepped down.
+    DEFAULT_LADDER = (52, 48, 40, 32, 24, 16, 8, 4)
+
+    def probe_speed_ladder(
+        self,
+        *,
+        points: int = 3,
+        lba: int | None = None,
+        count: int | None = None,
+        candidates: Sequence[int] | None = None,
+    ) -> tuple[SpeedRung, ...]:
+        """Time each candidate speed and report which are real rungs.
+
+        Page 2A reports the SETTING, not reality: a drive will accept a speed
+        it cannot deliver, and will deliver the same rate for two different
+        settings. Only a timed streaming read can tell, so this sets each
+        candidate, lets the drive settle, and times a read in a window
+        disjoint from every other window of every other rung — the cache can
+        never serve a remeasure.
+
+        ``points``:
+
+        * ``3`` (default) cuts the span into three equal bands and measures
+          each rung once in each, giving it a RANGE. Only at ``points == 3``
+          does any rung get a :class:`Verdict` other than ``UNKNOWN``.
+        * ``1`` (or ``0``, which the library normalises to 1) measures one
+          window per rung. Every verdict comes back ``UNKNOWN`` — deliberately,
+          because a ladder derived from point samples is a confident wrong
+          answer.
+
+        **Any other value is** :class:`InvalidArgument` **— it is not rounded
+        down.** ``points=2`` is a request the library cannot honour, not a
+        request for 1.
+
+        ``lba``/``count`` default to the same span the CLI chooses, so rows
+        stay comparable with every ``accudisc speeds`` measurement without the
+        caller re-deriving it. Note the two are NOT the same span, which is
+        the part worth reading: at ``points > 1`` the bands are the point, so
+        the span opens out to the WHOLE disc to make them inner/middle/outer;
+        at ``points == 1`` it is the middle half, one representative radius.
+        Passing ``lba`` yourself narrows the span, and three bands of the last
+        sixth of a disc are still three well-formed numbers with nothing to
+        mark them as local.
+
+        ``candidates`` defaults to :attr:`DEFAULT_LADDER` capped at the drive's
+        page-2A maximum.
+
+        Every candidate is returned, in the order given — this marks rungs,
+        it never discards them. **The drive is LEFT at the last candidate
+        tested**; speed is not auto-restored, exactly as with reads.
+
+        The verdicts are about THIS disc, not this drive. A rung admitted on a
+        short disc may be unreachable on a longer one, and media whose rate
+        falls off toward the outer edge — observed, not hypothetical — can
+        invalidate a rung admitted mid-disc. Probe per disc; never cache a
+        ladder across discs.
+        """
+        if points not in (0, 1, 3):
+            raise InvalidArgument(
+                lib.ACCUDISC_ERR_INVAL,
+                f"points must be 1 or 3 (0 means 1), not {points} — the library "
+                "refuses anything else rather than rounding it down",
+            )
+
+        if candidates is None:
+            try:
+                max_kbps, _ = self.get_speed()
+                max_x = max_kbps // 176
+            except AccuDiscError:
+                max_x = 52
+            cand = tuple(x for x in self.DEFAULT_LADDER if x <= max_x)
+            if not cand:
+                cand = (max_x or 1,)
+        else:
+            cand = tuple(int(x) for x in candidates)
+            if not cand:
+                raise InvalidArgument(lib.ACCUDISC_ERR_INVAL,
+                                      "candidates is empty")
+        if len(cand) > 255:
+            raise InvalidArgument(lib.ACCUDISC_ERR_INVAL,
+                                  "at most 255 candidates (ncand is a uint8_t)")
+
+        if lba is None or count is None:
+            leadout = self.read_toc().leadout_lba
+            if lba is None:
+                lba = 0 if points > 1 else leadout // 4
+            if count is None:
+                count = leadout - lba if leadout > lba else 0
+                if points <= 1 and count > leadout // 2:
+                    count = leadout // 2
+
+        c_cand = ffi.new("uint16_t[]", list(cand))
+        out = ffi.new("accudisc_speed_rung[]", len(cand))
+        _check(
+            lib.accudisc_probe_speed_ladder(
+                self._handle, lba, count, c_cand, len(cand), points, out
+            ),
+            self,
+        )
+        return tuple(_rung_from_c(out[i]) for i in range(len(cand)))
+
+    @staticmethod
+    def admitted_ladder(rungs: Iterable[SpeedRung]) -> tuple[int, ...]:
+        """The requested speeds of the ADMITTED rungs, in the order probed.
+
+        The equivalent of the CLI's ``ladder admitted=`` line, and it carries
+        the same caveat: an EMPTY tuple is not the same as no ladder. At
+        ``points == 1`` every verdict is ``UNKNOWN`` and this is empty because
+        nothing was judged — the CLI expresses that by printing no line at
+        all, which a parser can distinguish and a ``()`` cannot. If you need
+        to tell those apart, test the verdicts.
+        """
+        return tuple(r.requested_x for r in rungs
+                     if r.verdict == Verdict.ADMITTED)
+
     # -- TOC ---------------------------------------------------------------
 
     def read_toc(self) -> Toc:
@@ -1483,6 +1683,29 @@ def _toc_to_c(toc: Toc):
         c.sessions[i].data_tracks = s.data_tracks
         c.sessions[i].leadout_lba = s.leadout_lba
     return c
+
+
+def _rung_from_c(r) -> SpeedRung:
+    """One C rung row.
+
+    The 0 -> None mapping on min/max is the only translation here that is not
+    a straight copy, and it is the point of the wrapper: the C struct uses 0
+    for "no gradient was measured", which as a plain number is indistinguishable
+    from a rung that measured zero. Both fields are set together or not at all
+    (the engine only fills them when EVERY band measured), so testing either
+    is equivalent — `or` rather than `and` so a future half-filled row surfaces
+    as None instead of a bare 0.
+    """
+    measured = r.min_cx or r.max_cx
+    return SpeedRung(
+        requested_x=r.requested_x,
+        reported_x=r.reported_x,
+        measured_cx=r.measured_cx,
+        min_cx=r.min_cx if measured else None,
+        max_cx=r.max_cx if measured else None,
+        equiv_x=r.equiv_x,
+        verdict=Verdict(r.verdict),
+    )
 
 
 def _stats_from_c(s) -> ReadStats:

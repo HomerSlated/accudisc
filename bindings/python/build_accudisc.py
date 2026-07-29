@@ -284,6 +284,34 @@ int accudisc_probe_features(accudisc_device *dev, accudisc_features *out);
 int accudisc_probe_accurate_stream(accudisc_device *dev, uint32_t lba,
                                    uint8_t *accurate);
 
+/* ---- achievable speed ladder ------------------------------------------- */
+#define ACCUDISC_RUNG_UNKNOWN ...
+#define ACCUDISC_RUNG_ADMITTED ...
+#define ACCUDISC_RUNG_DUPLICATE ...
+#define ACCUDISC_RUNG_QUANTIZED ...
+
+/* An OUT ARRAY with no `size` field, deliberately — a per-element size would
+ * mean trusting N separate caller claims, which is not what API_PLAN §7.1's
+ * OUT rule says. The stride is therefore frozen: this binding is compiled
+ * against the same header the library was, and tests/test_binding.py pins
+ * sizeof() so a mismatch is a failed import rather than a garbled row 1. */
+typedef struct accudisc_speed_rung {
+    uint16_t requested_x;
+    uint16_t reported_x;
+    uint16_t measured_cx;
+    uint16_t min_cx;
+    uint16_t max_cx;
+    uint16_t equiv_x;
+    uint8_t  verdict;
+    ...;
+} accudisc_speed_rung;
+
+int accudisc_probe_speed_ladder(accudisc_device *dev,
+                                uint32_t lba, uint32_t count,
+                                const uint16_t *candidates,
+                                uint8_t ncand, uint8_t points,
+                                accudisc_speed_rung *out);
+
 /* ---- status map -------------------------------------------------------- */
 #define ACCUDISC_MAP_PENDING ...
 #define ACCUDISC_MAP_OK ...
