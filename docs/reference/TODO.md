@@ -2128,7 +2128,34 @@ Answered from source as §by; all three folded into their plan (§107.2).
   migration, and it is the one part where getting it wrong "produces a
   correct image, three spin-ups and nothing red".
 
-### 10. cdda2img §109 — `accudisc_write_opts` has the same defect, older and on the destructive path — `[P2]`, NOT STARTED
+### 10. cdda2img §109 — `accudisc_write_opts` has the same defect, older and on the destructive path — **DONE 2026-07-29**
+
+> **Landed.** `uint32_t size` leads the struct, `ACCUDISC_WRITE_OPTS_INIT`
+> sets it, `accudisc_write` runs `adsc_abi_import` **before the device
+> check** — mirroring `accudisc_read_cdda` (`engine.c:355`) for the two
+> reasons that code states: a stale binding is diagnosed as ERR_ABI
+> ("rebuild") rather than ERR_INVAL ("fix your arguments"), and the guard
+> stays reachable without a drive.
+>
+> **The field landed in padding, so `sizeof` did not move (24 bytes before
+> and after) — and that is a hazard, not a saving.** It means an
+> already-compiled caller still type-checks and still passes 24 bytes. What
+> saves it is that those bytes now start with `simulate`, which is 0 or 1,
+> and both are below `sizeof(uint32_t)` and refused. Old callers fail loudly
+> on the first call. `tests/test_abi.c` drives *both* values rather than
+> leaving that to be inferred from the layout, and pins
+> `offsetof(cdtext_path) == 16` so a later field that does move things is
+> noticed by the assertion instead of by a burn.
+>
+> **The guard was made to fail before it was trusted:** replacing the
+> negotiation with a plain `memcpy` failed exactly the four refusal
+> assertions and left the acceptance ones passing — the correct signature,
+> since a bypass accepts everything. Restored, 33/33.
+>
+> API_PLAN §8 row 7. Man page `accudisc.8` updated (the struct, the macro,
+> and `ACCUDISC_ERR_ABI` in the return list).
+
+<details><summary>original entry</summary>
 
 Raised by cdda2img while reading our tree, and it is a fair catch. We held
 `accudisc_probe_speed_ladder` unbound to keep the `accudisc_speed_rung` ABI
@@ -2188,6 +2215,8 @@ is genuinely inside the same window, and the window is closing.
   reasoning: two ~95 s whole-disc rips vary run-to-run by more than the
   quantity being measured. Still the gate on any library-side whole-disc
   entry point — build nothing before it lands.
+
+</details>
 
 ## Deferred (explicitly, by user decision)
 

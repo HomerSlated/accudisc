@@ -101,7 +101,27 @@ int accudisc_write(accudisc_device *dev, const char *toc_path,
                    void (*progress)(void *user, uint32_t done, uint32_t total),
                    void *user)
 {
-    if (!dev || !toc_path || !bin_path || !opts)
+    if (!opts)
+        return ACCUDISC_ERR_INVAL;
+
+    /* Size negotiation first, on the same rule and for the same reasons as
+     * accudisc_read_cdda (engine.c): before the device check, so a binding with
+     * a stale layout is diagnosed as ERR_ABI ("rebuild") rather than ERR_INVAL
+     * ("fix your arguments"), and so the guard is reachable in tests/test_abi.c
+     * without a drive. `opts` is only guaranteed to be opts->size bytes long,
+     * so everything downstream reads the local copy, never the caller's.
+     *
+     * It matters more here than there. This is the one entry point in the
+     * library that is not idempotent: reading a field past the end of a short
+     * caller's struct does not return a wrong answer to be checked later, it
+     * burns a disc. */
+    accudisc_write_opts local;
+    int abi = adsc_abi_import(&local, sizeof local, opts, opts->size);
+    if (abi != ACCUDISC_OK)
+        return abi;
+    opts = &local;
+
+    if (!dev || !toc_path || !bin_path)
         return ACCUDISC_ERR_INVAL;
 
     struct adsc_write_toc *toc = malloc(sizeof *toc);

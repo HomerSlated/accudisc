@@ -48,6 +48,16 @@ _Static_assert(sizeof(accudisc_chunk) == 32, "accudisc_chunk grew: soname bump")
  * reminder, not a defect. */
 _Static_assert(sizeof(accudisc_read_req) == 56, "read_req grew — see above");
 _Static_assert(sizeof(accudisc_read_stats) == 136, "read_stats grew — see above");
+_Static_assert(sizeof(accudisc_write_opts) == 24, "write_opts grew — see above");
+
+/* The size field landed in padding, so adding it did NOT move sizeof. Pinned
+ * because that fact is load-bearing in the header's own explanation of why an
+ * old caller fails loudly, and a future field that changes it would leave that
+ * paragraph describing a layout that no longer exists. */
+_Static_assert(offsetof(accudisc_write_opts, size) == 0,
+               "write_opts: size must lead — adsc_abi_import writes offset 0");
+_Static_assert(offsetof(accudisc_write_opts, cdtext_path) == 16,
+               "write_opts: the guard was supposed to be free; it moved a field");
 
 #endif
 
@@ -215,6 +225,89 @@ int main(void)
 
         ck(strcmp(accudisc_strerror(ACCUDISC_ERR_ABI), "unknown error") != 0,
            "strerror: ERR_ABI has its own message");
+    }
+
+    /* ---- accudisc_write: the same guard on the destructive path ------------
+     * The stakes differ from read's. There, a struct read past its end returns
+     * a wrong answer that a later check might catch; here it burns a disc. So
+     * these go through the real accudisc_write with a NULL device, and the
+     * ERR_INVAL cases are the positive evidence: reaching the device check
+     * means the ABI layer ACCEPTED the struct, which is the half that a guard
+     * refusing everything would also pass. ---- */
+    {
+        accudisc_write_opts o = ACCUDISC_WRITE_OPTS_INIT;
+
+        ck(o.size == sizeof(accudisc_write_opts),
+           "write_opts: the INIT macro sets size to this build's");
+
+        ck(accudisc_write(NULL, NULL, NULL, NULL, NULL, NULL) ==
+               ACCUDISC_ERR_INVAL,
+           "write: NULL opts is ERR_INVAL, checked before any deref");
+
+        ck(accudisc_write(NULL, "t.toc", "a.bin", &o, NULL, NULL) ==
+               ACCUDISC_ERR_INVAL,
+           "write: a good size reaches the device check (ERR_INVAL)");
+
+        /* This is the case cdda2img asked for: a caller built against the
+         * PREVIOUS header passes 24 bytes whose first four are `simulate`.
+         * Both its values are below sizeof(uint32_t), so both are refused —
+         * which is the whole reason sizeof() not changing is safe. */
+        accudisc_write_opts old_layout = o;
+        old_layout.size = 0;
+        ck(accudisc_write(NULL, "t.toc", "a.bin", &old_layout, NULL, NULL) ==
+               ACCUDISC_ERR_ABI,
+           "write: an old caller's simulate=0 read as size is ERR_ABI");
+        old_layout.size = 1;
+        ck(accudisc_write(NULL, "t.toc", "a.bin", &old_layout, NULL, NULL) ==
+               ACCUDISC_ERR_ABI,
+           "write: an old caller's simulate=1 read as size is ERR_ABI");
+
+        accudisc_write_opts absurd_o = o;
+        absurd_o.size = 0x100000u; /* as if never initialised */
+        ck(accudisc_write(NULL, "t.toc", "a.bin", &absurd_o, NULL, NULL) ==
+               ACCUDISC_ERR_ABI,
+           "write: uninitialised-looking size is ERR_ABI, not a fault");
+
+        /* A NEWER caller. Zero tail = "declared, not used" and is accepted;
+         * a set byte past our end is a feature we would silently drop, and is
+         * refused. Without the second half the first proves nothing — a guard
+         * that accepts every long struct passes it. */
+        {
+            unsigned char big[sizeof(accudisc_write_opts) + 8];
+            const uint32_t longlen = (uint32_t)sizeof big;
+            memset(big, 0, sizeof big);
+            memcpy(big, &o, sizeof o);
+            memcpy(big, &longlen, sizeof longlen);
+            ck(accudisc_write(NULL, "t.toc", "a.bin",
+                              (const accudisc_write_opts *)big, NULL, NULL) ==
+                   ACCUDISC_ERR_INVAL,
+               "write: long struct with an all-zero tail is accepted");
+
+            big[sizeof(accudisc_write_opts) + 4] = 1;
+            ck(accudisc_write(NULL, "t.toc", "a.bin",
+                              (const accudisc_write_opts *)big, NULL, NULL) ==
+                   ACCUDISC_ERR_ABI,
+               "write: long struct with a SET tail field is refused, not dropped");
+        }
+
+        /* A SHORTER caller: cut before cdtext_path, the field that was already
+         * appended once. The poisoned tail must be invented as NULL rather than
+         * read — a garbage cdtext_path is a burn with the wrong lead-in. */
+        {
+            unsigned char small[sizeof(accudisc_write_opts) + 8];
+            const uint32_t shortlen =
+                (uint32_t)offsetof(accudisc_write_opts, cdtext_path);
+            memset(small, 0xAA, sizeof small);
+            memcpy(small, &shortlen, sizeof shortlen);
+            accudisc_write_opts dst_o;
+            memset(&dst_o, 0xBB, sizeof dst_o);
+            rc = adsc_abi_import(&dst_o, sizeof dst_o, small, shortlen);
+            ck(rc == ACCUDISC_OK, "write_opts: short struct accepted");
+            ck(dst_o.cdtext_path == NULL,
+               "write_opts: short struct zero-extends cdtext_path (0xAA not read)");
+            ck(dst_o.simulate == (int)0xAAAAAAAA,
+               "write_opts: a field inside the declared region is copied, not zeroed");
+        }
     }
 
     if (fails) {

@@ -564,6 +564,7 @@ message when the rewrite lands. Do not dribble it out.
 | 5 | An unknown command exits **2**, not 1 | pinned by `cli_surface.sh`, unchanged | No — but see below |
 | 6 | `speeds --sweep`: appends `min=`/`max=` per rung; `accudisc_speed_rung` grows 6 → 10 bytes and `accudisc_probe_speed_ladder` takes a new `points` argument | **DONE 2026-07-28** | No — keys are appended, `measured=` unchanged (see below) |
 | 6b | `speeds --sweep` also appends `verdict=` per rung and a `ladder admitted=` line; `accudisc_speed_rung` grows 10 → 14 bytes (`equiv_x`, `verdict`) | **DONE 2026-07-28** | No — additive, and both are absent without `--sweep`. **But it makes their `drive_speed.admitted_ladder` redundant** |
+| 7 | `accudisc_write_opts` gains a leading `uint32_t size` + `ACCUDISC_WRITE_OPTS_INIT`; `accudisc_write` returns `ACCUDISC_ERR_ABI` when it is 0 or unhonourable | **DONE 2026-07-29** | No — library ABI only; the CLI is rebuilt with it. **But it breaks any already-compiled caller, deliberately — see below** |
 
 **Row 6 is an ABI break taken knowingly, and the last free one on that
 struct.** `accudisc_speed_rung` gained `min_cx`/`max_cx` without a `size`
@@ -579,6 +580,23 @@ It would have been easy to make it the mean of three, which every existing
 parser would have kept reading without complaint while the quantity changed
 underneath. `min`/`max` are also **per line, optional**: a rung whose bands
 did not all measure omits them rather than printing `0.00`.
+
+**Row 7 breaks compiled callers on purpose, and the mechanism is worth stating
+because it looks like the opposite.** `size` landed in existing padding, so
+`sizeof(accudisc_write_opts)` did **not** change — it is 24 bytes before and
+after. That is not source compatibility bought for free. A caller built against
+the previous header passes 24 bytes whose first four are `simulate`, so the
+library reads a size of 0 or 1, and both are below `sizeof(uint32_t)` and
+refused. Every stale caller gets `ACCUDISC_ERR_ABI` on its first call rather
+than a burn from misaligned fields, which is the intended outcome; `tests/
+test_abi.c` drives both values explicitly rather than leaving it to be inferred
+from the layout.
+
+Raised by cdda2img (§109.2, restated as a blocker in §111.2a) while auditing
+which structs carry the §7.1 guard. Their argument is the one built to: without
+it, a future field addition does not raise `AbiMismatch` and degrade them to the
+subprocess — it produces a well-formed call about the wrong bytes on the one
+operation in the system that is not idempotent.
 
 Anything that lands in this table as "breaks a parser: Yes" needs a decision,
 not just a note.

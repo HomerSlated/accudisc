@@ -437,6 +437,26 @@ as
 .B accudisc_read_cdtext()
 emits it.
 .PP
+The struct leads with
+.I size
+and the caller must set it, which
+.B ACCUDISC_WRITE_OPTS_INIT
+does:
+.PP
+.nf
+.B "    accudisc_write_opts o = ACCUDISC_WRITE_OPTS_INIT;"
+.fi
+.PP
+The rules are the IN half of the negotiation described for
+.B accudisc_read_req
+above \(em a shorter struct is zero-extended, a longer one is accepted only if
+every byte past this build's end is zero, and a declared size of 0 is
+.BR ACCUDISC_ERR_ABI .
+The guard matters more here than on the read path: this is the only entry point
+in the library that is not idempotent, so a field read past the end of a short
+caller's struct does not return a wrong answer to be checked later, it burns a
+disc.
+.PP
 Return values:
 .B ACCUDISC_OK
 for a clean burn or clean simulate;
@@ -445,13 +465,19 @@ when the burn completed but see the log;
 .B ACCUDISC_ERR_UNSUPPORTED
 when the disc is not blank, in which case
 .I nothing
-was written; any other negative
+was written;
+.B ACCUDISC_ERR_ABI
+when
+.I opts\->size
+is 0 or declares fields this build cannot honour, in which case nothing was
+written and nothing was read past the struct; any other negative
 .B ACCUDISC_ERR_*
 for a transport, parse or local error. A negative return means the burn did not
 complete; a non-negative return means it did.
 .PP
 This API is marked provisional in the header: the write engine is young and its
-options struct may grow.
+options struct may grow \(em which is why it carries
+.IR size .
 .SH VENDOR DRIVERS
 .B libaccudisc
 itself is pure MMC/SG. No proprietary opcode is ever compiled into the core.

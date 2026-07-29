@@ -985,7 +985,7 @@ static void write_progress(void *user, uint32_t done, uint32_t total)
 static int cmd_write(accudisc_device *dev, int argc, char **argv)
 {
     const char *toc = NULL, *bin = NULL;
-    accudisc_write_opts o = {0};
+    accudisc_write_opts o = ACCUDISC_WRITE_OPTS_INIT;
     struct write_prog wp = { -1, 0, 0 };
 
     for (int i = 0; i < argc; i++) {

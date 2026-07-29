@@ -165,8 +165,27 @@ ACCUDISC_API const char *accudisc_atip_manufacturer(uint8_t min, uint8_t sec,
  * Burn one audio session Disc-At-Once. The caller supplies a cdrdao .toc and
  * the raw audio BIN it references; AccuDisc only moves the bits. Requires a
  * blank disc and an ACCUDISC_OPEN_RDWR handle. Provisional API — the write
- * engine is young; fields may grow. */
+ * engine is young; fields may grow, which is exactly why it carries `size`.
+ *
+ * This is an IN struct on the one path in the library that is not idempotent.
+ * Growing it without the guard would not fail loudly — it would have the
+ * library read past the end of a shorter caller's struct and burn a disc from
+ * whatever was there. The size negotiation is the same one accudisc_read_req
+ * uses (see its block comment below for the full IN/OUT rules): a shorter
+ * struct is zero-extended, a longer one is accepted only if every byte past
+ * this build's end is zero, and a declared size of 0 is always ERR_ABI.
+ *
+ * Use the macro; do not set the field by hand:
+ *
+ *     accudisc_write_opts o = ACCUDISC_WRITE_OPTS_INIT;
+ *
+ * Note that `size` landed in existing padding, so sizeof() did NOT change when
+ * the guard was added. That is not a compatibility win — a caller built
+ * against the older header passes 24 bytes whose first 4 are `simulate`, which
+ * is 0 or 1 and so refused as a size. Old callers fail loudly, which is the
+ * intent; they do not silently pass with `simulate` read as a length. */
 typedef struct accudisc_write_opts {
+    uint32_t size;  /* = sizeof(accudisc_write_opts); ACCUDISC_WRITE_OPTS_INIT */
     int simulate;   /* test-write: run the full path with the laser off */
     int byteswap;   /* swap each 16-bit audio sample before writing */
     int speed;      /* 0 = leave the drive's current write speed */
@@ -176,6 +195,8 @@ typedef struct accudisc_write_opts {
      * callers get NULL and the prior behaviour unchanged. */
     const char *cdtext_path;
 } accudisc_write_opts;
+
+#define ACCUDISC_WRITE_OPTS_INIT { .size = sizeof(accudisc_write_opts) }
 
 /* A POSITIVE accudisc_write() return: the burn COMPLETED, but with a caveat the
  * caller should surface (CLI maps it to exit 3, "completed with caveats"). The
@@ -192,6 +213,9 @@ typedef struct accudisc_write_opts {
  *   ACCUDISC_WROTE_WITH_CAVEATS the burn completed but see the log (e.g. the
  *                               CD-Text SIZE_INFO disagrees with the .toc);
  *   ACCUDISC_ERR_UNSUPPORTED    the disc is not blank — nothing was written;
+ *   ACCUDISC_ERR_ABI            opts->size is 0, or declares fields this build
+ *                               does not have and cannot honour — nothing was
+ *                               written, and nothing was read past the struct;
  *   other negative ACCUDISC_ERR_*  a transport/parse/local error.
  * A negative return means the burn did NOT complete; a non-negative return
  * means it did. */
