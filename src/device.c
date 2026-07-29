@@ -76,6 +76,7 @@ const char *accudisc_strerror(int err)
                                           "current state (would corrupt data)";
     case ACCUDISC_ERR_ABI:         return "struct size mismatch — rebuild "
                                           "against this library's header";
+    case ACCUDISC_ERR_NOT_BLANK:   return "disc is not blank (nothing written)";
     default:                       return "unknown error";
     }
 }

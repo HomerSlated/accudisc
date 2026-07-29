@@ -68,9 +68,16 @@ def test_skew_check_sees_a_PATCH_level_difference():
 
     Driven by faking the LOADED version, because the honest pair cannot occur in
     one build tree — which is precisely why it went unnoticed.
+
+    The fakes are DERIVED from the real version, one component at a time, not
+    written as literals. Literals were the first version of this test and they
+    broke on the very next bump: `(0, 4, 0)` was a fake under 0.3.0 and became
+    the truth under 0.4.0, so the case silently stopped testing anything and
+    the failure it produced pointed at the guard rather than at itself.
     """
     real = ad.library_version
-    for fake in ((0, 3, 1), (0, 4, 0), (1, 3, 0)):
+    maj, minr, pat = ad.version
+    for fake in ((maj, minr, pat + 1), (maj, minr + 1, pat), (maj + 1, minr, pat)):
         ad.library_version = lambda f=fake: f
         try:
             ad._check_version_skew()
@@ -819,11 +826,29 @@ def test_not_blank_maps_to_its_own_exception_type():
     """`result=not_blank` must be distinguishable from `result=error`.
 
     The CLI separates them because exit 2 covers both and the code alone
-    cannot disambiguate. On the binding the type does it — but only if
-    Unsupported is not swallowed by a broader class.
+    cannot disambiguate. On the binding the type does it.
+
+    Since 0.4.0 the library says it directly: ERR_NOT_BLANK = -13, split out of
+    ERR_UNSUPPORTED, which had been exact only BY CENSUS. The assertions below
+    pin the split rather than the old census.
     """
+    assert ad._ERRORS[lib.ACCUDISC_ERR_NOT_BLANK] is ad.NotBlank
     assert ad._ERRORS[lib.ACCUDISC_ERR_UNSUPPORTED] is ad.Unsupported
-    assert issubclass(ad.Unsupported, ad.AccuDiscError)
+    assert issubclass(ad.NotBlank, ad.AccuDiscError)
+
+    # NotBlank is a SIBLING of Unsupported, deliberately not a subclass. A
+    # subclass would keep `except Unsupported` catching a not-blank disc, which
+    # is the exact ambiguity -13 exists to end — backward compatibility bought
+    # by preserving the bug. Old callers break loudly instead, as with the ABI
+    # guard.
+    assert not issubclass(ad.NotBlank, ad.Unsupported)
+    assert not issubclass(ad.Unsupported, ad.NotBlank)
+
+    # The codes are distinct in the header, not just in the map. If these ever
+    # collide, every assertion above passes while meaning nothing.
+    assert lib.ACCUDISC_ERR_NOT_BLANK != lib.ACCUDISC_ERR_UNSUPPORTED
+    assert lib.ACCUDISC_ERR_NOT_BLANK == -13
+
     assert not issubclass(ad.InvalidArgument, ad.Unsupported)
     assert not issubclass(ad.Unsupported, ad.InvalidArgument)
 

@@ -43,7 +43,7 @@ from ._accudisc import ffi, lib
 
 __all__ = [
     "AccuDiscError", "InvalidArgument", "OutOfMemory", "OpenFailed", "IOFailed",
-    "SenseError", "ShortResponse", "Unsupported", "Cancelled", "CrcError",
+    "SenseError", "ShortResponse", "Unsupported", "NotBlank", "Cancelled", "CrcError",
     "NotFound", "UnsafeCombination", "AbiMismatch", "RetainedBufferError",
     "C2", "Sub", "MapState", "Anomaly", "TocSource", "TocDegrade", "C2Verdict",
     "Verdict", "WriteResult",
@@ -82,7 +82,7 @@ def library_version() -> tuple[int, int, int]:
 
 
 def version_string() -> str:
-    """The loaded library's version as it prints it, e.g. ``"0.3.0"``."""
+    """The loaded library's version as it prints it, e.g. ``"0.4.0"``."""
     return ffi.string(lib.accudisc_version_string()).decode()
 
 
@@ -172,6 +172,23 @@ class Unsupported(AccuDiscError):
     """``ACCUDISC_ERR_UNSUPPORTED`` — not supported by this drive or build."""
 
 
+class NotBlank(AccuDiscError):
+    """``ACCUDISC_ERR_NOT_BLANK`` — the disc is not blank; nothing was written.
+
+    Its own class since 0.4.0. Before that this arrived as
+    :class:`Unsupported`, which was *exact* — the library had exactly one
+    reachable ``ERR_UNSUPPORTED`` under the write path — but exact **by
+    census, not by construction**. Any new ``ERR_UNSUPPORTED`` there would have
+    silently joined the meaning, and the resulting bug reads as correct at both
+    ends: the caller tells the user to insert a blank disc they are already
+    holding, and no test on either side can tell.
+
+    Catch this rather than string-matching a message, and note it is
+    **narrower** than the token it replaces: `Unsupported` on `write()` now
+    means what it says everywhere else.
+    """
+
+
 class Cancelled(AccuDiscError):
     """``ACCUDISC_ERR_CANCELLED`` — stopped by the cancel flag or the sink."""
 
@@ -232,6 +249,7 @@ _ERRORS: dict[int, type[AccuDiscError]] = {
     lib.ACCUDISC_ERR_SENSE: SenseError,
     lib.ACCUDISC_ERR_SHORT: ShortResponse,
     lib.ACCUDISC_ERR_UNSUPPORTED: Unsupported,
+    lib.ACCUDISC_ERR_NOT_BLANK: NotBlank,
     lib.ACCUDISC_ERR_CANCELLED: Cancelled,
     lib.ACCUDISC_ERR_CRC: CrcError,
     lib.ACCUDISC_ERR_NOTFOUND: NotFound,
@@ -405,7 +423,7 @@ class WriteResult(enum.Enum):
     ==================  ===================================================
     ``ok``              :attr:`WriteResult.OK`
     ``caveats``         :attr:`WriteResult.CAVEATS`
-    ``not_blank``       raises :class:`Unsupported` — nothing was written
+    ``not_blank``       raises :class:`NotBlank` — nothing was written
     ``error``           raises another :class:`AccuDiscError`
     ==================  ===================================================
 

@@ -381,6 +381,20 @@ search directory is compiled into the library
 (`ACCUDISC_DRIVER_DIR_DEFAULT`), so a re-install to a new prefix would leave
 the library looking for drivers under the old one.
 
+### A wheel, for consumers that resolve dependencies
+
+```sh
+cmake --build build --target wheel      # -> build/bindings/python/wheel/*.whl
+```
+
+`cp310-abi3`, so one wheel serves CPython 3.10–3.14. Use it where a consumer's
+installer (`pip`, `pipx`) has to *find* the package rather than compile it from
+this checkout. It is **prefix-specific** — its `RUNPATH` is the prefix the build
+tree was configured for — so it travels with the matching `make install`. See
+`bindings/python/README.md` for the discovery rules and
+`ACCUDISC_REQUIRE_INSTALLED`, which an installer should set so that "no
+installed library found" fails loudly instead of silently linking a build tree.
+
 ## Signatures
 
 Source files under `include/`, `src/`, `cli/` and `drivers/` may carry a

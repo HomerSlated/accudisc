@@ -2128,7 +2128,22 @@ Answered from source as §by; all three folded into their plan (§107.2).
   disc**; they had half-decided to record a constant from one Tracy run, which
   would silently mean a different radius on every disc of another length.
 
-- **`ACCUDISC_ERR_NOT_BLANK = -13` — `[P2]`, agreed, not landed.** Today
+- ~~**`ACCUDISC_ERR_NOT_BLANK = -13`**~~ — **LANDED 2026-07-29, 0.4.0**, approved
+  by Keith after cdda2img (§120.1) showed the deferral's precondition was about
+  to be false: `result=not_blank` was a CLI token, and it was the insurance
+  against the census-vs-construction gap, so retiring the CLI cashed it in.
+  Three places as costed, plus `strerror`, the binding's `NotBlank` class and
+  the cdef. `NotBlank` is a **sibling** of `Unsupported`, not a subclass —
+  subclassing would keep `except Unsupported` catching a not-blank disc, i.e.
+  backward compatibility bought by preserving the bug.
+
+  Bumped to **0.4.0 with no struct change**, deliberately: a consumer that maps
+  error codes to user actions is as broken by a silently changed *meaning* as by
+  a moved field, and the version is the only signal it gets.
+
+  The original entry, kept because the reasoning is the reusable part:
+
+  Today
   `ACCUDISC_ERR_UNSUPPORTED` doubles as "disc is not blank". Verified this is
   *exact*: `src/write/burn.c:155` is the only `ERR_UNSUPPORTED` reachable from
   `accudisc_write`, and `src/write/` calls nothing from the driver/plan/session

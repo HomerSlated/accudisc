@@ -1019,11 +1019,16 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
     const char *result;
     int ret;
 
-    if (err == ACCUDISC_ERR_UNSUPPORTED) {
+    if (err == ACCUDISC_ERR_NOT_BLANK) {
         /* Not blank = a precondition that could not complete, i.e. exit 2 per
          * the tool-wide convention (fatal: command could not complete). Nothing
          * was written. (Was exit 3 here, which collided with "completed with
-         * caveats" — corrected 2026-07-24.) */
+         * caveats" — corrected 2026-07-24.)
+         *
+         * Keys on ERR_NOT_BLANK since 0.4.0, not ERR_UNSUPPORTED: the old test
+         * was exact only by census, so a future ERR_UNSUPPORTED anywhere under
+         * the write path would have printed "disc is not blank" about something
+         * else entirely. The `result=not_blank` token is unchanged. */
         fprintf(stderr, "accudisc: write: disc is not blank\n");
         result = "not_blank";
         ret = 2;

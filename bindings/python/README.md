@@ -15,10 +15,34 @@ PYTHONPATH=. python3 tests/test_binding.py      # 55 tests, no drive needed
 `ctest -R python_binding` does all of that as part of the normal test run, and
 *skips* (rather than fails) when `python3` or `cffi` is missing.
 
-Header and library discovery, in order: `ACCUDISC_INCLUDE_DIR` /
-`ACCUDISC_LIB_DIR` → `pkg-config accudisc` → this checkout's `include/` and
-`build/src/`. The third is the development default; an RPATH is set so
-`libaccudisc.so.0` is found without `LD_LIBRARY_PATH`.
+## Discovery — which library you actually linked
+
+In order, first match wins:
+
+| # | source | notes |
+|---|---|---|
+| 1 | `ACCUDISC_INCLUDE_DIR` + `ACCUDISC_LIB_DIR` | explicit; silent |
+| 2 | `pkg-config accudisc` | **the supported route for a consumer** |
+| 3 | this checkout's `include/` + `build/src/` | development only; **warns** |
+
+**`pkg-config` beats the build tree whenever it answers.** The hazard is when it
+*doesn't*: on a developer box that has never run `make install` there is no
+`accudisc.pc` anywhere on the search path, so a consumer's install falls through
+to (3) and silently produces a working extension bound to a build tree. It
+behaves identically until that tree moves.
+
+Two things guard it now:
+
+* Branch 3 **warns on stderr, every time**, naming the tree it chose.
+* `ACCUDISC_REQUIRE_INSTALLED=1` makes branch 3 a **hard error**. Installers
+  should set it — then "no installed library" fails at build time with a
+  message, instead of at import time with a missing `libaccudisc.so.0` that
+  names nothing leading back to the choice.
+
+So the answer to "what should an installer do": set
+`ACCUDISC_REQUIRE_INSTALLED=1` and put the library's `.pc` on
+`PKG_CONFIG_PATH` if the prefix is not a default one. There is no intended
+fallback beyond that — failing loudly is the design.
 
 ## Install
 
@@ -75,6 +99,31 @@ without it:         /opt/aaa, then /opt/aaa   (silently stale)
 `accudisc/` on one interpreter is the §113 stale-extension bug at package
 granularity — whichever wins the path is the one you get, and neither is
 labelled. Pick one.
+
+### Wheel
+
+```sh
+cmake --build build --target wheel     # -> build/bindings/python/wheel/*.whl
+```
+
+Produces `accudisc-<version>-cp310-abi3-linux_x86_64.whl`. One wheel serves
+CPython 3.10 through 3.14 — verified by building on 3.14 and installing on
+3.10.20 with the build tree moved away.
+
+**The `cp310-abi3` tag comes from `setup.cfg`, and it is not optional.** The
+extension has always been limited-API, but without `[bdist_wheel] py_limited_api
+= cp310` the *wheel* is tagged for the building interpreter — the first one
+built here came out `cp314-cp314`, which pip refuses to install on 3.10 even
+though the `.so` inside it works there. An abi3 wheel declares the **oldest**
+CPython it supports, so the floor belongs in that tag, not the builder's
+version.
+
+**The wheel is prefix-specific.** Its `RUNPATH` is `ACCUDISC_INSTALL_RPATH` —
+the prefix the build tree was configured for — so a wheel travels with the
+`make install` that matches it. Installing one against a different prefix
+reproduces the exact failure the staging split exists to prevent. It does not
+require the library to be installed to *build*: it links the build tree and
+records the install RUNPATH.
 
 ## Why API mode
 

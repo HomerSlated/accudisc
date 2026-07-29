@@ -27,7 +27,14 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 3 /* 0.3.0: accudisc_speed_rung 6 -> 14 bytes and
+#define ACCUDISC_VERSION_MINOR 4 /* 0.4.0: ACCUDISC_ERR_NOT_BLANK = -13 split
+                                  * out of ERR_UNSUPPORTED on the write path. No
+                                  * struct moved — bumped anyway, because a
+                                  * consumer that maps error codes to user
+                                  * actions is as broken by a silently changed
+                                  * MEANING as by a moved field, and the version
+                                  * is the only signal it gets.
+                                  * 0.3.0: accudisc_speed_rung 6 -> 14 bytes and
                                   * accudisc_write_opts gained `size`; the probe
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
@@ -86,13 +93,37 @@ typedef enum accudisc_err {
                                       request — only where the corruption is
                                       known and measured. Overridable per-call
                                       where the request offers a field for it. */
-    ACCUDISC_ERR_ABI         = -12 /* a caller-allocated struct declared a
+    ACCUDISC_ERR_ABI         = -12, /* a caller-allocated struct declared a
                                       `size` this library cannot honour: zero
                                       (never initialised), or larger than this
                                       build's, with fields set that this build
                                       does not know. Distinct from ERR_INVAL
                                       because it means "rebuild against this
                                       header", not "fix your arguments". */
+    ACCUDISC_ERR_NOT_BLANK   = -13 /* accudisc_write refused: the loaded disc
+                                      is not blank. Nothing was written.
+                                      Split out of ERR_UNSUPPORTED in 0.4.0.
+
+                                      Why it is its own code rather than a
+                                      documented special case: it was exact
+                                      only BY CENSUS. ERR_UNSUPPORTED was
+                                      reachable from accudisc_write in exactly
+                                      one place, so callers could map it to
+                                      "insert a blank disc" — but any future
+                                      ERR_UNSUPPORTED under the write path
+                                      would have joined that meaning silently,
+                                      and the resulting failure is well-formed
+                                      at both ends: the caller tells the user
+                                      to insert a blank disc they are already
+                                      holding, and no test on either side can
+                                      tell. A distinct code makes the mapping
+                                      true BY CONSTRUCTION.
+
+                                      ERR_UNSUPPORTED keeps its ordinary
+                                      meaning on this path ("the drive or this
+                                      build cannot do what was asked"), and is
+                                      now free to appear there without
+                                      colliding. */
 } accudisc_err;
 
 /* Static human-readable name for an accudisc_err value. */
@@ -226,7 +257,10 @@ typedef struct accudisc_write_opts {
  *   ACCUDISC_OK (0)             clean burn (or clean simulate);
  *   ACCUDISC_WROTE_WITH_CAVEATS the burn completed but see the log (e.g. the
  *                               CD-Text SIZE_INFO disagrees with the .toc);
- *   ACCUDISC_ERR_UNSUPPORTED    the disc is not blank — nothing was written;
+ *   ACCUDISC_ERR_NOT_BLANK      the disc is not blank — nothing was written
+ *                               (was ERR_UNSUPPORTED before 0.4.0; see the
+ *                               enum for why the census-exact mapping was not
+ *                               good enough);
  *   ACCUDISC_ERR_ABI            opts->size is 0, or declares fields this build
  *                               does not have and cannot honour — nothing was
  *                               written, and nothing was read past the struct;
@@ -1352,6 +1386,23 @@ typedef struct accudisc_read_stats {
                                * output — it is how the library learns how much
                                * of your allocation it may write. */
     uint64_t sectors_read;    /* returned by the drive (excludes zero-fills) */
+
+    /* CONTRACT — the three fields below are the caveat verdict's inputs.
+     *
+     *     hard_errors || sectors_suspect || sectors_flagged
+     *
+     * is what the CLI projects onto exit 3, and by ruling (2026-07-29) it is
+     * what every API consumer re-derives for itself: the library deliberately
+     * exports no verdict helper and no verdict field.
+     *
+     * So these three are a STABILITY PROMISE, not internal accounting. Changing
+     * what feeds one of them is a semantic break even though the struct does
+     * not move — a consumer showing a user "this rip is clean" would silently
+     * change its mind — and it takes a version bump for the same reason
+     * ACCUDISC_ERR_NOT_BLANK did. See docs/reference/cli-machine-interface.md
+     * ("Exit codes -> library semantics"); the note is repeated here because
+     * that document's audience is CLI consumers and these fields' audience is
+     * not. */
     uint64_t sectors_flagged; /* >= 1 C2 bit set */
     uint64_t c2_bits;         /* total fired C2 bits (real reads only) */
     uint64_t hard_errors;     /* sectors zero-filled after retries */
@@ -1363,7 +1414,9 @@ typedef struct accudisc_read_stats {
     uint64_t sense_other;     /* any other terminal sense */
     uint64_t rereads;         /* problem-driven extra sector reads issued */
     uint64_t sectors_recovered; /* problem seen, clean/agreeing copy won */
-    uint64_t sectors_suspect;   /* consensus failed, best-effort delivered */
+    uint64_t sectors_suspect;   /* consensus failed, best-effort delivered.
+                                 * CONTRACT — third input to the caveat verdict;
+                                 * see the note at sectors_flagged above. */
     uint64_t slips;           /* disagreements that were a pure positional
                                * shift (reads identical modulo offset) — the
                                * C2-invisible slip class; a nonzero count on

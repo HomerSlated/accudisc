@@ -43,6 +43,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from cffi import FFI
@@ -91,7 +92,28 @@ def _locate() -> tuple[list[str], list[str], list[str]]:
     if pc_inc and pc_lib:
         return pc_inc, pc_lib, _runtime_dirs(pc_lib)
 
-    # Uninstalled: build against this checkout.
+    # Uninstalled: build against this checkout. DEVELOPMENT ONLY.
+    #
+    # This branch is why an installer can silently link the wrong library.
+    # pkg-config is tried first and wins when it answers — but when it does NOT
+    # (no accudisc.pc on the search path, which is the normal state on a
+    # developer box that has never run `make install`), we fall through to here
+    # and produce a working extension bound to a build tree. It behaves
+    # identically until that tree moves, and nothing in the install output says
+    # which library was chosen. cdda2img hit exactly this with `pipx inject`
+    # (§123.2): the install succeeded without PKG_CONFIG_PATH, and the artefact
+    # was the dev-tree one wearing an installed package's clothes.
+    #
+    # So: announce it, every time, and let an installer forbid it outright.
+    if os.environ.get("ACCUDISC_REQUIRE_INSTALLED"):
+        raise SystemExit(
+            "accudisc: ACCUDISC_REQUIRE_INSTALLED is set and `pkg-config "
+            "accudisc` did not answer, so the only remaining source is this "
+            "checkout's build tree — which is what that variable exists to "
+            "refuse. Install the library, or put its .pc on PKG_CONFIG_PATH:\n"
+            "    PKG_CONFIG_PATH=<prefix>/lib64/pkgconfig pip install ...\n"
+            "Unset ACCUDISC_REQUIRE_INSTALLED to build against the checkout."
+        )
     tree_inc = _REPO / "include"
     tree_lib = _REPO / "build" / "src"
     if not (tree_inc / "accudisc" / "accudisc.h").is_file():
@@ -104,6 +126,18 @@ def _locate() -> tuple[list[str], list[str], list[str]]:
             f"{tree_lib} does not exist — build the C library first:\n"
             f"    cmake -B build && cmake --build build"
         )
+    # Loud, on stderr, unconditionally. A silent fallback here is the whole
+    # defect: the failure it causes appears later, somewhere else, as a missing
+    # libaccudisc.so.0 that names nothing leading back to this choice.
+    sys.stderr.write(
+        f"accudisc: WARNING — no installed library found (pkg-config did not "
+        f"answer), building against the DEVELOPMENT TREE at {tree_lib}.\n"
+        f"accudisc:   The result is bound to that path and breaks if it moves. "
+        f"Fine for development; NOT what you want in an installer.\n"
+        f"accudisc:   For an installed library: "
+        f"PKG_CONFIG_PATH=<prefix>/lib64/pkgconfig ...\n"
+        f"accudisc:   To make this an error instead: ACCUDISC_REQUIRE_INSTALLED=1\n"
+    )
     return [str(tree_inc)], [str(tree_lib)], _runtime_dirs([str(tree_lib)])
 
 
@@ -151,6 +185,7 @@ typedef enum accudisc_err {
     ACCUDISC_ERR_NOTFOUND,
     ACCUDISC_ERR_UNSAFE_COMBINATION,
     ACCUDISC_ERR_ABI,
+    ACCUDISC_ERR_NOT_BLANK,
     ...
 } accudisc_err;
 

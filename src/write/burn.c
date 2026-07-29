@@ -152,7 +152,7 @@ int adsc_write_run(struct accudisc_device *dev,
     if ((ret = adsc_write_read_disc_info(dev, &di)) != ACCUDISC_OK)
         return ret;
     if (di.status != 0)
-        return ACCUDISC_ERR_UNSUPPORTED; /* not blank */
+        return ACCUDISC_ERR_NOT_BLANK;
 
     /* 3. Power calibration for a real burn (fires the laser at the PCA).
      * Skipped in simulate. A drive that reports "invalid command" (SK 5 /

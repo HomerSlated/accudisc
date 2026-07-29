@@ -93,6 +93,24 @@ Three properties of that table are load-bearing:
   C2, suspect or hard-error signal fired — it does not mean the audio is
   correct. The absolute gates (AccurateRip, CTDB) live in the calling
   application and this contract says nothing about them.
+- **The `read` caveat verdict is the CONSUMER's to re-derive, and that is a
+  ruling, not an omission** (Keith, 2026-07-29). The library deliberately does
+  **not** export a `read_verdict()` helper or a verdict field. Every API
+  consumer computes `hard_errors || sectors_suspect || sectors_flagged` from
+  `accudisc_read_stats` itself, exactly as `cli/main.c` does.
+
+  The alternative — library-side, one authority, CLI consumes it — was
+  recommended by both this project and cdda2img and was **not** chosen. It is
+  recorded here so nobody re-opens it as an oversight.
+
+  What the ruling obliges us to: **those three fields are contract.** Their
+  names, their types and *what feeds them* are a stability promise, not
+  internal accounting, because a consumer that never sees an exit code derives
+  a user-visible verdict from them. Changing what counts as `sectors_suspect`
+  is a semantic break even though nothing in the struct moves — the same class
+  of break as `ERR_NOT_BLANK`, and it takes a version bump for the same reason.
+  `accudisc.h` repeats this beside the fields, because this document's audience
+  is shrinking to CLI consumers while the fields' audience is not.
 
 ## `features` output (stdout)
 

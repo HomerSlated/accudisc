@@ -120,3 +120,52 @@ else()
     set(_adsc_py_full "${CMAKE_INSTALL_PREFIX}/${ACCUDISC_PYTHON_SITEDIR}")
 endif()
 accudisc_install_strip("${_adsc_py_full}/accudisc/_accudisc.abi3.so")
+
+# ---- `wheel` target ---------------------------------------------------------
+#
+#   cmake --build build --target wheel      -> build/bindings/python/wheel/*.whl
+#
+# Not part of ALL: it needs `pip` and produces an artefact nobody wants on an
+# ordinary build.
+#
+# The wheel is PREFIX-SPECIFIC and that is not a defect to design away — it is
+# the honest consequence of a native extension that must find libaccudisc.so.0.
+# Its RUNPATH is ACCUDISC_INSTALL_RPATH, i.e. the prefix THIS build tree was
+# configured for, so a wheel and the `make install` that accompanies it belong
+# together. Installing this wheel against a different prefix reproduces exactly
+# the failure the staging split exists to prevent.
+#
+# It does NOT require the library to be installed first: it links against the
+# build tree and records the install RUNPATH, the same trick the staged
+# extension uses. That is discovery branch 1 (explicit env vars), which is why
+# no ACCUDISC_REQUIRE_INSTALLED guard is needed here — the build-tree fallback
+# that guard exists to refuse is never reached.
+#
+# Sources are copied to a staging dir first, because setuptools' build_ext
+# rebuilds on timestamps and a stale bindings/python/build/ in the source tree
+# is silently packaged as-is (see build_accudisc.py's RUNPATH stamp).
+set(_adsc_wheel_stage "${CMAKE_CURRENT_BINARY_DIR}/wheelsrc")
+set(_adsc_wheel_out "${CMAKE_CURRENT_BINARY_DIR}/wheel")
+
+add_custom_target(wheel
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${_adsc_wheel_stage}" "${_adsc_wheel_out}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_adsc_wheel_stage}/accudisc"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml"
+            "${CMAKE_CURRENT_SOURCE_DIR}/setup.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/setup.cfg"
+            "${CMAKE_CURRENT_SOURCE_DIR}/build_accudisc.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/README.md"
+            "${_adsc_wheel_stage}/"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_CURRENT_SOURCE_DIR}/accudisc/__init__.py"
+            "${_adsc_wheel_stage}/accudisc/"
+    COMMAND ${CMAKE_COMMAND} -E env
+            "ACCUDISC_INCLUDE_DIR=${PROJECT_SOURCE_DIR}/include"
+            "ACCUDISC_LIB_DIR=$<TARGET_FILE_DIR:accudisc>"
+            "ACCUDISC_RUNTIME_LIB_DIR=${ACCUDISC_INSTALL_RPATH}"
+            ${Python3_EXECUTABLE} -m pip wheel --no-deps --no-build-isolation
+            -w "${_adsc_wheel_out}" "${_adsc_wheel_stage}"
+    DEPENDS accudisc
+    COMMENT "Building abi3 wheel (RUNPATH: ${ACCUDISC_INSTALL_RPATH})"
+    VERBATIM)
