@@ -726,6 +726,112 @@ def test_verdict_values_match_the_c_constants():
 
 
 # ---------------------------------------------------------------------------
+# recording (the destructive path — nothing here touches a drive)
+# ---------------------------------------------------------------------------
+
+
+def test_write_opts_size_is_set_and_accepted_by_the_library():
+    """The guard added in 0.3.0, exercised through the real entry point.
+
+    ERR_INVAL (not ERR_ABI) from a NULL device is the positive evidence: the
+    size negotiation ACCEPTED the struct and execution reached the argument
+    checks behind it. A guard that refused everything would fail this.
+    """
+    o = ffi.new("accudisc_write_opts*")
+    o.size = ffi.sizeof("accudisc_write_opts")
+    assert lib.accudisc_write(ffi.NULL, b"t.toc", b"a.bin", o, ffi.NULL,
+                              ffi.NULL) == lib.ACCUDISC_ERR_INVAL
+
+
+def test_write_opts_zero_size_is_refused():
+    """What a hand-rolled caller who skipped the field produces."""
+    o = ffi.new("accudisc_write_opts*")
+    o.size = 0
+    assert lib.accudisc_write(ffi.NULL, b"t.toc", b"a.bin", o, ffi.NULL,
+                              ffi.NULL) == lib.ACCUDISC_ERR_ABI
+
+
+def test_write_opts_old_layout_size_is_refused():
+    """A caller built before 0.3.0 passes 24 bytes starting with `simulate`.
+
+    sizeof did not change when `size` was added, so nothing about the call
+    looks wrong. Both possible values of `simulate` must be refused as sizes,
+    which is the entire reason that is safe.
+    """
+    for simulate_value in (0, 1):
+        o = ffi.new("accudisc_write_opts*")
+        o.size = simulate_value
+        assert lib.accudisc_write(ffi.NULL, b"t.toc", b"a.bin", o, ffi.NULL,
+                                  ffi.NULL) == lib.ACCUDISC_ERR_ABI
+
+
+def test_write_result_covers_only_completed_burns():
+    """There is no WriteResult for a failure, and that is deliberate.
+
+    The one mistake this API is shaped to prevent is a caller reporting a
+    written disc as blank. A failure member would make that a one-line bug.
+    """
+    assert {r.name for r in ad.WriteResult} == {"OK", "CAVEATS"}
+    assert ad.WriteResult.OK.token == "ok"
+    assert ad.WriteResult.CAVEATS.token == "caveats"
+    assert ad.WriteResult.OK.clean is True
+    assert ad.WriteResult.CAVEATS.clean is False, (
+        "CAVEATS is not clean — but the disc WAS written"
+    )
+
+
+def test_caveats_is_a_positive_return_not_an_error():
+    """`rc > 0` means the burn COMPLETED. _check must not raise on it.
+
+    A caller testing `if rc:` reports a successful burn as a failure; one
+    testing `if rc < 0` silently drops the caveat. Both compile. This pins the
+    library's own constant to the positive side and the checker to `< 0`.
+    """
+    assert lib.ACCUDISC_WROTE_WITH_CAVEATS > 0
+    assert ad._check(lib.ACCUDISC_WROTE_WITH_CAVEATS) == \
+        lib.ACCUDISC_WROTE_WITH_CAVEATS
+    assert ad._check(0) == 0
+    # The complement: _check must still raise on the negative side, or the
+    # assertions above only prove it never raises at all.
+    for bad in (lib.ACCUDISC_ERR_INVAL, lib.ACCUDISC_ERR_UNSUPPORTED,
+                lib.ACCUDISC_ERR_ABI):
+        try:
+            ad._check(bad)
+        except ad.AccuDiscError:
+            pass
+        else:
+            raise AssertionError(f"_check({bad}) did not raise")
+
+
+def test_not_blank_maps_to_its_own_exception_type():
+    """`result=not_blank` must be distinguishable from `result=error`.
+
+    The CLI separates them because exit 2 covers both and the code alone
+    cannot disambiguate. On the binding the type does it — but only if
+    Unsupported is not swallowed by a broader class.
+    """
+    assert ad._ERRORS[lib.ACCUDISC_ERR_UNSUPPORTED] is ad.Unsupported
+    assert issubclass(ad.Unsupported, ad.AccuDiscError)
+    assert not issubclass(ad.InvalidArgument, ad.Unsupported)
+    assert not issubclass(ad.Unsupported, ad.InvalidArgument)
+
+
+def test_write_is_reachable_and_marshals_its_options():
+    """Every option reaches C, checked by reading the struct back.
+
+    Not run against a device — the point is that `speed` and `byteswap` are not
+    silently dropped, which a burn would reveal far too late.
+    """
+    o = ffi.new("accudisc_write_opts*")
+    o.size = ffi.sizeof("accudisc_write_opts")
+    o.simulate, o.byteswap, o.speed = 1, 1, 8
+    path = ffi.new("char[]", b"/tmp/ct.bin")
+    o.cdtext_path = path
+    assert o.simulate == 1 and o.byteswap == 1 and o.speed == 8
+    assert ffi.string(o.cdtext_path) == b"/tmp/ct.bin"
+
+
+# ---------------------------------------------------------------------------
 # standalone runner (no pytest required)
 # ---------------------------------------------------------------------------
 

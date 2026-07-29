@@ -46,7 +46,7 @@ __all__ = [
     "SenseError", "ShortResponse", "Unsupported", "Cancelled", "CrcError",
     "NotFound", "UnsafeCombination", "AbiMismatch", "RetainedBufferError",
     "C2", "Sub", "MapState", "Anomaly", "TocSource", "TocDegrade", "C2Verdict",
-    "Verdict",
+    "Verdict", "WriteResult",
     "Sense", "DriveId", "Track", "Session", "Toc", "TocInfo", "Features",
     "SpeedRung", "Chunk", "ReadStats", "ReadResult", "Cancel", "Device", "Q",
     "version", "library_version", "map_state", "map_severity", "anomaly_token",
@@ -386,6 +386,45 @@ class C2Verdict(enum.IntEnum):
     UNSUPPORTED = lib.ACCUDISC_C2_UNSUPPORTED
     SUPPORTED = lib.ACCUDISC_C2_SUPPORTED
     UNVERIFIED = lib.ACCUDISC_C2_UNVERIFIED
+
+
+class WriteResult(enum.Enum):
+    """The outcome of a burn that COMPLETED.
+
+    Both members mean the disc was written. There is no member for a failure:
+    a burn that did not complete raises, because the one mistake this API
+    exists to prevent is a caller reporting a written disc as blank.
+
+    :attr:`token` reproduces the CLI's ``summary … result=`` value, which is
+    what cdda2img keys decisions on. The CLI's four tokens do not all live
+    here, because two of them are not outcomes of a completed burn — the full
+    mapping, which is the whole contract:
+
+    ==================  ===================================================
+    CLI ``result=``     binding
+    ==================  ===================================================
+    ``ok``              :attr:`WriteResult.OK`
+    ``caveats``         :attr:`WriteResult.CAVEATS`
+    ``not_blank``       raises :class:`Unsupported` — nothing was written
+    ``error``           raises another :class:`AccuDiscError`
+    ==================  ===================================================
+
+    Exit codes are deliberately absent. They are a *process* convention that
+    stays in the CLI (API_PLAN §3); a binding reproduces the semantics, not
+    the mechanism.
+    """
+
+    OK = "ok"
+    CAVEATS = "caveats"
+
+    @property
+    def token(self) -> str:
+        return self.value
+
+    @property
+    def clean(self) -> bool:
+        """``False`` for CAVEATS. The disc was still written either way."""
+        return self is WriteResult.OK
 
 
 class Verdict(enum.IntEnum):
@@ -1254,6 +1293,98 @@ class Device:
             self,
         )
         return tuple(_rung_from_c(out[i]) for i in range(len(cand)))
+
+    # -- recording ---------------------------------------------------------
+
+    def write(
+        self,
+        toc_path: str,
+        bin_path: str,
+        *,
+        simulate: bool = False,
+        byteswap: bool = False,
+        speed: int = 0,
+        cdtext_path: str | None = None,
+        progress: Callable[[int, int], None] | None = None,
+    ) -> WriteResult:
+        """Burn one audio session Disc-At-Once. **This destroys a blank disc.**
+
+        ``toc_path`` is a cdrdao ``.toc``; ``bin_path`` is the raw s16 audio it
+        names. ``cdtext_path`` is a raw READ TOC format-0x05 blob, byte-for-byte
+        as :meth:`read_cdtext_raw` emits it, laid into the lead-in verbatim.
+
+        Requires a blank disc and a device opened with ``rdwr=True``.
+
+        Returns :class:`WriteResult` — and read what that class says about the
+        four CLI tokens, because the split is the contract. In short: a return
+        means the disc **was written**, an exception means it was not.
+
+        :class:`WriteResult.CAVEATS` is the case worth designing around. The
+        burn completed, but something was logged that the caller must surface
+        — today, a CD-Text SIZE_INFO pack whose declared track range disagrees
+        with the ``.toc``. The detail arrives only through
+        :meth:`set_log`, so install a log sink before burning or the caveat is
+        a boolean with no explanation.
+
+        ``progress(done, total)`` is called with sector counts. An exception
+        raised inside it propagates out of this call, but **does not stop the
+        burn** — the C progress callback returns void, so there is nothing to
+        signal cancellation with. Do not put work that can fail in it.
+
+        ``speed=0`` leaves the drive's current write speed.
+        """
+        opts = ffi.new("accudisc_write_opts*")
+        opts.size = ffi.sizeof("accudisc_write_opts")
+        opts.simulate = 1 if simulate else 0
+        opts.byteswap = 1 if byteswap else 0
+        opts.speed = int(speed)
+        # Kept alive for the duration of the call: cffi frees an unreferenced
+        # new_allocator result, and opts.cdtext_path would then dangle into a
+        # burn. Assigning it to a local is load-bearing, not tidiness.
+        keep_cdtext = ffi.NULL
+        if cdtext_path is not None:
+            keep_cdtext = ffi.new("char[]", str(cdtext_path).encode())
+        opts.cdtext_path = keep_cdtext
+
+        raised: list[BaseException] = []
+
+        if progress is None:
+            cb = ffi.NULL
+        else:
+            @ffi.callback("void(void *, uint32_t, uint32_t)",
+                          onerror=lambda exc, val, tb: raised.append(exc))
+            def cb(_user, done, total):
+                progress(done, total)
+
+        rc = lib.accudisc_write(
+            self._handle,
+            str(toc_path).encode(),
+            str(bin_path).encode(),
+            opts,
+            cb,
+            ffi.NULL,
+        )
+
+        # Order matters. A progress callback that raised must not mask the
+        # outcome of a burn that COMPLETED -- reporting a written disc as
+        # failed is the exact error this API is shaped to prevent. So the
+        # library's verdict is resolved first and the callback exception is
+        # only re-raised when the burn did not complete anyway.
+        if rc < 0:
+            if raised:
+                raise raised[0]
+            _raise(rc, self)
+        if raised:
+            import warnings
+            warnings.warn(
+                f"progress callback raised {raised[0]!r} — the burn COMPLETED "
+                f"and the disc is written; the exception is not being raised "
+                f"because that would read as a failed burn",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return (WriteResult.CAVEATS if rc == lib.ACCUDISC_WROTE_WITH_CAVEATS
+                else WriteResult.OK)
 
     @staticmethod
     def admitted_ladder(rungs: Iterable[SpeedRung]) -> tuple[int, ...]:

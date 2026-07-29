@@ -177,14 +177,32 @@ hard way by cdda2img, not by us.)
 * **No subprocess, no `--progress-fd` parsing, no exit codes.** Those are
   process conventions that stay in the CLI by design (API_PLAN §3); the mapping
   is `docs/reference/cli-machine-interface.md`.
-* **No whole-disc-to-file fast path.** `read_to_file` exists, but for a whole
-  disc the CLI's `--pcm` writes the file inside the library's own address
-  space, which this cannot beat — it routes every sector through Python first.
-* **`accudisc_probe_speed_ladder` is not bound yet** — but the reason is now
-  spent, not pending. It was held back so `accudisc_speed_rung` could grow
-  without a `size` field while nothing outside this repo linked the library;
-  that growth landed 2026-07-28 (`min_cx`/`max_cx`, 6 → 10 bytes). Binding it
-  is the next step, and doing so makes any further growth of that struct a
-  real version break. See `docs/reference/TODO.md`.
-* **`accudisc_write` is not bound yet** — the one destructive path, and it
-  should not ride along with a freshly written read path.
+* **No whole-disc-to-file fast path.** `read_to_file` exists and routes every
+  sector through Python; the CLI's `--pcm` does not. The gap is smaller than it
+  sounds — `read_sink()` (`cli/main.c:1000`) also loops per sector and
+  `fwrite`s, so the library never writes the file either way, and the real
+  delta is a C callback versus a Python one per chunk. cdda2img measured the
+  Python sink at ~273x headroom against a 32x drive, so this is a bounded cost
+  rather than an architectural one.
+
+Both previously-absent calls are now bound (2026-07-29):
+
+* **`accudisc_probe_speed_ladder`** — `Device.probe_speed_ladder()`. Binding it
+  spent the free ABI window on `accudisc_speed_rung`; that struct is frozen at
+  14 bytes and growing it now costs a version break.
+* **`accudisc_write`** — `Device.write()`. Read `WriteResult` before using it:
+  a **return** means the disc was written, an **exception** means it was not,
+  and `WriteResult.CAVEATS` is a completed burn that needs surfacing rather
+  than a failure.
+
+### What the write binding has and has not been run against
+
+Exercised on a PX-716A: the guarded `accudisc_write_opts` is accepted, the call
+reaches the library's blank check, and a non-blank disc raises `Unsupported` —
+the binding equivalent of the CLI's `result=not_blank`.
+
+**A successful burn has not been run through the binding.** `WriteResult.OK`
+and `WriteResult.CAVEATS` are covered device-free only, because that needs a
+blank disc. The refusal path proves the option marshalling and the ABI guard;
+it does not prove the progress callback under load. Treat the success path as
+bound-but-unproven until a blank goes in.

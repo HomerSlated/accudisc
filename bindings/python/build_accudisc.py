@@ -171,6 +171,26 @@ void accudisc_set_log(accudisc_device *dev,
                       void (*fn)(void *user, const char *msg),
                       void *user);
 
+/* ---- recording (DAO write) --------------------------------------------- */
+#define ACCUDISC_WROTE_WITH_CAVEATS ...
+
+/* IN struct, guarded by `size` since 0.3.0 — the library reads past the end of
+ * a shorter one otherwise, and this is the only non-idempotent entry point in
+ * the API. `size` is set from ffi.sizeof() at every call site. */
+typedef struct accudisc_write_opts {
+    uint32_t size;
+    int simulate;
+    int byteswap;
+    int speed;
+    const char *cdtext_path;
+    ...;
+} accudisc_write_opts;
+
+int accudisc_write(accudisc_device *dev, const char *toc_path,
+                   const char *bin_path, const accudisc_write_opts *opts,
+                   void (*progress)(void *user, uint32_t done, uint32_t total),
+                   void *user);
+
 /* ---- TOC --------------------------------------------------------------- */
 typedef struct accudisc_track {
     uint8_t number;

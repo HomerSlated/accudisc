@@ -1954,6 +1954,24 @@ zero-copy opt-in.
 
 **Still to do on this entry:**
 
+- ~~**`accudisc_probe_speed_ladder` is NOT bound**~~ — **BOUND 2026-07-29**
+  (`ea11d56`). `Device.probe_speed_ladder()`, A/B'd against the CLI on Tracy at
+  **both** `points=3` and `points=1`. The CLI-vs-CLI control fired and settled
+  it: binding-vs-CLI and CLI-vs-CLI show the same max delta (0.41x) and mean
+  (0.027x), while every structural field — 7 verdicts, 7 page-2A readings, the
+  admitted ladder — is identical across all three runs. **The ABI window is
+  spent:** `accudisc_speed_rung` is frozen at 14 bytes and pinned in
+  `tests/test_binding.py`. The span defaults live in the binding rather than in
+  a note asking the caller to reproduce them.
+- ~~**`accudisc_write` is NOT bound**~~ — **BOUND 2026-07-29**.
+  `Device.write()` returns `WriteResult`; OK/CAVEATS both mean the disc WAS
+  written, `not_blank`/`error` arrive as exceptions (`Unsupported` vs other).
+  **The success path is bound but UNPROVEN** — the non-blank refusal is
+  hardware-checked end to end, an actual burn through the binding is not,
+  because it needs a blank disc. Do not read "bound" as "burned".
+
+<details><summary>the two entries as originally written</summary>
+
 - **`accudisc_probe_speed_ladder` is NOT bound — but the reason it was held
   back is gone `[P2]`.** It gated on the `speeds` min/avg/max item, which
   landed 2026-07-28 and spent the ABI window: `accudisc_speed_rung` is now
@@ -1977,6 +1995,9 @@ zero-copy opt-in.
   with cdda2img (§101.6): probes → `read_span` → status map → whole-disc (if at
   all) → `write` last, only after the read path is A/B'd on real media. It will
   need the `summary … result=` token and the positive-return rule.
+
+</details>
+
 - ~~**No hardware validation yet.**~~ **VALIDATED 2026-07-27 (cdda2img §102).**
   Their `tools/binding_ab.py` on the PX-716A with Tracy: **3/3 spans
   byte-identical** subprocess vs binding (inner LBA 300, middle 72415, outer
