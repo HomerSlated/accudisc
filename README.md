@@ -353,10 +353,28 @@ Useful knobs:
 
 | option | default | why you would change it |
 |---|---|---|
-| `ACCUDISC_INSTALL_RPATH` | the installed libdir | set **empty** for distro packaging targeting `/usr`, where a RUNPATH into a standard directory is flagged and buys nothing |
+| `ACCUDISC_INSTALL_RPATH` | the installed libdir | set **empty** for distro packaging targeting `/usr` — but read the warning below first |
 | `ACCUDISC_SETCAP_ON_INSTALL` | `ON` | `OFF` if the target filesystem carries no capabilities, or you intend to run the tool as root |
 | `ACCUDISC_INSTALL_PYTHON` | `ON` | `OFF` to skip the binding (it needs `python3` + `cffi` at build time) |
 | `ACCUDISC_PYTHON_SITEDIR` | `<libdir>/pythonX.Y/site-packages` | a different layout, or a different interpreter's directory |
+
+**An empty `ACCUDISC_INSTALL_RPATH` is only safe where the loader already
+searches the install libdir.** It is the right setting for `/usr`, and it is
+*wrong* anywhere `ld.so` will not find `libaccudisc.so.0` by itself. Measured:
+an empty-RPATH install to a prefix outside `ld.so.conf` produces a CLI that
+dies with
+
+```
+error while loading shared libraries: libaccudisc.so.0: cannot open shared
+object file: No such file or directory
+```
+
+The default value exists precisely to avoid that, so change it only
+deliberately. If you do — or if you install to `/usr/local` on a system whose
+`ld.so.conf` does not cover it — run `ldconfig` afterwards, or add the
+directory to `/etc/ld.so.conf.d/`. The install does **not** run `ldconfig`
+itself: under `DESTDIR` it would be wrong, and outside it the cache is the
+distribution's to manage.
 
 **Changing the prefix requires a rebuild, not just a re-install.** The driver
 search directory is compiled into the library

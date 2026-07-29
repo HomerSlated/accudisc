@@ -40,7 +40,11 @@ relocatability fix.** `ACCUDISC_RUNTIME_LIB_DIR` controls what gets recorded:
 
 The empty case is an instruction, not an absence, which is why the code tests
 for membership rather than truthiness. It is what a distro packager targeting
-`/usr` wants. Under CMake this is driven by `ACCUDISC_INSTALL_RPATH`.
+`/usr` wants — **and only works where the loader already searches the install
+libdir.** Measured: empty `RUNPATH` plus a prefix outside `ld.so.conf` gives
+`ImportError: libaccudisc.so.0: cannot open shared object file`, the same
+failure as the non-relocatable build it replaced. Run `ldconfig`, or leave the
+default. Under CMake this is driven by `ACCUDISC_INSTALL_RPATH`.
 
 ### pip / pipx
 
