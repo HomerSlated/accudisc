@@ -56,7 +56,8 @@ static int slurp_file(const char *path, int nul, uint8_t **out, uint32_t *out_le
 
 int adsc_write_load_model(const char *toc_path, const char *cdtext_path,
                           struct adsc_write_toc *out, uint8_t **cdtext_buf,
-                          struct adsc_cdtext_info *info)
+                          struct adsc_cdtext_info *info,
+                          char *err, size_t errcap)
 {
     if (!toc_path || !out || !cdtext_buf)
         return ACCUDISC_ERR_INVAL;
@@ -68,7 +69,7 @@ int adsc_write_load_model(const char *toc_path, const char *cdtext_path,
     int rc = slurp_file(toc_path, 1, &txt, NULL);
     if (rc != ACCUDISC_OK)
         return rc;
-    rc = adsc_toc_parse_cue((const char *)txt, out);
+    rc = adsc_toc_parse_cue((const char *)txt, out, err, errcap);
     free(txt);
     if (rc != ACCUDISC_OK)
         return rc;
@@ -130,9 +131,15 @@ int accudisc_write(accudisc_device *dev, const char *toc_path,
 
     uint8_t *cdtext_buf = NULL;
     struct adsc_cdtext_info cti;
+    char parse_err[256] = {0};
     int rc = adsc_write_load_model(toc_path, opts->cdtext_path, toc,
-                                   &cdtext_buf, &cti);
+                                   &cdtext_buf, &cti, parse_err,
+                                   sizeof parse_err);
     if (rc != ACCUDISC_OK) {
+        /* The one place the caller can learn WHICH line was wrong: the return
+         * code is ERR_INVAL for every malformed .toc. */
+        if (parse_err[0])
+            adsc_dev_log(dev, "toc: %s", parse_err);
         free(toc);
         return rc;
     }

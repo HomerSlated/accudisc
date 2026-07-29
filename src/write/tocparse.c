@@ -11,6 +11,7 @@
  * ABBA "Gold" image (leadout = sum of FILE lengths).
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -57,6 +58,51 @@ static long parse_msf(const char **pp)
     return (mm * 60 + ss) * 75 + ff;
 }
 
+/* Parse a FILE *start offset* -> BYTES; -1 on error, advances *pp.
+ *
+ * cdrdao writes this field in two units and the grammar does not mark which:
+ *
+ *     start_offset : byte offset, or MM:SS:FF into the file
+ *
+ * so "0" is zero BYTES and "00:00:00" is zero FRAMES, and the two agree only
+ * at zero. Everywhere else a bare count read as frames is off by 2352x — on
+ * the burn path, silently. That is why this returns bytes rather than frames
+ * and does the conversion itself: the unit is decided where the syntax is
+ * known, not by a caller looking at a number that no longer says which it is.
+ *
+ * Rejecting the bare form outright would also have been defensible, but it is
+ * the form cdrdao itself emits and the one our own annotated reference shows
+ * four times (cdda2img docs/reference/reference.toc:362).
+ */
+static long long parse_file_start(const char **pp)
+{
+    const char *p = skipws(*pp);
+    char *e;
+    long long n = strtoll(p, &e, 10);
+    if (e == p || n < 0)
+        return -1;
+    if (*e != ':') {           /* bare count: already bytes */
+        *pp = e;
+        return n;
+    }
+    long frames = parse_msf(pp); /* re-parse from the top as MM:SS:FF */
+    if (frames < 0)
+        return -1;
+    return (long long)frames * SECTOR_BYTES;
+}
+
+/* Record why the parse failed and return the code, so the caller can say WHICH
+ * LINE rather than "invalid argument" for the whole file. Requested by cdda2img
+ * (§117.2) after losing several minutes to a rejected FILE line — and we lost
+ * the same minutes to the same line independently the same day, which is about
+ * as clear a signal as a diagnostic ever gets. err may be NULL. */
+static int fail(char *err, size_t errcap, int lineno, const char *what)
+{
+    if (err && errcap)
+        snprintf(err, errcap, "line %d: %s", lineno, what);
+    return ACCUDISC_ERR_INVAL;
+}
+
 /* Copy a "..."-quoted string to dst; returns ptr past the close quote, or
  * NULL. dst may be NULL to just skip (name we don't need). */
 static const char *parse_qstr(const char *p, char *dst, size_t cap)
@@ -78,16 +124,21 @@ static const char *parse_qstr(const char *p, char *dst, size_t cap)
     return p + 1;
 }
 
-int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out)
+int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out,
+                       char *err, size_t errcap)
 {
+    if (err && errcap)
+        err[0] = 0;
     if (!text || !out)
         return ACCUDISC_ERR_INVAL;
     memset(out, 0, sizeof(*out));
 
     int cur = -1;                 /* current track index */
     int have_file[99] = {0};
+    int lineno = 0;
 
     for (const char *p = text; *p;) {
+        lineno++;
         const char *ls = skipws(p);
         const char *le = ls;
         int inq = 0;
@@ -101,7 +152,8 @@ int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out)
          * whose tail would otherwise be scanned as its own directive line —
          * the TOC-injection vector. Refuse rather than reinterpret. */
         if (inq)
-            return ACCUDISC_ERR_INVAL;
+            return fail(err, errcap, lineno,
+                        "unterminated quote (a value may not span a line)");
 
         if (kw(ls, "CATALOG")) {
             char m[32];
@@ -116,7 +168,7 @@ int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out)
             }
         } else if (kw(ls, "TRACK")) {
             if (out->ntracks >= 99)
-                return ACCUDISC_ERR_INVAL;
+                return fail(err, errcap, lineno, "more than 99 tracks");
             cur = out->ntracks++;
             struct adsc_write_track *t = &out->track[cur];
             memset(t, 0, sizeof(*t));
@@ -141,13 +193,24 @@ int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out)
                 const char *q = parse_qstr(ls + (ls[0] == 'A' ? 9 : 4),
                                            NULL, 0);
                 if (!q)
-                    return ACCUDISC_ERR_INVAL;
-                long fstart = parse_msf(&q);
+                    return fail(err, errcap, lineno,
+                                "FILE needs a \"quoted filename\"");
+                long long fstart = parse_file_start(&q);
+                if (fstart < 0)
+                    return fail(err, errcap, lineno,
+                                "FILE start offset must be a byte count or "
+                                "MM:SS:FF");
                 long flen = parse_msf(&q);
-                if (fstart < 0 || flen < 0)
-                    return ACCUDISC_ERR_INVAL;
-                /* stash raw FILE fields; fixed up in the second pass */
-                t->file_offset = (uint64_t)fstart; /* frames for now */
+                if (flen < 0)
+                    return fail(err, errcap, lineno,
+                                "FILE needs an explicit MM:SS:FF length; "
+                                "cdrdao's \"length omitted = to end of file\" "
+                                "is not supported because resolving it needs "
+                                "the BIN's size, which this parser is not "
+                                "given");
+                /* file_offset is already BYTES (parse_file_start decided the
+                 * unit); the second pass no longer converts it. */
+                t->file_offset = (uint64_t)fstart;
                 t->sectors = (uint32_t)flen;
                 have_file[cur] = 1;
             } else if (kw(ls, "START")) {
@@ -160,19 +223,21 @@ int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out)
     }
 
     if (out->ntracks < 1)
-        return ACCUDISC_ERR_INVAL;
+        return fail(err, errcap, lineno, "no TRACK found");
 
     /* Second pass: contiguous disc layout. start_lba = running sum of lengths;
-     * index1 sits `pregap` in; BIN offset = FILE-start frames * 2352. */
+     * index1 sits `pregap` in; the BIN offset is already bytes. */
     uint32_t cum = 0;
     for (int i = 0; i < out->ntracks; i++) {
         struct adsc_write_track *t = &out->track[i];
-        if (!t->audio || !have_file[i])
-            return ACCUDISC_ERR_INVAL; /* audio-only, every track needs a FILE */
+        if (!t->audio)
+            return fail(err, errcap, 0, "track is not TRACK AUDIO "
+                                        "(this is an audio-only writer)");
+        if (!have_file[i])
+            return fail(err, errcap, 0, "track has no FILE line");
         if (t->pregap > t->sectors)
-            return ACCUDISC_ERR_INVAL;
-        uint32_t fstart_frames = (uint32_t)t->file_offset;
-        t->file_offset = (uint64_t)fstart_frames * SECTOR_BYTES;
+            return fail(err, errcap, 0, "START pregap exceeds the FILE length");
+        /* file_offset is already in bytes -- see parse_file_start. */
         t->index1_lba = cum + t->pregap;
         cum += t->sectors;
     }

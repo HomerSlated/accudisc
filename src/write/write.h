@@ -8,6 +8,7 @@
 #ifndef ADSC_WRITE_H
 #define ADSC_WRITE_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 struct accudisc_device;
@@ -110,8 +111,14 @@ int adsc_cuesheet_build(const struct adsc_write_toc *toc,
 /* Parse a cdrdao .toc file (NUL-terminated text) into the DAO layout model:
  * per-track FILE offset/length, START pre-gaps, ISRC, pre-emphasis/copy, and
  * the disc MCN. Audio tracks only. Computes each track's start_lba/index1_lba
- * and the lead-out. Returns ACCUDISC_ERR_INVAL on malformed input. */
-int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out);
+ * and the lead-out. Returns ACCUDISC_ERR_INVAL on malformed input.
+ *
+ * `err` (may be NULL) receives "line N: <what>" on failure and is set empty on
+ * entry. Worth the parameter because ACCUDISC_ERR_INVAL for a whole file names
+ * neither the line, the field, nor what was expected — cdda2img lost time to
+ * that (§117.2) and so did we, on the same rejected FILE line, the same day. */
+int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out,
+                       char *err, size_t errcap);
 
 /* Load a .toc (and, if cdtext_path is non-NULL, a raw CD-Text blob) from disk
  * into the DAO model. Slurps both files, parses the .toc via adsc_toc_parse_cue,
@@ -122,11 +129,13 @@ int adsc_toc_parse_cue(const char *text, struct adsc_write_toc *out);
  * cdtext_path) and the CALLER must free it after the burn; on any error nothing
  * is left allocated. `info` (may be NULL) receives the validation result, e.g.
  * how many zero-CRC packs were regenerated. Device-free so it is unit-testable.
+ * `err` (may be NULL) receives the parser's "line N: <what>" detail.
  * Returns a parse/IO/open/validation error otherwise. */
 struct adsc_cdtext_info;
 int adsc_write_load_model(const char *toc_path, const char *cdtext_path,
                           struct adsc_write_toc *out, uint8_t **cdtext_buf,
-                          struct adsc_cdtext_info *info);
+                          struct adsc_cdtext_info *info,
+                          char *err, size_t errcap);
 
 /* ------------------------------------------------------------------ */
 /* DAO burn orchestration                                             */

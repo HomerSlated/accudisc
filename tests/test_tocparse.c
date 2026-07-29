@@ -31,7 +31,7 @@ int main(void)
 {
     struct adsc_write_toc toc;
 
-    assert(adsc_toc_parse_cue(TOC, &toc) == ACCUDISC_OK);
+    assert(adsc_toc_parse_cue(TOC, &toc, NULL, 0) == ACCUDISC_OK);
     assert(toc.ntracks == 2);
     assert(strcmp(toc.mcn, "1234567890123") == 0);
 
@@ -57,7 +57,7 @@ int main(void)
 
     /* Degenerate input rejected. */
     struct adsc_write_toc bad;
-    assert(adsc_toc_parse_cue("CD_DA\n", &bad) == ACCUDISC_ERR_INVAL);
+    assert(adsc_toc_parse_cue("CD_DA\n", &bad, NULL, 0) == ACCUDISC_ERR_INVAL);
 
     /* --- TOC injection via a newline inside a quoted value ------------------
      * A line-oriented scan that loses quote context lets a value carrying an
@@ -80,7 +80,7 @@ int main(void)
             "} }\n"
             "FILE \"real.bin\" 00:00:00 00:10:00\n";
         struct adsc_write_toc inj;
-        assert(adsc_toc_parse_cue(INJECT, &inj) == ACCUDISC_ERR_INVAL);
+        assert(adsc_toc_parse_cue(INJECT, &inj, NULL, 0) == ACCUDISC_ERR_INVAL);
     }
 
     /* A legitimately quoted single-line value with balanced quotes still
@@ -92,8 +92,63 @@ int main(void)
             "TITLE \"A perfectly ordinary title\"\n"
             "FILE \"real.bin\" 00:00:00 00:10:00\n";
         struct adsc_write_toc t2;
-        assert(adsc_toc_parse_cue(OK, &t2) == ACCUDISC_OK);
+        assert(adsc_toc_parse_cue(OK, &t2, NULL, 0) == ACCUDISC_OK);
         assert(t2.ntracks == 1);
+    }
+
+    /* --- FILE start offset: BYTES or MM:SS:FF, and they are NOT the same ---
+     * cdrdao's grammar is "start_offset : byte offset or MM:SS:FF into file",
+     * with nothing in the token to say which. The two agree only at zero; a
+     * bare count read as frames is off by 2352x, on the burn path, silently.
+     * So the discriminating case is a NON-zero offset expressed both ways,
+     * which is the pair below. A fixture using 0 — as ours and cdda2img's both
+     * did — cannot tell the units apart at all. */
+    {
+        static const char *BYTES =
+            "CD_DA\nTRACK AUDIO\nFILE \"x.bin\" 2352 00:10:00\n";
+        static const char *FRAMES =
+            "CD_DA\nTRACK AUDIO\nFILE \"x.bin\" 00:00:01 00:10:00\n";
+        struct adsc_write_toc tb, tf;
+        assert(adsc_toc_parse_cue(BYTES, &tb, NULL, 0) == ACCUDISC_OK);
+        assert(adsc_toc_parse_cue(FRAMES, &tf, NULL, 0) == ACCUDISC_OK);
+        /* 2352 bytes is ONE sector in; frame 1 is also one sector in. Same
+         * place, reached through both syntaxes — that is the equivalence the
+         * conversion has to preserve. */
+        assert(tb.track[0].file_offset == 2352);
+        assert(tf.track[0].file_offset == 2352);
+        /* And the anti-test: had the bare form been read as frames it would
+         * have become 2352*2352. Asserted explicitly so the regression is
+         * named rather than merely absent. */
+        assert(tb.track[0].file_offset != (uint64_t)2352 * 2352);
+    }
+
+    /* --- the parse error says WHICH line ------------------------------------
+     * ACCUDISC_ERR_INVAL for a whole file names neither the line nor the field.
+     * cdda2img lost minutes to a rejected FILE line (§117.2); so did we, the
+     * same day, on the same line. */
+    {
+        static const char *NOLEN =
+            "CD_DA\n"
+            "\n"
+            "TRACK AUDIO\n"
+            "FILE \"x.bin\" 0\n";      /* cdrdao: length omitted = to EOF */
+        struct adsc_write_toc t3;
+        char err[256] = "not-touched";
+        assert(adsc_toc_parse_cue(NOLEN, &t3, err, sizeof err) ==
+               ACCUDISC_ERR_INVAL);
+        assert(strncmp(err, "line 4:", 7) == 0);
+        assert(strstr(err, "length") != NULL);
+
+        /* err must be CLEARED on success, not left holding a stale message
+         * from a previous call — a caller that logs it unconditionally would
+         * otherwise report a failure that did not happen. */
+        char err2[256] = "stale";
+        struct adsc_write_toc t4;
+        assert(adsc_toc_parse_cue(TOC, &t4, err2, sizeof err2) == ACCUDISC_OK);
+        assert(err2[0] == 0);
+
+        /* NULL err is still legal — every existing caller passes it. */
+        assert(adsc_toc_parse_cue(NOLEN, &t3, NULL, 0) == ACCUDISC_ERR_INVAL);
     }
 
     return 0;
