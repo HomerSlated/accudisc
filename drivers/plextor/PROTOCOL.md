@@ -73,7 +73,7 @@ value); hex = a hard-coded template byte.
 | E4 | 0x48aa30 | `e4 ..` | |
 | E4 | 0x4967f0 | `e4 01 …… 12 ..` | |
 | E5 | 0x48aac0 | `e5 ..` | |
-| E9 | 0x489c20 | `e9 10 ..` | vendor MODE command (get/set by CDB[1]); **GigaRec = page 0x06** |
+| E9 | 0x489c20 | `e9 10 ..` | vendor MODE command (get/set by CDB[1]); ~~GigaRec = page 0x06~~ — **superseded, GigaRec is page `0x04`** (the `0x06` was `resp[1]`, a constant header present in every page's response; see the verified model below) |
 | E9 | 0x489cc0 | `e9 ..` | |
 | E9 | 0x495860 | `e9 10 21 ..` | subcmd pair 0x10/0x21 |
 | EA | 0x489ad0 | `ea ..` | **Q-Check counters** — matches plextor.c |
