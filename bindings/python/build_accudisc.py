@@ -440,6 +440,23 @@ ffibuilder.set_source(
     include_dirs=_INCLUDE_DIRS,
     library_dirs=_LIBRARY_DIRS,
     runtime_library_dirs=_RUNTIME_DIRS,
+    # One artefact for every CPython >= 3.2, instead of one per interpreter.
+    #
+    # This is what makes _remove_stale_extensions' rule ("exactly one extension
+    # and it is always current") actually sufficient. Without it the rule is
+    # still true and still not enough, because extensions are per-interpreter:
+    # the last interpreter to build becomes the only one that can import, and
+    # a consumer on a different minor gets ModuleNotFoundError. cdda2img hit
+    # exactly that (§114.1) the moment the cleanup landed — their venv is 3.10,
+    # ours is 3.14, and this package's declared floor is 3.10.
+    #
+    # cffi's API-mode output is limited-API already: it defines Py_LIMITED_API
+    # in the generated source itself, and every Python symbol the extension
+    # references is in the stable ABI (checked with `nm -D --undefined-only`).
+    # This flag is what makes setuptools NAME it accordingly and stop tagging
+    # it for one interpreter. Verified rather than assumed: an extension built
+    # on 3.14 imports and passes the suite on 3.10.20.
+    py_limited_api=True,
 )
 
 

@@ -1928,12 +1928,12 @@ caught this (§101.2) and they are right. The corrected shape:
   the call that earns the binding, because the subprocess path forces a
   write-file/read-back/unlink round-trip *per recovery attempt*
   (`passes x rungs` per failed track).
-- **Whole-disc reads stay file-based.** `read_to_file` exists but is not the
-  recommended path. Measured, so the recommendation is not folklore: the
-  per-chunk Python copy is 0.02 s cache-warm over 0.941 GB, and copy + write +
-  fsync of the whole ~1 GB is 0.51 s — negligible against a multi-minute rip.
-  Keep the file path for simplicity and because the downstream wants a path,
-  **not** because the copy is expensive.
+- **Whole-disc reads stay file-based, and `read_to_file` IS the recommended
+  path** — corrected 2026-07-29. This entry used to say it was not, on a
+  device-free measurement of the copy (0.02 s cache-warm over 0.941 GB). That
+  number was right and answered the wrong question; the on-drive A/B/A puts
+  the binding **0.06 s** from the subprocess over a 112 s whole-disc rip,
+  inside a 3.68 s noise floor. See the closed `read_to_file` item below.
 
 Held as they were: `ERR_NOTFOUND` is absence (returns `None`), `accudisc_write`'s
 caveat is a **positive** return (`_check` tests `rc < 0`), copy by default with
@@ -2115,18 +2115,42 @@ Answered from source as §by; all three folded into their plan (§107.2).
   `accudisc.h:194`. Their `write_disc` is last in their own ordering, so this is
   not on the critical path.
 
-- **`read_to_file`'s docstring now gives advice its own audience may not take —
-  `[P3]`, ours.** It says that for a whole disc "the CLI's `--pcm` path remains
-  the better transport", because the CLI writes the file inside the library's
-  address space while `read_to_file` routes every sector through Python. The
-  comparison is still *true*; it is the recommendation that is now wrong, since
-  the only reader of that docstring is a binding consumer — precisely the party
-  told to use the API exclusively. Rewrite as a cost statement, not a redirect.
-  Whether a library-side whole-disc-to-file entry point gets built is a separate
-  question and stays open: cdda2img will rip both ways and send a wall-clock
-  number first (§106.4). Build nothing on the guess that one memcpy per chunk is
-  noise — that is an expectation, and this correspondence keeps proving those
-  insufficient.
+- ~~**`read_to_file`'s docstring gives advice its own audience may not take**~~
+  — **CLOSED 2026-07-29 by measurement (cdda2img §115).** The docstring is
+  rewritten as a cost statement, and **the whole-disc entry point is decided:
+  do not build one.**
+
+  A/B/A, Tracy, whole disc (162892 sectors), req=40, pcm + c2 + raw sub on
+  both arms, `accudisc 0.3.0` at both ends:
+
+  | arm | wall clock | rate |
+  |---|---|---|
+  | A1 subprocess | 116.43 s | 18.65x |
+  | B **binding** | 112.69 s | 19.27x |
+  | A2 subprocess | 112.75 s | 19.26x |
+
+  **0.06 s over 112 s against a 3.68 s subprocess-vs-subprocess noise floor.**
+  It lands on the faster side, which is a rounding error with a sign rather
+  than a result. Page 2A read identically before every arm, so all three ran
+  on the same rung. PCM and C2 byte-identical between the binding and the
+  *adjacent* subprocess arm over 383 MB and 48 MB; A1, the cold first pass,
+  differs from both — which is "the disc warmed up", not "the transport is
+  broken". Only `A1 == A2 != B` would have indicted the carrier.
+
+  **Both of the old docstring's claims were wrong, and differently so.** It
+  said the CLI "writes the file inside the library's address space" —
+  `read_sink()` (`cli/main.c:1000`) also loops per sector and `fwrite`s, so
+  the library never writes the file either way. And it called the cost "small",
+  which was a guess nobody had numbered. Note the §110 pre-screen and this run
+  answered *different* questions — 273x headroom said the sink is not
+  intrinsically too slow; this says the nonlinear failure that harness could
+  not see (callback falls behind, cache drains, read collapses to a
+  seek-per-chunk crawl) does not occur here. Only the second was worth acting
+  on.
+
+  Scope, stated because the table reads as more general than it is: **one
+  drive, one disc, one speed.** Not a claim about a 48x drive on a clean
+  pressing.
 
 - **The single-spin sequence test — `[P2]`, THEY ASKED FOR IT (§107.2), NOT
   BUILT.** Q3 dissolved: there is no cross-call lead-in cache *and no inline

@@ -1646,12 +1646,43 @@ class Device:
     ) -> ReadResult:
         """Read a range, splitting the streams into separate files.
 
-        Provided for completeness. For a **whole disc** the CLI's ``--pcm``
-        path remains the better transport: it writes the file inside the
-        library's address space, whereas this routes every sector through
-        Python first. The cost is one memcpy per chunk against a multi-minute
-        rip — small, but bought nothing, since the bytes land in the same file
-        either way.
+        **Use it for a whole disc. It costs nothing measurable.** This docstring
+        used to steer callers to the CLI's ``--pcm`` instead, on two claims that
+        were both wrong:
+
+        * *"the CLI writes the file inside the library's address space."* It
+          does not. ``read_sink()`` (``cli/main.c:1000``) also loops per sector
+          and ``fwrite``\\ s — the library never writes the file on either path.
+          The real difference is a C callback versus a Python one per chunk.
+        * *"the cost is small but bought nothing."* Small was a guess, and the
+          advice outlived the audience: the only party reading this is a
+          binding consumer, who has been told not to shell out.
+
+        Measured instead, by cdda2img, as A/B/A over a whole disc (Tracy,
+        162892 sectors, req=40, pcm + c2 + raw sub on both arms):
+
+        =========================  ==========  =============
+        arm                        wall clock  rate
+        =========================  ==========  =============
+        A1 subprocess              116.43 s    18.65x
+        B  **binding**             112.69 s    19.27x
+        A2 subprocess              112.75 s    19.26x
+        =========================  ==========  =============
+
+        The binding differs from the adjacent subprocess arm by **0.06 s over
+        112 s**, against a subprocess-vs-subprocess noise floor of **3.68 s**.
+        It lands on the faster side, which is a rounding error with a sign
+        rather than a result. PCM and C2 came back byte-identical to the
+        adjacent arm over 383 MB and 48 MB respectively.
+
+        So the Python sink is not the bottleneck at 40x — the drive is — and
+        there is no library-side whole-disc entry point, deliberately. One
+        drive, one disc, one speed; it is not a claim about a 48x drive on a
+        clean pressing.
+
+        ``sub`` does not reproduce run to run and cannot be compared: no CIRC
+        protection, a per-frame CRC-16 as its only check, failing independently
+        of the audio counters.
         """
         files: dict[str, object] = {}
         try:

@@ -9,7 +9,7 @@ The C library must be built first; the binding links it.
 ```sh
 cmake -B build && cmake --build build          # from the repo root
 cd bindings/python && python3 build_accudisc.py
-PYTHONPATH=. python3 tests/test_binding.py      # 39 tests, no drive needed
+PYTHONPATH=. python3 tests/test_binding.py      # 55 tests, no drive needed
 ```
 
 `ctest -R python_binding` does all of that as part of the normal test run, and
@@ -158,8 +158,18 @@ cannot fire on an object that has no `Device` to call. (Reported by cdda2img,
 whose own harness had reasoned the phantom harmless; pinned here by
 `test_imported_package_is_the_binding_not_a_namespace_phantom`.)
 
-**Running under `uv`:** build the extension for the interpreter you are about to
-use, and pass `--no-project`.
+**One extension serves every CPython >= 3.2.** `set_source` passes
+`py_limited_api=True`, so the build produces a single `_accudisc.abi3.so` rather
+than one file per interpreter, and `build_accudisc.py` deletes stale siblings so
+exactly one exists and it is always current. Verified rather than assumed: an
+extension built on 3.14.6 imports and passes all 55 tests on 3.10.20.
+
+Both halves are needed. "Exactly one extension, always current" is true but
+*insufficient* on its own, because a per-interpreter extension makes the last
+interpreter to build the only one that can import — which is how cdda2img's 3.10
+venv ended up unable to load a binding built here on 3.14.
+
+**Running under `uv`:** pass `--no-project`.
 
 ```sh
 ACCUDISC_INCLUDE_DIR=…/accudisc/include ACCUDISC_LIB_DIR=…/accudisc/build/src \
@@ -177,13 +187,13 @@ hard way by cdda2img, not by us.)
 * **No subprocess, no `--progress-fd` parsing, no exit codes.** Those are
   process conventions that stay in the CLI by design (API_PLAN §3); the mapping
   is `docs/reference/cli-machine-interface.md`.
-* **No whole-disc-to-file fast path.** `read_to_file` exists and routes every
-  sector through Python; the CLI's `--pcm` does not. The gap is smaller than it
-  sounds — `read_sink()` (`cli/main.c:1000`) also loops per sector and
-  `fwrite`s, so the library never writes the file either way, and the real
-  delta is a C callback versus a Python one per chunk. cdda2img measured the
-  Python sink at ~273x headroom against a 32x drive, so this is a bounded cost
-  rather than an architectural one.
+* **No whole-disc-to-file fast path, and none is needed.** `read_to_file`
+  routes every sector through Python. Measured A/B/A over a whole disc
+  (cdda2img, 2026-07-29): binding 112.69 s vs subprocess 112.75 s adjacent,
+  against a 3.68 s subprocess-vs-subprocess noise floor — a **0.06 s**
+  difference over 112 seconds, with PCM and C2 byte-identical. The drive is
+  the bottleneck at 40x, not the sink, so there is deliberately no library-side
+  entry point. One drive, one disc, one speed.
 
 Both previously-absent calls are now bound (2026-07-29):
 

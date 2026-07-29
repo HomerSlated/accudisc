@@ -93,11 +93,23 @@ def test_package_version_matches_the_library():
     against is a pin nobody can rely on — and cdda2img's stated plan is to key
     on exactly this number.
     """
-    import tomllib
     from pathlib import Path
 
     pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-    declared = tomllib.loads(pyproject.read_text())["project"]["version"]
+    text = pyproject.read_text()
+    try:
+        import tomllib
+        declared = tomllib.loads(text)["project"]["version"]
+    except ModuleNotFoundError:
+        # tomllib is 3.11+, and this package's declared floor is 3.10. Skipping
+        # would be worse than a crude parse: this test is the only thing
+        # standing between a hand-kept version and a pin cdda2img relies on,
+        # and it would be silently absent on exactly the interpreter they ship
+        # on. One regex, anchored to the [project] table's own field.
+        import re
+        m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', text)
+        assert m, "no version field in pyproject.toml"
+        declared = m.group(1)
     assert declared == ad.version_string(), (
         f"pyproject.toml says {declared}, libaccudisc says {ad.version_string()}")
 
