@@ -205,14 +205,26 @@ Both previously-absent calls are now bound (2026-07-29):
   and `WriteResult.CAVEATS` is a completed burn that needs surfacing rather
   than a failure.
 
-### What the write binding has and has not been run against
+### What the write binding has been run against
 
-Exercised on a PX-716A: the guarded `accudisc_write_opts` is accepted, the call
-reaches the library's blank check, and a non-blank disc raises `Unsupported` —
-the binding equivalent of the CLI's `result=not_blank`.
+Both paths, on a device:
 
-**A successful burn has not been run through the binding.** `WriteResult.OK`
-and `WriteResult.CAVEATS` are covered device-free only, because that needs a
-blank disc. The refusal path proves the option marshalling and the ABI guard;
-it does not prove the progress callback under load. Treat the success path as
-bound-but-unproven until a blank goes in.
+* **Refusal**, on the PX-716A with a non-blank disc: the guarded
+  `accudisc_write_opts` is accepted, the call reaches the library's blank check,
+  and `Unsupported` is raised — the binding equivalent of `result=not_blank`.
+* **Success**, on a CDEmu virtual blank: `WriteResult.OK` returned, the progress
+  callback fired 6 times ending at `(150, 150)`, and a **full round-trip**
+  through the binding — write, then `read_span` of the burned track — came back
+  **byte-identical** (blake2b `0b2d87d2…`, 0 flagged, 0 hard errors).
+
+To reproduce the blank:
+
+```sh
+cdemu create-blank --writer-id=WRITER-TOC --medium-type=cdr74 0 /var/tmp/cdr
+# ... burn to /dev/sr1 ... then to read it back:
+cdemu unload 0 && cdemu load 0 /var/tmp/cdr.toc
+```
+
+**`WriteResult.CAVEATS` remains device-free-only.** Reaching it needs a CD-Text
+blob whose SIZE_INFO disagrees with the `.toc`, which the round-trip above does
+not construct. The mapping is tested; the path is not.

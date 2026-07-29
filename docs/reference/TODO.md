@@ -1966,9 +1966,16 @@ zero-copy opt-in.
 - ~~**`accudisc_write` is NOT bound**~~ — **BOUND 2026-07-29**.
   `Device.write()` returns `WriteResult`; OK/CAVEATS both mean the disc WAS
   written, `not_blank`/`error` arrive as exceptions (`Unsupported` vs other).
-  **The success path is bound but UNPROVEN** — the non-blank refusal is
-  hardware-checked end to end, an actual burn through the binding is not,
-  because it needs a blank disc. Do not read "bound" as "burned".
+  **Both paths device-verified 2026-07-29:** refusal on the PX-716A with Tracy
+  loaded, and success on a CDEmu virtual blank — `WriteResult.OK`, progress
+  callback fired 6 times ending `(150, 150)`, and a full **round-trip through
+  the binding** (write, then `read_span` of the burned track) came back
+  byte-identical, 0 flagged, 0 hard. CDEmu state restored to the empty device
+  it was found as.
+
+  **`WriteResult.CAVEATS` is still device-free-only** — reaching it needs a
+  CD-Text blob whose SIZE_INFO disagrees with the `.toc`, which the round-trip
+  does not construct. The four-token mapping is tested; that one path is not.
 
 <details><summary>the two entries as originally written</summary>
 
