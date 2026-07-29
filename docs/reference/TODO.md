@@ -1606,7 +1606,7 @@ Notes for whoever does it:
   before drive contention was known to produce the same signature). Removing a
   guard is not a reason to delete a measurement.
 
-### 2. `setcap` the INSTALLED binary, not the build-tree one — `[P1]`
+### 2. `setcap` the INSTALLED binary, not the build-tree one — `[P1]`, **ENABLED 2026-07-29, NOT CLOSED**
 
 `CMakeLists.txt:34-38` already documents this and we have not been doing it. The
 capability binds to the **inode**, so every rebuild that relinks the CLI drops
@@ -1616,6 +1616,25 @@ it. Three independent reasons now, the third new:
 2. It silently disarms the vendor path mid-session (four occurrences).
 3. **Since the 2026-07-26 relink, cdda2img executes the same inode**, so our
    rebuild drops the capability from *their* binary too.
+
+> **The mechanism now exists** (`make install`, 2026-07-29):
+> `ACCUDISC_SETCAP_ON_INSTALL` caps the installed binary, strip runs first so
+> the xattr survives, and `DESTDIR` skips it with the command a package script
+> must run. Verified with `getcap` on a real install.
+>
+> **It is enabled, not closed, and the difference is reason 3.** Nothing is
+> fixed until the binaries actually invoked come from the install — ours *and*
+> cdda2img's, which still executes the build-tree inode. Until that switch
+> happens the rebuild keeps disarming both. **Deciding that is Keith's**, not
+> something to change under either project's feet.
+>
+> cdda2img's §119.2 raises the severity and the argument holds: this is a
+> **measurement-validity** defect, not an inconvenience. A rip with the vendor
+> path disarmed is a *different configuration*, so any bench run, A/B or ladder
+> probe straddling a rebuild silently compares two configurations while looking
+> like one series. Their `disc_ab.py` refuses a stale extension and re-hashes
+> the engine; neither check can see a dropped capability. The cost is wrong
+> answers, not lost minutes.
 
 ### 3. Audit `if (!quiet)` around anything that is not progress — `[P2]`
 

@@ -17,24 +17,60 @@ PYTHONPATH=. python3 tests/test_binding.py      # 55 tests, no drive needed
 
 Header and library discovery, in order: `ACCUDISC_INCLUDE_DIR` /
 `ACCUDISC_LIB_DIR` → `pkg-config accudisc` → this checkout's `include/` and
-`build/src/`. The third is the working default because the library is not
-installed yet; an RPATH is set so `libaccudisc.so.0` is found without
-`LD_LIBRARY_PATH`.
+`build/src/`. The third is the development default; an RPATH is set so
+`libaccudisc.so.0` is found without `LD_LIBRARY_PATH`.
 
-`pip install .` works and was verified into a clean venv — but note **what the
-RPATH means for distribution**. Built against an uninstalled tree, the
-extension carries an *absolute* `RUNPATH` to that build directory:
+## Install
+
+`make install` from the repo root installs the binding along with everything
+else — see the top-level README. It builds a **separate** extension whose
+`RUNPATH` points at the *installed* libdir, staged in the build tree rather
+than written over `bindings/python/accudisc/`: the development extension there
+must keep pointing at `build/src` for the test suite, and the two files differ
+in exactly one respect that nothing at import time can check.
+
+**Runtime path is separately settable, and that is the whole of the
+relocatability fix.** `ACCUDISC_RUNTIME_LIB_DIR` controls what gets recorded:
+
+| value | effect |
+|---|---|
+| unset | follows the link directory (development default) |
+| a path | record exactly that `RUNPATH` — the installed libdir |
+| set and **empty** | record **no** `RUNPATH`; let `ld.so` resolve it |
+
+The empty case is an instruction, not an absence, which is why the code tests
+for membership rather than truthiness. It is what a distro packager targeting
+`/usr` wants. Under CMake this is driven by `ACCUDISC_INSTALL_RPATH`.
+
+### pip / pipx
+
+Once the C library is installed and visible to `pkg-config`, a plain
+`pip install bindings/python` produces a **relocatable** extension — discovery
+takes the `pkg-config` branch, so the `RUNPATH` names the installed libdir and
+nothing points into a build tree. Verified end-to-end: a fresh venv, the build
+tree moved aside, `python3 -c 'import accudisc'` from `/`.
+
+```sh
+PKG_CONFIG_PATH=<prefix>/lib64/pkgconfig pip install ./bindings/python
+```
+
+**Delete `bindings/python/build/` before a `pip install` whose RUNPATH differs
+from the last one.** `setup.py` goes through `cffi_modules` → setuptools
+`build_ext`, which rebuilds on file timestamps and never runs this package's
+own stale-extension cleanup; a leftover `build/lib*/` is packaged as-is. That
+is guarded — the RUNPATH is stamped into the generated C so a change to it
+changes the source and forces a relink — but the guard costs nothing to
+double-check and the failure it prevents is silent:
 
 ```
-$ readelf -d …/site-packages/accudisc/_accudisc*.so | grep RUNPATH
-  RUNPATH  [/home/kgr/Git/accudisc/build/src]
+with the stamp:     /opt/aaa, then /opt/bbb   (correct)
+without it:         /opt/aaa, then /opt/aaa   (silently stale)
 ```
 
-That is correct for this machine and meaningless anywhere else. So the install
-is not relocatable until the library is installed properly and found via
-`pkg-config` (repo TODO task 2). For CI, build the C library in the same job
-and install the binding from source; do not copy the built package between
-machines.
+**Do not both `make install` and `pip install` the binding.** Two copies of
+`accudisc/` on one interpreter is the §113 stale-extension bug at package
+granularity — whichever wins the path is the one you get, and neither is
+labelled. Pick one.
 
 ## Why API mode
 

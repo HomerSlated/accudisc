@@ -313,6 +313,56 @@ cmake --build build
 
 C11, `-Wall -Wextra`.
 
+## Installing
+
+```sh
+cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build
+sudo cmake --install build          # or: sudo make -C build install
+```
+
+Installs the CLI, the shared and static library, the public headers, the vendor
+drivers (`plextor` today), the pkg-config file, both man pages, and the Python
+binding. The prefix is honoured throughout — `/usr`, `/usr/local`, `~/.local`,
+a staging tree — and `DESTDIR` works for packaging.
+
+Two things happen at install time that a plain file copy would not do:
+
+* **`strip`**, on the CLI, the shared library, the drivers and the Python
+  extension. `libaccudisc.a` is deliberately exempt: a static archive's symbol
+  table *is* its linking interface, and `--strip-unneeded` there breaks every
+  static link against it. That exemption is why the files are named one at a
+  time instead of using `cmake --install --strip`, which would strip the
+  archive too.
+* **`setcap cap_sys_rawio=ep`** on the installed CLI. Vendor opcodes and the
+  burn path need it; the base read/rip path does not. This is the *durable*
+  arming — a file capability binds to the **inode**, and the build tree gets a
+  fresh one on every relink, so only the installed binary stays armed.
+
+**Order matters and is enforced: strip first, setcap second.** `strip`
+preserves the inode, but the kernel clears the `security.capability` xattr on
+any write to the file, so the reverse order leaves the binary silently unarmed
+— and unarmed fails quietly, falling back to generic MMC with no error. Check
+with `getcap`, never by comparing inodes.
+
+Under `DESTDIR` the setcap step is **skipped** with a message naming the
+command a package's post-install script must run, because capabilities do not
+survive tar/cpio.
+
+Useful knobs:
+
+| option | default | why you would change it |
+|---|---|---|
+| `ACCUDISC_INSTALL_RPATH` | the installed libdir | set **empty** for distro packaging targeting `/usr`, where a RUNPATH into a standard directory is flagged and buys nothing |
+| `ACCUDISC_SETCAP_ON_INSTALL` | `ON` | `OFF` if the target filesystem carries no capabilities, or you intend to run the tool as root |
+| `ACCUDISC_INSTALL_PYTHON` | `ON` | `OFF` to skip the binding (it needs `python3` + `cffi` at build time) |
+| `ACCUDISC_PYTHON_SITEDIR` | `<libdir>/pythonX.Y/site-packages` | a different layout, or a different interpreter's directory |
+
+**Changing the prefix requires a rebuild, not just a re-install.** The driver
+search directory is compiled into the library
+(`ACCUDISC_DRIVER_DIR_DEFAULT`), so a re-install to a new prefix would leave
+the library looking for drivers under the old one.
+
 ## Signatures
 
 Source files under `include/`, `src/`, `cli/` and `drivers/` may carry a

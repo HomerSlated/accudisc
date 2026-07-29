@@ -71,6 +71,13 @@ install(DIRECTORY ${PROJECT_SOURCE_DIR}/include/accudisc
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
 )
 
+# The SHARED object only — libaccudisc.a is exempt for the reason given below,
+# and the exemption is why this names one file instead of using
+# `cmake --install --strip`. TARGET_FILE_NAME resolves to the real versioned
+# file (libaccudisc.so.X.Y.Z), not one of the symlinks beside it.
+accudisc_install_strip(
+    "${CMAKE_INSTALL_FULL_LIBDIR}/$<TARGET_FILE_NAME:accudisc>")
+
 # Opt-in post-link strip (see ACCUDISC_STRIP_BINARIES in ../CMakeLists.txt).
 # The SHARED library only — libaccudisc.a is deliberately left alone, because
 # a static archive's symbol table IS its linking interface and

@@ -14,9 +14,28 @@ Header/library discovery, in order:
 2. ``pkg-config accudisc`` (an installed library)
 3. the repo checkout this file sits in — ``include/`` and ``build/src/``
 
-(3) is the working default today because the library is not installed yet
-(TODO "install properly"). It also sets an RPATH at (3), so the extension finds
-``libaccudisc.so.0`` without ``LD_LIBRARY_PATH``.
+(3) is the development default: it also sets an RPATH at (3), so the extension
+finds ``libaccudisc.so.0`` without ``LD_LIBRARY_PATH``.
+
+RUNTIME PATH IS SEPARATELY SETTABLE, and that separation is the whole of the
+relocatability fix. Until 0.3.0 the link-time and run-time directories were the
+same list, so an extension built here recorded a RUNPATH into
+``<repo>/build/src`` — correct on this machine, and silently wrong the moment
+the package was installed anywhere, because the build tree it points at is not
+part of the install. ``pip install .`` "worked" only because the build tree
+happened to still be sitting where it was left.
+
+``ACCUDISC_RUNTIME_LIB_DIR`` overrides it:
+
+* unset            — runtime dirs follow the link dirs (development default)
+* set to a path    — record exactly that RUNPATH (the *installed* libdir)
+* set and **empty** — record NO RUNPATH, and let ``ld.so`` resolve the
+  library from its ordinary search path. This is the right answer for a
+  ``/usr`` install, and it is why the empty value has to be honoured rather
+  than treated as "unset": ``os.environ.get`` cannot tell those apart, so
+  membership is tested instead.
+
+Under CMake this is set for you; see ``ACCUDISC_INSTALL_PYTHON``.
 """
 
 from __future__ import annotations
@@ -48,17 +67,29 @@ def _pkg_config(*args: str) -> list[str]:
     return out.split()
 
 
+def _runtime_dirs(link_dirs: list[str]) -> list[str]:
+    """RUNPATH to record. See the module docstring for why empty is meaningful.
+
+    Membership, not truthiness: an empty ACCUDISC_RUNTIME_LIB_DIR is an
+    instruction ("record no RUNPATH"), not an absence.
+    """
+    if "ACCUDISC_RUNTIME_LIB_DIR" not in os.environ:
+        return link_dirs
+    val = os.environ["ACCUDISC_RUNTIME_LIB_DIR"].strip()
+    return [val] if val else []
+
+
 def _locate() -> tuple[list[str], list[str], list[str]]:
     """Return (include_dirs, library_dirs, runtime_library_dirs)."""
     inc = os.environ.get("ACCUDISC_INCLUDE_DIR")
     lib = os.environ.get("ACCUDISC_LIB_DIR")
     if inc and lib:
-        return [inc], [lib], [lib]
+        return [inc], [lib], _runtime_dirs([lib])
 
     pc_inc = [a[2:] for a in _pkg_config("--cflags-only-I") if a.startswith("-I")]
     pc_lib = [a[2:] for a in _pkg_config("--libs-only-L") if a.startswith("-L")]
     if pc_inc and pc_lib:
-        return pc_inc, pc_lib, pc_lib
+        return pc_inc, pc_lib, _runtime_dirs(pc_lib)
 
     # Uninstalled: build against this checkout.
     tree_inc = _REPO / "include"
@@ -73,7 +104,7 @@ def _locate() -> tuple[list[str], list[str], list[str]]:
             f"{tree_lib} does not exist — build the C library first:\n"
             f"    cmake -B build && cmake --build build"
         )
-    return [str(tree_inc)], [str(tree_lib)], [str(tree_lib)]
+    return [str(tree_inc)], [str(tree_lib)], _runtime_dirs([str(tree_lib)])
 
 
 _INCLUDE_DIRS, _LIBRARY_DIRS, _RUNTIME_DIRS = _locate()
@@ -435,7 +466,31 @@ int accudisc_scan_isrc(accudisc_device *dev, uint32_t lba, char isrc[13]);
 
 ffibuilder.set_source(
     "accudisc._accudisc",
-    "#include <accudisc/accudisc.h>",
+    # The RUNPATH is stamped into the generated C as a comment, and that is
+    # load-bearing rather than documentation. It protects the PIP path
+    # specifically — `setup.py`'s cffi_modules, which runs setuptools'
+    # build_ext and never reaches _remove_stale_extensions() in __main__.
+    #
+    # build_ext rebuilds on `newer_group(sources, target)` and cannot see
+    # runtime_library_dirs, so with an unchanged cdef a build that changes ONLY
+    # the RUNPATH reuses the cached object and relinks nothing. Stamping the
+    # value into the source makes the .c content change, which makes cffi
+    # rewrite it, which makes build_ext recompile — putting the thing that
+    # decides correctness back into the cache key.
+    #
+    # Measured, and measured BOTH ways, because the first test could not tell
+    # the difference: running this script directly self-cleans, so it relinks
+    # regardless and shows nothing. On the pip path, two installs from one
+    # source tree requesting /opt/aaa then /opt/bbb give
+    #
+    #     with this stamp:    /opt/aaa, then /opt/bbb   (correct)
+    #     without it:         /opt/aaa, then /opt/aaa   (silently stale)
+    #
+    # The real-world instance: a `pip install` with a stale
+    # bindings/python/build/ produced a wheel whose RUNPATH still named the
+    # development build tree, while every log line said success.
+    "/* accudisc runtime_library_dirs: %s */\n"
+    "#include <accudisc/accudisc.h>" % (":".join(_RUNTIME_DIRS) or "(none)"),
     libraries=["accudisc"],
     include_dirs=_INCLUDE_DIRS,
     library_dirs=_LIBRARY_DIRS,
@@ -491,7 +546,32 @@ def _remove_stale_extensions(keep: Path | None = None) -> list[Path]:
     return removed
 
 
-if __name__ == "__main__":
+def _main() -> None:
+    import argparse
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument(
+        "--stage",
+        metavar="DIR",
+        help="compile into DIR instead of this source tree, and leave the "
+        "source tree's extension alone. Used by `make install` to build an "
+        "extension whose RUNPATH points at the INSTALLED libdir, without "
+        "disturbing the development one that points at build/src — the two "
+        "differ only in RUNPATH, so overwriting one with the other would "
+        "silently break either the test suite or the install.",
+    )
+    args = ap.parse_args()
+
+    if args.stage:
+        stage = Path(args.stage).resolve()
+        stage.mkdir(parents=True, exist_ok=True)
+        built = Path(ffibuilder.compile(tmpdir=str(stage), verbose=True))
+        # No _remove_stale_extensions here, deliberately: its scope is the
+        # source package directory, and a staged build must not touch it.
+        # The staging directory is created fresh by the build system instead.
+        print(f"staged {built}")
+        return
+
     # Before, not after: a failed compile must not leave the previous build in
     # place looking current. Better to end with no extension than a stale one.
     for gone in _remove_stale_extensions():
@@ -500,3 +580,7 @@ if __name__ == "__main__":
     for gone in _remove_stale_extensions(keep=built):
         print(f"removed stale extension {gone.name}")
     print(f"built {built.name}")
+
+
+if __name__ == "__main__":
+    _main()

@@ -61,6 +61,26 @@ option(ACCUDISC_SETCAP_AFTER_BUILD
     "re-apply cap_sys_rawio to the CLI after each link (needs a passwordless \
 privilege rule for setcap; see ACCUDISC_SETCAP_COMMAND)" ON)
 
+# ON by default (Keith, 2026-07-29). Installing is a root operation, so unlike
+# the build-time step this needs no doas rule — it calls setcap directly, via
+# ACCUDISC_INSTALL_SETCAP_COMMAND below.
+#
+# This is the DURABLE arming, and the reason TODO task 2 asks for it: a file
+# capability binds to the INODE, and the build tree gets a fresh inode on every
+# relink, so a capped build-tree binary disarms itself constantly. The installed
+# inode is stable, so capping it survives every rebuild.
+#
+# It is skipped automatically when DESTDIR is set — see cli/CMakeLists.txt.
+option(ACCUDISC_SETCAP_ON_INSTALL
+    "apply cap_sys_rawio to the INSTALLED CLI (skipped under DESTDIR)" ON)
+
+# Not ACCUDISC_SETCAP_COMMAND: that one carries `doas` because the build runs
+# unprivileged. `make install` to a system prefix is already root, and invoking
+# doas from a root install is at best redundant and at worst prompts in a
+# non-interactive packaging run.
+set(ACCUDISC_INSTALL_SETCAP_COMMAND setcap CACHE STRING
+    "setcap invocation used at install time (already privileged; no doas)")
+
 # The privileged setcap invocation, as a list. NOTE THE ABSOLUTE PATH: doas
 # matches the command string as *written*, not the resolved binary. On this
 # host `command -v setcap` reports /bin/setcap, which is the same inode as
@@ -74,6 +94,28 @@ set(ACCUDISC_SETCAP_COMMAND doas /usr/bin/setcap CACHE STRING
 add_compile_options(-Wall -Wextra)
 
 include(GNUInstallDirs)
+
+# RUNPATH recorded in everything installed that loads libaccudisc.so.0 — the
+# CLI and the Python extension. ONE knob, because the two must agree: they load
+# the same library, so a prefix needing a RUNPATH needs it for both.
+#
+# MUST STAY AFTER include(GNUInstallDirs). CMAKE_INSTALL_FULL_LIBDIR does not
+# exist before that line, so declaring this above it gives the CACHE an empty
+# default which then persists across reconfigures. Found exactly that way while
+# writing this: the install log read `runtime path ... to ""` and every other
+# line looked correct.
+#
+# The default is not cosmetic. CMake drops the build-tree RPATH at install and
+# records NOTHING by default — correct for /usr, silently broken for every
+# other prefix. Measured: `cmake --install` to a custom prefix produced a CLI
+# that died with "libaccudisc.so.0: cannot open shared object file". Recording
+# the installed libdir is right everywhere, and merely redundant where the
+# loader already searches that directory.
+#
+# Set it EMPTY for distro packaging targeting /usr, where a RUNPATH into a
+# standard directory is flagged (Debian lintian) and buys nothing.
+set(ACCUDISC_INSTALL_RPATH "${CMAKE_INSTALL_FULL_LIBDIR}" CACHE STRING
+    "RUNPATH for installed binaries that load libaccudisc (empty = none)")
 
 # Resolve the strip decision BEFORE the subdirectories, because
 # add_custom_command(TARGET ...) may only be called in the directory that
@@ -111,6 +153,42 @@ endif()
 if(ACCUDISC_STRIP_EFFECTIVE)
     find_program(STRIP_EXECUTABLE strip REQUIRED)
 endif()
+
+# ---- install-time strip -----------------------------------------------------
+#
+# Separate from the build-time strip and NOT a duplicate of it: install(TARGETS)
+# copies the file, so an unstripped build tree yields an unstripped install
+# whatever the post-link step did, and a `cmake --install` into a second prefix
+# gets the same treatment as the first.
+#
+# Deliberately NOT `cmake --install --strip` / CMAKE_INSTALL_DO_STRIP: those
+# strip every installed binary including libaccudisc.a, and a static archive's
+# symbol table IS its linking interface — --strip-unneeded there breaks every
+# static link against it (src/CMakeLists.txt:74-80). Naming the files one at a
+# time is what keeps that exemption structural instead of hoping a global switch
+# knows about it.
+#
+# `path` is evaluated at install time and may contain generator expressions.
+# DESTDIR is honoured so staged/packaged installs strip the staged copy.
+function(accudisc_install_strip path)
+    if(NOT ACCUDISC_STRIP_EFFECTIVE)
+        return()
+    endif()
+    install(CODE "
+        set(_f \"\$ENV{DESTDIR}${path}\")
+        if(NOT EXISTS \"\${_f}\")
+            message(FATAL_ERROR
+                \"accudisc: nothing to strip at \${_f} — an install rule and \"
+                \"this strip rule disagree about where the file lands\")
+        endif()
+        message(STATUS \"Stripping: \${_f}\")
+        execute_process(COMMAND \"${STRIP_EXECUTABLE}\" --strip-unneeded \"\${_f}\"
+                        RESULT_VARIABLE _rc)
+        if(NOT _rc EQUAL 0)
+            message(FATAL_ERROR \"accudisc: strip failed on \${_f}\")
+        endif()
+    ")
+endfunction()
 
 add_subdirectory(src)
 add_subdirectory(drivers)
@@ -150,7 +228,39 @@ if(ACCUDISC_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
-# pkg-config file for downstream consumers (including the bindings)
+# The Python binding. Last, so its install rules run after libaccudisc's — it
+# links against the build tree, but the ordering keeps `make install` readable
+# and leaves room for a future variant that links the installed library.
+add_subdirectory(bindings/python)
+
+# ---- man pages --------------------------------------------------------------
+# Sections follow each page's own .TH line: accudisc.1 is the CLI (User
+# Commands), accudisc.8 is the library reference. Section 8 is "system
+# administration" by convention and a library API would normally be section 3 —
+# left as-is rather than renamed, because the page is self-consistent and
+# `man 8 accudisc` is what anyone reading this repo has learned.
+install(FILES docs/man/accudisc.1 DESTINATION ${CMAKE_INSTALL_MANDIR}/man1)
+install(FILES docs/man/accudisc.8 DESTINATION ${CMAKE_INSTALL_MANDIR}/man8)
+
+# pkg-config file for downstream consumers (including the bindings).
+#
+# libdir/includedir are resolved through the FULL_ variants rather than pasted
+# after ${exec_prefix}: GNUInstallDirs lets CMAKE_INSTALL_LIBDIR be ABSOLUTE
+# (-DCMAKE_INSTALL_LIBDIR=/usr/lib64 is a normal thing for a packager to pass),
+# and "${exec_prefix}//usr/lib64" is what the naive concatenation produces —
+# a .pc file that parses fine and hands every consumer a path that does not
+# exist. Kept prefix-relative when it legitimately is, so the .pc stays
+# relocatable in the common case.
+if(IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")
+    set(ACCUDISC_PC_LIBDIR "${CMAKE_INSTALL_FULL_LIBDIR}")
+else()
+    set(ACCUDISC_PC_LIBDIR "\${exec_prefix}/${CMAKE_INSTALL_LIBDIR}")
+endif()
+if(IS_ABSOLUTE "${CMAKE_INSTALL_INCLUDEDIR}")
+    set(ACCUDISC_PC_INCLUDEDIR "${CMAKE_INSTALL_FULL_INCLUDEDIR}")
+else()
+    set(ACCUDISC_PC_INCLUDEDIR "\${prefix}/${CMAKE_INSTALL_INCLUDEDIR}")
+endif()
 configure_file(cmake/accudisc.pc.in ${CMAKE_BINARY_DIR}/accudisc.pc @ONLY)
 install(FILES ${CMAKE_BINARY_DIR}/accudisc.pc
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)

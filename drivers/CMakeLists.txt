@@ -16,6 +16,11 @@ function(accudisc_add_driver name)
         PRIVATE ${PROJECT_SOURCE_DIR}/include)
     install(TARGETS accudisc_drv_${name}
         LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/accudisc/drivers)
+    # Drivers are dlopen'd, so only .dynsym is load-bearing; stripping .symtab
+    # costs backtrace quality and nothing else. Registered per driver here so a
+    # new accudisc_add_driver() call gets it without anyone remembering to.
+    accudisc_install_strip(
+        "${CMAKE_INSTALL_FULL_LIBDIR}/accudisc/drivers/$<TARGET_FILE_NAME:accudisc_drv_${name}>")
 endfunction()
 
 accudisc_add_driver(plextor plextor/plextor.c)
