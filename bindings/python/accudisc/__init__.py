@@ -82,13 +82,31 @@ def library_version() -> tuple[int, int, int]:
 
 
 def version_string() -> str:
-    """The loaded library's version as it prints it, e.g. ``"0.2.0"``."""
+    """The loaded library's version as it prints it, e.g. ``"0.3.0"``."""
     return ffi.string(lib.accudisc_version_string()).decode()
 
 
 def _check_version_skew() -> None:
+    """Refuse a binding compiled against a different library than it loaded.
+
+    Compares all three components. It used to compare ``[:2]``, on the reasoning
+    that patch releases do not change layout — true as a rule, and worthless as
+    a guard, because the rule it depends on is one WE have to keep. cdda2img
+    (§113.2) found the case: three struct layouts changed inside 0.2.0 without a
+    version bump, so the check compared 0.2 to 0.2 and passed a two-day-old
+    extension against a freshly built library.
+
+    Full-tuple comparison costs a rebuild on a patch bump, which is cheap. The
+    false negative it removes is not: :class:`AbiMismatch` is the one error
+    cdda2img's transport treats as "degrade to the subprocess", so a miss here
+    does not surface as a failure, it surfaces as well-formed calls about the
+    wrong bytes.
+
+    This is a backstop, never the primary defence — that is the per-struct
+    ``size`` field, which holds regardless of what the version says.
+    """
     compiled, loaded = version, library_version()
-    if compiled[:2] != loaded[:2]:
+    if compiled != loaded:
         raise AbiMismatch(
             lib.ACCUDISC_ERR_ABI,
             f"binding compiled against accudisc {'.'.join(map(str, compiled))} "

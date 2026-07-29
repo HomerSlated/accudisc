@@ -58,6 +58,34 @@ def test_version_agrees_with_loaded_library():
     assert ad.version_string() == ".".join(str(n) for n in ad.library_version())
 
 
+def test_skew_check_sees_a_PATCH_level_difference():
+    """The case the old ``[:2]`` comparison could not see.
+
+    cdda2img (§113.2) found it live: three struct layouts changed inside 0.2.0
+    with no version bump, so the guard compared 0.2 to 0.2 and passed a
+    two-day-old extension against a freshly built library. Patch-level skew is
+    now a refusal.
+
+    Driven by faking the LOADED version, because the honest pair cannot occur in
+    one build tree — which is precisely why it went unnoticed.
+    """
+    real = ad.library_version
+    for fake in ((0, 3, 1), (0, 4, 0), (1, 3, 0)):
+        ad.library_version = lambda f=fake: f
+        try:
+            ad._check_version_skew()
+        except ad.AbiMismatch as exc:
+            assert "rebuild" in str(exc)
+        else:
+            raise AssertionError(f"loaded {fake} vs compiled {ad.version} passed")
+        finally:
+            ad.library_version = real
+
+    # The complement: the honest pair must still be accepted, or the guard is
+    # just a refusal with a version number in it.
+    ad._check_version_skew()
+
+
 def test_package_version_matches_the_library():
     """pyproject's version is hand-kept; this is what makes that safe.
 

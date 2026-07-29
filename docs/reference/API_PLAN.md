@@ -565,6 +565,33 @@ message when the rewrite lands. Do not dribble it out.
 | 6 | `speeds --sweep`: appends `min=`/`max=` per rung; `accudisc_speed_rung` grows 6 → 10 bytes and `accudisc_probe_speed_ladder` takes a new `points` argument | **DONE 2026-07-28** | No — keys are appended, `measured=` unchanged (see below) |
 | 6b | `speeds --sweep` also appends `verdict=` per rung and a `ladder admitted=` line; `accudisc_speed_rung` grows 10 → 14 bytes (`equiv_x`, `verdict`) | **DONE 2026-07-28** | No — additive, and both are absent without `--sweep`. **But it makes their `drive_speed.admitted_ladder` redundant** |
 | 7 | `accudisc_write_opts` gains a leading `uint32_t size` + `ACCUDISC_WRITE_OPTS_INIT`; `accudisc_write` returns `ACCUDISC_ERR_ABI` when it is 0 or unhonourable | **DONE 2026-07-29** | No — library ABI only; the CLI is rebuilt with it. **But it breaks any already-compiled caller, deliberately — see below** |
+| 8 | **Version 0.2.0 → 0.3.0**, and the Python binding's skew check tightened from `major.minor` to the full triple | **DONE 2026-07-29** | No — but they **pin on `accudisc_version_string()`**, so the number they hold moves |
+
+**Row 8 is the correction of a rule this document stated and we then did not
+follow.** §8's own text says a layout change means "bumping
+`ACCUDISC_VERSION_MINOR` so the .so version moves with the layout". Between rows
+6, 6b and 7, `accudisc_speed_rung` went 6 → 10 → 14 bytes and
+`accudisc_write_opts` gained a field — three layout changes, all inside 0.2.0,
+none of them bumped. A binding compiled against any of those and loaded against
+any other compares `0.2` to `0.2` and finds them equal.
+
+cdda2img found it (§113.2) as a live hazard rather than a theoretical one: a
+stale `_accudisc.abi3.so` from 2026-07-27 was the only extension loadable on
+their Python 3.10 venv, and they were about to `pip install` it against a
+library rebuilt three times that morning. Two fixes, and they are not
+alternatives:
+
+- **The bump**, which makes the *existing* check fire for anyone holding 0.2.
+- **The tightening** to a full-triple comparison, so a future patch-level layout
+  change is caught too.
+
+Doing only the second would be the same defect one digit further right: a check
+of any granularity is worth exactly what the discipline of bumping is worth.
+Which is also the argument for why neither replaces the per-struct `size`
+guards — those hold whatever the version says, and cdda2img made the same point
+from their side: *"a version check at major.minor granularity is not a
+substitute for per-struct size guards, it is a coarser thing that looks like
+one."*
 
 **Row 6 is an ABI break taken knowingly, and the last free one on that
 struct.** `accudisc_speed_rung` gained `min_cx`/`max_cx` without a `size`

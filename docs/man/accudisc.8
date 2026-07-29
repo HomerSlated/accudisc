@@ -2,7 +2,7 @@
 .\" SPDX-License-Identifier: MIT
 .\" Manual page for libaccudisc, the AccuDisc public C API.
 .\" Requires the tbl(1) preprocessor (see the '\" t line above).
-.TH ACCUDISC 8 "2026-07-26" "AccuDisc 0.2.0" "AccuDisc Library Reference"
+.TH ACCUDISC 8 "2026-07-29" "AccuDisc 0.3.0" "AccuDisc Library Reference"
 .SH NAME
 libaccudisc, accudisc \- AccuDisc CD\-DA capture and recording library
 .SH SYNOPSIS
@@ -39,7 +39,7 @@ as do the absolute verification gates (AccurateRip, CTDB).
 .SH VERSIONING
 .nf
 .B #define ACCUDISC_VERSION_MAJOR 0
-.B #define ACCUDISC_VERSION_MINOR 2
+.B #define ACCUDISC_VERSION_MINOR 3
 .B #define ACCUDISC_VERSION_PATCH 0
 .PP
 .B const char *accudisc_version_string(void);
@@ -48,7 +48,7 @@ as do the absolute verification gates (AccurateRip, CTDB).
 .PP
 The macros describe the header a caller compiled against; the functions report
 the library actually linked. Comparing them detects header/library skew. The
-current version is 0.2.0 and the soname remains
+current version is 0.3.0 and the soname remains
 .IR libaccudisc.so.0 .
 .SH ERROR MODEL
 Every fallible function returns

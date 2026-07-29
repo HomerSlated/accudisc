@@ -423,5 +423,43 @@ ffibuilder.set_source(
 )
 
 
+def _remove_stale_extensions(keep: Path | None = None) -> list[Path]:
+    """Delete every ``_accudisc*.so`` in the package except *keep*.
+
+    Found by cdda2img (§113) as a live hazard, not a tidiness one. A build here
+    produces ONE interpreter-tagged extension — but an earlier ``pip install .``
+    left an ``_accudisc.abi3.so`` behind, and the two then diverge silently:
+    a rebuild refreshes the tagged file while the abi3 one stays as it was.
+    Which file gets loaded depends on the interpreter, so on 3.14 you always
+    get today's build and on 3.10 (this package's floor, and cdda2img's venv)
+    you get whatever was last installed. Theirs was two days stale, against a
+    library rebuilt three times that morning.
+
+    Nothing catches that downstream. ``_check_version_skew`` compares versions,
+    and a struct layout can change without one moving — which is exactly what
+    had happened. So the fix is here: leave one extension, or none. A missing
+    module is an ImportError, which is loud; a stale one is well-formed calls
+    about the wrong bytes.
+
+    Scope is deliberately narrow: only ``_accudisc*.so``, only in the package
+    directory, all of them outputs of this script and git-ignored.
+    """
+    pkg = _HERE / "accudisc"
+    removed = []
+    for so in sorted(pkg.glob("_accudisc*.so")):
+        if keep is not None and so.resolve() == keep.resolve():
+            continue
+        so.unlink()
+        removed.append(so)
+    return removed
+
+
 if __name__ == "__main__":
-    ffibuilder.compile(verbose=True)
+    # Before, not after: a failed compile must not leave the previous build in
+    # place looking current. Better to end with no extension than a stale one.
+    for gone in _remove_stale_extensions():
+        print(f"removed stale extension {gone.name}")
+    built = Path(ffibuilder.compile(verbose=True))
+    for gone in _remove_stale_extensions(keep=built):
+        print(f"removed stale extension {gone.name}")
+    print(f"built {built.name}")

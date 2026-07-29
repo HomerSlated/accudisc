@@ -238,7 +238,7 @@ with recovery profiles.)
 `include/accudisc/*.h` is the contract. The CLI and every binding are built
 against it exclusively, never against `src/` internals. Device handles are
 opaque, every identifier is prefixed `accudisc_` / `ACCUDISC_`, and libc types
-are kept out of the ABI where avoidable. Current version **0.2.0**.
+are kept out of the ABI where avoidable. Current version **0.3.0**.
 
 ```c
 #include <accudisc/accudisc.h>

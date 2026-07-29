@@ -15,9 +15,23 @@
 extern "C" {
 #endif
 
+/* MINOR moves whenever a struct layout changes, so that the .so version moves
+ * with the layout and a version comparison can see it. That rule was stated in
+ * API_PLAN §8 and then not followed: accudisc_speed_rung went 6 -> 10 -> 14 and
+ * accudisc_write_opts gained a size field, all inside 0.2.0. A binding compiled
+ * against any of those and loaded against another compares 0.2 to 0.2 and finds
+ * them equal. cdda2img caught it (§113.2) as a live hazard rather than a
+ * theoretical one — their venv was about to load a two-day-old extension.
+ *
+ * The lesson is not that the check was too coarse. It is that a version check
+ * of ANY granularity is worth exactly what the discipline of bumping it is
+ * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 2 /* 0.2.0: read_req/read_stats layout changed
-                                 * (API_PLAN §7.1). soname stays .so.0. */
+#define ACCUDISC_VERSION_MINOR 3 /* 0.3.0: accudisc_speed_rung 6 -> 14 bytes and
+                                  * accudisc_write_opts gained `size`; the probe
+                                  * is now bound, so the rung layout is frozen.
+                                  * 0.2.0: read_req/read_stats layout changed
+                                  * (API_PLAN §7.1). soname stays .so.0. */
 #define ACCUDISC_VERSION_PATCH 0
 
 #if defined(_WIN32)
