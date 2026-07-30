@@ -65,9 +65,14 @@ message(STATUS "accudisc: Python binding via ${Python3_EXECUTABLE} "
 # 3.14), but site-packages is not — this installs into the BUILDING
 # interpreter's version directory. Point another interpreter at it with
 # PYTHONPATH, or override this, if that is not what you want.
-set(ACCUDISC_PYTHON_SITEDIR
+# Through accudisc_derived_cache for the same reason as ACCUDISC_INSTALL_RPATH:
+# a plain cache default freezes on the first configure. This one is relative, so
+# a prefix change alone cannot stale it — but switching lib/lib64 or building
+# against a different interpreter both can, and would install into the previous
+# interpreter's version directory while reporting success.
+accudisc_derived_cache(ACCUDISC_PYTHON_SITEDIR
     "${CMAKE_INSTALL_LIBDIR}/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages"
-    CACHE STRING "where to install the Python package (under the prefix)")
+    "where to install the Python package (under the prefix)")
 
 # RUNPATH comes from the shared ACCUDISC_INSTALL_RPATH, not a knob of its own:
 # the extension and the CLI load the same libaccudisc.so.0, so a prefix that

@@ -376,6 +376,15 @@ directory to `/etc/ld.so.conf.d/`. The install does **not** run `ldconfig`
 itself: under `DESTDIR` it would be wrong, and outside it the cache is the
 distribution's to manage.
 
+`ACCUDISC_INSTALL_RPATH` and `ACCUDISC_PYTHON_SITEDIR` **follow a prefix change
+on reconfigure**, unless you set them yourself — a value you passed with `-D` is
+never overwritten, empty included. A cache default is only evaluated when the
+entry is absent, so without that these froze at the first prefix: re-pointing a
+`/usr/local` tree at `/usr` produced binaries whose `RUNPATH` still named
+`/usr/local/lib64`, which is invisible wherever the loader searches the
+directory anyway and fatal where it does not. If a tree predates this and CMake
+warns that the value looks stale, clear it with `cmake -B build -UACCUDISC_INSTALL_RPATH`.
+
 **Changing the prefix requires a rebuild, not just a re-install.** The driver
 search directory is compiled into the library
 (`ACCUDISC_DRIVER_DIR_DEFAULT`), so a re-install to a new prefix would leave

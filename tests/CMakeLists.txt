@@ -77,3 +77,19 @@ add_test(NAME test_uninstall_safety
                  ${CMAKE_COMMAND}
                  ${Python3_EXECUTABLE})
 set_tests_properties(test_uninstall_safety PROPERTIES TIMEOUT 600)
+
+# The installed RUNPATH must name the prefix the tree is CURRENTLY configured
+# for. Reconfiguring an existing tree to a new prefix left the old libdir in the
+# cache and therefore in the binary — invisible on a prefix the loader already
+# searches, fatal on one it does not.
+#
+# Asserts both directions, because the obvious fix for one breaks the other: the
+# derived default follows a prefix change, and a value the user set does not
+# move. Uses two temp prefixes so a wrong RUNPATH cannot be masked by ld.so
+# finding the library anyway.
+add_test(NAME test_install_relocate
+         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/install_relocate.sh
+                 ${PROJECT_SOURCE_DIR}
+                 ${CMAKE_COMMAND})
+set_tests_properties(test_install_relocate PROPERTIES
+                     TIMEOUT 900 SKIP_RETURN_CODE 77)

@@ -95,6 +95,63 @@ add_compile_options(-Wall -Wextra)
 
 include(GNUInstallDirs)
 
+# A cache knob whose default is DERIVED from the configuration (the prefix, the
+# libdir, the interpreter version) rather than fixed.
+#
+# The problem this solves: `set(X "${derived}" CACHE ...)` evaluates its default
+# ONLY when the entry is absent, so the value is right on the first configure
+# and frozen thereafter. Reconfigure the tree to a different prefix and the knob
+# still holds the old one — silently, because every log line afterwards is
+# consistent with itself.
+#
+# So the value alone cannot answer "did the user choose this, or did we?", and
+# without that answer there is no safe move: follow the prefix and a deliberate
+# override is destroyed; leave it and the knob is a stale lie. An INTERNAL
+# marker records what WE last derived. Equal to the current value means ours,
+# and ours may follow; anything else is the user's and is left untouched — an
+# EMPTY value included, which is a real instruction here ("record no RUNPATH")
+# and must never be read as "unset".
+#
+# The one ambiguity is a user who explicitly passes exactly the value we would
+# have derived. That is indistinguishable, and following the prefix is the
+# safer reading: it keeps the install working, which is what they asked for by
+# naming that path in the first place.
+function(accudisc_derived_cache var default doc)
+    set(_marker ${var}_AUTO)
+    set(${var} "${default}" CACHE STRING "${doc}")
+    if(NOT DEFINED ${_marker})
+        # First configure of this tree since the marker existed. If it is also
+        # the tree's very first configure the value IS the default and there is
+        # nothing to say. Otherwise the entry predates the marker and is
+        # genuinely ambiguous — say so once rather than guess, because both
+        # guesses are destructive: adopting the default discards an override,
+        # keeping the value cements a stale prefix.
+        if(NOT "${${var}}" STREQUAL "${default}")
+            message(WARNING
+                "accudisc: ${var} is '${${var}}' but this configuration "
+                "derives '${default}'. If you set it deliberately, ignore "
+                "this; it will not be asked again. If it is left over from an "
+                "earlier prefix, clear it:\n"
+                "    cmake -B <dir> -U${var}\n"
+                "A stale RUNPATH is invisible wherever the loader searches the "
+                "directory anyway, and fatal where it does not.")
+        endif()
+    elseif("${${var}}" STREQUAL "${${_marker}}"
+           AND NOT "${${var}}" STREQUAL "${default}")
+        set(${var} "${default}" CACHE STRING "${doc}" FORCE)
+        message(STATUS "accudisc: ${var} follows the configuration: "
+                       "${${_marker}} -> ${default}")
+    endif()
+    # ONE argument for the docstring. set(... CACHE <type> <doc>) takes exactly
+    # one, and splitting it over two adjacent strings — which reads fine, and is
+    # what message() would accept — makes the whole call a silent no-op: no
+    # error, no entry, and the marker then looks "not yet defined" on every
+    # subsequent configure, so the branch above never runs. Written that way
+    # first, and caught only because the relocation test still failed.
+    set(${_marker} "${default}" CACHE INTERNAL
+        "value accudisc derived for ${var}; tells our default from a user's")
+endfunction()
+
 # RUNPATH recorded in everything installed that loads libaccudisc.so.0 — the
 # CLI and the Python extension. ONE knob, because the two must agree: they load
 # the same library, so a prefix needing a RUNPATH needs it for both.
@@ -114,7 +171,15 @@ include(GNUInstallDirs)
 #
 # Set it EMPTY for distro packaging targeting /usr, where a RUNPATH into a
 # standard directory is flagged (Debian lintian) and buys nothing.
-set(ACCUDISC_INSTALL_RPATH "${CMAKE_INSTALL_FULL_LIBDIR}" CACHE STRING
+# Declared through accudisc_derived_cache (below) rather than a plain
+# set(... CACHE ...): a cache default is evaluated ONLY when the entry does not
+# yet exist, so a plain declaration is right on the first configure and frozen
+# forever after. Reconfiguring an existing tree to a new prefix then produced a
+# CLI whose RUNPATH named the OLD prefix's libdir — measured on a /usr/local
+# tree re-pointed at /usr, which survived only because /usr/lib64 is a default
+# loader path and ld.so never consulted the RUNPATH. Aim the second prefix at
+# /opt and the install is dead on arrival.
+accudisc_derived_cache(ACCUDISC_INSTALL_RPATH "${CMAKE_INSTALL_FULL_LIBDIR}"
     "RUNPATH for installed binaries that load libaccudisc (empty = none)")
 
 # Resolve the strip decision BEFORE the subdirectories, because
