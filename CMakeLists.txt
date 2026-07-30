@@ -264,3 +264,42 @@ endif()
 configure_file(cmake/accudisc.pc.in ${CMAKE_BINARY_DIR}/accudisc.pc @ONLY)
 install(FILES ${CMAKE_BINARY_DIR}/accudisc.pc
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+
+# ---- uninstall --------------------------------------------------------------
+#
+#   doas cmake --build build --target uninstall
+#
+# CMake has no built-in uninstall. This one is driven by install_manifest.txt,
+# written by every `cmake --install`, so the list is true by construction rather
+# than hand-maintained — a hand-maintained list drifts the moment an install
+# rule is added, and drifts silently.
+#
+# CANDIDATES is a list of directories that MAY be removed — it does not
+# authorise anything on its own. cmake/uninstall.cmake removes one only if the
+# manifest shows the install populated it AND it ends up empty. So this list
+# being wrong cannot delete someone else's directory; the worst it does is
+# leave one of ours behind.
+#
+# DEEPEST FIRST: a parent is only empty once its children are gone.
+if(IS_ABSOLUTE "${ACCUDISC_PYTHON_SITEDIR}")
+    set(_adsc_pysite "${ACCUDISC_PYTHON_SITEDIR}")
+else()
+    set(_adsc_pysite "${CMAKE_INSTALL_PREFIX}/${ACCUDISC_PYTHON_SITEDIR}")
+endif()
+
+set(_adsc_dirs
+    "${CMAKE_INSTALL_FULL_INCLUDEDIR}/accudisc"
+    "${CMAKE_INSTALL_FULL_LIBDIR}/accudisc/drivers"
+    "${CMAKE_INSTALL_FULL_LIBDIR}/accudisc")
+if(ACCUDISC_INSTALL_PYTHON)
+    list(INSERT _adsc_dirs 0 "${_adsc_pysite}/accudisc")
+endif()
+
+add_custom_target(uninstall
+    COMMAND ${CMAKE_COMMAND}
+            -DMANIFEST=${CMAKE_BINARY_DIR}/install_manifest.txt
+            "-DCANDIDATES=${_adsc_dirs}"
+            "-DDERIVED=__pycache__"
+            -P ${CMAKE_CURRENT_LIST_DIR}/cmake/uninstall.cmake
+    COMMENT "Removing every file listed in install_manifest.txt"
+    VERBATIM)

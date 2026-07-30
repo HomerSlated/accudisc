@@ -59,3 +59,21 @@ add_test(NAME test_python_binding
                  ${PROJECT_SOURCE_DIR}
                  $<TARGET_FILE_DIR:accudisc>)
 set_tests_properties(test_python_binding PROPERTIES SKIP_RETURN_CODE 77)
+
+# Safety properties of the `uninstall` target. Does a real install into a temp
+# prefix and touches nothing outside it.
+#
+# It configures and builds a second tree, so it is the slowest test here by far
+# — and it is worth that, because the operation it guards is the only
+# DESTRUCTIVE one in the build system. A defect in the other 33 tests produces a
+# wrong answer; a defect here deletes a directory that was not ours.
+#
+# Asserts what must NOT happen (a foreign file kept, a directory we never
+# populated left alone) as well as what must: no manifest entry survives, and no
+# importable `accudisc` remains.
+add_test(NAME test_uninstall_safety
+         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/uninstall_safety.sh
+                 ${PROJECT_SOURCE_DIR}
+                 ${CMAKE_COMMAND}
+                 ${Python3_EXECUTABLE})
+set_tests_properties(test_uninstall_safety PROPERTIES TIMEOUT 600)

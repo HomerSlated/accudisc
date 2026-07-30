@@ -381,6 +381,48 @@ search directory is compiled into the library
 (`ACCUDISC_DRIVER_DIR_DEFAULT`), so a re-install to a new prefix would leave
 the library looking for drivers under the old one.
 
+### Uninstalling
+
+```sh
+sudo cmake --build build --target uninstall     # or: sudo make -C build uninstall
+```
+
+It removes exactly what `install_manifest.txt` records, so **it must be run
+from the build tree that did the install**. There is no manifest if you never
+installed, and the target refuses rather than guessing — deleting paths it
+merely *expects* to exist is a worse failure than not uninstalling.
+
+Two properties it will not violate, both enforced structurally and covered by
+`test_uninstall_safety`:
+
+* **A directory the install never populated is never removed**, even one whose
+  name it knows. Authorisation comes from a manifest entry living under it, not
+  from the directory being on a list.
+* **A non-empty directory is never removed.** Nothing is deleted recursively.
+  Drop your own file into `<libdir>/accudisc/drivers/` and both it and the
+  directory survive, while our drivers still go.
+
+The single exception is `__pycache__`, purged by exact name from a directory
+the install populated: the interpreter creates it from a file we installed, the
+manifest cannot see it, and left behind it would keep the package directory
+alive. That matters more than tidiness — a surviving
+`site-packages/accudisc/` is a PEP 420 namespace package, so `import accudisc`
+**succeeds** and yields an empty module with no version and no `Device`.
+
+If you ran `ldconfig` after installing, run it again afterwards. To remove an
+install by hand instead, this is the whole layout (prefix-relative):
+
+```
+bin/accudisc
+lib*/libaccudisc.so, libaccudisc.so.0, libaccudisc.so.<version>
+lib*/libaccudisc.a
+lib*/accudisc/drivers/accudisc-drv-*.so
+lib*/pkgconfig/accudisc.pc
+include/accudisc/*.h
+share/man/man1/accudisc.1, share/man/man8/accudisc.8
+lib*/pythonX.Y/site-packages/accudisc/          (ACCUDISC_PYTHON_SITEDIR)
+```
+
 ### A wheel, for consumers that resolve dependencies
 
 ```sh
