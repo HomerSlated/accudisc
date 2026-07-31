@@ -219,6 +219,17 @@ suite behind it exists, the methodology has known confounds documented in
 RECOVERY.md §12.5–12.6, and the next iteration is scheduled at a
 weeks-to-months pace. Treat the section above as a roadmap, not a feature.
 
+**AccuDisc ships no profiles, and installs none.** It provides the composable
+*levers* — `--verify`, `--c2-retries`, `--ladder`, whole-disc speed — and the
+frame-accurate status surface to judge them by. Choosing which lever to pull for
+a given damage class is *policy*, and policy belongs to the calling application,
+alongside the absolute gates (AccurateRip, CTDB) a profile has to be scored
+against; AccuDisc performs no lookups at all. So a consuming application owns
+and distributes its own profiles — cdda2img ships seven, as its own data files.
+Nothing in this repo's install set is a profile, and `install.sh` deliberately
+creates no directory for one: a second source of truth for a decision this
+project does not make could only diverge silently.
+
 (Unrelated, despite the word: the `profile=0x0008` token in `disc` and `media`
 output is the MMC *disc* profile — the media-type code. It has nothing to do
 with recovery profiles.)
@@ -230,7 +241,7 @@ with recovery profiles.)
 | `libaccudisc` | `src/`, `include/accudisc/` | Shared library + public C API |
 | `accudisc` | `cli/` | Command-line interface |
 | Vendor drivers | `drivers/` | `dlopen`'d modules; Plextor today |
-| Python bindings | `bindings/python/` | Placeholder — not yet implemented |
+| Python bindings | `bindings/python/` | cffi API mode, `abi3` — one wheel serves CPython 3.10–3.14 |
 | Rust bindings | `bindings/rust/` | Placeholder — not yet implemented |
 
 ## The C API
@@ -238,7 +249,7 @@ with recovery profiles.)
 `include/accudisc/*.h` is the contract. The CLI and every binding are built
 against it exclusively, never against `src/` internals. Device handles are
 opaque, every identifier is prefixed `accudisc_` / `ACCUDISC_`, and libc types
-are kept out of the ABI where avoidable. Current version **0.3.0**.
+are kept out of the ABI where avoidable. Current version **0.4.0**.
 
 ```c
 #include <accudisc/accudisc.h>
@@ -313,10 +324,39 @@ cmake --build build
 
 C11, `-Wall -Wextra`.
 
+**If you are reading this inside a source tarball**, you have the *user*
+distribution: the sources of everything `install.sh` installs, and nothing else.
+The test suite, the developer tools under `tools/`, the Rust binding placeholder
+and the internal design documents are not included, so `-DACCUDISC_BUILD_TESTS=ON`
+and `./install.sh --run-tests` both refuse with a message saying so. Clone the
+repository if you want them.
+
 ## Installing
 
 ```sh
-cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local
+./install.sh                        # build + install to /usr/local
+./install.sh --prefix ~/.local      # ...or anywhere else
+./install.sh uninstall              # remove it again
+./install.sh --help
+```
+
+`install.sh` is a documented wrapper around the CMake steps below, not a second
+build system. It exists because three CMake defaults are tuned for this
+project's development machine and are wrong elsewhere — most importantly
+`ACCUDISC_SETCAP_AFTER_BUILD`, which is ON by default and **fails the build** on
+any host without a passwordless privilege rule for `setcap`. The script also
+gets the privilege split right (build unprivileged, escalate only for the
+install) and installs the Python binding as a *wheel* rather than into the
+prefix's `site-packages` — see below for why that matters.
+
+Read the header of `install.sh`: every decision it makes is written down there,
+and every step is a `cmake` command you can run yourself. `--dry-run` prints
+them all without running any.
+
+The equivalent by hand:
+
+```sh
+cmake -B build -DCMAKE_INSTALL_PREFIX=/usr/local -DACCUDISC_SETCAP_AFTER_BUILD=OFF
 cmake --build build
 sudo cmake --install build          # or: sudo make -C build install
 ```
@@ -355,7 +395,8 @@ Useful knobs:
 |---|---|---|
 | `ACCUDISC_INSTALL_RPATH` | the installed libdir | set **empty** for distro packaging targeting `/usr` — but read the warning below first |
 | `ACCUDISC_SETCAP_ON_INSTALL` | `ON` | `OFF` if the target filesystem carries no capabilities, or you intend to run the tool as root |
-| `ACCUDISC_INSTALL_PYTHON` | `ON` | `OFF` to skip the binding (it needs `python3` + `cffi` at build time) |
+| `ACCUDISC_INSTALL_PYTHON` | `ON` | `OFF` to skip the site-packages copy — which `install.sh` does by default; see the wheel section |
+| `ACCUDISC_INSTALL_WHEEL` | `OFF` | `ON` to install the wheel into `<datadir>/accudisc/wheel` (requires `make wheel` first) |
 | `ACCUDISC_PYTHON_SITEDIR` | `<libdir>/pythonX.Y/site-packages` | a different layout, or a different interpreter's directory |
 
 **An empty `ACCUDISC_INSTALL_RPATH` is only safe where the loader already
@@ -432,19 +473,76 @@ share/man/man1/accudisc.1, share/man/man8/accudisc.8
 lib*/pythonX.Y/site-packages/accudisc/          (ACCUDISC_PYTHON_SITEDIR)
 ```
 
-### A wheel, for consumers that resolve dependencies
+### The Python binding: a wheel, not a site-packages copy
+
+`install.sh` installs the binding as a **wheel**, to:
+
+```
+$PREFIX/share/accudisc/wheel/accudisc-<version>-cp310-abi3-<plat>.whl
+```
+
+**Why not site-packages.** `make install` *can* copy the package into
+`$PREFIX/lib/pythonX.Y/site-packages` (`ACCUDISC_INSTALL_PYTHON`, ON by
+default). That directory is derived correctly — it is exactly what Python's own
+`sysconfig` names for this prefix — and on many systems it is on **no
+interpreter's `sys.path`**. Measured on Void Linux: a `/usr/local` install
+produced a package `import accudisc` could not find, because the system
+interpreter searches `/usr/lib/python3.14/site-packages` and nothing under
+`/usr/local`.
+
+Installing into `/usr` instead is worse, not better: that tree belongs to the
+distribution's package manager, and modern ones mark it `EXTERNALLY-MANAGED`
+(PEP 668) specifically to prevent it. So the wheel is the answer — every Python
+installer already understands one, and it drops into a venv, a pipx venv or a
+user install without any of them needing to know AccuDisc exists.
+
+**Why under the prefix.** The wheel is **prefix-specific**: its extension's
+`RUNPATH` is the prefix this build tree was configured for, so it is only valid
+for the `libaccudisc.so.0` installed beside it. Keeping the two together is the
+invariant. Any fixed global location breaks the moment a second prefix exists —
+two wheels, the same name, different `RUNPATH`s, and nothing at import time able
+to tell them apart.
+
+**The directory is the contract, not the filename.** The name carries the
+version and the ABI/platform tags, which installers parse, so it changes on
+every bump and must not be renamed to something stable. Consumers glob:
+
+```sh
+ls "$PREFIX"/share/accudisc/wheel/accudisc-*.whl
+pkg-config --variable=wheeldir accudisc     # the same path, if pkg-config finds us
+```
+
+Treat the `pkg-config` route as a bonus rather than the primary one: it does not
+search `/usr/local`'s `pkgconfig` directory on every distribution, so it can
+report nothing for a perfectly good install. The variable is also present
+unconditionally — it names where a wheel *would* go, which is not a claim that
+one is there. Globbing the directory is what answers that.
+
+Installing it, once built:
+
+```sh
+pipx install /path/to/cdda2img                  # a checkout — not on PyPI yet
+pipx inject cdda2img "$(ls $PREFIX/share/accudisc/wheel/accudisc-*.whl)"
+pipx uninject cdda2img accudisc                 # and back out again
+```
+
+`inject` rather than a separate install because a pipx application runs in its
+own isolated venv and cannot see packages installed anywhere else. The wheel
+declares its dependency on `cffi`, so that arrives with it.
+
+Building one by hand:
 
 ```sh
 cmake --build build --target wheel      # -> build/bindings/python/wheel/*.whl
+./install.sh --print-wheel              # prints that path, or fails
 ```
 
-`cp310-abi3`, so one wheel serves CPython 3.10–3.14. Use it where a consumer's
-installer (`pip`, `pipx`) has to *find* the package rather than compile it from
-this checkout. It is **prefix-specific** — its `RUNPATH` is the prefix the build
-tree was configured for — so it travels with the matching `make install`. See
-`bindings/python/README.md` for the discovery rules and
-`ACCUDISC_REQUIRE_INSTALLED`, which an installer should set so that "no
-installed library found" fails loudly instead of silently linking a build tree.
+The target is not part of `ALL` (it needs `pip`), which is why
+`ACCUDISC_INSTALL_WHEEL` defaults `OFF` — a default-ON install rule would fail
+for everyone who had not built it first. See `bindings/python/README.md` for the
+discovery rules and `ACCUDISC_REQUIRE_INSTALLED`, which an installer should set
+so that "no installed library found" fails loudly instead of silently linking a
+build tree.
 
 ## Signatures
 
@@ -502,4 +600,8 @@ features (GigaRec, VariRec, PoweRec).
 pinned — see the section above, and note carefully what "verified" does and does
 not mean there.
 
-**Bindings: not started.** See `docs/reference/TODO.md` for the outstanding work.
+**Python binding: complete and in use.** cffi API mode against the public
+header, shipped as an `abi3` wheel that serves CPython 3.10–3.14 from one
+artefact. It covers the read, probe and write paths, and is what cdda2img
+consumes. **Rust binding: not started.** See `docs/reference/TODO.md` for the
+outstanding work.

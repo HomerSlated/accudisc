@@ -1266,7 +1266,12 @@ ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
  * repo's own history:
  *
  *     accudisc_read_req    32 -> 40 -> 56 bytes
- *     accudisc_read_stats  80 -> 104 -> 128 bytes
+ *     accudisc_read_stats  80 -> 104 -> 128 -> 136 bytes
+ *
+ * That list is prose and drifts; it was stale by one growth (stopping at 128)
+ * until 2026-08-01, when the 8trax agent quoted it back to us as something it
+ * had learned. tests/test_abi.c pins the CURRENT sizes with _Static_assert, so
+ * the assertions are authoritative and this paragraph is not.
  *
  * The CLI never noticed, because it is rebuilt with the library. A binding
  * compiled against one header and loaded against a different .so would, by

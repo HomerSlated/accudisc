@@ -18,11 +18,33 @@
 # which is precisely the kind of difference this project does not leave to
 # convention.
 
-option(ACCUDISC_INSTALL_PYTHON "build and install the Python binding" ON)
+# TWO INDEPENDENT DECISIONS, and the recommended arrangement sets them
+# OPPOSITE ways — which is why they are two options and not one.
+#
+#   ACCUDISC_INSTALL_PYTHON  -> copy the package into the PREFIX's site-packages
+#   ACCUDISC_INSTALL_WHEEL   -> install the built wheel into DATADIR, for a
+#                               consumer's installer (pip/pipx) to pick up
+#
+# The prefix's site-packages is frequently NOT on any interpreter's sys.path:
+# measured on Void, /usr/local/lib/python3.14/site-packages is absent from the
+# system interpreter's path, so `make install` to /usr/local left a package that
+# imported nowhere. That is not our bug to fix — Python's own
+# sysconfig.get_path('purelib', vars={'base': ...}) names the same directory —
+# but it does mean the sitedir copy is the WRONG default for a prefix outside
+# /usr, and the wheel is the answer there (see install.sh).
+#
+# Until 2026-07-31 this was one option with an early return(), so
+# -DACCUDISC_INSTALL_PYTHON=OFF also deleted the `wheel` target defined below —
+# making the recommended combination inexpressible. Measured, not theorised:
+# `make wheel` reported "No rule to make target".
+option(ACCUDISC_INSTALL_PYTHON
+    "install the Python binding into the prefix's site-packages" ON)
+option(ACCUDISC_INSTALL_WHEEL
+    "install the built wheel into DATADIR/accudisc/wheel (needs `make wheel`)" OFF)
 
-if(NOT ACCUDISC_INSTALL_PYTHON)
-    message(STATUS "accudisc: Python binding will NOT be installed "
-                   "(-DACCUDISC_INSTALL_PYTHON=OFF)")
+if(NOT ACCUDISC_INSTALL_PYTHON AND NOT ACCUDISC_INSTALL_WHEEL)
+    message(STATUS "accudisc: no Python component will be installed "
+                   "(-DACCUDISC_INSTALL_PYTHON=OFF -DACCUDISC_INSTALL_WHEEL=OFF)")
     return()
 endif()
 
@@ -54,6 +76,13 @@ if(NOT _adsc_cffi_rc EQUAL 0)
 endif()
 message(STATUS "accudisc: Python binding via ${Python3_EXECUTABLE} "
                "(cffi ${_adsc_cffi_ver})")
+
+# ---- into the prefix's site-packages (ACCUDISC_INSTALL_PYTHON) --------------
+#
+# Guarded flat rather than indented: the block is ~70 lines and re-indenting it
+# would bury a one-line change in a whole-file diff. The closing `endif()` names
+# the option it closes.
+if(ACCUDISC_INSTALL_PYTHON)
 
 # Where the package lands. Derived from the PREFIX, never from the
 # interpreter's own sysconfig: sysconfig reports the path of the interpreter
@@ -126,6 +155,8 @@ else()
 endif()
 accudisc_install_strip("${_adsc_py_full}/accudisc/_accudisc.abi3.so")
 
+endif() # ACCUDISC_INSTALL_PYTHON
+
 # ---- `wheel` target ---------------------------------------------------------
 #
 #   cmake --build build --target wheel      -> build/bindings/python/wheel/*.whl
@@ -174,3 +205,60 @@ add_custom_target(wheel
     DEPENDS accudisc
     COMMENT "Building abi3 wheel (RUNPATH: ${ACCUDISC_INSTALL_RPATH})"
     VERBATIM)
+
+# ---- installing the wheel (ACCUDISC_INSTALL_WHEEL) --------------------------
+#
+# WHERE, AND WHY THERE: ${DATADIR}/accudisc/wheel — i.e. UNDER THE PREFIX, and
+# that is the whole point rather than an arbitrary choice. The wheel's RUNPATH
+# names this build's ACCUDISC_INSTALL_RPATH, so the wheel is only valid for the
+# libaccudisc.so.0 installed alongside it. Any fixed global location
+# (/usr/share, ~/.local/share) would be wrong by construction the moment a
+# second prefix exists: two wheels, same name, different RUNPATHs, and nothing
+# at import time can tell them apart.
+#
+# THE DIRECTORY IS THE CONTRACT, NOT THE FILENAME. A wheel's name carries the
+# version and the ABI/platform tags (accudisc-0.4.0-cp310-abi3-linux_x86_64.whl)
+# and PEP 427 requires it stay parseable — installers read those tags off the
+# name — so we must NOT rename it to something stable, and a consumer must glob:
+#
+#     ls "$PREFIX"/share/accudisc/wheel/accudisc-*.whl
+#
+# Deliberately no `accudisc-latest.whl` symlink: it would either be an invalid
+# wheel name or a second parseable name for the same file, and an installer
+# picking up both is a failure nobody would look for.
+#
+# NOT part of an ordinary `make install`, hence default OFF: the wheel needs
+# pip, and `wheel` is not in ALL, so a default-ON rule would fail every install
+# that had not built it.
+if(ACCUDISC_INSTALL_WHEEL)
+    # Resolved at INSTALL time, not configure time — the file does not exist
+    # until `make wheel` runs, and its name is not predictable from here (the
+    # platform tag comes from pip, not from us).
+    #
+    # $ENV{DESTDIR} is prepended by hand because install(CODE) does not get the
+    # staging prefix that install(FILES) does — same idiom as
+    # accudisc_install_strip in the top-level CMakeLists.
+    #
+    # Both failure modes are FATAL rather than skipped. "ON but nothing built"
+    # would otherwise install nothing and report success, which is precisely the
+    # class of silent no-op this project keeps finding.
+    install(CODE "
+        file(GLOB _adsc_whl \"${_adsc_wheel_out}/*.whl\")
+        list(LENGTH _adsc_whl _adsc_whl_n)
+        if(_adsc_whl_n EQUAL 0)
+            message(FATAL_ERROR
+                \"accudisc: ACCUDISC_INSTALL_WHEEL is ON but no wheel exists in \"
+                \"${_adsc_wheel_out} — the wheel target is not part of ALL. \"
+                \"Build it first:\\n    cmake --build <builddir> --target wheel\")
+        elseif(_adsc_whl_n GREATER 1)
+            message(FATAL_ERROR
+                \"accudisc: \${_adsc_whl_n} wheels in ${_adsc_wheel_out}: \"
+                \"\${_adsc_whl}. Installing all of them would leave a consumer's \"
+                \"glob ambiguous. Rebuild the target (it clears the directory) \"
+                \"or remove the stale ones.\")
+        endif()
+        file(INSTALL
+             DESTINATION \"\$ENV{DESTDIR}${CMAKE_INSTALL_FULL_DATADIR}/accudisc/wheel\"
+             TYPE FILE FILES \${_adsc_whl})
+    ")
+endif()

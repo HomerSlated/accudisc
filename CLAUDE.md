@@ -149,6 +149,32 @@ cmake -B build && cmake --build build
 ./build/cli/accudisc --version
 ```
 
+**Installing is `./install.sh`** (build + install + uninstall, fully documented
+in its own header). It exists because three CMake defaults are right for this
+machine and wrong everywhere else — chiefly `ACCUDISC_SETCAP_AFTER_BUILD`, ON by
+default, which *fails the build* on any host without a passwordless `setcap`
+rule. It also builds unprivileged and escalates only for `cmake --install`, and
+installs the Python binding as a **wheel** into `$PREFIX/share/accudisc/wheel/`
+rather than into the prefix's `site-packages` (which is on no interpreter's
+`sys.path` outside `/usr`). `./install.sh uninstall --build-dir build` reverses
+it, driven by `install_manifest.txt`.
+
+**`./tools/mkdist.sh` → `dist/accudisc-<version>.tar.gz`** is the **user**
+distribution: only the sources of what the installer installs. `tests/`,
+`tools/`, `bindings/rust/`, `docs/research/`, this file, and the internal
+planning docs are excluded — so a tarball build refuses
+`-DACCUDISC_BUILD_TESTS=ON` with a message saying where the suite lives. The
+file list is `git ls-files` filtered by an explicit path list, so `.gitignore`'s
+exclusions (`private/`) are inherited rather than re-implemented. `dist/` is
+git-ignored.
+
+> **`install.sh` leaves `build/` configured with `ACCUDISC_BUILD_TESTS=OFF`.**
+> `scripts/sync.py` runs a bare `cmake -B build`, which preserves that cache,
+> and `ctest` will still report the *previous* configure's registrations against
+> whatever test binaries remain — passing without rebuilding them. Re-enable
+> tests explicitly (`cmake -B build -DACCUDISC_BUILD_TESTS=ON`) before relying
+> on the commit gate.
+
 C11, `-Wall -Wextra`. Public API is C, prefix `accudisc_` / `ACCUDISC_`;
 opaque handles, no libc types leaking into the ABI where avoidable.
 

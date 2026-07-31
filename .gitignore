@@ -1,3 +1,8 @@
+# Distribution tarballs, produced by tools/mkdist.sh. Build output, not source:
+# every byte in them comes from tracked files, so the repo already holds
+# everything they contain.
+dist/
+
 # Build output
 build/
 *.o

@@ -1292,6 +1292,125 @@ Headline items, for grep:
   `build/cli/accudisc` again, so §8 is a *live* obligation: write the ledger row
   before the commit, not at the end of a phase.
 
+## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
+
+8trax is the third correspondent and the first **GUI** consumer. Keith's ruling
+(their §b.1): it is a GUI **alternative** to cdda2img that will never interact
+with it — not a peer sharing work, not a front end over it. He also wants
+**nothing built until both AccuDisc and cdda2img go gold** (a few weeks), so
+**neither item below is scheduled before gold.** They are recorded because 8trax
+has written no code against us yet, which will never be true again, and asking
+them what they needed while their migration cost was zero was the whole point.
+
+### 1. Read-path progress callback — `[P2]`, their top ask
+
+`accudisc_read_cdda` has no progress callback; `accudisc_write` does
+(`accudisc.h:270-275`). One consumer, two shapes.
+
+**The constraint that makes it worth anything: identical signature to the write
+callback**, `void (*progress)(void *user, uint32_t done, uint32_t total)`. Their
+point is that the value is the two paths becoming interchangeable behind one
+abstraction; a differently-shaped read callback is worth much less.
+
+Why not "just scan the map": every progress consumer that is *not* the grid —
+window title, taskbar, ETA, an aggregate bar across a batch — would scan ~350,000
+bytes per frame at 60 Hz to recover one integer we already have.
+
+**`done` MUST count sectors ATTEMPTED, including `HARD` — do not wire it to
+`sectors_read`.** Found by 8trax (§d.1) before the thing existed, and verified:
+`src/read/engine.c:558-562` classifies a `HARD` sector, publishes it to the map,
+then `continue`s **past** `r.st.sectors_read++`. So `sectors_read` is "delivered",
+not "processed" — which is exactly what `accudisc.h:1393` says it is ("returned
+by the drive (excludes zero-fills)"), so the field is correct and must not
+change. But a progress bar fed from it **stalls short of 100% on a damaged disc
+and never completes** — on precisely the disc where the user is already anxious,
+where a stuck bar reads as a hung application. If `done` is ever defined the
+other way, say so in the header rather than leaving it to be discovered.
+
+Same rule for the burn equivalent: whatever an unwritable sector is, it still
+advances `done`.
+
+### 2. Status map on the WRITE path — `[P3]`, below item 1 by their own ranking
+
+`accudisc.h:1218-1219` has said "passes it to a read (later: write) request"
+since the map was introduced. 8trax asked explicitly (§b.3.2), which is what
+turns it from a parenthetical into a task.
+
+Their justification is better than the header's, which never gave one: **a rip
+failure costs time and is repeatable; a burn failure costs a physical disc and is
+not undoable.** That is where a user wants to watch it happen rather than read a
+percentage. Symmetric Rip/Burn tabs drawing one widget from one byte layout is
+the secondary benefit.
+
+### 3. Documentation defects this exposed — `[P3]`, cheap
+
+- **The priority chain is not in the header.** `engine.c:552-553` classifies
+  `hard > suspect > recovered > C2 > ok`, one byte per sector, so **a higher
+  state masks a lower one that also applies**. Reachable case: `recov[s]` is set
+  by boundary-overlap consensus (`engine.c:467-487`) *before* `bits[]` is
+  computed (`engine.c:489-492`), and `RECOVERED` outranks `C2`, so a
+  consensus-recovered sector whose winning copy still has C2 fired displays as
+  `RECOVERED` with the C2 invisible. Consequence for any consumer: **counting
+  `C2` cells in the map is not the count of C2-flagged sectors** — that is
+  `stats.sectors_flagged` (`engine.c:582-589`), accounted unconditionally. Map
+  for the picture, stats for the numbers.
+- **`RECOVERED` vs `OK` is not an ordering**, and the header does not say so.
+  About the *bytes*, `RECOVERED` has strictly more evidence (multiple agreeing
+  reads, or a C2-clean copy found — `engine.c:495-508` sets it only when C2 went
+  to **zero**). About the *medium* it is worse: a problem was observed there.
+  Neither is verification — a deterministic miscorrection passes both, and
+  `RECOVERY.md §12.4` has the measured instance where recovery drove C2 to 0–1
+  and AccurateRip v2 + CTDB still failed. Guidance given: give `RECOVERED` its
+  own hue off the `OK`→bad ramp; severity there is *effort* (extra reads taken),
+  and it is the state most likely to differ on a re-rip.
+- **Severity is not comparable across states.** Larger is worse within each, and
+  that is deliberate so one saturation ramp works — but severity 7 under `C2`
+  (~128 fired bits) and under `RECOVERED` (7 extra reads) are unrelated
+  quantities. Never sum severity across states.
+
+### 4. The Rust binding is OURS — Keith's ruling, 2026-08-01 — `[P2]`
+
+*"We will build the bindings, and coordinate with the other agents to service
+their needs."* 8trax offered to write `accudisc-sys` + the safe wrapper from
+their side (their §2.1.2); **declined**, and they have been told not to
+scaffold it. Not before gold, like everything else here.
+
+"Service their needs" is the operative half: the wrapper gets designed against
+8trax's real call sequence, not against the header's full surface. Four things
+to get from them before writing it — asked, with no reply expected before gold:
+
+1. Which calls they actually make, and in what order.
+2. Where the subprocess boundary sits. Per their §b.2 they are subprocess-first
+   *permanently* for anything privileged (burn, vendor features) because of the
+   `CAP_SYS_RAWIO`-binds-to-the-inode point — so a wrapper covering the whole
+   API is partly dead weight, and knowing which part matters.
+3. What the status map should look like in Rust — raw `&[u8]`, a typed cell
+   iterator, or per-state counts without walking it. They redraw at 60 Hz.
+4. Whether the sink callback survives contact with FLTK. They confirmed the
+   blocking-call-on-a-worker shape is right, but the sink runs *inside* that
+   call, and a Rust closure crossing FFI has constraints the C header cannot
+   anticipate.
+
+`bindings/rust/README.md` still says "scaffolded once the C API surface
+stabilizes"; that condition is now met (see item 1's stability note), and the
+blocker is schedule, not readiness.
+
+### 5. Answered, no work — recorded so it is not re-litigated
+
+- **Threading**: blocking `accudisc_read_cdda` on a worker thread is the shape
+  8trax wants (FLTK is single-UI-thread; a callback/reactor API would force them
+  to marshal every callback onto the UI thread anyway). The status map is a
+  particularly good fit *because* it sidesteps marshalling — worker writes bytes,
+  UI reads on a redraw timer, nothing crosses the boundary. **Do not "improve"
+  this into a callback.**
+- **`CAP_SYS_RAWIO` decided their architecture.** It binds to the executable's
+  inode, so subprocessing the CLI carries it for free, while linking
+  `libaccudisc` would need `setcap` on the **GUI binary itself**. They will not
+  ship a setcap'd desktop GUI, so their plan is subprocess-first *permanently*
+  for anything privileged (burn, vendor features), library for the unprivileged
+  read/probe/parse work. Worth remembering: for a GUI consumer the machine
+  interface is not a fallback, it is the primary path for half the product.
+
 ## Outstanding — carried from 2026-07-26 (phase 3 landed; these did not)
 
 ### 0. RECOVERED sectors were returned WRONG, 9/9 — `[P1]`, cdda2img §89.5, NOT DIAGNOSED

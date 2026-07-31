@@ -288,7 +288,25 @@ if(ACCUDISC_BUILD_CLI)
     # created. See there for the ordering constraint.
 endif()
 
+# The tests directory is ABSENT from the user distribution tarball
+# (tools/mkdist.sh ships only the sources of what gets installed), so its
+# existence is checked rather than assumed. Without this guard, configuring an
+# unpacked tarball with -DACCUDISC_BUILD_TESTS=ON fails inside CMake with
+# "add_subdirectory given source ... which is not an existing directory" —
+# accurate, and useless to someone who does not know the tarball is pruned.
+#
+# FATAL rather than a silent skip: the caller asked for tests. Turning them off
+# on their behalf and reporting success is how a build claims to have tested
+# something it never compiled.
 if(ACCUDISC_BUILD_TESTS)
+    if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/tests/CMakeLists.txt")
+        message(FATAL_ERROR
+            "accudisc: ACCUDISC_BUILD_TESTS is ON but there is no tests/ "
+            "directory here. This is the source DISTRIBUTION, which ships only "
+            "what the installer needs; the test suite lives in the git "
+            "repository. Configure with -DACCUDISC_BUILD_TESTS=OFF, or build "
+            "from a clone.")
+    endif()
     enable_testing()
     add_subdirectory(tests)
 endif()
@@ -326,6 +344,15 @@ if(IS_ABSOLUTE "${CMAKE_INSTALL_INCLUDEDIR}")
 else()
     set(ACCUDISC_PC_INCLUDEDIR "\${prefix}/${CMAKE_INSTALL_INCLUDEDIR}")
 endif()
+# Same absolute-vs-relative treatment as libdir/includedir above, for the same
+# reason: CMAKE_INSTALL_DATADIR may legitimately be absolute, and pasting it
+# after ${prefix} yields "${prefix}//usr/share" — a path that parses and does
+# not exist.
+if(IS_ABSOLUTE "${CMAKE_INSTALL_DATADIR}")
+    set(ACCUDISC_PC_WHEELDIR "${CMAKE_INSTALL_FULL_DATADIR}/accudisc/wheel")
+else()
+    set(ACCUDISC_PC_WHEELDIR "\${prefix}/${CMAKE_INSTALL_DATADIR}/accudisc/wheel")
+endif()
 configure_file(cmake/accudisc.pc.in ${CMAKE_BINARY_DIR}/accudisc.pc @ONLY)
 install(FILES ${CMAKE_BINARY_DIR}/accudisc.pc
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
@@ -358,6 +385,17 @@ set(_adsc_dirs
     "${CMAKE_INSTALL_FULL_LIBDIR}/accudisc")
 if(ACCUDISC_INSTALL_PYTHON)
     list(INSERT _adsc_dirs 0 "${_adsc_pysite}/accudisc")
+endif()
+# The wheel's directories. Appended rather than inserted because they are
+# unrelated to the entries above; deepest-first WITHIN the pair, which is the
+# property that matters — share/accudisc cannot go empty until share/accudisc/
+# wheel is gone. Both options are declared by bindings/python/CMakeLists.txt,
+# which add_subdirectory() has already processed by this line, and option()
+# creates a cache entry, so they are visible here.
+if(ACCUDISC_INSTALL_WHEEL)
+    list(APPEND _adsc_dirs
+        "${CMAKE_INSTALL_FULL_DATADIR}/accudisc/wheel"
+        "${CMAKE_INSTALL_FULL_DATADIR}/accudisc")
 endif()
 
 add_custom_target(uninstall

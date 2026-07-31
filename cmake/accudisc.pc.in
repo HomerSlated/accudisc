@@ -3,6 +3,30 @@ exec_prefix=${prefix}
 libdir=@ACCUDISC_PC_LIBDIR@
 includedir=@ACCUDISC_PC_INCLUDEDIR@
 
+# Where `make install` places the Python wheel, when built with
+# -DACCUDISC_INSTALL_WHEEL=ON:
+#
+#     pkg-config --variable=wheeldir accudisc
+#
+# The DIRECTORY is the contract; the filename carries version and ABI tags and
+# changes with both, so glob it. This variable is present unconditionally in
+# THIS TEMPLATE — it names where a wheel WOULD go, which is not a claim that one
+# is there. Globbing the directory is the only thing that answers that, and a
+# consumer has to glob regardless.
+#
+# TEST FOR A NON-EMPTY ANSWER, NEVER FOR THE EXIT STATUS. `pkg-config
+# --variable=X` exits 0 and prints nothing when X is undefined — measured, and
+# identical to a variable that is defined-empty; only a missing PACKAGE gives a
+# non-zero status. So
+#
+#     if pkg-config --variable=wheeldir accudisc; then ...    # WRONG
+#
+# takes the success branch and hands you "". That matters here specifically:
+# any accudisc.pc installed before this variable existed is found, answers 0,
+# and yields nothing. Found by the cdda2img agent against exactly such an
+# install (their §130.1).
+wheeldir=@ACCUDISC_PC_WHEELDIR@
+
 Name: accudisc
 Description: @PROJECT_DESCRIPTION@
 Version: @PROJECT_VERSION@
