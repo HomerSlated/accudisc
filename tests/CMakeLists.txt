@@ -93,3 +93,23 @@ add_test(NAME test_install_relocate
                  ${CMAKE_COMMAND})
 set_tests_properties(test_install_relocate PROPERTIES
                      TIMEOUT 900 SKIP_RETURN_CODE 77)
+
+# Phase 3b — A/B parity of src/repair/ against cdda2img's pinned `ctanalyse`
+# (tag ctanalyse-ab-baseline, commit 0e94be1). Eight arms over three real disc
+# fixtures in /var/tmp; SKIPS (77) when they are absent, which is everywhere but
+# this machine — 1.6 GB of disc images are deliberately not in the repo.
+#
+# The harness is a separate program from theirs and only their JSON OUTPUT is
+# read, so no GPL code is linked, included or executed.
+#
+# Element-wise on the correction list, not on the summary counts, and that
+# distinction is load-bearing: an injected position-basis defect returns the
+# right NUMBER of corrections at the wrong bytes, and an injected grid window
+# reproduces `dirty_columns` exactly (11760 vs 11760) while changing the
+# corrections entirely. A count comparison passes both.
+add_executable(ctdb_ab ctdb_ab.c)
+target_link_libraries(ctdb_ab PRIVATE accudisc_static)
+target_include_directories(ctdb_ab PRIVATE ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME test_ctdb_ab
+         COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/ctdb_ab.sh $<TARGET_FILE:ctdb_ab>)
+set_tests_properties(test_ctdb_ab PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77)
