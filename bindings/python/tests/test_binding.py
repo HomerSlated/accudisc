@@ -18,6 +18,7 @@ CMake/ctest gate does not need pytest installed.
 from __future__ import annotations
 
 import sys
+import types
 
 import accudisc as ad
 from accudisc._accudisc import ffi, lib
@@ -619,6 +620,108 @@ def test_read_span_refuses_over_the_ceiling():
         assert "ceiling" in str(exc)
     else:
         raise AssertionError("an oversized span must be refused, not allocated")
+
+
+# ---------------------------------------------------------------------------
+# C2/audio alignment
+# ---------------------------------------------------------------------------
+
+
+def _lag(pairs, active, flags, diffs, peak, runner):
+    """A C lag struct, built in C memory so the wrapper sees the real layout."""
+    c = ffi.new("accudisc_c2_lag*")
+    c.lag_pairs, c.sectors_active, c.flags_used = pairs, active, flags
+    c.diff_bytes, c.peak_milli, c.runner_milli = diffs, peak, runner
+    return c[0]
+
+
+def test_c2_lag_struct_size_is_pinned():
+    """An OUT struct with no `size` field — the layout is the whole contract.
+
+    Only one of these is ever returned, so unlike a rung array a mismatch
+    cannot cascade across elements. It does something worse in miniature:
+    `lag_pairs` is first, so a header/library skew silently misreads the one
+    number the caller acts on, and every remaining field with it.
+    """
+    assert ffi.sizeof("accudisc_c2_lag") == 20, (
+        "accudisc_c2_lag changed size — bump the version and tell cdda2img "
+        "before updating this pin"
+    )
+
+
+def test_inconclusive_is_a_sentinel_not_a_number():
+    """NOTFOUND fills the struct anyway, so `lag_pairs` is well-formed garbage.
+
+    The named hazard: the library still writes whatever shift scored highest.
+    Nothing in the struct says "this did not conclude" — only the return code
+    does — so a wrapper reading the struct alone would hand back a confident
+    integer for a probe that reached no verdict.
+    """
+    c = ad._c2_lag_from_c(_lag(3, 12, 400, 900, 210, 190), conclusive=False)
+    assert c.lag_pairs is None, "an inconclusive probe must not report a lag"
+    assert not c.conclusive
+    assert c.sectors_active == 12, "the evidence survives the sentinel"
+    assert c.flags_used == 400 and c.diff_bytes == 900
+
+
+def test_a_conclusive_lag_survives():
+    """The complement — without it, a wrapper returning None always passes."""
+    c = ad._c2_lag_from_c(_lag(-2, 340, 9001, 21000, 640, 120), conclusive=True)
+    assert c.lag_pairs == -2, "a negative lag is a real verdict, not an error"
+    assert c.conclusive and c.c2_fired
+    assert (c.peak_milli, c.runner_milli) == (640, 120)
+
+
+def test_a_conclusive_zero_lag_is_not_an_absent_one():
+    """`lag_pairs == 0` means MEASURED, and this drive has no lag.
+
+    It is a different fact from `None`, and the distinction is the reason the
+    sentinel is None rather than 0. A drive that happens to be aligned would
+    otherwise be indistinguishable from a probe that could not conclude — and
+    the caller's next move differs: record 0, versus retry on damaged media.
+    """
+    c = ad._c2_lag_from_c(_lag(0, 500, 8000, 19000, 700, 150), conclusive=True)
+    assert c.lag_pairs == 0
+    assert c.conclusive, "zero is a verdict"
+
+
+def test_c2_fired_separates_a_clean_span_from_thin_evidence():
+    """Both are inconclusive; they call for different next moves.
+
+    An all-zero struct means no C2 fired at all — the span was clean and there
+    was nothing to correlate, so the answer is a damaged span or a higher
+    speed. Evidence present but insufficient means the method worked and the
+    span was too small. Collapsing both into `lag_pairs is None` loses that,
+    which is what cdda2img asked us to surface (§137.10).
+    """
+    clean = ad._c2_lag_from_c(_lag(0, 0, 0, 0, 0, 0), conclusive=False)
+    assert not clean.conclusive and not clean.c2_fired
+
+    thin = ad._c2_lag_from_c(_lag(1, 7, 30, 40, 180, 170), conclusive=False)
+    assert not thin.conclusive and thin.c2_fired, (
+        "C2 fired but the evidence was thin — distinguishable from a clean span"
+    )
+
+
+def test_probe_c2_lag_refuses_an_lba_past_leadout():
+    """The guard is in the wrapper, so it fires before any drive I/O."""
+    d = object.__new__(ad.Device)
+    d.read_toc = lambda: types.SimpleNamespace(leadout_lba=1000)
+    try:
+        ad.Device.probe_c2_lag(d, lba=1000)
+    except ad.InvalidArgument as exc:
+        assert "lead-out" in str(exc), exc
+    else:
+        raise AssertionError("an lba at lead-out must be refused")
+
+    # The complement: a valid lba must get PAST the guard. Without it, a
+    # wrapper that refused every lba would pass the check above.
+    try:
+        ad.Device.probe_c2_lag(d, lba=0)
+    except ad.InvalidArgument as exc:
+        raise AssertionError(f"lba=0 must be accepted: {exc}")
+    except ValueError as exc:
+        assert "closed" in str(exc), exc
 
 
 # ---------------------------------------------------------------------------

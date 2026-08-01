@@ -48,7 +48,7 @@ __all__ = [
     "C2", "Sub", "MapState", "Anomaly", "TocSource", "TocDegrade", "C2Verdict",
     "Verdict", "WriteResult",
     "Sense", "DriveId", "Track", "Session", "Toc", "TocInfo", "Features",
-    "SpeedRung", "Chunk", "ReadStats", "ReadResult", "Cancel", "Device", "Q",
+    "SpeedRung", "C2Lag", "Chunk", "ReadStats", "ReadResult", "Cancel", "Device", "Q",
     "version", "library_version", "map_state", "map_severity", "anomaly_token",
     "msf_to_lba", "lba_to_msf", "parse_q", "extract_q",
     "MAX_SPAN_BYTES", "UNTRUSTED_GEOMETRY",
@@ -721,6 +721,65 @@ class SpeedRung:
 
 
 @dataclass(frozen=True, slots=True)
+class C2Lag:
+    """The drive's C2-bitmap/audio alignment, and the evidence behind it.
+
+    ``lag_pairs`` is ``None`` when the probe could not conclude — which is a
+    NORMAL outcome, not an error, and is why this returns a value rather than
+    raising. A clean disc, a clean span, or flags incoherent with reread
+    instability all land here. The evidence fields are still filled in, so the
+    two cases the library distinguishes stay distinguishable:
+
+    * ``sectors_active == 0`` — no C2 fired anywhere in the span. Nothing was
+      wrong with the probe; there was nothing to measure. Try a damaged span,
+      or a speed at which flags actually fire.
+    * ``sectors_active > 0`` with ``lag_pairs is None`` — C2 fired, but the
+      reread evidence was too thin to pick a peak. A larger span may conclude.
+
+    :attr:`c2_fired` names that split so a caller does not re-derive it.
+
+    **Sign convention:** a fired bit at bitmap position *i* describes audio byte
+    ``i - 4 * lag_pairs``. Positive lag means the bitmap trails the audio.
+
+    **Report-only.** AccuDisc never applies this to the bitmaps it delivers —
+    it is a factual property of the drive for the caller to record and apply.
+    Anything treating fired bits as byte-exact damage positions (an erasure
+    feed for parity repair) must correct for it; misplaced erasures actively
+    harm decoding, so an unapplied lag is worse than none.
+
+    ``peak_milli`` is agreement against a PROXY oracle — reread instability,
+    which cannot see bytes that fail identically in paired reads — so expect it
+    well below what a database oracle would give. It is not a confidence score
+    to threshold on: a verdict is only returned at all when the peak dominates
+    every other shift, so any non-``None`` ``lag_pairs`` is already unambiguous.
+    """
+
+    lag_pairs: int | None    #: None = inconclusive; see the class docstring
+    sectors_active: int      #: C2-active sectors seen in the scan pass
+    flags_used: int          #: fired C2 bits contributing at the peak
+    diff_bytes: int          #: unstable byte observations accumulated
+    peak_milli: int          #: flags landing on unstable bytes at the peak, ‰
+    runner_milli: int        #: best agreement at any OTHER shift, ‰
+
+    @property
+    def conclusive(self) -> bool:
+        """Did the probe return an alignment? Equivalent to ``lag_pairs is not None``."""
+        return self.lag_pairs is not None
+
+    @property
+    def c2_fired(self) -> bool:
+        """Did any C2 fire in the span at all?
+
+        The one distinction worth making on an inconclusive result: ``False``
+        means the span was clean and the probe had nothing to work with,
+        ``True`` means it had evidence and it was not enough. They call for
+        different next moves, and telling them apart from ``lag_pairs`` alone
+        is impossible.
+        """
+        return self.sectors_active > 0
+
+
+@dataclass(frozen=True, slots=True)
 class ReadStats:
     """Counters for one :meth:`Device.read`."""
 
@@ -1208,6 +1267,54 @@ class Device:
         out = ffi.new("uint8_t*")
         _check(lib.accudisc_probe_accurate_stream(self._handle, lba, out), self)
         return bool(out[0])
+
+    def probe_c2_lag(self, lba: int = 0, count: int | None = None) -> C2Lag:
+        """Measure this drive's C2-bitmap/audio alignment. **Needs DAMAGED media.**
+
+        Some drives return the C2 bitmap shifted from the audio bytes of the
+        same sector by a small constant amount (2 sample pairs on the Plextor
+        PX-716A). The probe needs no external reference: fired flags mark bytes
+        the CIRC decoder failed on, failed bytes are unstable across
+        cache-defeated rereads, so flag positions are cross-correlated against
+        reread instability over candidate shifts and the agreement peak is the
+        lag.
+
+        That method is why the media matters. A clean disc fires no flags and
+        there is nothing to correlate — so this returns an INCONCLUSIVE
+        :class:`C2Lag` (``lag_pairs is None``) rather than raising. Absence of
+        evidence is not an I/O failure, and it is common enough that making it
+        an exception would put a ``try`` around the normal case.
+
+        ``count`` defaults to the rest of the disc from ``lba``, matching
+        ``accudisc c2lag``. A wider span gives the correlation more to work
+        with; the probe scans for C2-active sectors and only rereads those, so
+        span costs less than it looks.
+
+        Speed is not set here. Flags fire more readily at higher speeds, so if
+        a span comes back with ``c2_fired`` false, :meth:`set_speed` upward and
+        retry before concluding the disc is clean. The drive is left wherever
+        the caller put it.
+
+        The result is a property of the DRIVE, not the disc, so it is worth
+        caching per drive — but it is **report-only**: the library goes on
+        delivering raw bitmaps, and applying the correction is the caller's
+        job. See :class:`C2Lag`.
+        """
+        if count is None:
+            leadout = self.read_toc().leadout_lba
+            if lba >= leadout:
+                raise InvalidArgument(
+                    lib.ACCUDISC_ERR_INVAL,
+                    f"lba {lba} is at or past lead-out {leadout}",
+                )
+            count = leadout - lba
+
+        out = ffi.new("accudisc_c2_lag*")
+        rc = lib.accudisc_probe_c2_lag(self._handle, lba, count, out)
+        if rc == lib.ACCUDISC_ERR_NOTFOUND:
+            return _c2_lag_from_c(out[0], conclusive=False)
+        _check(rc, self)
+        return _c2_lag_from_c(out[0], conclusive=True)
 
     #: The CLI's default candidate ladder, before the page-2A cap is applied
     #: (``cli/main.c`` ``cmd_speeds``). Fastest-first, so the returned rows and
@@ -1903,6 +2010,26 @@ def _rung_from_c(r) -> SpeedRung:
         max_cx=r.max_cx if measured else None,
         equiv_x=r.equiv_x,
         verdict=Verdict(r.verdict),
+    )
+
+
+def _c2_lag_from_c(c, conclusive: bool) -> C2Lag:
+    """One C lag struct.
+
+    ``conclusive`` comes from the RETURN CODE, never from inspecting the
+    struct. On ACCUDISC_ERR_NOTFOUND the library still fills every evidence
+    field, and `lag_pairs` is then whatever shift happened to score highest —
+    a well-formed integer that means nothing. There is no value of it that
+    signals "inconclusive", so the only thing that can carry that fact is the
+    rc, and it has to be passed in rather than re-derived here.
+    """
+    return C2Lag(
+        lag_pairs=c.lag_pairs if conclusive else None,
+        sectors_active=c.sectors_active,
+        flags_used=c.flags_used,
+        diff_bytes=c.diff_bytes,
+        peak_milli=c.peak_milli,
+        runner_milli=c.runner_milli,
     )
 
 

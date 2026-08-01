@@ -370,6 +370,26 @@ int accudisc_probe_features(accudisc_device *dev, accudisc_features *out);
 int accudisc_probe_accurate_stream(accudisc_device *dev, uint32_t lba,
                                    uint8_t *accurate);
 
+/* ---- C2/audio alignment ------------------------------------------------- */
+
+/* An OUT struct with no `size` field, like accudisc_speed_rung above and for
+ * the same reason. Unlike the rung there is only ever one of these, so a
+ * stride mismatch cannot cascade — but a field mismatch still misreads every
+ * number after the first, and lag_pairs is the one the caller acts on.
+ * tests/test_binding.py pins sizeof(). */
+typedef struct accudisc_c2_lag {
+    int32_t  lag_pairs;
+    uint32_t sectors_active;
+    uint32_t flags_used;
+    uint32_t diff_bytes;
+    uint16_t peak_milli;
+    uint16_t runner_milli;
+    ...;
+} accudisc_c2_lag;
+
+int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba, uint32_t count,
+                          accudisc_c2_lag *out);
+
 /* ---- achievable speed ladder ------------------------------------------- */
 #define ACCUDISC_RUNG_UNKNOWN ...
 #define ACCUDISC_RUNG_ADMITTED ...
