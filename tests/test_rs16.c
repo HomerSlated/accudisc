@@ -8,11 +8,14 @@
  * recovering the ORIGINAL word, never by comparing against a second run of
  * the decoder.
  *
- * Standalone, so it can be built and run before the module is wired into
- * CMake:
- *
- *   gcc -std=c11 -Wall -Wextra -Iinclude -o /tmp/rs16_selftest \
- *       src/repair/gf16.c src/repair/rs16.c src/repair/selftest.c
+ * SCOPE, and the reason test_rs16_kat.c exists beside this file. Every decode
+ * here forms its error syndromes with adsc_rs16_syndromes() and hands them to
+ * adsc_rs16_decode(). That is a ROUND TRIP: the two functions share a position
+ * convention, so a convention that is wrong in BOTH cancels and every test
+ * below still passes. Nothing here can see it. test_rs16_kat.c computes the
+ * syndromes from the definition with its own field arithmetic, and that is
+ * what pins the convention. Keep the division — this file is the wide
+ * behavioural sweep, that one is the ground truth.
  */
 
 #include <stdarg.h>
@@ -20,8 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "gf16.h"
-#include "rs16.h"
+#include "repair/gf16.h"
+#include "repair/rs16.h"
 
 #define MAX_N_DATA 1024
 #define OUT_MAX    (ADSC_RS16_MAX_NPAR + 1)
@@ -279,12 +282,17 @@ static int attempt(unsigned npar, unsigned n_data, unsigned nerr,
 /* ---- 7.3 error-only round trips, and the single-error closed form -------- */
 static void test_single_error_closed_form(unsigned npar, unsigned n_data)
 {
-    /* One error is the case that pins the Forney factor and the position
-     * basis at once: the evaluator collapses to the error magnitude and
-     * Lambda'(X^-1) collapses to X, so any stray power of alpha shows up
-     * immediately and unambiguously. Run it before the random sweeps —
-     * a failure here says which stage is wrong, a failure at t = 6 does
-     * not. */
+    /* One error pins the Forney factor: the evaluator collapses to the error
+     * magnitude and Lambda'(X^-1) collapses to X, so a stray power of alpha
+     * in that stage shows up immediately. Run it before the random sweeps —
+     * a failure here says which stage is wrong, a failure at t = 6 does not.
+     *
+     * It does NOT pin the position basis, though an earlier version of this
+     * comment claimed it did. err_syn is built from adsc_rs16_syndromes(), so
+     * a basis shared with the decoder cancels: shift both and this test still
+     * reports the planted position exactly. See test_rs16_kat.c, which builds
+     * the same syndromes independently and is the only thing here that can
+     * fail on a basis error. */
     uint16_t orig[MAX_N_DATA], recv[MAX_N_DATA];
     uint16_t a[ADSC_RS16_MAX_NPAR], b[ADSC_RS16_MAX_NPAR];
     uint16_t err_syn[ADSC_RS16_MAX_NPAR];
