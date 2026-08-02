@@ -343,6 +343,42 @@ int accudisc_check_audio_range(const accudisc_toc *toc, uint32_t lba,
                                uint32_t count, accudisc_range_check *out);
 const char *accudisc_range_reason_str(unsigned reason);
 
+/* ---- CTDB parity repair -------------------------------------------------- */
+#define ACCUDISC_CTDB_UNVERIFIED ...
+
+typedef struct accudisc_ctdb_req {
+    uint32_t size;
+    uint32_t npar;
+    uint32_t wire_stride;
+    uint32_t image_first_frame;
+    uint32_t image_frames;
+    int32_t  offset_pairs;
+    const uint8_t *pcm;
+    uint64_t       pcm_bytes;
+    const uint8_t *parity;
+    uint64_t       parity_bytes;
+    const uint8_t *pcm_erasures;
+    uint64_t       pcm_erasures_bytes;
+    ...;
+} accudisc_ctdb_req;
+
+typedef struct accudisc_ctdb_report {
+    uint32_t size;
+    int32_t  offset_pairs;
+    uint32_t dirty_columns;
+    uint32_t repaired_columns;
+    uint32_t refused_columns;
+    uint32_t erasure_columns;
+    uint32_t corrections;
+    uint32_t crc32_before;
+    uint32_t crc32_after;
+    uint32_t unverified_columns;
+    ...;
+} accudisc_ctdb_report;
+
+int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
+                         accudisc_ctdb_report *report);
+
 /* ---- disc classification ------------------------------------------------ */
 typedef enum accudisc_disc_kind {
     ACCUDISC_DISC_NEITHER,

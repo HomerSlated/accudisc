@@ -1043,6 +1043,133 @@ def test_disc_probe_not_obtained_is_not_a_value():
 
 
 # ---------------------------------------------------------------------------
+# CTDB parity repair
+# ---------------------------------------------------------------------------
+#
+# Fixture-free, so it runs everywhere: an all-zero image has all-zero syndromes,
+# so all-zero parity is VALID parity for it and damage can be planted by hand.
+# The eight-arm A/B against 1.6 GB of real CTDB parity proves the wire format;
+# this proves the binding's contract, which is a different question.
+
+_WIRE_STRIDE = 588          # S = 1176 words = one frame
+_S = _WIRE_STRIDE * 2
+_FRAMES = 6                 # W/S = 6, so sc = 4 rows
+_PCM_WORDS = _FRAMES * 1176
+
+
+def _ctdb_case(npar=2):
+    """A clean image, valid parity for it, and an empty erasure bitmap."""
+    return (bytearray(_PCM_WORDS * 2),
+            bytes(_S * npar * 2),
+            bytearray((_PCM_WORDS + 7) // 8))
+
+
+def _word(row, col=10):
+    """PCM word index of one codeword symbol: base + S + col + row*S."""
+    return _S + col + row * _S
+
+
+def _plant(pcm, row, value=0xA53C, col=10):
+    w = _word(row, col)
+    pcm[w * 2] = value & 0xFF
+    pcm[w * 2 + 1] = value >> 8
+
+
+def _flag(bits, row, col=10):
+    w = _word(row, col)
+    bits[w >> 3] |= 1 << (w & 7)
+
+
+def _repair(pcm, parity, erasures=None, npar=2):
+    return ad.ctdb_repair(pcm=pcm, parity=parity, npar=npar,
+                          wire_stride=_WIRE_STRIDE, image_first_frame=0,
+                          image_frames=_FRAMES, erasures=erasures)
+
+
+def test_ctdb_struct_sizes():
+    """Both structs carry a `size` field, and the binding must agree on it."""
+    assert ffi.sizeof("accudisc_ctdb_req") == 72
+    assert ffi.sizeof("accudisc_ctdb_report") == 40
+
+
+def test_ctdb_clean_image_is_clean():
+    pcm, parity, _ = _ctdb_case()
+    r = _repair(pcm, parity)
+    assert r.clean and r.verified and r.dirty_columns == 0
+    assert r.audio is not None and r.corrections == 0
+
+
+def test_ctdb_repairs_and_returns_audio():
+    pcm, parity, _ = _ctdb_case()
+    _plant(pcm, row=1)
+    r = _repair(pcm, parity)
+    assert r.verified, "one error against npar=2 should be correctable"
+    assert r.dirty_columns == 1 and r.corrections == 1
+    assert r.audio == bytearray(_PCM_WORDS * 2), "audio was not restored"
+    assert r.audio_unverified is None
+
+
+def test_ctdb_full_capacity_erasures_are_unverified():
+    """The contract this class exists for.
+
+    npar erasures consume every check equation, so the errata are determined
+    and re-verification is an identity. The repair still happens — `audio` must
+    NOT be the thing that is None-tested to detect a refusal — but the strong
+    attribute stays empty so a caller writing `if r.audio:` declines it, exactly
+    as a C caller writing `rc == ACCUDISC_OK` does.
+    """
+    pcm, parity, bits = _ctdb_case()
+    _plant(pcm, row=1)
+    _plant(pcm, row=2, value=0x1234)
+    _flag(bits, row=1)
+    _flag(bits, row=2)
+
+    r = _repair(pcm, parity, erasures=bits)
+    assert r.unverified_columns == 1
+    assert r.audio is None, "the weaker result was reachable through .audio"
+    assert r.audio_unverified is not None, "nothing was written at all"
+    assert not r.verified and not r.refused
+    assert r.audio_unverified == bytearray(_PCM_WORDS * 2)
+
+
+def test_ctdb_refusal_is_a_result_not_an_exception():
+    """Two errors exceed npar/2 = 1 with no erasures to help."""
+    pcm, parity, _ = _ctdb_case()
+    _plant(pcm, row=0)
+    _plant(pcm, row=3, value=0x0F0F)
+    r = _repair(pcm, parity)
+    assert r.refused and r.refused_columns == 1
+    assert r.audio is None and r.audio_unverified is None
+    assert r.dirty_columns == 1
+
+
+def test_ctdb_in_place_repair():
+    """out may alias pcm; the same object comes back."""
+    pcm, parity, _ = _ctdb_case()
+    _plant(pcm, row=1)
+    r = ad.ctdb_repair(pcm=pcm, parity=parity, npar=2,
+                       wire_stride=_WIRE_STRIDE, image_first_frame=0,
+                       image_frames=_FRAMES, out=pcm)
+    assert r.audio is pcm
+    assert pcm == bytearray(_PCM_WORDS * 2)
+
+
+def test_ctdb_parity_size_mismatch_raises():
+    """A blob paired with another entry's npar is otherwise UNDETECTABLE.
+
+    The blob is syndrome-major, so a 16-parity blob's first 8 planes are a
+    valid 8-parity code that decodes to plausible corrections. Only the byte
+    count can catch it, which is why this is an exception and not a result.
+    """
+    pcm, parity, _ = _ctdb_case(npar=2)
+    try:
+        _repair(pcm, parity, npar=4)   # blob is sized for npar=2
+    except ad.InvalidArgument:
+        return
+    raise AssertionError("a blob sized for a different npar was accepted")
+
+
+# ---------------------------------------------------------------------------
 # standalone runner (no pytest required)
 # ---------------------------------------------------------------------------
 

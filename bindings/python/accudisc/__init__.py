@@ -47,6 +47,7 @@ __all__ = [
     "NotFound", "UnsafeCombination", "AbiMismatch", "RetainedBufferError",
     "C2", "Sub", "MapState", "Anomaly", "TocSource", "TocDegrade", "C2Verdict",
     "DiscKind", "DiscReason", "TrayState", "DiscProbe",
+    "CtdbRepair", "ctdb_repair",
     "Verdict", "WriteResult",
     "Sense", "DriveId", "Track", "Session", "Toc", "TocInfo", "Features",
     "SpeedRung", "C2Lag", "Chunk", "ReadStats", "ReadResult", "Cancel", "Device", "Q",
@@ -775,6 +776,69 @@ class SpeedRung:
         if self.min_cx is None or self.max_cx is None:
             return None
         return self.max_cx - self.min_cx
+
+
+@dataclass(frozen=True, slots=True)
+class CtdbRepair:
+    """The outcome of :func:`ctdb_repair`, and which claim it supports.
+
+    **There are three outcomes, not two**, and the difference between the first
+    two is the whole reason this class does not simply hand back a buffer:
+
+    * fully repaired and every correction re-verified — :attr:`audio`;
+    * repaired, but some columns were *determined* rather than verified —
+      :attr:`audio_unverified`, and see below;
+    * refused, nothing written — both are ``None`` and
+      :attr:`refused_columns` is non-zero.
+
+    :attr:`audio` is ``None`` unless the repair was FULLY verified. That is
+    deliberate and it mirrors the C exactly: there, a caller testing
+    ``rc == ACCUDISC_OK`` declines the weaker result and keeps the strong
+    contract it was written against, while accepting it requires naming the
+    second return code. Here, the naive ``if r.audio:`` declines it in the same
+    way, and accepting it means asking for :attr:`audio_unverified` **by name**.
+    Neither language lets you reach the weaker audio without saying so.
+
+    A column carrying exactly ``npar`` erasures consumes every check equation
+    the parity has, so its errata are exactly determined and re-deriving the
+    syndromes from them is an identity that cannot disagree. Such a column is
+    right if and only if its erasure list was complete, and a C2-derived list
+    under-flags. This is a property of correct erasure decoding rather than a
+    defect — which is also why no comparison against another implementation can
+    detect it.
+
+    **Nothing here is an absolute gate.** CTDB publishes per-track CRCs, so
+    there is no whole-image value to check against and :attr:`crc32_after` is
+    one this library computed. Gate on the per-track CRCs and AccurateRip
+    before committing, whichever attribute you read.
+    """
+
+    audio: bytes | bytearray | None      #: repaired audio, ONLY if fully verified
+    audio_unverified: bytes | bytearray | None  #: repaired audio when unverified_columns > 0
+    offset_pairs: int        #: the offset used, echoed back
+    dirty_columns: int       #: columns whose syndromes did not reconcile
+    repaired_columns: int    #: of those, the ones that decoded
+    refused_columns: int     #: of those, the ones beyond capacity
+    erasure_columns: int     #: dirty columns carrying at least one erasure
+    unverified_columns: int  #: repaired columns that were determined, not verified
+    corrections: int         #: symbols changed; zero-magnitude errata not counted
+    crc32_before: int        #: over the codeword region, before repair
+    crc32_after: int         #: ditto after
+
+    @property
+    def verified(self) -> bool:
+        """Did every repaired column re-verify? Equivalent to ``audio is not None``."""
+        return self.audio is not None
+
+    @property
+    def refused(self) -> bool:
+        """Was the repair declined? Nothing was written; a NORMAL outcome."""
+        return self.refused_columns > 0
+
+    @property
+    def clean(self) -> bool:
+        """Did the image already reconcile with the parity, needing no repair?"""
+        return self.dirty_columns == 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -2146,6 +2210,135 @@ def _rung_from_c(r) -> SpeedRung:
         max_cx=r.max_cx if measured else None,
         equiv_x=r.equiv_x,
         verdict=Verdict(r.verdict),
+    )
+
+
+def ctdb_repair(
+    *,
+    pcm,
+    parity,
+    npar: int,
+    wire_stride: int,
+    image_first_frame: int,
+    image_frames: int,
+    offset_pairs: int = 0,
+    erasures=None,
+    out=None,
+) -> CtdbRepair:
+    """Apply a CueTools DB parity blob to a rip, correcting what CIRC could not.
+
+    Needs no device — this is arithmetic on buffers you already hold. It is the
+    one place AccuDisc does arithmetic on audio rather than moving it.
+
+    **The offset is an INPUT, not something this finds.** Pass the alignment you
+    determined; the call reconciles at that offset or declines. There is no
+    search here, deliberately.
+
+    **A refusal is a result, not an exception.** A column beyond the parity's
+    capacity gives a :class:`CtdbRepair` with ``refused`` true and no audio,
+    because "this damage exceeds what the entry can fix" is an ordinary answer
+    about a disc rather than a failure of the call. Bad geometry, mismatched
+    buffer sizes and odd addresses still raise.
+
+    ::
+
+        r = accudisc.ctdb_repair(
+            pcm=image, parity=blob, npar=entry.npar,
+            wire_stride=entry.stride,
+            image_first_frame=bounds[0],
+            image_frames=bounds[-1] - bounds[0],
+            offset_pairs=my_offset, erasures=c2_bitmap)
+
+        if r.audio is not None:          # fully verified
+            commit_if_track_crcs_pass(r.audio)
+        elif r.audio_unverified is not None:
+            ...                          # see CtdbRepair; weaker claim
+        elif r.refused:
+            ...                          # beyond capacity, nothing written
+
+    :param pcm: the whole rip, 16-bit LE stereo, ``[0, lead-out)``. NOT the
+        CTDB image window — this is the domain the two are most often
+        conflated in, and the library does the shift itself.
+    :param parity: the entry's blob exactly as fetched. Its length must equal
+        ``wire_stride * 2 * npar * 2`` bytes; a blob paired with another
+        entry's ``npar`` is otherwise UNDETECTABLE, because the blob is
+        syndrome-major and a 16-parity blob's first 8 planes are a valid
+        8-parity code that decodes to plausible corrections.
+    :param erasures: optional C2 bitmap, one bit per 16-bit word, **absolute
+        over pcm** — index by PCM word, never by image word. The library does
+        the domain shift; pre-shifting applies it twice. ``None`` means
+        error-only decoding, a normal mode rather than a degraded one.
+    :param out: optional writable buffer of ``len(pcm)`` bytes to receive the
+        result. Pass the same object as ``pcm`` to repair in place — supported,
+        and nothing is written unless every dirty column decoded, so a refusal
+        cannot leave a half-repaired buffer. Defaults to a fresh ``bytearray``.
+
+    All buffers must be 2-byte aligned; anything ``malloc`` returned is, but a
+    ``memoryview`` sliced at an odd offset is not and raises
+    :class:`InvalidArgument`.
+    """
+    pcm_buf = ffi.from_buffer(pcm)
+    par_buf = ffi.from_buffer(parity)
+    if out is None:
+        out = bytearray(len(pcm_buf))
+    out_buf = ffi.from_buffer(out, require_writable=True)
+    if len(out_buf) != len(pcm_buf):
+        raise InvalidArgument(
+            lib.ACCUDISC_ERR_INVAL,
+            f"out is {len(out_buf)} bytes, pcm is {len(pcm_buf)}",
+        )
+
+    q = ffi.new("accudisc_ctdb_req*")
+    q.size = ffi.sizeof("accudisc_ctdb_req")
+    q.npar = npar
+    q.wire_stride = wire_stride
+    q.image_first_frame = image_first_frame
+    q.image_frames = image_frames
+    q.offset_pairs = offset_pairs
+    q.pcm = ffi.cast("const uint8_t *", pcm_buf)
+    q.pcm_bytes = len(pcm_buf)
+    q.parity = ffi.cast("const uint8_t *", par_buf)
+    q.parity_bytes = len(par_buf)
+    if erasures is not None:
+        era_buf = ffi.from_buffer(erasures)
+        q.pcm_erasures = ffi.cast("const uint8_t *", era_buf)
+        q.pcm_erasures_bytes = len(era_buf)
+
+    rep = ffi.new("accudisc_ctdb_report*")
+    rep.size = ffi.sizeof("accudisc_ctdb_report")
+    rc = lib.accudisc_ctdb_repair(q, ffi.cast("uint8_t *", out_buf), rep)
+    if rc != lib.ACCUDISC_ERR_NOTFOUND:
+        _check(rc)
+    return _ctdb_repair_from_c(rep[0], out, rc)
+
+
+def _ctdb_repair_from_c(c, out, rc: int) -> CtdbRepair:
+    """One C repair report, plus which of the three outcomes the RC says it is.
+
+    The outcome comes from the return code and never from inspecting the
+    report, for the same reason C2Lag's `conclusive` does: on a refusal the
+    library still fills every count, so the struct alone cannot say whether
+    `out` was written. Only the rc carries that.
+
+    Splitting the buffer across two attributes is what makes the weaker claim
+    unreachable by accident. `audio` is populated on ACCUDISC_OK alone, so the
+    obvious `if r.audio:` declines an unverified repair exactly as the C
+    caller's `rc == ACCUDISC_OK` does.
+    """
+    verified = rc == lib.ACCUDISC_OK
+    unverified = rc == lib.ACCUDISC_CTDB_UNVERIFIED
+    return CtdbRepair(
+        audio=out if verified else None,
+        audio_unverified=out if unverified else None,
+        offset_pairs=c.offset_pairs,
+        dirty_columns=c.dirty_columns,
+        repaired_columns=c.repaired_columns,
+        refused_columns=c.refused_columns,
+        erasure_columns=c.erasure_columns,
+        unverified_columns=c.unverified_columns,
+        corrections=c.corrections,
+        crc32_before=c.crc32_before,
+        crc32_after=c.crc32_after,
     )
 
 
