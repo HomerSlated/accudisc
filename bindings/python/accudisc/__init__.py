@@ -46,6 +46,7 @@ __all__ = [
     "SenseError", "ShortResponse", "Unsupported", "NotBlank", "Cancelled", "CrcError",
     "NotFound", "UnsafeCombination", "AbiMismatch", "RetainedBufferError",
     "C2", "Sub", "MapState", "Anomaly", "TocSource", "TocDegrade", "C2Verdict",
+    "DiscKind", "DiscReason", "TrayState", "DiscProbe",
     "Verdict", "WriteResult",
     "Sense", "DriveId", "Track", "Session", "Toc", "TocInfo", "Features",
     "SpeedRung", "C2Lag", "Chunk", "ReadStats", "ReadResult", "Cancel", "Device", "Q",
@@ -398,6 +399,62 @@ class TocDegrade(enum.IntEnum):
         return ffi.string(lib.accudisc_toc_degrade_str(int(self))).decode()
 
 
+class DiscKind(enum.IntEnum):
+    """Which path a loaded disc is eligible for.
+
+    ``NEITHER`` is a successful classification, not a failure — see
+    :meth:`Device.probe_disc`.
+    """
+
+    NEITHER = lib.ACCUDISC_DISC_NEITHER
+    BLANK = lib.ACCUDISC_DISC_BLANK
+    AUDIO = lib.ACCUDISC_DISC_AUDIO
+
+    @property
+    def token(self) -> str:
+        """The CLI's stable machine token (``AUDIO``/``BLANK``/``NEITHER``).
+
+        Taken from the library rather than retyped here, so it cannot drift
+        from what the CLI prints: the two are the same function call.
+        """
+        return ffi.string(lib.accudisc_disc_kind_str(self.value)).decode()
+
+
+class DiscReason(enum.IntEnum):
+    """Why :class:`DiscKind` came out as it did.
+
+    Worth acting on rather than just logging: ``NO_MEDIUM`` and ``APPENDABLE``
+    are retryable in a way ``DATA_CD`` and ``NOT_CD_PROFILE`` are not.
+    """
+
+    AUDIO = lib.ACCUDISC_DISC_WHY_AUDIO
+    BLANK = lib.ACCUDISC_DISC_WHY_BLANK
+    DATA_CD = lib.ACCUDISC_DISC_WHY_DATA_CD
+    CLOSED_DATA = lib.ACCUDISC_DISC_WHY_CLOSED_DATA
+    APPENDABLE = lib.ACCUDISC_DISC_WHY_APPENDABLE
+    NO_MEDIUM = lib.ACCUDISC_DISC_WHY_NO_MEDIUM
+    NOT_CD_PROFILE = lib.ACCUDISC_DISC_WHY_NOT_CD_PROFILE
+    UNREADABLE = lib.ACCUDISC_DISC_WHY_UNREADABLE
+
+    @property
+    def token(self) -> str:
+        """The CLI's stable lowercase slug, from the library. See :attr:`DiscKind.token`."""
+        return ffi.string(lib.accudisc_disc_reason_str(self.value)).decode()
+
+
+class TrayState(enum.IntEnum):
+    """Only meaningful when :attr:`DiscProbe.reason` is ``NO_MEDIUM``."""
+
+    UNKNOWN = lib.ACCUDISC_TRAY_UNKNOWN
+    CLOSED = lib.ACCUDISC_TRAY_CLOSED
+    OPEN = lib.ACCUDISC_TRAY_OPEN
+
+    @property
+    def token(self) -> str:
+        """The CLI's stable token, from the library. See :attr:`DiscKind.token`."""
+        return ffi.string(lib.accudisc_tray_state_str(self.value)).decode()
+
+
 class C2Verdict(enum.IntEnum):
     """Conservative: only "claimed AND functional" earns ``SUPPORTED``."""
 
@@ -718,6 +775,49 @@ class SpeedRung:
         if self.min_cx is None or self.max_cx is None:
             return None
         return self.max_cx - self.min_cx
+
+
+@dataclass(frozen=True, slots=True)
+class DiscProbe:
+    """What is in the drive, and which path it is eligible for.
+
+    :attr:`kind` is the verdict and :attr:`reason` is why. The remaining
+    fields are the evidence it was reached from, kept so a caller can log or
+    second-guess the verdict without a second round of drive commands.
+
+    **Three fields are optional because the library has a distinct "not
+    obtained" value for them, and a sentinel that looks like data is exactly
+    how a caller ends up acting on a number that means nothing.** ``profile``
+    is ``None`` when no profile was reported; ``erasable`` and ``disc_status``
+    are ``None`` when the drive did not answer. ``0`` is a real, different
+    answer for both of the latter — ``disc_status == 0`` means *empty*, which
+    is the whole basis of the blank verdict — so the distinction is load
+    bearing rather than tidiness.
+    """
+
+    kind: DiscKind           #: the verdict: which path this disc is eligible for
+    reason: DiscReason       #: why that verdict
+    tray: TrayState          #: only meaningful when reason is NO_MEDIUM
+    profile: int | None      #: GET CONFIGURATION current profile; None = none reported
+    erasable: bool | None    #: True = CD-RW; None = not obtained
+    disc_status: int | None  #: 0 empty, 1 open, 2 closed; None = not obtained
+    audio_tracks: int        #: tracks with CTRL bit 2 clear
+    data_tracks: int         #: tracks with CTRL bit 2 set
+
+    @property
+    def can_rip(self) -> bool:
+        """Is there audio to read?"""
+        return self.kind is DiscKind.AUDIO
+
+    @property
+    def can_burn(self) -> bool:
+        """Is this a blank the burn path will accept?"""
+        return self.kind is DiscKind.BLANK
+
+    @property
+    def no_medium(self) -> bool:
+        """Is the drive empty? Retryable, unlike the other refusals."""
+        return self.reason is DiscReason.NO_MEDIUM
 
 
 @dataclass(frozen=True, slots=True)
@@ -1267,6 +1367,42 @@ class Device:
         out = ffi.new("uint8_t*")
         _check(lib.accudisc_probe_accurate_stream(self._handle, lba, out), self)
         return bool(out[0])
+
+    def probe_disc(self) -> DiscProbe:
+        """Classify the loaded disc: rip it, burn it, or neither.
+
+        The one call worth making before deciding what to do with a drive. It
+        answers from GET CONFIGURATION, READ DISC INFORMATION and the TOC, so
+        it distinguishes an empty tray from a data CD from an appendable disc
+        without the caller assembling that itself.
+
+        **A refusal is a RESULT, not an exception.** ``kind == NEITHER`` means
+        the classification succeeded and the answer is "neither path is
+        legal"; a data CD, an open session with nothing rippable yet, and an
+        empty drive all land there with different :attr:`DiscProbe.reason`
+        values. Only a failure to talk to the drive at all raises. Making an
+        empty tray an exception would put a ``try`` around the most ordinary
+        thing that can happen to a CD drive.
+
+        ::
+
+            p = dev.probe_disc()
+            if p.can_rip:
+                ...
+            elif p.can_burn:
+                ...
+            elif p.no_medium:
+                ...          # retryable: ask for a disc
+            else:
+                raise SystemExit(f"cannot use this disc: {p.reason.token}")
+
+        :attr:`DiscProbe.reason` is worth branching on rather than logging:
+        ``NO_MEDIUM`` and ``APPENDABLE`` can change without the user doing
+        anything drastic, while ``DATA_CD`` and ``NOT_CD_PROFILE`` cannot.
+        """
+        out = ffi.new("accudisc_disc_probe*")
+        _check(lib.accudisc_probe_disc(self._handle, out), self)
+        return _disc_probe_from_c(out[0])
 
     def probe_c2_lag(self, lba: int = 0, count: int | None = None) -> C2Lag:
         """Measure this drive's C2-bitmap/audio alignment. **Needs DAMAGED media.**
@@ -2010,6 +2146,30 @@ def _rung_from_c(r) -> SpeedRung:
         max_cx=r.max_cx if measured else None,
         equiv_x=r.equiv_x,
         verdict=Verdict(r.verdict),
+    )
+
+
+def _disc_probe_from_c(c) -> DiscProbe:
+    """One C disc-probe struct.
+
+    The three sentinel mappings are the whole job. ACCUDISC_DISC_STATUS_UNKNOWN
+    (0xff) is the library's "not obtained" for both `erasable` and
+    `disc_status`, and profile 0 is "none reported" — passing any of them
+    through as an integer would hand the caller a well-formed value that means
+    the opposite of what it looks like. `erasable` in particular would be
+    TRUTHY at 0xff, so a plain cast would report every drive that declined to
+    answer as holding a CD-RW.
+    """
+    unknown = lib.ACCUDISC_DISC_STATUS_UNKNOWN
+    return DiscProbe(
+        kind=DiscKind(c.kind),
+        reason=DiscReason(c.reason),
+        tray=TrayState(c.tray),
+        profile=c.profile or None,
+        erasable=None if c.erasable == unknown else bool(c.erasable),
+        disc_status=None if c.disc_status == unknown else c.disc_status,
+        audio_tracks=c.audio_tracks,
+        data_tracks=c.data_tracks,
     )
 
 

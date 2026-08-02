@@ -343,6 +343,53 @@ int accudisc_check_audio_range(const accudisc_toc *toc, uint32_t lba,
                                uint32_t count, accudisc_range_check *out);
 const char *accudisc_range_reason_str(unsigned reason);
 
+/* ---- disc classification ------------------------------------------------ */
+typedef enum accudisc_disc_kind {
+    ACCUDISC_DISC_NEITHER,
+    ACCUDISC_DISC_BLANK,
+    ACCUDISC_DISC_AUDIO,
+    ...
+} accudisc_disc_kind;
+
+typedef enum accudisc_disc_reason {
+    ACCUDISC_DISC_WHY_AUDIO,
+    ACCUDISC_DISC_WHY_BLANK,
+    ACCUDISC_DISC_WHY_DATA_CD,
+    ACCUDISC_DISC_WHY_CLOSED_DATA,
+    ACCUDISC_DISC_WHY_APPENDABLE,
+    ACCUDISC_DISC_WHY_NO_MEDIUM,
+    ACCUDISC_DISC_WHY_NOT_CD_PROFILE,
+    ACCUDISC_DISC_WHY_UNREADABLE,
+    ...
+} accudisc_disc_reason;
+
+typedef enum accudisc_tray_state {
+    ACCUDISC_TRAY_UNKNOWN,
+    ACCUDISC_TRAY_CLOSED,
+    ACCUDISC_TRAY_OPEN,
+    ...
+} accudisc_tray_state;
+
+#define ACCUDISC_DISC_STATUS_UNKNOWN ...
+
+/* An OUT struct with no `size` field, like accudisc_c2_lag above. */
+typedef struct accudisc_disc_probe {
+    uint16_t profile;
+    uint8_t erasable;
+    uint8_t disc_status;
+    uint8_t audio_tracks;
+    uint8_t data_tracks;
+    uint8_t kind;
+    uint8_t reason;
+    uint8_t tray;
+    ...;
+} accudisc_disc_probe;
+
+int accudisc_probe_disc(accudisc_device *dev, accudisc_disc_probe *out);
+const char *accudisc_disc_kind_str(unsigned kind);
+const char *accudisc_disc_reason_str(unsigned reason);
+const char *accudisc_tray_state_str(unsigned tray);
+
 /* ---- feature probe ----------------------------------------------------- */
 typedef enum accudisc_c2_verdict {
     ACCUDISC_C2_UNSUPPORTED,

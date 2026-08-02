@@ -972,6 +972,77 @@ def test_write_is_reachable_and_marshals_its_options():
 
 
 # ---------------------------------------------------------------------------
+# disc classification
+# ---------------------------------------------------------------------------
+
+
+def test_disc_probe_sizeof():
+    """Pin the OUT struct's layout.
+
+    accudisc_disc_probe has no `size` field (it is an OUT struct, like
+    accudisc_c2_lag), so nothing at run time can notice a field appearing or
+    changing width. A stale cdef would misread every value after the change
+    while still producing well-formed integers.
+    """
+    assert ffi.sizeof("accudisc_disc_probe") == 10
+
+
+def test_disc_tokens_are_the_cli_tokens():
+    """The tokens are the machine interface, so assert the LITERALS.
+
+    DiscKind.token calls the library, so comparing it against the library
+    would be circular — it would pass through any rename. These literals are
+    what cli-machine-interface.md publishes and what cdda2img keys decisions
+    on, so a C-side rename must fail here.
+    """
+    assert [k.token for k in ad.DiscKind] == ["NEITHER", "BLANK", "AUDIO"]
+    assert [r.token for r in ad.DiscReason] == [
+        "audio", "blank", "data_cd", "closed_data",
+        "appendable", "no_medium", "not_cd_profile", "unreadable",
+    ]
+    assert [t.token for t in ad.TrayState] == ["unknown", "closed", "open"]
+
+
+def test_disc_probe_not_obtained_is_not_a_value():
+    """0xff must become None, and 0 must NOT.
+
+    The library uses ACCUDISC_DISC_STATUS_UNKNOWN (0xff) for "the drive did not
+    answer". Passed through as an integer it is TRUTHY, so a plain bool() would
+    report every drive that declined to answer as holding a CD-RW. The
+    anti-assertion naming that wrong answer is the point of this test.
+
+    The other half matters just as much: disc_status == 0 is a real answer
+    meaning *empty*, which is the entire basis of the blank verdict, so it must
+    survive as 0 rather than being folded into None with the sentinel.
+    """
+    unknown = lib.ACCUDISC_DISC_STATUS_UNKNOWN
+
+    c = ffi.new("accudisc_disc_probe*")
+    c.kind = lib.ACCUDISC_DISC_NEITHER
+    c.reason = lib.ACCUDISC_DISC_WHY_NO_MEDIUM
+    c.tray = lib.ACCUDISC_TRAY_OPEN
+    c.erasable = unknown
+    c.disc_status = unknown
+    c.profile = 0
+    p = ad._disc_probe_from_c(c[0])
+    assert p.erasable is None and p.erasable is not True
+    assert p.disc_status is None
+    assert p.profile is None
+    assert p.no_medium and not p.can_rip and not p.can_burn
+
+    c.erasable = 0
+    c.disc_status = 0
+    c.profile = 0x09
+    c.kind = lib.ACCUDISC_DISC_BLANK
+    c.reason = lib.ACCUDISC_DISC_WHY_BLANK
+    p = ad._disc_probe_from_c(c[0])
+    assert p.erasable is False, "erasable 0 became None: a real answer was lost"
+    assert p.disc_status == 0, "disc_status 0 became None: 'empty' was lost"
+    assert p.profile == 0x09
+    assert p.can_burn and not p.can_rip and not p.no_medium
+
+
+# ---------------------------------------------------------------------------
 # standalone runner (no pytest required)
 # ---------------------------------------------------------------------------
 
