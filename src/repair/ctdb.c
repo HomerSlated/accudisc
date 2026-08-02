@@ -84,6 +84,7 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
     long delta;
     int rc = ACCUDISC_ERR_INVAL;
     uint32_t dirty = 0, repaired = 0, refused = 0, erasure_cols = 0;
+    uint32_t unverified = 0;
 
     if (!req || !out_pcm)
         return ACCUDISC_ERR_INVAL;
@@ -112,23 +113,46 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
      * a mismatched wire_stride fails here rather than decoding garbage. */
     if (req->parity_bytes != (uint64_t)S * npar * 2u)
         return ACCUDISC_ERR_INVAL;
-    if (W / S < 3u)
-        return ACCUDISC_ERR_INVAL; /* too short for a codeword at all */
+    /* Both bounds are on the 64-bit quotient, BEFORE the cast, and both are
+     * reachable from an entry alone. Too few rows and there is no codeword;
+     * too many and the column is longer than GF(2^16) can index, which
+     * adsc_rs16_decode rejects per column with ERR_INVAL — folded into
+     * refused_columns down in pass 2, where it would report "damaged beyond
+     * this entry's capacity" for a geometry that was never usable. Catch it
+     * here, where the honest answer is still available.
+     *
+     * The cast is the other half: sc is unsigned, W/S is not, and
+     * image_frames = 2^30 with wire_stride = 1 truncates to sc = 0xFFFFFFFE.
+     * -Wconversion says nothing, because the cast is explicit. */
+    if (W / S < 3u || W / S - 2u > (uint64_t)ADSC_GF16_ORDER)
+        return ACCUDISC_ERR_INVAL;
     sc = (unsigned)(W / S) - 2u;
 
     if (base + W > pcm_words)
         return ACCUDISC_ERR_INVAL; /* image window is not inside the PCM */
 
-    /* Every word the codeword region touches, at this offset, must exist. */
+    /* Every word the codeword region touches, at this offset, must exist. The
+     * highest is column S-1 of row sc-1, i.e. first + (S-1) + (sc-1)*S, which
+     * is first + sc*S - 1. An earlier `+ S` here demanded one row MORE than
+     * the codeword region occupies, so a positive offset past (W mod S) was
+     * refused — and since S is ten frames, an image whose frame count is a
+     * multiple of ten refused EVERY positive offset. Negative offsets bind on
+     * the `first < 0` test instead, which is why the -639 A/B arms never saw
+     * it and no amount of A/B parity could have found it. */
     {
         long first = (long)base + (long)S + delta;
-        long last = first + (long)sc * (long)S + (long)S - 1;
+        long last = first + (long)sc * (long)S - 1;
 
         if (first < 0 || last < 0 || (uint64_t)last >= pcm_words)
             return ACCUDISC_ERR_INVAL;
     }
+    /* In the BYTE domain. `pcm_erasures_bytes * 8` overflows uint64_t for a
+     * declared length above 2^61, which defeats the check that follows it and
+     * lets pass 2 read off the end of the bitmap. The caller supplies this
+     * length, so it is not network-reachable — but it is our bounds check, and
+     * a bounds check that a caller's own arithmetic can switch off is not one. */
     if (req->pcm_erasures
-        && req->pcm_erasures_bytes * 8u < pcm_words)
+        && req->pcm_erasures_bytes < (pcm_words + 7u) / 8u)
         return ACCUDISC_ERR_INVAL; /* bitmap does not cover the PCM */
 
     pcm = (const uint16_t *)(const void *)req->pcm;
@@ -191,6 +215,25 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
 
         n = adsc_rs16_decode(npar, E, sc, nera ? erasures : NULL, nera,
                              positions, values, ADSC_RS16_MAX_NPAR + 1);
+        /* DETERMINED, NOT VERIFIED. npar erasures consume all npar check
+         * equations, so the decoder's re-verification — the step that turns a
+         * miscorrection into an honest refusal everywhere else — re-derives
+         * the syndromes from the solution it just derived from those
+         * syndromes. It is an identity and cannot fail. The column is right
+         * iff its erasure list was complete, and C2 under-flags.
+         *
+         * Testing nera == npar is exactly right, and it is worth writing down
+         * why rather than reaching into the decoder for the real predicate.
+         * Unverifiable means the errata are exactly determined:
+         * degree_lambda == npar, i.e. t + nera == npar. Capacity separately
+         * requires 2t + nera <= npar. Substituting gives t + npar <= npar,
+         * so t == 0 and nera == npar. The two conditions coincide; there is
+         * no other shape of decode with zero residual redundancy.
+         *
+         * Only the FIRST call can be at capacity — the retry below passes no
+         * erasures at all, so anything it returns was genuinely verified. */
+        if (n > 0 && nera == npar)
+            unverified++;
         /* Erasures are a hint, not a constraint. A bitmap that is wrong — C2
          * over-flagging, or a misaligned capture — can push a correctable
          * column over capacity, and error-only may still succeed on it. Retry
@@ -226,12 +269,19 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
         } else {
             uint16_t *dst = (uint16_t *)(void *)out_pcm;
 
+            /* memmove, not memcpy: the exact-alias case is already skipped,
+             * but a PARTIAL overlap passes this test and is undefined
+             * behaviour for memcpy. Such a call is a caller error whatever we
+             * do; it should not also be UB. */
             if (out_pcm != req->pcm)
-                memcpy(out_pcm, req->pcm, (size_t)req->pcm_bytes);
+                memmove(out_pcm, req->pcm, (size_t)req->pcm_bytes);
             for (uint64_t i = 0; i < nfix; i++)
                 dst[fixes[i].word] = fixes[i].value;
-            after = crc32_words(dst + first, (uint64_t)sc * S);
-            rc = ACCUDISC_OK;
+            /* Only when something changed. With nfix == 0 the copy above is
+             * exact, so this sweep is 383 MB to recompute a value we hold. */
+            if (nfix)
+                after = crc32_words(dst + first, (uint64_t)sc * S);
+            rc = unverified ? ACCUDISC_CTDB_UNVERIFIED : ACCUDISC_OK;
         }
         if (report) {
             report->offset_pairs = req->offset_pairs;
@@ -242,6 +292,9 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
             report->corrections = (uint32_t)(refused ? 0 : nfix);
             report->crc32_before = before;
             report->crc32_after = after;
+            /* Zero on the refused path: nothing was applied, so no column's
+             * verification status describes out_pcm. */
+            report->unverified_columns = refused ? 0 : unverified;
         }
     }
 

@@ -321,7 +321,14 @@ static void test_erasure_bitmap_is_pcm_absolute(void)
     q.pcm_erasures = bits;
     q.pcm_erasures_bytes = (pcm_words + 7u) / 8u;
     rc = accudisc_ctdb_repair(&q, out, &rep);
-    expect(rc == ACCUDISC_OK, "with PCM-absolute erasures: rc %d", rc);
+    /* NPAR erasures is exactly full capacity, so this is the DETERMINED case:
+     * the audio below is restored byte-exactly and the library still declines
+     * to say it verified that. Both halves matter — the weaker return code
+     * must not be a refusal in disguise. */
+    expect(rc == ACCUDISC_CTDB_UNVERIFIED,
+           "with PCM-absolute erasures at full capacity: rc %d", rc);
+    expect(rep.unverified_columns == 1, "unverified_columns %u, expected 1",
+           rep.unverified_columns);
     expect(rep.erasure_columns == 1, "erasure_columns %u, expected 1",
            rep.erasure_columns);
     expect(rep.corrections == NPAR, "%u corrections, %u planted",
@@ -347,6 +354,89 @@ static void test_erasure_bitmap_is_pcm_absolute(void)
     free(damaged); free(out); free(bits);
 }
 
+/* The case the suite could not see before, and the reason ACCUDISC_CTDB_UNVERIFIED
+ * exists. An erasure list that is FULL but WRONG — npar flags, one of them
+ * pointing at undamaged audio while a real error goes unflagged — is exactly
+ * determined, so the decoder's re-verification is an identity and succeeds.
+ * The audio it produces is wrong. Nothing inside this library can tell, which
+ * is precisely why the return code has to.
+ *
+ * The assertion that matters is the LAST one: out differs from the original.
+ * Without it this test would pass against a decoder that quietly got the right
+ * answer, and would therefore be asserting nothing about the contract. */
+static void test_full_but_wrong_erasures_are_unverified(void)
+{
+    accudisc_ctdb_req q;
+    accudisc_ctdb_report rep = ACCUDISC_CTDB_REPORT_INIT;
+    uint16_t *damaged = malloc((size_t)pcm_words * 2u);
+    uint8_t *out = calloc((size_t)pcm_words, 2u);
+    uint8_t *bits = calloc((size_t)(pcm_words + 7u) / 8u, 1u);
+    uint64_t w[NPAR], bogus;
+    int rc;
+
+    memcpy(damaged, pcm, (size_t)pcm_words * 2u);
+    for (unsigned i = 0; i < NPAR; i++) {
+        w[i] = base + S + 11u + (uint64_t)i * S;
+        damaged[w[i]] ^= (uint16_t)(0xA000u + i);
+    }
+    /* Flag the first NPAR-1 truthfully; the last error stays unflagged and a
+     * clean row is flagged in its place. Still exactly NPAR erasures. */
+    for (unsigned i = 0; i < NPAR - 1u; i++)
+        bits[w[i] >> 3] |= (uint8_t)(1u << (w[i] & 7u));
+    /* Row NPAR is clean and, with sc == 10, is still INSIDE the column. A
+     * first attempt used row NPAR+2, which is past the end: the erasure scan
+     * never reached it, nera came out NPAR-1, and the call refused for want of
+     * capacity — a red test that had nothing to do with the contract. */
+    bogus = base + S + 11u + (uint64_t)NPAR * S;
+    bits[bogus >> 3] |= (uint8_t)(1u << (bogus & 7u));
+
+    req_init(&q);
+    q.pcm = (const uint8_t *)damaged;
+    q.pcm_erasures = bits;
+    q.pcm_erasures_bytes = (pcm_words + 7u) / 8u;
+
+    rc = accudisc_ctdb_repair(&q, out, &rep);
+    expect(rc == ACCUDISC_CTDB_UNVERIFIED,
+           "a full-but-wrong erasure list must report UNVERIFIED, not OK "
+           "(rc %d)", rc);
+    expect(rep.unverified_columns == 1, "unverified_columns %u, expected 1",
+           rep.unverified_columns);
+    expect(memcmp(out, pcm, (size_t)pcm_words * 2u) != 0,
+           "the repair happened to be correct, so this test proved nothing "
+           "about the unverified contract");
+
+    free(damaged); free(out); free(bits);
+}
+
+/* A positive offset against an image whose frame count is a multiple of ten,
+ * i.e. W mod S == 0. The bound at ctdb.c:125 was over-strict by one row S,
+ * which refused every positive offset for such an image. No A/B arm could
+ * reach it: the fixtures' negative offsets bind on `first < 0` instead. */
+static void test_positive_offset_when_w_divides_s(void)
+{
+    accudisc_ctdb_req q;
+    accudisc_ctdb_report rep = ACCUDISC_CTDB_REPORT_INIT;
+    uint8_t *out = calloc((size_t)pcm_words, 2u);
+    int rc;
+
+    expect((uint64_t)FRAMES * 1176u % S == 0u,
+           "fixture geometry no longer has W mod S == 0, so this test cannot "
+           "exercise the bound it was written for");
+
+    /* Declare the PCM as exactly the image window. The buffer really is
+     * PCM_FRAMES long, so nothing reads out of bounds — but without this the
+     * fixture's ten frames of slack absorb the spurious row and the old bound
+     * passes too, which would make this test unable to fail. */
+    req_init(&q);
+    q.pcm_bytes = (base + W) * 2u;
+    q.offset_pairs = 1;
+    rc = accudisc_ctdb_repair(&q, out, &rep);
+    expect(rc != ACCUDISC_ERR_INVAL,
+           "a positive offset was refused as invalid geometry (rc %d)", rc);
+
+    free(out);
+}
+
 int main(void)
 {
     pcm_words = (uint64_t)PCM_FRAMES * 1176u;
@@ -367,6 +457,8 @@ int main(void)
     test_repairs_exactly(NPAR / 2 + 1, "npar/2 + 1 errors (past capacity)");
     test_in_place_matches();
     test_erasure_bitmap_is_pcm_absolute();
+    test_full_but_wrong_erasures_are_unverified();
+    test_positive_offset_when_w_divides_s();
 
     printf("test_ctdb_api: %u checks, %u failures\n", checks, failures);
     free(pcm);

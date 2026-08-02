@@ -1720,9 +1720,15 @@ ACCUDISC_API int accudisc_cdtext_decode(const uint8_t *raw, uint32_t len,
  * whole safety argument:
  *
  *   ACCUDISC_OK  every column whose syndromes disagreed with CTDB's was
- *                corrected, and the corrections were re-verified against the
+ *                corrected, and every correction was re-verified against the
  *                error syndromes before being applied. out_pcm holds the
  *                repaired audio.
+ *
+ *   ACCUDISC_CTDB_UNVERIFIED
+ *                the same, EXCEPT that report->unverified_columns of them were
+ *                determined rather than verified. A STRICTLY WEAKER CLAIM —
+ *                see below. Positive, so a caller testing `rc == ACCUDISC_OK`
+ *                declines it and must opt in deliberately.
  *
  * It does NOT mean the audio is right. **This is a relative check, not an
  * absolute gate.** CTDB publishes per-track CRCs, not a whole-image CRC, so
@@ -1731,6 +1737,33 @@ ACCUDISC_API int accudisc_cdtext_decode(const uint8_t *raw, uint32_t len,
  * per-track CRC and AccurateRip — live in the calling application and must
  * still be applied afterwards (docs/reference/RECOVERY.md: relative checks
  * never outrank absolute gates).
+ *
+ * DETERMINED VERSUS VERIFIED, the distinction ACCUDISC_CTDB_UNVERIFIED marks.
+ * A column carrying exactly npar erasures consumes every check equation the
+ * parity has: npar syndromes, npar unknown magnitudes at known positions. The
+ * system is exactly determined, so it always has a solution, and re-deriving
+ * the syndromes from that solution is an identity — it cannot disagree. The
+ * re-verification that makes every other column trustworthy is therefore
+ * vacuous at exactly full erasure capacity, and this is true of any correct
+ * errata decoder, not a defect in this one. What it means in practice: such a
+ * column is right if and only if the erasure list for it was COMPLETE. Ours
+ * comes from C2, which under-flags as well as over-flags. One unflagged error
+ * alongside npar-1 correct flags yields a confident wrong repair with no
+ * residual redundancy left to notice.
+ *
+ * Every word this can touch lies inside the CTDB image window, which is also
+ * the window the per-track CRCs cover — so the caller's absolute gate does
+ * close over it. That is why this is reported rather than refused: refusing
+ * would discard the at-capacity repairs that were correct, and residual error
+ * capacity cannot recover a position dropped from the erasure list.
+ *
+ * A HOSTILE PARITY BLOB IS NOT A MEMORY-SAFETY PROBLEM AND IS STILL A PROBLEM.
+ * Parity computed over an attacker-chosen target image will rewrite the audio
+ * into exactly that target and return success — measured, all 4704 words of a
+ * synthetic image. No bound is violated: the rewrite stays inside the codeword
+ * region and within npar/2 symbols per column. That is what a parity code IS,
+ * and it is the other reason the caller's per-track CRC gate is load-bearing
+ * rather than advisory. Fetch the blob and the CRCs from the same entry.
  *
  * There is deliberately no way to obtain the correction list without the
  * verdict. A decoder handed a wrong npar or a wrong offset will emit a
@@ -1747,6 +1780,18 @@ ACCUDISC_API int accudisc_cdtext_decode(const uint8_t *raw, uint32_t len,
  * pressed-in pregap turned up. Frames are 2352-byte sectors throughout;
  * offsets are in stereo sample PAIRS (4 bytes), the unit AccurateRip and
  * CTDB both use. */
+
+/* A POSITIVE accudisc_ctdb_repair() return: the repair was applied and out_pcm
+ * is written, but report->unverified_columns columns were determined rather
+ * than verified (see above). Test with `rc >= 0` for "audio was written" and
+ * `rc == ACCUDISC_OK` for the full claim; the two differ ON PURPOSE, so that a
+ * caller which never heard of this code keeps the strong contract it was
+ * written against instead of silently inheriting a weaker one.
+ *
+ * Deliberately not the same value as ACCUDISC_WROTE_WITH_CAVEATS: the two say
+ * different things and nothing should be able to conflate them if a return
+ * code is ever logged or compared away from its call site. */
+#define ACCUDISC_CTDB_UNVERIFIED 2
 
 #define ACCUDISC_CTDB_REQ_INIT    { .size = sizeof(accudisc_ctdb_req) }
 #define ACCUDISC_CTDB_REPORT_INIT { .size = sizeof(accudisc_ctdb_report) }
@@ -1782,7 +1827,11 @@ typedef struct accudisc_ctdb_report {
     uint32_t size;              /* = sizeof; ACCUDISC_CTDB_REPORT_INIT */
     int32_t  offset_pairs;      /* the offset used, echoed back */
     uint32_t dirty_columns;     /* columns whose syndromes did not reconcile */
-    uint32_t repaired_columns;  /* of those, the ones corrected */
+    uint32_t repaired_columns;  /* of those, the ones that DECODED. On the
+                                 * ACCUDISC_ERR_NOTFOUND path nothing was
+                                 * applied, so this can be non-zero while
+                                 * `corrections` is 0: it describes the disc,
+                                 * not the buffer. */
     uint32_t refused_columns;   /* of those, the ones beyond capacity */
     uint32_t erasure_columns;   /* dirty columns carrying at least one erasure.
                                  * NOTE this counts columns that HAD erasures,
@@ -1793,6 +1842,11 @@ typedef struct accudisc_ctdb_report {
                                  * errata (C2 over-flagging) are not counted */
     uint32_t crc32_before;      /* over the codeword region, before repair */
     uint32_t crc32_after;       /* ditto after; equal when nothing changed */
+    uint32_t unverified_columns; /* repaired columns that were DETERMINED, not
+                                  * verified: exactly npar erasures consumed
+                                  * every check equation. Non-zero is what
+                                  * makes the return ACCUDISC_CTDB_UNVERIFIED.
+                                  * A subset of repaired_columns. */
 } accudisc_ctdb_report;
 
 /* out_pcm receives pcm_bytes of repaired audio and MAY alias req->pcm, in
@@ -1801,6 +1855,11 @@ typedef struct accudisc_ctdb_report {
  * half-repaired buffer even when aliasing.
  *
  *   ACCUDISC_OK             repaired (or already clean); out_pcm written
+ *   ACCUDISC_CTDB_UNVERIFIED  repaired and out_pcm written, but
+ *                           report->unverified_columns of the columns were
+ *                           determined rather than verified. Positive: test
+ *                           `rc >= 0` for "written", `== ACCUDISC_OK` for the
+ *                           full claim.
  *   ACCUDISC_ERR_NOTFOUND   a column exceeded capacity; out_pcm untouched.
  *                           A NORMAL outcome, not an error condition —
  *                           there is no error taxonomy here because there is
