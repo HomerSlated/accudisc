@@ -39,6 +39,41 @@ behaviors, command layouts, and hardware quirks we relied on:
   kind of facts: mechanisms, versions, and the specific pressings carrying
   them, each with primary-source citations.
 
+## CTDB parity repair (`src/repair/`)
+
+The Reed-Solomon decoder over GF(2¹⁶) is **clean-room**, written from a spec
+(`private/docs/rs16-spec.md`) rather than from any implementation, and the
+distinction matters here more than elsewhere: the tool it replaces for this job,
+cdda2img's `ctanalyse`, is **GPLv3**, and AccuDisc is MIT. No GPL source was
+read, linked, included or executed by the implementation, by the tests, or by
+any agent that worked on this subsystem.
+
+- **The algorithms are textbook and unowned**: Berlekamp-Massey, the Forney
+  algorithm, and the Chien search, in their standard errata (errors-and-
+  erasures) form. The spec cites them rather than restating them, and the
+  implementation follows the citations.
+- **The CueTools Database (CTDB)** (https://db.cuetools.net), by Grigory
+  Chudov, publishes the parity blobs and the per-track CRCs this operates on.
+  AccuDisc does no lookups — the calling application fetches the entry — but
+  the on-wire geometry the decoder must match is CTDB's. That geometry is
+  recorded in `rs16-spec.md` §3a; it was determined by **measurement against
+  real parity blobs**, then confirmed in correspondence with the cdda2img
+  project, whose author had already solved it independently.
+- **cdda2img's `ctanalyse`** was used as an **oracle, not a source**: its JSON
+  *output* on three real disc images is compared element-wise against ours by
+  `tests/ctdb_ab`. Two programs producing files that are then diffed is
+  interoperability testing, and no GPL code enters the build.
+- **The vectorised GF(2¹⁶) constant multiply** in `src/repair/sweep.c` uses the
+  published split-nibble / `vpshufb` table method — decompose a field element
+  into nibbles, replace the multiply with four 16-entry byte-table lookups —
+  which entered general use through James S. Plank and collaborators' work on
+  SIMD Galois-field arithmetic (the "Screaming Fast Galois Field Arithmetic"
+  line of papers, and GF-Complete). The technique is described in the
+  literature; this implementation was written from the description and shares
+  no code with GF-Complete.
+- **Slicing-by-8 CRC-32** is Intel's published table-driven technique, likewise
+  implemented from the description.
+
 ## Vendor drivers
 
 Drivers under `drivers/` are standalone modules with their own provenance
@@ -67,6 +102,13 @@ binaries or sources).
   an automated audit with no CRITICAL or HIGH findings on that date — it is an
   audit-freshness marker, **not** a security guarantee or an external
   certification. See the Signatures section of `README.md` for verification.
+- Because a signature is a freshness marker, **absence is meaningful and is not
+  an oversight**. As of 2026-08-02 `src/repair/rs16.{c,h}` carry signatures and
+  `src/repair/{gf16.c,gf16.h,sweep.c,ctdb.c}` do not: gf16 and ctdb.c were
+  audited and then modified by the remediation the audit itself asked for, and
+  sweep.c was written afterwards. Stale signatures were **deleted rather than
+  kept**, since one that does not verify is worse than none. They return when
+  those files are audited in their current form.
 
 ## ATIP / media catalog (`src/drive/media_atip_db.inc`)
 
