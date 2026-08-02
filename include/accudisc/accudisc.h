@@ -1804,7 +1804,11 @@ typedef struct accudisc_ctdb_req {
     uint32_t image_frames;      /* bounds[-1] - bounds[0], in sectors */
     int32_t  offset_pairs;      /* alignment of our PCM against the entry */
 
-    const uint8_t *pcm;         /* whole rip, 16-bit LE stereo */
+    /* Whole rip, 16-bit LE stereo. pcm, parity and out_pcm are all read and
+     * written as 16-bit words, so all three must be 2-BYTE ALIGNED; an odd
+     * address is refused with ACCUDISC_ERR_INVAL rather than being undefined
+     * behaviour. Anything malloc() returned already satisfies this. */
+    const uint8_t *pcm;
     uint64_t       pcm_bytes;
 
     const uint8_t *parity;      /* the entry's blob, exactly as fetched */

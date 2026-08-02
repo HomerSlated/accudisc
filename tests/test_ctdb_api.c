@@ -181,6 +181,21 @@ static void test_guards(void)
         expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
                "short erasure bitmap accepted");
     }
+
+    /* Odd addresses. Everything here is accessed as uint16_t, so an odd
+     * pointer is undefined behaviour on any target and a fault on some; it has
+     * to be refused rather than documented. Each of the three is checked
+     * separately, because one combined test would pass with two of the three
+     * guards missing. */
+    req_init(&q); q.pcm = (const uint8_t *)pcm + 1;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+           "misaligned pcm accepted");
+    req_init(&q); q.parity = (const uint8_t *)parity + 1;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+           "misaligned parity accepted");
+    req_init(&q);
+    expect(accudisc_ctdb_repair(&q, out + 1, &rep) == ACCUDISC_ERR_INVAL,
+           "misaligned out_pcm accepted");
     free(out);
 }
 

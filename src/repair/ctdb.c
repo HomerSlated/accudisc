@@ -73,6 +73,14 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
         return ACCUDISC_ERR_ABI;
     if (!req->pcm || !req->parity)
         return ACCUDISC_ERR_INVAL;
+    /* Every buffer here is read and written as uint16_t. An odd address makes
+     * that undefined behaviour rather than merely slow — UBSan flags it — and
+     * on a target with strict alignment it faults. Refusing is better than
+     * documenting: a caller passing an odd pointer has a bug either way, and
+     * this way it is reported instead of being a platform-dependent crash. */
+    if ((((uintptr_t)req->pcm | (uintptr_t)req->parity
+          | (uintptr_t)out_pcm) & 1u) != 0u)
+        return ACCUDISC_ERR_INVAL;
     if (req->npar == 0 || req->npar > ADSC_RS16_MAX_NPAR)
         return ACCUDISC_ERR_INVAL;
     if (req->wire_stride == 0 || req->wire_stride > 0x40000000u)
@@ -141,6 +149,13 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
     /* An all-erasure column returns npar errata, so npar per column is the
      * true worst case rather than npar/2. */
     fix_cap = (uint64_t)S * npar;
+    /* report->corrections is uint32_t and nfix is bounded by fix_cap, so this
+     * is the point at which the two representations have to agree. Reachable
+     * only from an entry claiming a stride the allocation below would fail on
+     * anyway (S is capped at 2^31, npar at 32, so fix_cap can reach 2^36) —
+     * but "would fail anyway" is not a bound, and this is. */
+    if (fix_cap > 0xFFFFFFFFu)
+        return ACCUDISC_ERR_INVAL;
     fixes = calloc((size_t)fix_cap, sizeof(*fixes));
     if (!acc || !fixes) { rc = ACCUDISC_ERR_NOMEM; goto out; }
 
