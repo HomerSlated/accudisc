@@ -107,6 +107,14 @@ set_tests_properties(test_install_relocate PROPERTIES
 # right NUMBER of corrections at the wrong bytes, and an injected grid window
 # reproduces `dirty_columns` exactly (11760 vs 11760) while changing the
 # corrections entirely. A count comparison passes both.
+# Scalar versus AVX2 sweep, bit-for-bit. SKIPS (77) rather than passing
+# vacuously when there is no second kernel to compare against.
+add_executable(test_sweep test_sweep.c)
+target_link_libraries(test_sweep PRIVATE accudisc_static)
+target_include_directories(test_sweep PRIVATE ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME test_sweep COMMAND test_sweep)
+set_tests_properties(test_sweep PROPERTIES SKIP_RETURN_CODE 77)
+
 add_executable(ctdb_ab ctdb_ab.c)
 target_link_libraries(ctdb_ab PRIVATE accudisc_static)
 target_include_directories(ctdb_ab PRIVATE ${PROJECT_SOURCE_DIR}/src)

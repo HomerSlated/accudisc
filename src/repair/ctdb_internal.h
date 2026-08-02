@@ -60,4 +60,11 @@ void adsc_ctdb_sweep(const uint16_t *pcm, uint64_t first, unsigned S,
  * buffer the sweep does not re-read. */
 uint32_t adsc_ctdb_crc32_words(const uint16_t *v, uint64_t n);
 
+/* Which kernel adsc_ctdb_sweep() will use: "scalar" or "avx2". The scalar path
+ * is always present and is the definition of correct; anything else is an
+ * acceleration selected at run time and required to agree with it bit for bit.
+ * Setting ACCUDISC_REPAIR_KERNEL=scalar forces it, which is how tests/test_sweep
+ * exercises the portable path on a machine that has AVX2. */
+const char *adsc_ctdb_sweep_kernel(void);
+
 #endif /* ACCUDISC_SRC_REPAIR_CTDB_INTERNAL_H */
