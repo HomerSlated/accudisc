@@ -133,11 +133,18 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
         if (first < 0 || last < 0 || (uint64_t)last >= pcm_words)
             return ACCUDISC_ERR_INVAL;
     }
-    /* In the BYTE domain. `pcm_erasures_bytes * 8` overflows uint64_t for a
-     * declared length above 2^61, which defeats the check that follows it and
-     * lets pass 2 read off the end of the bitmap. The caller supplies this
-     * length, so it is not network-reachable — but it is our bounds check, and
-     * a bounds check that a caller's own arithmetic can switch off is not one. */
+    /* In the BYTE domain, because `pcm_erasures_bytes * 8` overflows uint64_t
+     * above 2^61 and silently accepts everything past that.
+     *
+     * BUT BE CLEAR WHAT THIS DOES AND DOES NOT DO, because the first write-up
+     * of it claimed more (corrected 2026-08-02 by a second audit): the two
+     * forms are IDENTICAL for every declared length below 2^61, so this fixed
+     * an overflow and changed almost no behaviour. It cannot catch the case it
+     * was first credited with. A caller that declares 588 bytes and allocated
+     * 8 still reads off the end, because no arithmetic here can test a length
+     * the caller asserted about its own memory — exactly as for pcm/pcm_bytes.
+     * What this checks is that the declared bitmap is big enough for the PCM.
+     * That it is TRUE is the caller's contract, and the header says so. */
     if (req->pcm_erasures
         && req->pcm_erasures_bytes < (pcm_words + 7u) / 8u)
         return ACCUDISC_ERR_INVAL; /* bitmap does not cover the PCM */
@@ -145,17 +152,20 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
     pcm = (const uint16_t *)(const void *)req->pcm;
     par = (const uint16_t *)(const void *)req->parity;
 
-    acc = calloc((size_t)S * npar, sizeof(*acc));
     /* An all-erasure column returns npar errata, so npar per column is the
-     * true worst case rather than npar/2. */
+     * true worst case rather than npar/2.
+     *
+     * report->corrections is uint32_t and nfix is bounded by fix_cap, so this
+     * is where the two representations have to agree (S caps at 2^31 and npar
+     * at 32, so fix_cap can reach 2^36). Checked BEFORE the first allocation,
+     * not between the two: the earlier version returned here having already
+     * allocated acc, and the rebuttal that an 8.59 GB calloc would have failed
+     * anyway is not true on this host — it succeeds, and the memory leaked. */
     fix_cap = (uint64_t)S * npar;
-    /* report->corrections is uint32_t and nfix is bounded by fix_cap, so this
-     * is the point at which the two representations have to agree. Reachable
-     * only from an entry claiming a stride the allocation below would fail on
-     * anyway (S is capped at 2^31, npar at 32, so fix_cap can reach 2^36) —
-     * but "would fail anyway" is not a bound, and this is. */
     if (fix_cap > 0xFFFFFFFFu)
         return ACCUDISC_ERR_INVAL;
+
+    acc = calloc((size_t)S * npar, sizeof(*acc));
     fixes = calloc((size_t)fix_cap, sizeof(*fixes));
     if (!acc || !fixes) { rc = ACCUDISC_ERR_NOMEM; goto out; }
 

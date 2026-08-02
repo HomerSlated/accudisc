@@ -1818,7 +1818,14 @@ typedef struct accudisc_ctdb_req {
      * ABSOLUTE over `pcm` — index it by PCM word, never by image word. The
      * library does the domain shift; a caller that pre-shifts will shift
      * twice. NULL (with _bytes 0) means error-only decoding, which is a
-     * normal mode and not a degraded one. */
+     * normal mode and not a degraded one.
+     *
+     * pcm_erasures_bytes is TRUSTED, exactly as pcm_bytes is: the library
+     * checks that the length you declare is large enough to cover the PCM, and
+     * cannot check that it is true. A declared length longer than the memory
+     * you actually allocated is read past the end, and no arithmetic on this
+     * side can detect it. Stated because it was once mistaken for something a
+     * bounds check had closed. */
     const uint8_t *pcm_erasures;
     uint64_t       pcm_erasures_bytes;
 } accudisc_ctdb_req;

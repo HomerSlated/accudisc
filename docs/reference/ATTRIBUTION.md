@@ -103,12 +103,12 @@ binaries or sources).
   audit-freshness marker, **not** a security guarantee or an external
   certification. See the Signatures section of `README.md` for verification.
 - Because a signature is a freshness marker, **absence is meaningful and is not
-  an oversight**. As of 2026-08-02 `src/repair/rs16.{c,h}` carry signatures and
-  `src/repair/{gf16.c,gf16.h,sweep.c,ctdb.c}` do not: gf16 and ctdb.c were
-  audited and then modified by the remediation the audit itself asked for, and
-  sweep.c was written afterwards. Stale signatures were **deleted rather than
-  kept**, since one that does not verify is worse than none. They return when
-  those files are audited in their current form.
+  an oversight**. Stale signatures are **deleted rather than kept**, since one
+  that does not verify is worse than none, and a file is signed only after an
+  audit of the content it has *now*. As of 2026-08-02 everything in
+  `src/repair/` is signed except `ctdb.c`, which was withheld a second time
+  because the audit that would have signed it produced two findings against it;
+  it returns when those are re-checked in place.
 
 ## ATIP / media catalog (`src/drive/media_atip_db.inc`)
 
