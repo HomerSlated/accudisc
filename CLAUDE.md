@@ -33,11 +33,22 @@ but that boundary is current rather than permanent; see "Non-CD media" below.
   record — AccuDisc supplies **carriage only**, never codec design, and the
   format itself is likely a separate repo.
 - **Write** Red Book CD-R/RW (DAO).
-- **No post-processing, no lookups** — no CDDB/MusicBrainz, no analysis;
-  AccuDisc only moves bits. Reads (whole disc / track / TOC / subchannel /
+- **No lookups, and one narrow exception to "no analysis"** — no
+  CDDB/MusicBrainz, no network. Reads (whole disc / track / TOC / subchannel /
   targeted sectors, strategy chosen by the caller, some strategies gated on
   probed hardware support) are handed back to the calling application; writes
   accept TOC + BIN (+ optional SUB) from it.
+
+  The exception is **CTDB parity repair** (`accudisc_ctdb_repair`, `src/repair/`,
+  2026-08-02), which does arithmetic on audio rather than moving it. It is here
+  because it is Reed-Solomon over GF(2¹⁶) against a parity blob — a codec-shaped
+  problem that every consumer would otherwise reimplement, and that one of them
+  already had in GPL form we could not take. **The caller still fetches the CTDB
+  entry, chooses it, and gates the result**: the library is handed the blob and
+  the alignment and hands back repaired samples. It never looks anything up, and
+  a successful return is *not* a verification — CTDB publishes per-track CRCs,
+  which are the caller's absolute gate, not ours. See `docs/reference/RECOVERY.md`
+  §1.1.
 - **Frame-accurate status surface** (core design constraint): per-sector
   read/write status trackable by the caller with minimal overhead — richer
   than a FIFO/pipe — to drive progress bars and EAC-style color-coded disc

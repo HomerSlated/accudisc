@@ -1709,6 +1709,111 @@ typedef struct accudisc_cdtext {
 ACCUDISC_API int accudisc_cdtext_decode(const uint8_t *raw, uint32_t len,
                                         accudisc_cdtext **out);
 
+
+/* ---- CTDB parity repair -------------------------------------------------
+ *
+ * Applies a CueTools DB parity blob to a rip, correcting the samples CIRC
+ * could not. This is the one place AccuDisc does arithmetic on audio rather
+ * than moving it; see CLAUDE.md §Scope.
+ *
+ * WHAT A SUCCESSFUL RETURN MEANS, precisely, because the distinction is the
+ * whole safety argument:
+ *
+ *   ACCUDISC_OK  every column whose syndromes disagreed with CTDB's was
+ *                corrected, and the corrections were re-verified against the
+ *                error syndromes before being applied. out_pcm holds the
+ *                repaired audio.
+ *
+ * It does NOT mean the audio is right. **This is a relative check, not an
+ * absolute gate.** CTDB publishes per-track CRCs, not a whole-image CRC, so
+ * nothing here can compare the result against a published value; crc32_after
+ * is computed by this library, not fetched. The absolute gates — CTDB
+ * per-track CRC and AccurateRip — live in the calling application and must
+ * still be applied afterwards (docs/reference/RECOVERY.md: relative checks
+ * never outrank absolute gates).
+ *
+ * There is deliberately no way to obtain the correction list without the
+ * verdict. A decoder handed a wrong npar or a wrong offset will emit a
+ * populated, plausible-looking correction list alongside a failed verdict —
+ * measured, 531 corrections at npar=2 on audio that was undamaged at
+ * npar=16 — so a caller able to read one without the other can corrupt good
+ * audio by ignoring a flag. This returns the repaired image or an error, the
+ * same shape as accudisc_write.
+ *
+ * TWO DOMAINS, never conflated. `pcm` is the whole rip, [0, lead-out). The
+ * CTDB image is the window [image_first_frame, image_first_frame +
+ * image_frames) inside it. They coincide only when track 1 INDEX 01 sits at
+ * LBA 0, which is why a bug here stayed invisible until a disc with a
+ * pressed-in pregap turned up. Frames are 2352-byte sectors throughout;
+ * offsets are in stereo sample PAIRS (4 bytes), the unit AccurateRip and
+ * CTDB both use. */
+
+#define ACCUDISC_CTDB_REQ_INIT    { .size = sizeof(accudisc_ctdb_req) }
+#define ACCUDISC_CTDB_REPORT_INIT { .size = sizeof(accudisc_ctdb_report) }
+
+typedef struct accudisc_ctdb_req {
+    uint32_t size;              /* = sizeof; ACCUDISC_CTDB_REQ_INIT */
+    uint32_t npar;              /* parity symbols per column, from the entry */
+    uint32_t wire_stride;       /* the entry's `stride` field, sample pairs */
+    uint32_t image_first_frame; /* CTDB bounds[0], a PCM sector index */
+    uint32_t image_frames;      /* bounds[-1] - bounds[0], in sectors */
+    int32_t  offset_pairs;      /* alignment of our PCM against the entry */
+
+    const uint8_t *pcm;         /* whole rip, 16-bit LE stereo */
+    uint64_t       pcm_bytes;
+
+    const uint8_t *parity;      /* the entry's blob, exactly as fetched */
+    uint64_t       parity_bytes;
+
+    /* C2 erasures: one bit per 16-bit WORD, bit (i & 7) of byte (i >> 3),
+     * ABSOLUTE over `pcm` — index it by PCM word, never by image word. The
+     * library does the domain shift; a caller that pre-shifts will shift
+     * twice. NULL (with _bytes 0) means error-only decoding, which is a
+     * normal mode and not a degraded one. */
+    const uint8_t *pcm_erasures;
+    uint64_t       pcm_erasures_bytes;
+} accudisc_ctdb_req;
+
+/* Filled on success AND on ACCUDISC_ERR_NOTFOUND, so a caller can tell "clean
+ * already" (dirty_columns 0) from "damaged beyond this entry's capacity"
+ * (refused_columns > 0) without a second call. Untouched on argument errors,
+ * where no measurement happened. */
+typedef struct accudisc_ctdb_report {
+    uint32_t size;              /* = sizeof; ACCUDISC_CTDB_REPORT_INIT */
+    int32_t  offset_pairs;      /* the offset used, echoed back */
+    uint32_t dirty_columns;     /* columns whose syndromes did not reconcile */
+    uint32_t repaired_columns;  /* of those, the ones corrected */
+    uint32_t refused_columns;   /* of those, the ones beyond capacity */
+    uint32_t erasure_columns;   /* dirty columns carrying at least one erasure.
+                                 * NOTE this counts columns that HAD erasures,
+                                 * not columns the erasures helped — the two
+                                 * are different questions and conflating them
+                                 * loses the simpler one. */
+    uint32_t corrections;       /* symbols actually changed; zero-magnitude
+                                 * errata (C2 over-flagging) are not counted */
+    uint32_t crc32_before;      /* over the codeword region, before repair */
+    uint32_t crc32_after;       /* ditto after; equal when nothing changed */
+} accudisc_ctdb_report;
+
+/* out_pcm receives pcm_bytes of repaired audio and MAY alias req->pcm, in
+ * which case the repair is in place and no copy is made. Nothing is written
+ * unless every dirty column decoded, so a failed call cannot leave a
+ * half-repaired buffer even when aliasing.
+ *
+ *   ACCUDISC_OK             repaired (or already clean); out_pcm written
+ *   ACCUDISC_ERR_NOTFOUND   a column exceeded capacity; out_pcm untouched.
+ *                           A NORMAL outcome, not an error condition —
+ *                           there is no error taxonomy here because there is
+ *                           nothing a caller could usefully do differently.
+ *   ACCUDISC_ERR_INVAL      geometry or buffer sizes do not agree
+ *   ACCUDISC_ERR_ABI        a struct `size` this build does not know
+ *   ACCUDISC_ERR_NOMEM      working set (npar * stride symbols) unallocatable
+ *
+ * report may be NULL. */
+ACCUDISC_API int accudisc_ctdb_repair(const accudisc_ctdb_req *req,
+                                      uint8_t *out_pcm,
+                                      accudisc_ctdb_report *report);
+
 #ifdef __cplusplus
 }
 #endif

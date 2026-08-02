@@ -31,6 +31,7 @@ set(ACCUDISC_SOURCES
     cdda/rw.c
     repair/gf16.c
     repair/rs16.c
+    repair/ctdb.c
     meta/cdtext.c
     meta/cdtext_blob.c
     meta/cdtext_encode.c

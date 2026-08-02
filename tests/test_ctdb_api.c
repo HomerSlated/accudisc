@@ -1,0 +1,375 @@
+/* SPDX-License-Identifier: MIT */
+/* accudisc_ctdb_repair — interface guards and a synthetic end-to-end.
+ *
+ * Fixture-free on purpose. test_ctdb_ab covers the real CTDB parity, but its
+ * fixtures are 1.6 GB in /var/tmp and exist on one machine, so it skips
+ * everywhere else and the API would otherwise be untested there. Here the
+ * parity is BUILT from a synthetic image with the library's own syndrome
+ * function, which is self-consistent and therefore proves the plumbing — the
+ * domains, the window, the refusal path, the aliasing contract — rather than
+ * the wire format. The wire format is what the fixtures are for; the two tests
+ * answer different questions and neither substitutes for the other.
+ */
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <accudisc/accudisc.h>
+
+#include "repair/rs16.h"
+
+/* Geometry chosen so the test can fail, which took two attempts.
+ *
+ * S must NOT be a whole number of frames, and `base` must NOT be a multiple of
+ * S. With S = 1 frame every image offset is an exact number of rows, so a
+ * bitmap shifted between the PCM and image domains lands on the SAME column at
+ * a shifted row and rescues the column anyway — the domain test passed while
+ * proving nothing. The real stride (5880 pairs = 10 frames) against a
+ * first_frame of 3 makes the domain shift a genuine reordering.
+ *
+ * stridecount must also be >= NPAR, or an all-erasure column cannot be built:
+ * at S = 1 frame and 8 image frames a column held 6 symbols, so 8 planted
+ * errors could not all land inside it. */
+#define WIRE_STRIDE 5880u
+#define S           (WIRE_STRIDE * 2u) /* 11760 words = 10 frames */
+#define NPAR        8u
+#define FIRST_FRAME 3u                 /* NOT 0, and not a multiple of S/1176 */
+#define FRAMES      120u               /* W/S = 12, so stridecount = 10 >= NPAR */
+#define PCM_FRAMES  130u
+
+static unsigned failures, checks;
+
+static void expect(int ok, const char *fmt, ...)
+{
+    va_list ap;
+
+    checks++;
+    if (ok)
+        return;
+    failures++;
+    fputs("FAIL: ", stderr);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+}
+
+static uint32_t rnd_state = 0x243F6A88u;
+
+static uint16_t rnd16(void)
+{
+    rnd_state ^= rnd_state << 13;
+    rnd_state ^= rnd_state >> 17;
+    rnd_state ^= rnd_state << 5;
+    return (uint16_t)(rnd_state >> 8);
+}
+
+static uint16_t *pcm;      /* PCM domain: PCM_FRAMES frames */
+static uint16_t *parity;   /* S columns x NPAR planes, syndrome-major */
+static uint64_t pcm_words, base, W;
+static unsigned sc;
+
+/* Build parity for the clean image, using the same grid the library uses:
+ * column c is base + S + c + j*S for j = 0..sc-1. */
+static void build_parity(void)
+{
+    uint16_t col[ADSC_RS16_MAX_NPAR * 4];
+
+    for (unsigned c = 0; c < S; c++) {
+        uint16_t syn[ADSC_RS16_MAX_NPAR];
+
+        for (unsigned j = 0; j < sc; j++)
+            col[j] = pcm[base + S + c + (uint64_t)j * S];
+        adsc_rs16_syndromes(col, sc, NPAR, syn);
+        for (unsigned r = 0; r < NPAR; r++)
+            parity[(size_t)r * S + c] = syn[r];
+    }
+}
+
+static void req_init(accudisc_ctdb_req *q)
+{
+    memset(q, 0, sizeof *q);
+    q->size = sizeof *q;
+    q->npar = NPAR;
+    q->wire_stride = WIRE_STRIDE;
+    q->image_first_frame = FIRST_FRAME;
+    q->image_frames = FRAMES;
+    q->offset_pairs = 0;
+    q->pcm = (const uint8_t *)pcm;
+    q->pcm_bytes = pcm_words * 2u;
+    q->parity = (const uint8_t *)parity;
+    q->parity_bytes = (uint64_t)S * NPAR * 2u;
+}
+
+/* ---- interface guards ----------------------------------------------------- */
+static void test_guards(void)
+{
+    accudisc_ctdb_req q;
+    accudisc_ctdb_report rep = ACCUDISC_CTDB_REPORT_INIT;
+    uint8_t *out = malloc((size_t)pcm_words * 2u);
+
+    req_init(&q);
+    expect(accudisc_ctdb_repair(NULL, out, &rep) == ACCUDISC_ERR_INVAL,
+           "NULL req accepted");
+    expect(accudisc_ctdb_repair(&q, NULL, &rep) == ACCUDISC_ERR_INVAL,
+           "NULL out accepted");
+
+    /* The size guard exists so a caller built against a different header fails
+     * loudly instead of having a shorter struct read as a longer one. */
+    req_init(&q); q.size = 0;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_ABI,
+           "size 0 not refused");
+    req_init(&q); q.size = sizeof(q) - 4;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_ABI,
+           "short size not refused");
+    {
+        accudisc_ctdb_report bad = { .size = 1 };
+
+        req_init(&q);
+        expect(accudisc_ctdb_repair(&q, out, &bad) == ACCUDISC_ERR_ABI,
+               "bad report size not refused");
+    }
+
+    req_init(&q); q.npar = 0;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+           "npar 0 accepted");
+    req_init(&q); q.npar = ADSC_RS16_MAX_NPAR + 1;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+           "npar over the ceiling accepted");
+
+    /* The parity-size cross-check. This is the ONLY structural defence against
+     * a caller pairing an entry's blob with another entry's npar: a
+     * syndrome-major blob's first npar planes are a VALID narrower code, so
+     * decoding a 16-parity blob at npar 8 or 4 succeeds silently and returns
+     * identical corrections (measured against real CTDB data). Nothing
+     * downstream can notice. Refusing on the byte count is what makes the
+     * mismatch loud. */
+    req_init(&q); q.npar = NPAR / 2;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+           "npar halved but parity_bytes unchanged: not refused");
+    req_init(&q); q.wire_stride = WIRE_STRIDE / 2;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+           "wire_stride halved: not refused");
+
+    /* Domain guards: the image window must lie inside the PCM. */
+    req_init(&q); q.image_frames = PCM_FRAMES;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+           "image window overruns the PCM: not refused");
+    req_init(&q); q.image_first_frame = PCM_FRAMES;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+           "image starts past the PCM: not refused");
+    req_init(&q); q.image_frames = 0;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+           "zero-length image accepted");
+
+    /* An offset large enough to walk the codeword region off either end. */
+    req_init(&q); q.offset_pairs = -100000;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+           "offset running off the front accepted");
+    req_init(&q); q.offset_pairs = 100000;
+    expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+           "offset running off the back accepted");
+
+    /* A bitmap too short to cover the PCM would be read out of bounds. */
+    {
+        uint8_t small[4] = { 0 };
+
+        req_init(&q);
+        q.pcm_erasures = small;
+        q.pcm_erasures_bytes = sizeof small;
+        expect(accudisc_ctdb_repair(&q, out, &rep) == ACCUDISC_ERR_INVAL,
+               "short erasure bitmap accepted");
+    }
+    free(out);
+}
+
+/* ---- end to end ----------------------------------------------------------- */
+static void test_clean_image_is_clean(void)
+{
+    accudisc_ctdb_req q;
+    accudisc_ctdb_report rep = ACCUDISC_CTDB_REPORT_INIT;
+    uint8_t *out = calloc((size_t)pcm_words, 2u);
+    int rc;
+
+    req_init(&q);
+    rc = accudisc_ctdb_repair(&q, out, &rep);
+    expect(rc == ACCUDISC_OK, "clean image: rc %d", rc);
+    expect(rep.dirty_columns == 0, "clean image: %u dirty columns",
+           rep.dirty_columns);
+    expect(rep.corrections == 0, "clean image: %u corrections",
+           rep.corrections);
+    expect(rep.crc32_before == rep.crc32_after,
+           "clean image: crc moved %08x -> %08x", rep.crc32_before,
+           rep.crc32_after);
+    expect(memcmp(out, pcm, (size_t)pcm_words * 2u) == 0,
+           "clean image: output differs from input");
+    free(out);
+}
+
+static void test_repairs_exactly(unsigned nerr, const char *what)
+{
+    accudisc_ctdb_req q;
+    accudisc_ctdb_report rep = ACCUDISC_CTDB_REPORT_INIT;
+    uint16_t *damaged = malloc((size_t)pcm_words * 2u);
+    uint8_t *out = calloc((size_t)pcm_words, 2u);
+    uint64_t hit[16];
+    int rc;
+
+    memcpy(damaged, pcm, (size_t)pcm_words * 2u);
+    /* Damage distinct symbols of ONE column, so capacity is what is being
+     * tested rather than the spread. */
+    for (unsigned i = 0; i < nerr; i++) {
+        hit[i] = base + S + 7u + (uint64_t)i * S;
+        damaged[hit[i]] ^= (uint16_t)(0x1234u + i);
+    }
+
+    req_init(&q);
+    q.pcm = (const uint8_t *)damaged;
+    rc = accudisc_ctdb_repair(&q, out, &rep);
+
+    if (nerr <= NPAR / 2) {
+        expect(rc == ACCUDISC_OK, "%s: rc %d", what, rc);
+        expect(rep.dirty_columns == 1, "%s: %u dirty columns", what,
+               rep.dirty_columns);
+        expect(rep.corrections == nerr, "%s: %u corrections, %u planted", what,
+               rep.corrections, nerr);
+        expect(memcmp(out, pcm, (size_t)pcm_words * 2u) == 0,
+               "%s: repaired image is not the original", what);
+        expect(rep.crc32_before != rep.crc32_after || nerr == 0,
+               "%s: crc did not move despite %u corrections", what, nerr);
+    } else {
+        /* Beyond capacity the decoder must decline, and — the property that
+         * matters — must not have written anything. */
+        expect(rc == ACCUDISC_ERR_NOTFOUND, "%s: rc %d, expected NOTFOUND",
+               what, rc);
+        expect(rep.refused_columns > 0, "%s: refused nothing", what);
+        expect(rep.corrections == 0, "%s: reported %u corrections on a refusal",
+               what, rep.corrections);
+        expect(rep.crc32_after == rep.crc32_before,
+               "%s: crc32_after moved on a refusal", what);
+    }
+    free(damaged);
+    free(out);
+}
+
+/* out_pcm may alias req->pcm. Documented, so it must be tested: an in-place
+ * run has to give the same bytes as an out-of-place one, and an out-of-place
+ * run must not touch the input. */
+static void test_in_place_matches(void)
+{
+    accudisc_ctdb_req q;
+    accudisc_ctdb_report r1 = ACCUDISC_CTDB_REPORT_INIT;
+    accudisc_ctdb_report r2 = ACCUDISC_CTDB_REPORT_INIT;
+    uint16_t *a = malloc((size_t)pcm_words * 2u);
+    uint16_t *b = malloc((size_t)pcm_words * 2u);
+    uint8_t *out = calloc((size_t)pcm_words, 2u);
+
+    memcpy(a, pcm, (size_t)pcm_words * 2u);
+    a[base + S + 3u] ^= 0xBEEFu;
+    a[base + S + 3u + S] ^= 0x0FACu;
+    memcpy(b, a, (size_t)pcm_words * 2u);
+
+    req_init(&q);
+    q.pcm = (const uint8_t *)a;
+    expect(accudisc_ctdb_repair(&q, out, &r1) == ACCUDISC_OK,
+           "aliasing: out-of-place run failed");
+    expect(memcmp(a, b, (size_t)pcm_words * 2u) == 0,
+           "aliasing: out-of-place run MODIFIED its input");
+
+    q.pcm = (const uint8_t *)b;
+    expect(accudisc_ctdb_repair(&q, (uint8_t *)b, &r2) == ACCUDISC_OK,
+           "aliasing: in-place run failed");
+    expect(memcmp(out, b, (size_t)pcm_words * 2u) == 0,
+           "aliasing: in-place result differs from out-of-place");
+    expect(r1.crc32_after == r2.crc32_after,
+           "aliasing: crc differs, %08x vs %08x", r1.crc32_after,
+           r2.crc32_after);
+    free(a); free(b); free(out);
+}
+
+/* The erasure bitmap is indexed by PCM word, not image word. A caller that
+ * pre-shifts it into the image domain would flag the wrong samples; this
+ * pins which domain the library expects by flagging a position that is only
+ * correct in one of them. */
+static void test_erasure_bitmap_is_pcm_absolute(void)
+{
+    accudisc_ctdb_req q;
+    accudisc_ctdb_report rep = ACCUDISC_CTDB_REPORT_INIT;
+    uint16_t *damaged = malloc((size_t)pcm_words * 2u);
+    uint8_t *out = calloc((size_t)pcm_words, 2u);
+    uint8_t *bits = calloc((size_t)(pcm_words + 7u) / 8u, 1u);
+    uint64_t w[NPAR];
+    int rc;
+
+    memcpy(damaged, pcm, (size_t)pcm_words * 2u);
+    /* NPAR errors in one column: beyond the error-only capacity of NPAR/2,
+     * correctable only if every position is supplied as an erasure. */
+    for (unsigned i = 0; i < NPAR; i++) {
+        w[i] = base + S + 11u + (uint64_t)i * S;
+        damaged[w[i]] ^= (uint16_t)(0xA000u + i);
+        bits[w[i] >> 3] |= (uint8_t)(1u << (w[i] & 7u));
+    }
+
+    req_init(&q);
+    q.pcm = (const uint8_t *)damaged;
+    rc = accudisc_ctdb_repair(&q, out, &rep);
+    expect(rc == ACCUDISC_ERR_NOTFOUND,
+           "no erasures: %u errors should exceed npar/2 = %u (rc %d)", NPAR,
+           NPAR / 2, rc);
+
+    q.pcm_erasures = bits;
+    q.pcm_erasures_bytes = (pcm_words + 7u) / 8u;
+    rc = accudisc_ctdb_repair(&q, out, &rep);
+    expect(rc == ACCUDISC_OK, "with PCM-absolute erasures: rc %d", rc);
+    expect(rep.erasure_columns == 1, "erasure_columns %u, expected 1",
+           rep.erasure_columns);
+    expect(rep.corrections == NPAR, "%u corrections, %u planted",
+           rep.corrections, NPAR);
+    expect(memcmp(out, pcm, (size_t)pcm_words * 2u) == 0,
+           "erasure repair did not restore the original");
+
+    /* Now the same bitmap shifted into the IMAGE domain, which is what a
+     * caller doing the shift itself would pass. It must NOT rescue the
+     * column — if it did, the two domains would be interchangeable and the
+     * contract would be meaningless. */
+    memset(bits, 0, (size_t)(pcm_words + 7u) / 8u);
+    for (unsigned i = 0; i < NPAR; i++) {
+        uint64_t shifted = w[i] - base;
+
+        bits[shifted >> 3] |= (uint8_t)(1u << (shifted & 7u));
+    }
+    rc = accudisc_ctdb_repair(&q, out, &rep);
+    expect(rc == ACCUDISC_ERR_NOTFOUND,
+           "an image-domain bitmap rescued the column: the domains are not "
+           "distinguished (rc %d)", rc);
+
+    free(damaged); free(out); free(bits);
+}
+
+int main(void)
+{
+    pcm_words = (uint64_t)PCM_FRAMES * 1176u;
+    base = (uint64_t)FIRST_FRAME * 1176u;
+    W = (uint64_t)FRAMES * 1176u;
+    sc = (unsigned)(W / S) - 2u;
+
+    pcm = malloc((size_t)pcm_words * 2u);
+    parity = malloc((size_t)S * NPAR * 2u);
+    for (uint64_t i = 0; i < pcm_words; i++)
+        pcm[i] = rnd16();
+    build_parity();
+
+    test_guards();
+    test_clean_image_is_clean();
+    test_repairs_exactly(1, "1 error");
+    test_repairs_exactly(NPAR / 2, "npar/2 errors (at capacity)");
+    test_repairs_exactly(NPAR / 2 + 1, "npar/2 + 1 errors (past capacity)");
+    test_in_place_matches();
+    test_erasure_bitmap_is_pcm_absolute();
+
+    printf("test_ctdb_api: %u checks, %u failures\n", checks, failures);
+    free(pcm);
+    free(parity);
+    return failures ? 1 : 0;
+}
