@@ -105,10 +105,14 @@ binaries or sources).
 - Because a signature is a freshness marker, **absence is meaningful and is not
   an oversight**. Stale signatures are **deleted rather than kept**, since one
   that does not verify is worse than none, and a file is signed only after an
-  audit of the content it has *now*. As of 2026-08-02 everything in
-  `src/repair/` is signed except `ctdb.c`, which was withheld a second time
-  because the audit that would have signed it produced two findings against it;
-  it returns when those are re-checked in place.
+  audit of the content it has *now*. `src/repair/ctdb.c` was withheld twice
+  before being signed on 2026-08-02 — once for a pending fix, once for two
+  findings against it — which is the mechanism working rather than failing.
+- **A signed report is never amended in place.** Where a later audit finds an
+  error in an earlier one, the correction is published as an erratum in the new
+  report and the old signature goes on verifying the text that was actually
+  signed. This has happened once (2026-08-02, a table cell overstating what a
+  superseded bounds check rejected).
 
 ## ATIP / media catalog (`src/drive/media_atip_db.inc`)
 
