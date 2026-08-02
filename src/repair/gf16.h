@@ -50,4 +50,28 @@ uint16_t adsc_gf16_mul_pow(uint16_t a, unsigned e);
 /* Discrete logarithm base alpha, or ADSC_GF16_LOG_UNDEFINED for a == 0. */
 int adsc_gf16_log(uint16_t a);
 
+/* ---- hot path ----------------------------------------------------------
+ *
+ * The tables, and a multiply that skips the two things adsc_gf16_mul_pow()
+ * does per call and the syndrome sweep does not need. That sweep calls it
+ * 2.87 BILLION times for one disc, across a translation-unit boundary so it
+ * cannot be inlined, and each call re-tests the ready flag and reduces an
+ * exponent that is always below ADSC_RS16_MAX_NPAR. Hoisting is worth
+ * 6.313 s -> 2.906 s on a 383 MB image, with output bit-identical.
+ *
+ * PRECONDITIONS, unchecked on purpose — this is why it is not the default:
+ *   - adsc_gf16_init() has been called;
+ *   - e < ADSC_GF16_ORDER, i.e. already reduced.
+ * Violate either and you get a well-formed wrong answer or an out-of-range
+ * read. Use adsc_gf16_mul_pow() anywhere that is not a measured hot loop.
+ *
+ * Internal to src/repair/; not part of the installed interface. */
+extern uint16_t adsc_gf16_exp_tab[2 * ADSC_GF16_ORDER];
+extern uint16_t adsc_gf16_log_tab[65536];
+
+static inline uint16_t adsc_gf16_mul_pow_fast(uint16_t a, unsigned e)
+{
+    return a ? adsc_gf16_exp_tab[(unsigned)adsc_gf16_log_tab[a] + e] : 0u;
+}
+
 #endif /* ACCUDISC_SRC_REPAIR_GF16_H */

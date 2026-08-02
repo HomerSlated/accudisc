@@ -30,6 +30,7 @@ set(ACCUDISC_SOURCES
     cdda/pregap_scan.c
     cdda/rw.c
     repair/gf16.c
+    repair/sweep.c
     repair/rs16.c
     repair/ctdb.c
     meta/cdtext.c

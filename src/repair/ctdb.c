@@ -31,38 +31,16 @@
 
 #include "gf16.h"
 #include "rs16.h"
+#include "ctdb_internal.h"
 
 #define WORDS_PER_FRAME 1176u /* 2352 bytes / 2 */
 
-/* CRC-32 (the reflected, 0xEDB88320 one; init and final xor 0xFFFFFFFF).
- * Computed over the codeword region only, NOT the whole image and NOT the
- * image window — measured against cdda2img's published crc_before/crc_after.
- *
- * It is a change detector, not a gate. CTDB publishes per-track CRCs, so there
- * is nothing here to compare this against; the caller's absolute check is a
- * different quantity computed over different bytes. */
-static uint32_t crc32_words(const uint16_t *v, uint64_t n)
-{
-    static uint32_t table[256];
-    static int built;
-    uint32_t crc = 0xFFFFFFFFu;
-    const uint8_t *p = (const uint8_t *)v;
-    uint64_t nbytes = n * 2u;
-
-    if (!built) {
-        for (unsigned i = 0; i < 256; i++) {
-            uint32_t c = i;
-
-            for (unsigned k = 0; k < 8; k++)
-                c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
-            table[i] = c;
-        }
-        built = 1; /* idempotent and value-identical if raced; see gf16_init */
-    }
-    for (uint64_t i = 0; i < nbytes; i++)
-        crc = table[(crc ^ p[i]) & 0xFFu] ^ (crc >> 8);
-    return crc ^ 0xFFFFFFFFu;
-}
+/* The sweep and the CRC live in sweep.c: they are the hot path, and the A/B
+ * harness has to call the same code this does — see ctdb_internal.h. The CRC
+ * is computed over the codeword region only, NOT the whole image and NOT the
+ * image window, measured against the reference tool's published values. It is
+ * a change detector, not a gate; the caller's absolute check is a different
+ * quantity over different bytes. */
 
 /* One correction, held until every column has decoded. Nothing is written to
  * the caller's buffer before that, so an aliased out_pcm cannot be left half
@@ -79,7 +57,8 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
     const uint16_t *par;
     uint16_t *acc = NULL;
     struct fix *fixes = NULL;
-    uint64_t base, W, pcm_words, nfix = 0, fix_cap;
+    uint64_t base, W, pcm_words, nfix = 0, fix_cap, first = 0;
+    uint32_t before = 0;
     unsigned S, sc, npar;
     long delta;
     int rc = ACCUDISC_ERR_INVAL;
@@ -167,19 +146,11 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
 
     adsc_gf16_init();
 
-    /* Pass 1: syndromes, one sequential sweep. S_r <- v ^ S_r*alpha^r. */
-    for (unsigned j = 0; j < sc; j++) {
-        uint64_t row = (uint64_t)((long)base + (long)S + (long)j * (long)S + delta);
-
-        for (unsigned c = 0; c < S; c++) {
-            uint16_t v = pcm[row + c];
-            uint16_t *a = &acc[(size_t)c * npar];
-
-            a[0] ^= v; /* alpha^0 = 1 */
-            for (unsigned r = 1; r < npar; r++)
-                a[r] = (uint16_t)(adsc_gf16_mul_pow(a[r], r) ^ v);
-        }
-    }
+    /* Pass 1: syndromes and crc32_before, in ONE pass over the image. The two
+     * cover exactly the same bytes — the rows are contiguous — so computing
+     * them separately meant reading 383 MB twice. */
+    first = (uint64_t)((long)base + (long)S + delta);
+    adsc_ctdb_sweep(pcm, first, S, sc, npar, acc, &before);
 
     /* Pass 2: decode each column that disagrees. */
     for (unsigned c = 0; c < S; c++) {
@@ -191,7 +162,7 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
         int clean = 1, n;
 
         for (unsigned r = 0; r < npar; r++) {
-            E[r] = (uint16_t)(acc[(size_t)c * npar + r] ^ par[(size_t)r * S + c]);
+            E[r] = (uint16_t)(acc[(size_t)r * S + c] ^ par[(size_t)r * S + c]);
             clean &= (E[r] == 0);
         }
         if (clean)
@@ -258,9 +229,7 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
     }
 
     {
-        uint64_t first = (uint64_t)((long)base + (long)S + delta);
-        uint32_t before = crc32_words(pcm + first, (uint64_t)sc * S);
-        uint32_t after = before;
+        uint32_t after = before; /* `before` came out of the sweep above */
 
         if (refused) {
             /* Nothing is applied. Reporting crc32_after == crc32_before here
@@ -280,7 +249,7 @@ int accudisc_ctdb_repair(const accudisc_ctdb_req *req, uint8_t *out_pcm,
             /* Only when something changed. With nfix == 0 the copy above is
              * exact, so this sweep is 383 MB to recompute a value we hold. */
             if (nfix)
-                after = crc32_words(dst + first, (uint64_t)sc * S);
+                after = adsc_ctdb_crc32_words(dst + first, (uint64_t)sc * S);
             rc = unverified ? ACCUDISC_CTDB_UNVERIFIED : ACCUDISC_OK;
         }
         if (report) {

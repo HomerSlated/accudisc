@@ -66,12 +66,21 @@ def main():
 
     bad = bool(only_ours or only_ref or differ)
 
+    # crc_before is here because the sweep now computes it FUSED into the same
+    # pass that builds the syndromes. The reference JSON carries the field, so
+    # this compares against an external oracle; emitting a number only we ever
+    # read would have proved nothing about the fusion.
     for key in ("offset", "dirty_columns", "erasure_columns",
-                "image_first_frame", "image_frames"):
+                "image_first_frame", "image_frames", "crc_before"):
         if key in ours and key in ref:
-            same = ours[key] == ref[key]
+            a, b = ours[key], ref[key]
+            # The reference writes CRCs as hex strings and we emit integers.
+            # Compare the VALUES; a representation mismatch is not a defect.
+            if isinstance(b, str) and not isinstance(a, str):
+                b = int(b, 16)
+            same = a == b
             bad |= not same
-            print(f"  {key:20s} ours={ours[key]!r:>10} ref={ref[key]!r:>10}"
+            print(f"  {key:20s} ours={a!r:>10} ref={b!r:>10}"
                   f"  {'==' if same else '!! MISMATCH'}")
 
     refsect = ref.get("affected_sectors")

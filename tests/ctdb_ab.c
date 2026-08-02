@@ -35,6 +35,7 @@
 
 #include "repair/gf16.h"
 #include "repair/rs16.h"
+#include "repair/ctdb_internal.h"
 
 #define SS 11760u /* internal stride, words */
 
@@ -46,6 +47,7 @@ int main(int argc, char **argv)
     const uint8_t *era = NULL;
     size_t par_u16;
     unsigned npar, sc;
+    uint32_t crc_before = 0;
     int fd, off;
     struct stat st;
     FILE *f;
@@ -95,22 +97,25 @@ int main(int argc, char **argv)
 
     acc = calloc((size_t)SS * npar, sizeof(*acc));
 
-    /* One sequential pass. Horner, oldest symbol first: S_r <- v ^ S_r*alpha^r. */
-    for (unsigned j = 0; j < sc; j++) {
-        long row = (long)base + (long)SS + (long)j * (long)SS + delta;
+    /* Pass 1 is the SHIPPING sweep, called through src/repair/ctdb_internal.h.
+     * This file used to carry its own verbatim copy, which meant the eight-arm
+     * parity comparison certified a copy of the library rather than the library
+     * — it would have stayed green through any rewrite of the real one. The
+     * decode loop below is still ours, deliberately: its erasure_columns
+     * semantics reproduce the reference tool's ("erasures helped") rather than
+     * accudisc_ctdb_repair's ("column had erasures").
+     *
+     * The bounds check the old loop did per row is done once here, over the
+     * whole contiguous span, because the sweep does none by contract. */
+    {
+        long lo = (long)base + (long)SS + delta;
+        long hi = lo + (long)sc * (long)SS;
 
-        if (row < 0 || (size_t)row + SS > file_words) {
-            fprintf(stderr, "row %u out of range at offset %d\n", j, off);
+        if (lo < 0 || hi < 0 || (size_t)hi > file_words) {
+            fprintf(stderr, "codeword region out of range at offset %d\n", off);
             return 2;
         }
-        for (unsigned c = 0; c < SS; c++) {
-            uint16_t v = pcm[(size_t)row + c];
-            uint16_t *a = &acc[(size_t)c * npar];
-
-            a[0] ^= v; /* alpha^0 = 1 */
-            for (unsigned r = 1; r < npar; r++)
-                a[r] = (uint16_t)(adsc_gf16_mul_pow(a[r], r) ^ v);
-        }
+        adsc_ctdb_sweep(pcm, (uint64_t)lo, SS, sc, npar, acc, &crc_before);
     }
 
     /* Decode every dirty column. */
@@ -131,7 +136,7 @@ int main(int argc, char **argv)
         int clean = 1, rc;
 
         for (unsigned r = 0; r < npar; r++) {
-            E[r] = (uint16_t)(acc[(size_t)c * npar + r] ^ par[(size_t)r * SS + c]);
+            E[r] = (uint16_t)(acc[(size_t)r * SS + c] ^ par[(size_t)r * SS + c]);
             clean &= (E[r] == 0);
         }
         if (clean)
@@ -182,7 +187,8 @@ int main(int argc, char **argv)
     }
     printf("\n  ],\n  \"corrected_errors\": %u,\n  \"dirty_columns\": %u,\n"
            "  \"decoded_columns\": %u,\n  \"refused_columns\": %u,\n"
-           "  \"erasure_columns\": %u,\n  \"affected_sector_count\": %u\n}\n",
-           ncorr, dirty, decoded, refused, erasure_columns, nsect);
+           "  \"erasure_columns\": %u,\n  \"affected_sector_count\": %u,\n"
+           "  \"crc_before\": %u\n}\n",
+           ncorr, dirty, decoded, refused, erasure_columns, nsect, crc_before);
     return 0;
 }
