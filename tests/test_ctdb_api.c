@@ -452,6 +452,161 @@ static void test_positive_offset_when_w_divides_s(void)
     free(out);
 }
 
+/* ---- the offset window, pinned on BOTH sides ------------------------------
+ *
+ * test_positive_offset_when_w_divides_s above proves the catastrophic class is
+ * no longer categorically refused, and that is all it proves: at offset +1 it
+ * cannot distinguish the real ceiling S + (W mod S) from (W mod S) + 1 or from
+ * 2S + (W mod S). An arm that looks like it varies the parameter and does not.
+ *
+ * So pin the boundary itself — largest accepted and smallest refused, on each
+ * side — across geometries that vary what the formula depends on:
+ *
+ *     max offset_pairs = (S + (W mod S)) / 2      (pcm declared as base + W)
+ *     min offset_pairs = -(base + S) / 2
+ *
+ * The `+ S` is structural rather than slack: the codeword region begins one
+ * stride into the image and ends one stride short of its end, so there is a
+ * full stride of headroom above it whatever W mod S is. That is why the
+ * multiple-of-ten class floors at S/2 instead of at zero.
+ *
+ * Parity and PCM are all-zero here, which is VALID: zero samples give zero
+ * syndromes, so an accepted geometry returns ACCUDISC_OK rather than merely
+ * "not INVAL", and nothing about the decoder is under test. */
+static int offset_accepted(unsigned stride, unsigned first_frame,
+                           unsigned frames, long off)
+{
+    accudisc_ctdb_req q;
+    accudisc_ctdb_report rep = ACCUDISC_CTDB_REPORT_INIT;
+    unsigned s = stride * 2u;
+    uint64_t words = ((uint64_t)first_frame + frames) * 1176u;
+    uint8_t *zpcm = calloc((size_t)words, 2u);
+    uint8_t *zpar = calloc((size_t)s * NPAR, 2u);
+    uint8_t *zout = calloc((size_t)words, 2u);
+    int rc;
+
+    memset(&q, 0, sizeof q);
+    q.size = sizeof q;
+    q.npar = NPAR;
+    q.wire_stride = stride;
+    q.image_first_frame = first_frame;
+    q.image_frames = frames;
+    q.offset_pairs = (int32_t)off;
+    q.pcm = zpcm;
+    q.pcm_bytes = words * 2u;          /* exactly the image window: no slack */
+    q.parity = zpar;
+    q.parity_bytes = (uint64_t)s * NPAR * 2u;
+
+    rc = accudisc_ctdb_repair(&q, zout, &rep);
+    free(zpcm); free(zpar); free(zout);
+    return rc != ACCUDISC_ERR_INVAL;
+}
+
+static void test_offset_window_boundaries(void)
+{
+    static const struct { unsigned stride, ff, frames; } geom[] = {
+        { 5880u,  0u,  42u }, /* W mod S = 2352 words                        */
+        { 5880u,  0u,  40u }, /* W mod S = 0: the class that refused ALL      */
+        { 5880u,  3u,  42u }, /* base != 0, so the negative arm moves         */
+        { 5880u,  0u,  45u }, /* W mod S = S/2                                */
+        {   17u,  0u, 300u }, /* stride co-prime to 1176: no alignment luck   */
+        {   17u,  7u, 301u },
+    };
+
+    for (unsigned i = 0; i < sizeof geom / sizeof geom[0]; i++) {
+        unsigned stride = geom[i].stride, ff = geom[i].ff, fr = geom[i].frames;
+        unsigned s = stride * 2u;
+        uint64_t w = (uint64_t)fr * 1176u, b = (uint64_t)ff * 1176u;
+        long hi = (long)((s + w % s) / 2u);
+        long lo = -(long)((b + s) / 2u);
+
+        expect(offset_accepted(stride, ff, fr, hi),
+               "geom %u (stride %u, ff %u, frames %u): +%ld is the ceiling and "
+               "was refused", i, stride, ff, fr, hi);
+        expect(!offset_accepted(stride, ff, fr, hi + 1),
+               "geom %u: +%ld is one past the ceiling and was accepted",
+               i, hi + 1);
+        expect(offset_accepted(stride, ff, fr, lo),
+               "geom %u: %ld is the floor and was refused", i, lo);
+        expect(!offset_accepted(stride, ff, fr, lo - 1),
+               "geom %u: %ld is one past the floor and was accepted",
+               i, lo - 1);
+    }
+}
+
+/* ---- which erasure_columns is this? ---------------------------------------
+ *
+ * Two definitions are live in this tree and they agree on every arm we hold:
+ * the library counts dirty columns that CARRIED erasures (ctdb.c:208-209,
+ * incremented before the decode and never withdrawn), while tests/ctdb_ab.c
+ * deliberately reproduces the reference tool's "erasures were used AND helped"
+ * so the A/B compares like with like. cdda2img could not separate them by
+ * measurement (their §147.3) because both definitions predict every number
+ * either project had measured.
+ *
+ * Separating them needs a column that carries erasures and decodes error-only
+ * anyway. Build one: flag npar+1 positions so the errata decode is refused for
+ * want of capacity, leave the single real error UNflagged so the error-only
+ * retry (ctdb.c:237-239) succeeds on it.
+ *
+ *     "column HAD erasures"  -> 1        "erasures HELPED" -> 0 */
+static void test_erasure_columns_counts_columns_that_had_erasures(void)
+{
+    accudisc_ctdb_req q;
+    accudisc_ctdb_report rep = ACCUDISC_CTDB_REPORT_INIT;
+    uint16_t *damaged = malloc((size_t)pcm_words * 2u);
+    uint8_t *out = calloc((size_t)pcm_words, 2u);
+    uint8_t *bits = calloc((size_t)(pcm_words + 7u) / 8u, 1u);
+    const unsigned col = 11u, bad_row = 4u;
+    uint64_t bad = base + S + col + (uint64_t)bad_row * S;
+    unsigned flagged = 0;
+    int rc;
+
+    expect(sc >= NPAR + 2u,
+           "geometry gives only %u rows; need npar+1 flags plus an unflagged "
+           "damaged row for this test to mean anything", sc);
+
+    memcpy(damaged, pcm, (size_t)pcm_words * 2u);
+    damaged[bad] ^= 0xBEEFu;
+
+    /* npar+1 erasures, none of them the damaged word. The scan stops at
+     * npar+1 by design, so flagging more would change nothing. */
+    for (unsigned p = 0; p < sc && flagged < NPAR + 1u; p++) {
+        uint64_t w = base + S + col + (uint64_t)p * S;
+
+        if (p == bad_row)
+            continue;
+        bits[w >> 3] |= (uint8_t)(1u << (w & 7u));
+        flagged++;
+    }
+
+    req_init(&q);
+    q.pcm = (const uint8_t *)damaged;
+    q.pcm_erasures = bits;
+    q.pcm_erasures_bytes = (pcm_words + 7u) / 8u;
+    rc = accudisc_ctdb_repair(&q, out, &rep);
+
+    expect(rc == ACCUDISC_OK,
+           "over-capacity erasures should fall back to error-only and verify "
+           "(rc %d)", rc);
+    expect(rep.repaired_columns == 1, "repaired_columns %u, expected 1",
+           rep.repaired_columns);
+    expect(rep.corrections == 1, "corrections %u, expected 1 (the erasures are "
+           "no-ops and must not be counted)", rep.corrections);
+    /* The retry passes no erasures, so nothing it returns is at capacity. */
+    expect(rep.unverified_columns == 0,
+           "unverified_columns %u, expected 0 on the error-only retry",
+           rep.unverified_columns);
+    expect(rep.erasure_columns == 1,
+           "erasure_columns %u: 1 means \"column HAD erasures\" (the documented "
+           "contract), 0 means \"erasures helped\" (ctdb_ab's shim). The two "
+           "have diverged", rep.erasure_columns);
+    expect(memcmp(out, pcm, (size_t)pcm_words * 2u) == 0,
+           "error-only retry did not restore the original");
+
+    free(damaged); free(out); free(bits);
+}
+
 int main(void)
 {
     pcm_words = (uint64_t)PCM_FRAMES * 1176u;
@@ -474,6 +629,8 @@ int main(void)
     test_erasure_bitmap_is_pcm_absolute();
     test_full_but_wrong_erasures_are_unverified();
     test_positive_offset_when_w_divides_s();
+    test_offset_window_boundaries();
+    test_erasure_columns_counts_columns_that_had_erasures();
 
     printf("test_ctdb_api: %u checks, %u failures\n", checks, failures);
     free(pcm);
