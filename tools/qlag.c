@@ -209,6 +209,22 @@ int main(int argc, char **argv)
            good ? 100.0 * (double)nonpos / (double)good : 0.0);
     printf("  position frames    %llu\n", (unsigned long long)pos);
 
+    /* Say it, do not leave it to be inferred. Deriving one percentage from the
+     * other DOES NOT WORK — they are printed at different precisions, so the
+     * quotient of the displayed values is wrong by an amount that grows as
+     * CRC-good falls. Measured on cdda2img's sweep (their §153/§154, ours
+     * 2026-08-07f): at 38.73% CRC-good, 0.39/38.73 gives 1.007% against a true
+     * 0.995% — a systematic error, not a slip, and one that is invisible on a
+     * healthy capture because it only bites when the denominator shrinks. It
+     * happened to a careful reader immediately below a correct table. Widening
+     * the precision would make the derivation look MORE valid; the two figures
+     * are both printed so that nobody needs it. */
+    if (nonpos)
+        printf("    (both percentages are printed because neither derives from "
+               "the other: the\n     quotient of these rounded values drifts as "
+               "CRC-good falls, by 1.2%% of itself\n     at 39%% yield. Read the "
+               "column you want.)\n");
+
     if (!pos) {
         printf("\n  VERDICT: no CRC-good position frames — nothing measurable "
                "here.\n");
