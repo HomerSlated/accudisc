@@ -4,6 +4,14 @@ Dev scripts and hardware probes. Not part of the build or the install; they
 exist to answer questions about drives and discs before that knowledge is
 turned into library code.
 
+> **`/tmp` on this machine is tmpfs — it is RAM.** Build these into `build/`
+> and write their output to `/var/tmp/`, never `/tmp`. A whole-disc rip is
+> ~750 MB and a raw-subchannel capture ~15 MB per disc; enough of either in
+> `/tmp` exhausts memory and takes the machine down (it has happened twice:
+> 2026-07-22 and 2026-08-07). Two independent reasons, so neither one is the
+> whole rule — `/tmp` also cannot hold the `security.capability` xattr, so a
+> probe built there silently loses its `CAP_SYS_RAWIO` (see `speedprobe.c`).
+
 ## Hardware probes (C)
 
 Not wired into CMake — they use library internals (`src/`), which the public
@@ -11,8 +19,8 @@ ABI deliberately hides, so they link the static lib directly:
 
 ```sh
 cmake --build build
-gcc -o /tmp/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudisc.a -ldl
-/tmp/mediaprobe /dev/sr0
+gcc -o build/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudisc.a -ldl
+./build/mediaprobe /dev/sr0
 ```
 
 - **`mediaprobe.c`** — read-only. GET CONFIGURATION current profile, Real-Time
@@ -70,10 +78,56 @@ gcc -o /tmp/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudis
   ./build/bench_decode
   ```
 
-## Offline Q analysis (Python)
+## Offline Q analysis
 
 Operate on a raw subchannel capture (`accudisc read --sub raw --subf FILE`),
-96 bytes/sector:
+96 bytes/sector.
+
+- **`qlag.c`** — does the Q frame in transfer slot *i* describe sector
+  `base + i`, or another sector? Per CRC-good ADR=1 frame it histograms
+  `(frame's own absolute LBA) - (base + slot)` and returns NO LAG / LAG ±n /
+  SPREAD. **Public header only** — no device, no `CAP_SYS_RAWIO`, no `src/`:
+  ```sh
+  gcc -O2 -o build/qlag tools/qlag.c -laccudisc
+  ./build/qlag capture.sub [BASE_LBA] [--toc capture.fulltoc]
+  ```
+  It exists because Q looks like it cannot have this problem: an ADR=1 frame
+  carries its own address, so lag is invisible if you index by it. But
+  `accudisc_q_parse` leaves every position field zero on CRC failure, so a
+  CRC-**bad** frame can only be placed by slot — and those are exactly the
+  frames a subchannel health map draws. Lag is irrelevant where you can locate
+  the frame and decisive where you cannot.
+
+  Measured on the PX-716A (2026-08-07, one whole-disc capture): **no lag**,
+  157,871 of 157,914 position frames at delta 0. The 43 exceptions are not lag
+  — six short contiguous runs, every delta an exact multiple of 512 sectors, so
+  a frame can pass CRC-16 and still be positionally wrong at ~0.03 %. No
+  mechanism claimed.
+
+  **Confirmed at scale by cdda2img** (their §150.2/§151, 2026-08-07): 42 captures, 3
+  discs, 4×/8×/24×/32×/40×, three passes each — **NO LAG on every one**, none
+  near the SPREAD threshold. Including two independent Q-collapse events where
+  CRC-good fell to 47.79 % and 38.73 % while in-slot stayed ≥ 99.977 %. **A Q
+  yield below half does not disturb slot alignment**, so a slot-indexed lane
+  survives exactly the failure it exists to draw. Their sweep also found a disc
+  with **0.00 % non-position frames** (no MCN, no ISRCs), against ~1 % on
+  others — the interleave rate is a property of the pressing, so validating a Q
+  lane on the wrong disc would prove the `NO_POSITION` state unnecessary.
+
+  Falsified before it was trusted: a capture shifted by 3 sectors reports
+  `LAG +3`, a randomly jittered one reports `SPREAD` (41 deltas), a partial
+  capture is told it is not the whole disc, and a non-multiple-of-96 file is
+  refused rather than measured. cdda2img rebuilt the shifted arm independently
+  rather than take ours on trust; the minority deltas tracked the shift
+  (`-2048 → -2045`), which says those anomalies are positional facts about the
+  capture rather than artefacts of the measurement.
+
+  Non-position frames are reported against **two denominators** because "of
+  all" alone misleads: it moves when Q yield moves, so a reader comparing
+  speeds sees the interleave apparently thin under load. Against CRC-good it is
+  flat to three digits across a 2× change in yield.
+
+### Python oracles
 
 - **`qdecode.py FILE.sub START_LBA [--only-bad] [--boundaries]`** — per-frame Q
   decode with CRC gating. ADR-aware: only ADR=1 frames carry position; ADR=2 is

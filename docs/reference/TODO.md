@@ -1411,6 +1411,129 @@ blocker is schedule, not readiness.
   read/probe/parse work. Worth remembering: for a GUI consumer the machine
   interface is not a fallback, it is the primary path for half the product.
 
+## Consumer requests — cdda2img, recorded 2026-08-07
+
+### 1. `subq_map` — a per-sector Q-health lane beside `status_map` — `[P2]`, AWAITING KEITH'S RULING
+
+cdda2img §148 (answered in `2026-08-07a/b/c`). They are building the rip progress
+bar as a live disc map, and after reading the binding they withdrew two requests
+before sending — `status_map` and `read_span(**kwargs)` already gave them the C2
+lane and the frontier. **The one thing missing is the Q lane**, and this is the
+whole ask: a second `count`-byte array requested by `subq_map=True`, same
+allocation, lifetime and live-read semantics as `status_map`.
+
+**Nothing has been implemented.** The three answers they asked for needed no
+code; a new field on `accudisc_read_req` is scope, and scope is Keith's call.
+They are shipping the C2 lane meanwhile with the Q lane dark (§148.6), so
+nothing is blocked either way.
+
+**Why it belongs here rather than in their loop — the argument is correctness,
+not cost.** Their DIY path would read `_split_streams` and CRC every sector's Q.
+Hard-unreadable sectors are delivered **zero-filled** (`accudisc.h:1371-1374`),
+and a zero-filled Q frame **fails** CRC-16 (measured 2026-08-07: `rc == -9`,
+`ACCUDISC_ERR_CRC`, for both all-zero and all-ones fills). So a DIY lane paints
+fabricated subchannel damage on exactly the sectors whose audio is already gone
+— corroborating the real failure beside it, so it reads as confirmation rather
+than as a bug. The engine does not have this because it `continue`s at
+`engine.c:558-561` before the Q check; the only way to know that is to read the
+engine. They confirmed they would have shipped it (§149.1).
+
+The marginal cost in the engine is **not** the CRC — that already runs
+unconditionally for every SUB_RAW read at `engine.c:569-580`. The only new work
+is one relaxed atomic byte store per sector through the existing `map_store`
+(`engine.c:124-128`). Already paid for.
+
+**ABI: additive, no soname bump.** `accudisc_read_req` carries its own `.size`
+and the IN rule (`accudisc.h:1289-1294`) treats a shorter caller's tail as zero.
+`tests/test_abi.c:49` pins the current 56 bytes and would need updating with it.
+
+**The five states, agreed by both sides** (state in the low nibble, mirroring
+`ACCUDISC_MAP_STATE`/`SEVERITY`):
+
+```
+0x0  SUBQ_PENDING      not yet attempted (byte untouched)
+0x1  SUBQ_OK           CRC-16 verified, ADR=1 position frame
+0x2  SUBQ_BAD          CRC-16 failed
+0x3  SUBQ_NO_POSITION  CRC verified, ADR != 1 (MCN / ISRC)
+0x4  SUBQ_NO_AUDIO     sector was hard-unreadable; no frame delivered
+```
+
+`SUBQ_NO_POSITION` is the state neither side would have designed unprompted, and
+it is **load-bearing, not a nicety**. Measured 0.98% of frames (1,590 of
+162,892) are CRC-good non-position frames — MCN/ISRC, legitimately interleaved,
+which `index_map.c:84-85,124-125` already skips as such. Under their worst-wins
+aggregation over ~7,000-sector cells that is **every cell flagged on a perfect
+disc** (§149.2). A per-frame rate that looks negligible is total after
+aggregation. Note the two consumers read it with opposite polarity: healthy for
+a health lane, signal for `subq_toc`, which is the argument for it being a state
+rather than a boolean.
+
+**The rate varies by DISC, 0% to ~1%, and that makes it more necessary rather
+than less** (their §150.4b: an entire pressing with no MCN and no ISRCs, 0.00%
+across all fifteen captures). A state whose necessity depends on the disc is the
+dangerous kind — validate the Q lane on that disc alone and you prove the state
+optional. **So any acceptance test for `subq_map` must name a disc carrying MCN
+or ISRCs as a precondition**; otherwise `SUBQ_NO_POSITION` is unreachable and
+the arm passes without testing anything.
+
+Two design calls, both agreed (§149.4): **refuse** `subq_map` without
+`ACCUDISC_SUB_RAW` (`ACCUDISC_ERR_INVAL`) rather than return a uniform map a
+renderer will draw as a lane; and the **severity nibble stays zero**, because Q
+integrity is one CRC-16 and anything else there would be a proxy.
+
+### 2. Q lag — MEASURED, no lag on this drive; `tools/qlag.c` shipped
+
+Their question 3 was whether Q lags the audio, which would make an LBA-indexed
+map wrong by *k* everywhere. Settled for this drive and left open for the fleet.
+
+**Structural half (certain):** an ADR=1 frame is self-locating, so lag is
+invisible if you index by the frame's own address — but `accudisc_q_parse` leaves
+every position field zero on CRC failure by deliberate design
+(`accudisc.h:1481-1485`), so a CRC-**bad** frame can only be placed by transfer
+slot. Lag is irrelevant for the frames you can locate and decisive for the ones
+you cannot, which are exactly the frames the lane exists to draw.
+
+**Measured half:** `tools/qlag.c` (new, public-header-only, device-free) over a
+whole-disc raw-sub capture on the PX-716A: **157,871 of 157,914 position frames
+at delta 0** — no lag, and not a near-zero average. The 43 exceptions are six
+short contiguous runs whose deltas are all exact multiples of 512 sectors (a
+buffer number, not a disc number). **No mechanism claimed.** What it does prove
+is that a frame can pass CRC-16 and still be positionally wrong, at ~0.03%.
+
+Falsified before it was trusted: `LAG +3` on a shifted capture, `SPREAD` (41
+deltas) on a jittered one, refusal on a wrong stride, and a base-mismatch warning
+on a partial capture. **The SPREAD threshold is 8** (`SPREAD_MAX`), not the
+64-entry histogram capacity — `2026-08-07c` corrects that after we sent the wrong
+number.
+
+**CLOSED at scale by cdda2img** (their §150.2 and §151 — the per-capture numbers
+live in the correspondence itself; their sweep file is under *their* `private/`,
+machine-local and in no clone, so it is deliberately not cited as a path):
+42 captures, 3 discs, 4×/8×/24×/32×/40×, three passes each —
+**NO LAG on every one**, nothing near the threshold. The result we could not have
+obtained: two independent Q-collapse events (the vendor speed cliff, and one
+degraded pass among identical siblings) drop CRC-good to **47.79%** and
+**38.73%** while in-slot stays at **99.988%** and **99.978%**. A Q yield below
+half does not disturb slot alignment — damage removes frames without moving the
+ones that remain. That rules out the plausible failure (whatever destroys Q CRC
+also disturbs delivery timing, so survivors drift exactly when the lane most
+needs to be right) and it could not have been argued from first principles.
+
+They also rebuilt the shifted arm independently, and the detail that fell out of
+it is worth keeping: the minority deltas **tracked the shift** (`-2048 → -2045`),
+which makes the buffer-aligned anomalies positional facts about the capture
+rather than artefacts of the measurement.
+
+One defect their sweep exposed, since fixed: `nonpos` was printed only as a
+percentage of *all* frames, which moves when Q yield moves — so comparing
+captures across speeds suggests the interleave thins under load. It does not;
+normalised against CRC-good it is flat to three digits across a 2× change in
+yield. Both denominators now print.
+
+If a nonzero lag ever appears the unit is **whole frames** (one Q frame per
+sector, not sample pairs) and the sign convention is
+`accudisc_probe_c2_lag`'s — positive = the companion stream trails the audio.
+
 ## Outstanding — carried from 2026-07-26 (phase 3 landed; these did not)
 
 ### 0. RECOVERED sectors were returned WRONG, 9/9 — `[P1]`, cdda2img §89.5, NOT DIAGNOSED
