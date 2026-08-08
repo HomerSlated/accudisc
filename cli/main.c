@@ -112,6 +112,11 @@ static void usage(FILE *to)
         "                 status byte per sector (ACCUDISC_MAP_* encoding,\n"
         "                 see accudisc.h), updated in place during the read;\n"
         "                 mmap it MAP_SHARED to watch progress/state live\n"
+        "  --subq-map-file F  same, for Q-subchannel health: one\n"
+        "                 ACCUDISC_SUBQ_* byte per sector. Needs --sub raw.\n"
+        "                 A separate lane, not derivable from --map-file:\n"
+        "                 audio and Q fail independently. NO_POSITION (3)\n"
+        "                 is HEALTHY — interleaved MCN/ISRC frames\n"
         "  --progress-fd N  machine progress on fd N, newline-delimited:\n"
         "                 'progress <done> <total>' lines, then a final\n"
         "                 'summary hard= c2= recovered= suspect= rereads=\n"
@@ -1163,6 +1168,58 @@ static void render_map(const uint8_t *map, uint32_t count)
     fprintf(stderr, "]\n");
 }
 
+/* Allocate one per-sector lane: `count` bytes the library will store into.
+ * With a path it is a MAP_SHARED file, so another process can watch the bytes
+ * change during the read; without one, plain zeroed memory. ftruncate
+ * zero-fills, and 0 is PENDING in both lane vocabularies — the status map's and
+ * the Q map's — so an unread sector reads as unread either way.
+ *
+ * One function rather than two copies because there are two lanes now with
+ * identical lifecycles, and the copies would drift.
+ *
+ * *exit_code is set only on failure, and distinguishes the two kinds the CLI
+ * reports differently: 2 for out of memory, 1 for anything about the file. */
+static uint8_t *lane_alloc(const char *path, uint32_t count, int *exit_code)
+{
+    uint8_t *p;
+
+    if (!path) {
+        p = calloc(count, 1);
+        if (!p) {
+            fprintf(stderr, "accudisc: out of memory\n");
+            *exit_code = 2;
+        }
+        return p;
+    }
+
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0 || ftruncate(fd, (off_t)count) != 0) {
+        perror(path);
+        if (fd >= 0)
+            close(fd);
+        *exit_code = 1;
+        return NULL;
+    }
+    p = mmap(NULL, count, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (p == MAP_FAILED) {
+        perror(path);
+        *exit_code = 1;
+        return NULL;
+    }
+    return p;
+}
+
+static void lane_free(uint8_t *p, const char *path, uint32_t count)
+{
+    if (!p)
+        return;
+    if (path)
+        munmap(p, count); /* the file stays for post-mortem reads */
+    else
+        free(p);
+}
+
 static int cmd_read(accudisc_device *dev, int argc, char **argv)
 {
     accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
@@ -1170,6 +1227,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     const char *pcm_path = NULL, *c2_path = NULL, *sub_path = NULL;
     const char *cdg_path = NULL;
     const char *map_path = NULL, *fulltoc_path = NULL, *cdtext_path = NULL;
+    const char *subq_path = NULL;
     long start = 0, count = -1;
     int have_start = 0, want_session = -1, force = 0;
     int want_first_track = 0, want_last_track = 0;
@@ -1267,6 +1325,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             want_map = 1;
         else if (!strcmp(a, "--map-file") && i + 1 < argc)
             map_path = argv[++i];
+        else if (!strcmp(a, "--subq-map-file") && i + 1 < argc)
+            subq_path = argv[++i];
         else if (!strcmp(a, "--progress-fd") && i + 1 < argc)
             ctx.prog_fd = (int)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "-q"))
@@ -1284,6 +1344,14 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     }
     if (sub_path && req.sub == ACCUDISC_SUB_NONE) {
         fprintf(stderr, "accudisc: --subf requires --sub raw|q\n");
+        return 1;
+    }
+    if (subq_path && req.sub != ACCUDISC_SUB_RAW) {
+        /* The library refuses this too (ERR_INVAL); caught here so the message
+         * names the flag rather than making the user map an error code back to
+         * it. --sub q is drive-formatted and already CRC-gated inside the
+         * drive, so the lane would report the drive's opinion as ours. */
+        fprintf(stderr, "accudisc: --subq-map-file requires --sub raw\n");
         return 1;
     }
     if (c2_path && req.c2 == ACCUDISC_C2_NONE) {
@@ -1448,33 +1516,25 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             return crc;
     }
 
-    /* The status map is the library's caller-owned buffer; --map-file just
-     * makes that buffer a MAP_SHARED file so any other process can watch
-     * the same bytes live. ftruncate zero-fills, and 0 = PENDING. */
-    uint8_t *map;
-    if (map_path) {
-        int mfd = open(map_path, O_RDWR | O_CREAT | O_TRUNC, 0644);
-        if (mfd < 0 || ftruncate(mfd, (off_t)req.count) != 0) {
-            perror(map_path);
-            if (mfd >= 0)
-                close(mfd);
-            return 1;
-        }
-        map = mmap(NULL, req.count, PROT_READ | PROT_WRITE, MAP_SHARED,
-                   mfd, 0);
-        close(mfd);
-        if (map == MAP_FAILED) {
-            perror(map_path);
-            return 1;
-        }
-    } else {
-        map = calloc(req.count, 1);
-        if (!map) {
-            fprintf(stderr, "accudisc: out of memory\n");
-            return 2;
-        }
-    }
+    /* Both maps are the library's caller-owned buffers; the --*-file flags just
+     * make a buffer a MAP_SHARED file so any other process can watch the same
+     * bytes live. The Q lane is only allocated when asked for: unlike the
+     * status map, which --map renders at the end, nothing here consumes it. */
+    int lrc = 0;
+    uint8_t *map = lane_alloc(map_path, req.count, &lrc);
+    if (!map)
+        return lrc;
     req.status_map = map;
+
+    uint8_t *subq = NULL;
+    if (subq_path) {
+        subq = lane_alloc(subq_path, req.count, &lrc);
+        if (!subq) {
+            lane_free(map, map_path, req.count);
+            return lrc;
+        }
+        req.subq_map = subq;
+    }
 
     int ret = 1;
     if (pcm_path && !(ctx.pcm = fopen(pcm_path, "wb"))) {
@@ -1675,10 +1735,8 @@ out:
     }
     if (ctx.cdgf)
         fclose(ctx.cdgf);
-    if (map_path)
-        munmap(map, req.count); /* the file stays for post-mortem reads */
-    else
-        free(map);
+    lane_free(map, map_path, req.count);
+    lane_free(subq, subq_path, req.count);
     return ret;
 }
 

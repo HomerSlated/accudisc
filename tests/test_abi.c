@@ -46,7 +46,7 @@ _Static_assert(sizeof(accudisc_chunk) == 32, "accudisc_chunk grew: soname bump")
  * updating the number below, bumping ACCUDISC_VERSION_MINOR so the .so version
  * moves with the layout, and adding a row to API_PLAN §8. Tripping these is a
  * reminder, not a defect. */
-_Static_assert(sizeof(accudisc_read_req) == 56, "read_req grew — see above");
+_Static_assert(sizeof(accudisc_read_req) == 64, "read_req grew — see above");
 _Static_assert(sizeof(accudisc_read_stats) == 136, "read_stats grew — see above");
 _Static_assert(sizeof(accudisc_write_opts) == 24, "write_opts grew — see above");
 
@@ -116,6 +116,14 @@ int main(void)
            "import: short struct zero-extends `cancel` (0xAA not read past end)");
         ck(dst.status_map == NULL,
            "import: short struct zero-extends `status_map`");
+        /* The claim that made subq_map additive rather than an soname bump: a
+         * caller compiled against 0.4 declares a struct that ends before this
+         * field exists, and must come out with the lane switched off. If this
+         * ever read the caller's memory instead, the engine would store a Q
+         * health byte per sector through a garbage pointer. */
+        ck(dst.subq_map == NULL,
+           "import: short struct zero-extends `subq_map` — the 0.4 caller's "
+           "lane stays off");
         ck(dst.allow_unsafe == 0,
            "import: short struct zero-extends `allow_unsafe` — the guard stays on");
         ck(dst.speed_ladder == NULL && dst.ladder_len == 0,

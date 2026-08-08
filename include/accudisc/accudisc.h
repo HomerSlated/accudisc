@@ -27,7 +27,13 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 4 /* 0.4.0: ACCUDISC_ERR_NOT_BLANK = -13 split
+#define ACCUDISC_VERSION_MINOR 5 /* 0.5.0: accudisc_read_req gained subq_map and
+                                  * grew 56 -> 64 bytes. Purely additive (the
+                                  * field is last, an older caller zero-extends
+                                  * to NULL), so the soname stays .so.0 — but
+                                  * the layout moved, which is exactly what the
+                                  * minor is for.
+                                  * 0.4.0: ACCUDISC_ERR_NOT_BLANK = -13 split
                                   * out of ERR_UNSUPPORTED on the write path. No
                                   * struct moved — bumped anyway, because a
                                   * consumer that maps error codes to user
@@ -1244,6 +1250,77 @@ ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
 #define ACCUDISC_MAP_STATE(b)    ((uint8_t)(b) & 0x0f)
 #define ACCUDISC_MAP_SEVERITY(b) ((uint8_t)(b) >> 4)
 
+/* ---- Q-subchannel health map ------------------------------------------------
+ * A second, independent lane of one byte per sector, requested by setting
+ * `subq_map` on the read request. Same allocation, lifetime and live-read
+ * semantics as the status map above: caller-owned, `count` bytes, one relaxed
+ * atomic store per sector as its state settles, pollable from any thread or,
+ * in shared memory, any process.
+ *
+ * It answers a DIFFERENT question. The status map is about the AUDIO — whether
+ * the bytes handed to the sink can be trusted. This is about the Q subchannel
+ * of that same delivered sector: whether its CRC-16 verified, and whether it
+ * carried a position at all. A sector can be audio-clean with a dead Q (a lost
+ * pregap or index) or the reverse, so neither map is derivable from the other.
+ * The referent is always the sector as DELIVERED — after a rescue or consensus
+ * pass, the winning copy's Q, matching read_stats' subq_total / subq_ok.
+ *
+ * REQUIRES ACCUDISC_SUB_RAW. Any other `sub` with subq_map set is
+ * ACCUDISC_ERR_INVAL, not a uniform map: a lane that is all one colour because
+ * nothing was measured looks exactly like a lane that is all one colour because
+ * everything was fine, and no renderer can tell those apart.
+ *
+ * Why this lives here rather than in the caller's loop — the argument is
+ * correctness, not convenience. Hard-unreadable sectors are delivered
+ * ZERO-FILLED (see accudisc_chunk below), and a zero-filled Q frame FAILS
+ * CRC-16; that is not a case the CRC recognises and excuses. A caller
+ * recomputing this lane from the delivered subchannel therefore paints
+ * fabricated Q damage on exactly the sectors whose audio is already gone —
+ * where it corroborates the real failure sitting beside it and so reads as
+ * confirmation rather than as a bug. Hence SUBQ_NO_AUDIO, stored before the
+ * frame is examined at all.
+ *
+ *   0x0 PENDING      not yet attempted (byte untouched — zero your buffer)
+ *   0x1 OK           CRC-16 verified, ADR=1 position frame
+ *   0x2 BAD          CRC-16 failed; nothing in the frame means anything
+ *   0x3 NO_POSITION  CRC-16 verified, ADR != 1 — an MCN or ISRC frame
+ *   0x4 NO_AUDIO     sector was hard-unreadable; no frame was delivered
+ *
+ * NO_POSITION is HEALTHY, and it is the state a consumer is most likely to get
+ * wrong. MCN and ISRC frames are legitimately interleaved into the position
+ * stream by the pressing: ~1% of frames on a disc that carries them, and 0.00%
+ * on one that carries neither. Under any worst-wins aggregation into cells (a
+ * progress bar drawing one pixel per few thousand sectors) treating it as
+ * damage flags EVERY cell on a perfect disc. The rate varying by disc makes it
+ * more dangerous rather than less — validate on the wrong pressing and the
+ * state looks unnecessary. Note also that the two known consumers read it with
+ * opposite polarity, healthy for a health lane and signal for an ISRC/MCN scan,
+ * which is why it is a state rather than a flag.
+ *
+ * BAD outranks NO_POSITION, necessarily: accudisc_q_parse fills `adr` from the
+ * frame's first byte whether or not the CRC verified (it must — that byte is
+ * the frame-type header), so a corrupt frame can present ADR=2 or 3. Classify
+ * on `adr` first and a CRC-bad frame whose garbage header decodes to MCN gets
+ * painted NO_POSITION, i.e. reported as HEALTHY, on precisely the frames this
+ * lane exists to find.
+ *
+ * The severity nibble is ALWAYS ZERO. Q integrity is one CRC-16 over one
+ * 12-byte frame — it verified or it did not — so anything graded there would be
+ * a proxy for something else measured elsewhere.
+ *
+ * The numbering is deliberately PARALLEL to ACCUDISC_MAP_* so that one renderer
+ * can draw both lanes, but the vocabularies are DISJOINT and the decoders are
+ * NOT interchangeable. ACCUDISC_MAP_STATE() applied to a subq byte returns a
+ * well-formed ACCUDISC_MAP_* value naming a state that never occurred —
+ * NO_AUDIO reads back as RECOVERED, BAD as C2. Use the macro below. */
+#define ACCUDISC_SUBQ_PENDING     0x0 /* not yet attempted */
+#define ACCUDISC_SUBQ_OK          0x1 /* CRC-16 verified, ADR=1 position */
+#define ACCUDISC_SUBQ_BAD         0x2 /* CRC-16 failed */
+#define ACCUDISC_SUBQ_NO_POSITION 0x3 /* CRC-16 verified, ADR != 1 (MCN/ISRC) */
+#define ACCUDISC_SUBQ_NO_AUDIO    0x4 /* hard-unreadable; no frame delivered */
+
+#define ACCUDISC_SUBQ_STATE(b) ((uint8_t)(b) & 0x0f)
+
 /* ---- reading ---------------------------------------------------------------
  * One commanded read: the caller says what (range), with what companions
  * (C2 / subchannel), and how (chunking, retries, speed); the engine streams
@@ -1366,6 +1443,15 @@ typedef struct accudisc_read_req {
     uint8_t allow_unsafe;
     uint8_t *status_map;        /* count bytes, or NULL; see status map above */
     const volatile int *cancel; /* poll: nonzero aborts at the next chunk; or NULL */
+    /* count bytes, or NULL; see the Q-subchannel health map above. Requires
+     * sub == ACCUDISC_SUB_RAW — anything else is ACCUDISC_ERR_INVAL.
+     *
+     * Appended here rather than beside status_map, where it belongs by meaning:
+     * next to its sibling it would shift `cancel`, breaking every caller
+     * compiled against 0.4. At the end it is purely additive — an older
+     * caller's shorter struct zero-extends to subq_map == NULL and gets exactly
+     * its old behaviour (the IN rule above), so no soname bump. */
+    uint8_t *subq_map;
 } accudisc_read_req;
 
 /* One delivered chunk. data holds nsec sectors, each sector_len bytes laid

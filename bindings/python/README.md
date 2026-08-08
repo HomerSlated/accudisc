@@ -171,9 +171,18 @@ def sink(chunk):
     out.write(chunk.data)               # valid ONLY during this call
 
 result = dev.read(lba, count, sink=sink, c2=ad.C2.PTRS,
-                  sub=ad.Sub.RAW, status_map=True)
-print(result.state_counts())
+                  sub=ad.Sub.RAW, status_map=True, subq_map=True)
+print(result.state_counts())        # audio health, MapState
+print(result.subq_state_counts())   # Q health, SubQState
 ```
+
+`subq_map=True` needs `sub=Sub.RAW` and raises `InvalidArgument` otherwise. The
+two lanes are independent — a sector can be audio-clean with a dead Q — and
+their state numbering is parallel but **not interchangeable**: decode the Q lane
+with `subq_state()`, never `map_state()`, which would silently report
+`NO_AUDIO` as `RECOVERED`. Note also that `SubQState.NO_POSITION` is *healthy*:
+it is an interleaved MCN or ISRC frame, around 1% of sectors on a disc that
+carries them, so a health figure is `OK + NO_POSITION`.
 
 ## Three things worth knowing before you use it
 

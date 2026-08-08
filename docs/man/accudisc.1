@@ -42,7 +42,9 @@ person. Machine-readable output \(em the token lines on stdout, the
 .B \-\-progress\-fd
 channel, the
 .B \-\-map\-file
-status map and the exit codes \(em is a stable contract, specified in
+status map, the
+.B \-\-subq\-map\-file
+Q health map and the exit codes \(em is a stable contract, specified in
 .IR docs/reference/cli\-machine\-interface.md .
 Human-readable stderr output (the progress line, the summary block, log
 messages) is
@@ -686,6 +688,24 @@ post-mortem reads. See
 .B STATUS MAP ENCODING
 below.
 .TP
+.BI \-\-subq\-map\-file " F"
+Live Q-subchannel health map, in every mechanical respect the same as
+.B \-\-map\-file
+\(em same size, same ordering, same
+.B MAP_SHARED
+update, same persistence \(em but a separate lane holding a different
+measurement. Requires
+.BR "\-\-sub raw" ;
+anything else is refused rather than producing a map with nothing in it. See
+.B Q HEALTH MAP ENCODING
+below.
+.IP
+It is not derivable from the status map and neither substitutes for the other:
+the audio and the Q subchannel of a sector fail independently, so a sector can
+be audio-clean with a dead Q (a lost pregap or index) or the reverse. Measured
+on an ordinary audio disc: 3000 sectors, zero C2 and zero hard errors in the
+status lane, 32 CRC-failed Q frames in this one.
+.TP
 .BI \-\-progress\-fd " N"
 Machine-readable progress and summary on caller-supplied fd
 .IR N .
@@ -723,6 +743,50 @@ the number of extra reads it took for
 approximately log2 of the disagreeing byte count for
 .BR SUSPECT ,
 and 0 otherwise.
+.SH Q HEALTH MAP ENCODING
+One byte per sector, written by
+.BR \-\-subq\-map\-file .
+Same shape as the status map above and read with
+.B ACCUDISC_SUBQ_STATE()
+\(em but a
+.B separate vocabulary
+that happens to share the numbering, so the two decoders are
+.B not
+interchangeable. Decoding a Q byte with
+.B ACCUDISC_MAP_STATE()
+yields a well-formed name for a state that never occurred.
+.TS
+lb lb lb
+l l l.
+value	name	meaning
+0x0	ACCUDISC_SUBQ_PENDING	not yet attempted
+0x1	ACCUDISC_SUBQ_OK	CRC-16 verified, ADR=1 position frame
+0x2	ACCUDISC_SUBQ_BAD	CRC-16 failed
+0x3	ACCUDISC_SUBQ_NO_POSITION	CRC-16 verified, ADR \(!= 1 (MCN/ISRC)
+0x4	ACCUDISC_SUBQ_NO_AUDIO	sector unreadable; no frame delivered
+.TE
+.PP
+The severity nibble is always 0: Q integrity is one CRC-16 over one 12-byte
+frame, so there is no gradient to report.
+.PP
+.B NO_POSITION is healthy.
+MCN and ISRC frames are interleaved into the position stream by the pressing
+itself \(em measured at 1.00% of sectors on a disc carrying an MCN, and 0.00%
+on a pressing carrying neither. A health figure is therefore
+.RB ( OK " + " NO_POSITION )
+over the sectors attempted; counting it as damage under a worst-wins
+aggregation into cells flags every cell on a flawless disc.
+.PP
+.B NO_AUDIO is why this map exists.
+An unreadable sector is delivered zero-filled, and a zero-filled Q frame
+.I fails
+CRC-16 rather than being recognised as absent. Anything recomputing this lane
+from the delivered subchannel therefore records Q damage that was never on the
+disc, on exactly the sectors whose audio is already lost \(em where it
+corroborates the real failure instead of standing out. Measured: 16 unreadable
+sectors, 16 fabricated CRC failures from the delivered bytes, 16
+.B NO_AUDIO
+here.
 .PP
 Every state is a
 .B relative

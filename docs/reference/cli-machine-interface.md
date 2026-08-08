@@ -164,6 +164,51 @@ state = m[i] & 0x0F        # sector start_lba + i
 severity = m[i] >> 4
 ```
 
+## `read --subq-map-file F`
+
+Mechanically identical to `--map-file` — exactly `count` bytes, span order, no
+header, `MAP_SHARED` in-place updates, persists after exit — but a **separate
+lane carrying a different measurement**: the Q subchannel of each delivered
+sector. **Requires `--sub raw`**; any other `--sub` is refused (exit 1) rather
+than producing a lane with nothing measured in it.
+
+Low nibble via `ACCUDISC_SUBQ_STATE()`; the high nibble is always 0.
+
+| value | name | meaning |
+|---|---|---|
+| 0x0 | `SUBQ_PENDING` | not yet attempted |
+| 0x1 | `SUBQ_OK` | CRC-16 verified, ADR=1 position frame |
+| 0x2 | `SUBQ_BAD` | CRC-16 failed |
+| 0x3 | `SUBQ_NO_POSITION` | CRC-16 verified, ADR ≠ 1 — an MCN or ISRC frame |
+| 0x4 | `SUBQ_NO_AUDIO` | sector unreadable; no frame was delivered |
+
+**The numbering is parallel to `ACCUDISC_MAP_*` and the vocabularies are
+disjoint.** `map_state()` on a byte from this file returns a well-formed name
+for a state that never occurred — `NO_AUDIO` reads back as `RECOVERED`, `BAD` as
+`C2`. Nothing raises. Use the subq decoder.
+
+**`NO_POSITION` is healthy.** MCN and ISRC frames are interleaved into the
+position stream by the pressing: measured 1.00% of sectors on a disc carrying an
+MCN, and 0.00% on a pressing carrying neither. Health is
+`(OK + NO_POSITION) / attempted`. Under a worst-wins aggregation into cells,
+counting it as damage flags *every* cell on a flawless disc — and because the
+rate depends on the disc, validating on the wrong pressing proves the state
+unnecessary.
+
+**Not derivable from `--map-file`, and not re-derivable from `--subf`.** Audio
+and Q fail independently: measured on an ordinary disc, 3000 sectors with zero
+C2 and zero hard errors carried 32 CRC-failed Q frames. And an unreadable sector
+is delivered zero-filled, which **fails** CRC-16 — so recomputing this lane from
+the subchannel stream records damage that is not on the disc, precisely where
+the audio is already gone. Measured: 16 unreadable sectors → 16 fabricated CRC
+failures from the delivered bytes, against 16 `NO_AUDIO` here.
+
+```python
+SUBQ = {0: "PENDING", 1: "OK", 2: "BAD", 3: "NO_POSITION", 4: "NO_AUDIO"}
+state = SUBQ[m[i] & 0x0F]                 # sector start_lba + i
+healthy = (m[i] & 0x0F) in (1, 3)         # NOT just == 1
+```
+
 ## `c2lag` output (stdout)
 
 One `key=value` token line on success (parse tokens, not positions; new

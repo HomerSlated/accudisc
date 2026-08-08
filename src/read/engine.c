@@ -62,6 +62,26 @@ uint8_t adsc_map_suspect_byte(uint32_t diff_bytes)
     return (uint8_t)(ACCUDISC_MAP_SUSPECT | (sev_log2(diff_bytes) << 4));
 }
 
+uint8_t adsc_subq_byte(const accudisc_q *q)
+{
+    /* crc_ok BEFORE adr, and the order is the whole content of this function.
+     * accudisc_q_parse fills adr from q[0] whether or not the CRC verified —
+     * it must, that byte is the frame-type header and there is nothing else to
+     * read it from — so a corrupt frame routinely presents adr 2 or 3. Ask adr
+     * first and such a frame is classified NO_POSITION, which every consumer of
+     * this lane reads as HEALTHY. That is inverted polarity on exactly the
+     * frames the lane exists to draw, and nothing downstream could catch it:
+     * the byte is well-formed and names a state that genuinely occurs.
+     *
+     * No severity nibble: one CRC-16 over one 12-byte frame either verified or
+     * did not, so there is no honest gradient to report. */
+    if (!q->crc_ok)
+        return ACCUDISC_SUBQ_BAD;
+    if (q->adr != ACCUDISC_Q_POSITION)
+        return ACCUDISC_SUBQ_NO_POSITION;
+    return ACCUDISC_SUBQ_OK;
+}
+
 uint32_t adsc_audio_diff(const uint8_t *a, const uint8_t *b)
 {
     /* Fast path for the common case: two good reads that agree. memcmp is
@@ -366,6 +386,18 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         return ACCUDISC_ERR_INVAL;
     if (req->c2 > ACCUDISC_C2_PTRS_BEB || req->sub > ACCUDISC_SUB_Q)
         return ACCUDISC_ERR_INVAL;
+    /* The Q health lane needs the raw P-W frame to run its own CRC over. SUB_Q
+     * is drive-formatted and already CRC-gated inside the drive, so we would be
+     * reporting the drive's opinion as our measurement; SUB_NONE has nothing to
+     * measure at all. Refuse both rather than fill the map with a single state —
+     * a lane that is uniform because nothing was measured is indistinguishable,
+     * to a renderer, from a lane that is uniform because the disc is perfect.
+     *
+     * After adsc_abi_import, so a 0.4 caller (whose struct ends before this
+     * field) zero-extends to NULL and cannot trip a check for a feature it has
+     * never heard of. */
+    if (req->subq_map && req->sub != ACCUDISC_SUB_RAW)
+        return ACCUDISC_ERR_INVAL;
 
     /* The vendor read-speed uncap destroys the Q subchannel on inner/mid tracks
      * while leaving the audio and C2 streams clean and reporting no error — so
@@ -557,6 +589,11 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
             if (hard[s]) {
                 map_store(req->status_map, idx, ACCUDISC_MAP_HARD);
+                /* No frame was delivered — the sector is zero-filled. Saying so
+                 * is the whole reason this lane belongs in the engine: a
+                 * zero-filled Q frame FAILS CRC-16, so anyone recomputing this
+                 * downstream records fabricated Q damage here. */
+                map_store(req->subq_map, idx, ACCUDISC_SUBQ_NO_AUDIO);
                 continue;
             }
             r.st.sectors_read++;
@@ -577,6 +614,8 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                 r.st.subq_total++;
                 if (qd.crc_ok)
                     r.st.subq_ok++;
+
+                map_store(req->subq_map, idx, adsc_subq_byte(&qd));
             }
 
             if (bits[s]) {

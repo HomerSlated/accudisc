@@ -45,13 +45,15 @@ __all__ = [
     "AccuDiscError", "InvalidArgument", "OutOfMemory", "OpenFailed", "IOFailed",
     "SenseError", "ShortResponse", "Unsupported", "NotBlank", "Cancelled", "CrcError",
     "NotFound", "UnsafeCombination", "AbiMismatch", "RetainedBufferError",
-    "C2", "Sub", "MapState", "Anomaly", "TocSource", "TocDegrade", "C2Verdict",
+    "C2", "Sub", "MapState", "SubQState", "Anomaly", "TocSource", "TocDegrade",
+    "C2Verdict",
     "DiscKind", "DiscReason", "TrayState", "DiscProbe",
     "CtdbRepair", "ctdb_repair",
     "Verdict", "WriteResult",
     "Sense", "DriveId", "Track", "Session", "Toc", "TocInfo", "Features",
     "SpeedRung", "C2Lag", "Chunk", "ReadStats", "ReadResult", "Cancel", "Device", "Q",
-    "version", "library_version", "map_state", "map_severity", "anomaly_token",
+    "version", "library_version", "map_state", "map_severity", "subq_state",
+    "anomaly_token",
     "msf_to_lba", "lba_to_msf", "parse_q", "extract_q",
     "MAX_SPAN_BYTES", "UNTRUSTED_GEOMETRY",
 ]
@@ -321,6 +323,39 @@ class MapState(enum.IntEnum):
 def map_state(b: int) -> MapState:
     """State nibble of a status-map byte."""
     return MapState(b & 0x0F)
+
+
+class SubQState(enum.IntEnum):
+    """Low nibble of a Q-subchannel health byte.
+
+    A **separate** vocabulary from :class:`MapState`, deliberately not a
+    superset of it. The numbering is parallel so one renderer can draw both
+    lanes, but the meanings are disjoint and the decoders are not
+    interchangeable: ``MapState(byte & 0x0F)`` on a subq byte returns a
+    perfectly well-formed :class:`MapState` naming a state that never happened
+    — ``NO_AUDIO`` reads back as ``RECOVERED``, ``BAD`` as ``C2``. Use
+    :func:`subq_state`.
+
+    ``NO_POSITION`` is **healthy**, and it is the member most likely to be
+    misread. MCN and ISRC frames are interleaved into the position stream by
+    the pressing itself: roughly 1% of frames on a disc that carries them, and
+    0.00% on one that carries neither. Counted as damage under any worst-wins
+    aggregation into cells, it flags *every* cell on a flawless disc.
+    """
+
+    PENDING = lib.ACCUDISC_SUBQ_PENDING
+    OK = lib.ACCUDISC_SUBQ_OK
+    BAD = lib.ACCUDISC_SUBQ_BAD
+    NO_POSITION = lib.ACCUDISC_SUBQ_NO_POSITION
+    NO_AUDIO = lib.ACCUDISC_SUBQ_NO_AUDIO
+
+
+def subq_state(b: int) -> SubQState:
+    """State nibble of a Q-subchannel health byte.
+
+    Use this and not :func:`map_state`; see :class:`SubQState`.
+    """
+    return SubQState(b & 0x0F)
 
 
 def map_severity(b: int) -> int:
@@ -1190,6 +1225,7 @@ class ReadResult:
     count: int
     stats: ReadStats
     _map: object = None
+    _subq: object = None
     _keepalive: list = field(default_factory=list)
 
     @property
@@ -1214,6 +1250,37 @@ class ReadResult:
         counts = dict.fromkeys(MapState, 0)
         for b in mv:
             counts[MapState(b & 0x0F)] += 1
+        return counts
+
+    @property
+    def subq_map(self) -> memoryview | None:
+        """Per-sector Q-subchannel health bytes, or ``None`` if not requested.
+
+        Byte *i* is LBA ``self.lba + i``. Decode with :func:`subq_state` —
+        **not** :func:`map_state`, which shares the numbering but not the
+        vocabulary (see :class:`SubQState`). There is no severity nibble; Q
+        integrity is one CRC-16 over one frame and has no gradient.
+
+        Independent of :attr:`status_map` rather than derived from it: a sector
+        can be audio-clean with a dead Q, or the reverse.
+        """
+        if self._subq is None:
+            return None
+        return memoryview(ffi.buffer(self._subq, self.count))
+
+    def subq_state_counts(self) -> dict[SubQState, int]:
+        """Census of the Q health map by state.
+
+        Remember ``NO_POSITION`` counts **healthy** frames — MCN and ISRC — so
+        a health percentage is ``(OK + NO_POSITION) / attempted``, not
+        ``OK / attempted``.
+        """
+        mv = self.subq_map
+        if mv is None:
+            return {}
+        counts = dict.fromkeys(SubQState, 0)
+        for b in mv:
+            counts[SubQState(b & 0x0F)] += 1
         return counts
 
 
@@ -1823,6 +1890,7 @@ class Device:
         speed_ladder: Sequence[int] | None = None,
         allow_unsafe: bool = False,
         status_map: bool = False,
+        subq_map: bool = False,
         cancel: Cancel | None = None,
     ) -> ReadResult:
         """Stream ``count`` sectors from ``lba`` to ``sink``.
@@ -1839,6 +1907,13 @@ class Device:
 
         ``status_map=True`` allocates a ``count``-byte map; read it live from
         another thread through :attr:`ReadResult.status_map`.
+
+        ``subq_map=True`` allocates a second, independent ``count``-byte lane
+        holding Q-subchannel health, read through :attr:`ReadResult.subq_map`.
+        It requires ``sub=Sub.RAW`` and raises :class:`InvalidArgument`
+        otherwise — a lane that is uniform because nothing was measured is
+        indistinguishable, to a renderer, from one that is uniform because the
+        disc is perfect.
 
         All the accuracy knobs default off, which is a single-pass fast read.
         Note ``speed_ladder`` applies only to problem-sector rereads, not to
@@ -1876,6 +1951,12 @@ class Device:
             keepalive.append(map_buf)
             req.status_map = map_buf
 
+        subq_buf = None
+        if subq_map:
+            subq_buf = ffi.new("uint8_t[]", count)
+            keepalive.append(subq_buf)
+            req.subq_map = subq_buf
+
         if cancel is not None:
             keepalive.append(cancel._flag)
             req.cancel = cancel._flag
@@ -1900,6 +1981,7 @@ class Device:
             count=count,
             stats=_stats_from_c(stats),
             _map=map_buf,
+            _subq=subq_buf,
             _keepalive=keepalive,
         )
 

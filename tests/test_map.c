@@ -5,10 +5,119 @@
 
 #include <accudisc/accudisc.h>
 
+#include "cdda/crc16.h"
 #include "read/engine.h"
+
+/* Seal a 12-byte Q frame with the CRC accudisc_q_parse will accept: it compares
+ * adsc_crc16(q, 10) against the COMPLEMENT of the stored trailer, so store the
+ * complement. Building real frames matters — a test that hand-set `crc_ok` on
+ * an accudisc_q would never exercise the parse step where adr survives a
+ * failed CRC, which is the behaviour the classifier has to defend against. */
+static void q_seal(uint8_t q[12])
+{
+    uint16_t c = (uint16_t)~adsc_crc16(q, 10);
+
+    q[10] = (uint8_t)(c >> 8);
+    q[11] = (uint8_t)(c & 0xff);
+}
+
+static uint8_t classify(const uint8_t q[12], accudisc_q *out)
+{
+    accudisc_q parsed;
+
+    accudisc_q_parse(q, out ? out : &parsed);
+    return adsc_subq_byte(out ? out : &parsed);
+}
+
+static void test_subq_bytes(void)
+{
+    uint8_t q[12];
+    accudisc_q parsed;
+
+    /* A healthy position frame: CTRL=0 in the high nibble, ADR=1 in the low. */
+    memset(q, 0, sizeof q);
+    q[0] = 0x01;
+    q[1] = 0x01;  /* track 1, BCD */
+    q[2] = 0x01;  /* index 1 */
+    q_seal(q);
+    assert(classify(q, &parsed) == ACCUDISC_SUBQ_OK);
+    assert(parsed.crc_ok && parsed.adr == ACCUDISC_Q_POSITION);
+
+    /* MCN and ISRC frames are healthy too — they are interleaved into the
+     * position stream by the pressing, not a symptom of anything. */
+    memset(q, 0, sizeof q);
+    q[0] = 0x02;
+    q_seal(q);
+    assert(classify(q, NULL) == ACCUDISC_SUBQ_NO_POSITION);
+
+    memset(q, 0, sizeof q);
+    q[0] = 0x03;
+    q_seal(q);
+    assert(classify(q, NULL) == ACCUDISC_SUBQ_NO_POSITION);
+
+    /* THE POLARITY TRAP. A frame whose CRC fails but whose header byte still
+     * decodes to ADR=2 must be BAD, never NO_POSITION — the latter is the
+     * lane's HEALTHY state, so getting this backwards reports damage as health
+     * on exactly the frames the lane exists to find.
+     *
+     * The two asserts before the verdict are the point of the case: they prove
+     * the input can actually distinguish the two orderings. Without them a
+     * frame that merely failed to parse as ADR=2 would satisfy the verdict
+     * while testing nothing. */
+    memset(q, 0, sizeof q);
+    q[0] = 0x02;
+    q_seal(q);
+    q[3] ^= 0xff; /* payload damage: CRC now fails, header byte untouched */
+    classify(q, &parsed);
+    assert(!parsed.crc_ok);                 /* the CRC really did fail... */
+    assert(parsed.adr == ACCUDISC_Q_MCN);   /* ...and adr really is still 2 */
+    assert(classify(q, NULL) == ACCUDISC_SUBQ_BAD);
+
+    /* Same trap from the other direction: damage that lands IN the header byte
+     * and turns a position frame into a plausible-looking MCN one. */
+    memset(q, 0, sizeof q);
+    q[0] = 0x01;
+    q[1] = 0x01;
+    q_seal(q);
+    q[0] = 0x02;
+    classify(q, &parsed);
+    assert(!parsed.crc_ok && parsed.adr == ACCUDISC_Q_MCN);
+    assert(classify(q, NULL) == ACCUDISC_SUBQ_BAD);
+
+    /* The measurement the whole lane rests on: the frame a hard-unreadable
+     * sector delivers is zero-filled, and it FAILS CRC-16 rather than being
+     * recognised as absent. So a consumer recomputing this lane downstream
+     * records fabricated Q damage on every sector whose audio is already gone.
+     * The engine stores NO_AUDIO there instead, before parsing anything. */
+    memset(q, 0x00, sizeof q);
+    assert(classify(q, NULL) == ACCUDISC_SUBQ_BAD);
+    memset(q, 0xff, sizeof q);
+    assert(classify(q, NULL) == ACCUDISC_SUBQ_BAD);
+
+    /* Severity is always zero: one CRC over one frame has no gradient. */
+    memset(q, 0, sizeof q);
+    q[0] = 0x01;
+    q_seal(q);
+    assert((classify(q, NULL) >> 4) == 0);
+    q[3] ^= 0xff;
+    assert((classify(q, NULL) >> 4) == 0);
+
+    assert(ACCUDISC_SUBQ_STATE(ACCUDISC_SUBQ_NO_AUDIO) ==
+           ACCUDISC_SUBQ_NO_AUDIO);
+
+    /* The numbering collides with ACCUDISC_MAP_* by design (parallel shape, one
+     * renderer), and the vocabularies are disjoint. Pinned so that the day
+     * someone decodes a subq byte with ACCUDISC_MAP_STATE they can be pointed
+     * at a deliberate decision rather than an accident: NO_AUDIO would read
+     * back as RECOVERED, and BAD as C2, both perfectly well-formed. */
+    assert(ACCUDISC_SUBQ_NO_AUDIO == ACCUDISC_MAP_RECOVERED);
+    assert(ACCUDISC_SUBQ_BAD == ACCUDISC_MAP_C2);
+}
 
 int main(void)
 {
+    test_subq_bytes();
+
     /* States and severities round-trip through the accessor macros. */
     assert(ACCUDISC_MAP_STATE(ACCUDISC_MAP_OK) == ACCUDISC_MAP_OK);
     assert(ACCUDISC_MAP_SEVERITY(ACCUDISC_MAP_OK) == 0);

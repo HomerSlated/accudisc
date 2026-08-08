@@ -566,6 +566,7 @@ message when the rewrite lands. Do not dribble it out.
 | 6b | `speeds --sweep` also appends `verdict=` per rung and a `ladder admitted=` line; `accudisc_speed_rung` grows 10 → 14 bytes (`equiv_x`, `verdict`) | **DONE 2026-07-28** | No — additive, and both are absent without `--sweep`. **But it makes their `drive_speed.admitted_ladder` redundant** |
 | 7 | `accudisc_write_opts` gains a leading `uint32_t size` + `ACCUDISC_WRITE_OPTS_INIT`; `accudisc_write` returns `ACCUDISC_ERR_ABI` when it is 0 or unhonourable | **DONE 2026-07-29** | No — library ABI only; the CLI is rebuilt with it. **But it breaks any already-compiled caller, deliberately — see below** |
 | 8 | **Version 0.2.0 → 0.3.0**, and the Python binding's skew check tightened from `major.minor` to the full triple | **DONE 2026-07-29** | No — but they **pin on `accudisc_version_string()`**, so the number they hold moves |
+| 9 | `accudisc_read_req` gains `uint8_t *subq_map` (56 → **64** bytes) and the header gains `ACCUDISC_SUBQ_*`; new CLI flag `--subq-map-file`; Python `read(subq_map=True)`, `ReadResult.subq_map`, `SubQState`, `subq_state()`. **Version 0.4.0 → 0.5.0** | **DONE 2026-08-08** | No — additive on every surface. The field is **last**, so a 0.4 caller's shorter struct zero-extends to NULL and behaves exactly as before (the IN rule, §7.1); the CLI flag is new; the binding keyword defaults off. Requires `sub=RAW`, else `ERR_INVAL` |
 
 **Row 8 is the correction of a rule this document stated and we then did not
 follow.** §8's own text says a layout change means "bumping

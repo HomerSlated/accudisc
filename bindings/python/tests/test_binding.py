@@ -129,7 +129,7 @@ def test_struct_sizes_match_api_plan():
     table and the ABI rules were reasoned about, so a silent change should
     fail something.
     """
-    assert ffi.sizeof("accudisc_read_req") == 56
+    assert ffi.sizeof("accudisc_read_req") == 64
     assert ffi.sizeof("accudisc_read_stats") == 136
     assert ffi.sizeof("accudisc_chunk") == 32
 
@@ -361,6 +361,83 @@ def test_map_states_match_the_c_constants():
     assert int(ad.MapState.HARD) == lib.ACCUDISC_MAP_HARD
     assert int(ad.MapState.RECOVERED) == lib.ACCUDISC_MAP_RECOVERED
     assert int(ad.MapState.SUSPECT) == lib.ACCUDISC_MAP_SUSPECT
+
+
+def test_subq_states_match_the_c_constants():
+    assert int(ad.SubQState.PENDING) == lib.ACCUDISC_SUBQ_PENDING
+    assert int(ad.SubQState.OK) == lib.ACCUDISC_SUBQ_OK
+    assert int(ad.SubQState.BAD) == lib.ACCUDISC_SUBQ_BAD
+    assert int(ad.SubQState.NO_POSITION) == lib.ACCUDISC_SUBQ_NO_POSITION
+    assert int(ad.SubQState.NO_AUDIO) == lib.ACCUDISC_SUBQ_NO_AUDIO
+    for st in ad.SubQState:
+        assert ad.subq_state(int(st)) is st
+
+
+def test_subq_and_map_vocabularies_are_not_interchangeable():
+    """The numbering collides on purpose; the meanings do not.
+
+    Pinned because the failure is silent: decoding a subq byte with
+    ``map_state`` yields a well-formed ``MapState`` naming a state that never
+    occurred. If someone ever "unifies" the two enums, this is what should
+    object.
+    """
+    assert int(ad.SubQState.NO_AUDIO) == int(ad.MapState.RECOVERED)
+    assert int(ad.SubQState.BAD) == int(ad.MapState.C2)
+    # The wrong decoder does not raise — that is the whole problem.
+    assert ad.map_state(int(ad.SubQState.NO_AUDIO)) is ad.MapState.RECOVERED
+
+
+def test_subq_map_requires_raw_subchannel():
+    """Refusal, not a uniform lane a renderer would draw as measured data.
+
+    Reaches the library's own check without a drive: the argument validation in
+    accudisc_read_cdda runs before the device is touched, so a NULL handle
+    still returns ERR_INVAL rather than faulting.
+    """
+    req = ffi.new("accudisc_read_req*")
+    req.size = ffi.sizeof("accudisc_read_req")
+    req.count = 10
+    buf = ffi.new("uint8_t[]", 10)
+    req.subq_map = buf
+
+    for sub in (lib.ACCUDISC_SUB_NONE, lib.ACCUDISC_SUB_Q):
+        req.sub = sub
+        assert (lib.accudisc_read_cdda(ffi.NULL, req, ffi.NULL, ffi.NULL,
+                                       ffi.NULL) == lib.ACCUDISC_ERR_INVAL)
+
+    # And the guard is not simply always-on: with RAW it gets past this check
+    # and fails later, on the NULL device. Without this the assertions above
+    # would pass against a function that refused everything.
+    req.sub = lib.ACCUDISC_SUB_RAW
+    rc = lib.accudisc_read_cdda(ffi.NULL, req, ffi.NULL, ffi.NULL, ffi.NULL)
+    assert rc == lib.ACCUDISC_ERR_INVAL  # still INVAL, but for the NULL dev
+    req.subq_map = ffi.NULL
+    assert (lib.accudisc_read_cdda(ffi.NULL, req, ffi.NULL, ffi.NULL,
+                                   ffi.NULL) == rc)
+
+
+def test_subq_map_defaults_off_and_reads_back_none():
+    r = ad.ReadResult(lba=0, count=8, stats=None)
+    assert r.subq_map is None
+    assert r.subq_state_counts() == {}
+
+
+def test_subq_state_counts_censuses_every_state():
+    buf = ffi.new("uint8_t[]", 5)
+    for i, st in enumerate((ad.SubQState.OK, ad.SubQState.OK,
+                            ad.SubQState.BAD, ad.SubQState.NO_POSITION,
+                            ad.SubQState.NO_AUDIO)):
+        buf[i] = int(st)
+    r = ad.ReadResult(lba=0, count=5, stats=None, _subq=buf)
+
+    counts = r.subq_state_counts()
+    assert counts[ad.SubQState.OK] == 2
+    assert counts[ad.SubQState.BAD] == 1
+    assert counts[ad.SubQState.NO_POSITION] == 1
+    assert counts[ad.SubQState.NO_AUDIO] == 1
+    assert counts[ad.SubQState.PENDING] == 0
+    assert sum(counts.values()) == 5
+    assert bytes(r.subq_map) == bytes([1, 1, 2, 3, 4])
 
 
 # ---------------------------------------------------------------------------

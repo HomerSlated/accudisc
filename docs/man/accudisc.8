@@ -296,6 +296,23 @@ constants; see
 for the table. Reading the map from another thread while the device is being
 driven is safe and is the intended progress-tracking pattern.
 .PP
+.I req\->subq_map
+is a second, independent lane with the same size, lifetime and live-read
+semantics, holding the Q-subchannel health of each delivered sector:
+.BR ACCUDISC_SUBQ_STATE() " over the " ACCUDISC_SUBQ_*
+constants, severity always 0. It
+.B requires
+.IR req\->sub " == " ACCUDISC_SUB_RAW
+and returns
+.B ACCUDISC_ERR_INVAL
+otherwise. Neither map is derivable from the other \(em audio and Q fail
+independently \(em and in particular an unreadable sector is
+.B ACCUDISC_SUBQ_NO_AUDIO
+here rather than a CRC failure, because the zero-filled frame such a sector
+delivers does fail CRC-16 and would otherwise be recorded as damage that is not
+on the disc. See
+.BR accudisc (1).
+.PP
 .I req\->cancel,
 when non-NULL, is polled between chunks; a nonzero value aborts the read with
 .BR ACCUDISC_ERR_CANCELLED .

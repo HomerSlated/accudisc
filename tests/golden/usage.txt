@@ -97,6 +97,11 @@ read options:
                  status byte per sector (ACCUDISC_MAP_* encoding,
                  see accudisc.h), updated in place during the read;
                  mmap it MAP_SHARED to watch progress/state live
+  --subq-map-file F  same, for Q-subchannel health: one
+                 ACCUDISC_SUBQ_* byte per sector. Needs --sub raw.
+                 A separate lane, not derivable from --map-file:
+                 audio and Q fail independently. NO_POSITION (3)
+                 is HEALTHY — interleaved MCN/ISRC frames
   --progress-fd N  machine progress on fd N, newline-delimited:
                  'progress <done> <total>' lines, then a final
                  'summary hard= c2= recovered= suspect= rereads=

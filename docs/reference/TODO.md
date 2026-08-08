@@ -1413,7 +1413,43 @@ blocker is schedule, not readiness.
 
 ## Consumer requests — cdda2img, recorded 2026-08-07
 
-### 1. `subq_map` — a per-sector Q-health lane beside `status_map` — `[P2]`, AWAITING KEITH'S RULING
+### 1. `subq_map` — a per-sector Q-health lane beside `status_map` — DONE 2026-08-08
+
+**Keith ruled yes on 2026-08-08 and it shipped the same morning**, on every
+surface: `accudisc_read_req.subq_map` (56 → 64 bytes, appended last so it is
+additive — API_PLAN §8 row 9), the five `ACCUDISC_SUBQ_*` states, version
+0.4.0 → 0.5.0, CLI `--subq-map-file`, and Python `read(subq_map=True)` /
+`ReadResult.subq_map` / `SubQState` / `subq_state()`.
+
+Verified on the PX-716A with an 11-track audio disc carrying an MCN (which is
+what made the acceptance precondition below satisfiable): 3000 sectors gave
+2938 OK, 32 BAD, **30 NO_POSITION (1.00%)**, and a separate read of 16
+unreadable sectors gave 16 NO_AUDIO. Two things that could not be argued from
+the code alone —
+
+- `OK + NO_POSITION == 2968` matched the CLI's independently accumulated
+  `subq_ok` exactly. Two code paths, same answer.
+- The status lane was **all OK** across those 3000 sectors while the Q lane
+  carried 32 CRC failures, which is the independence claim measured rather
+  than asserted.
+- The counterfactual, also measured: CRC-ing the delivered subchannel for the
+  16 unreadable sectors yields **16 CRC failures** — the fabricated damage a
+  DIY lane would have recorded, against 16 `NO_AUDIO` from the engine.
+
+Kept below: the reasoning, because the *why* is the part that has to survive,
+and the acceptance precondition, because it still binds on any future test.
+
+**One thing this exposed, and it was worse than the feature was valuable.**
+`CMAKE_BUILD_TYPE=Release` puts `-DNDEBUG` on the test targets, which compiles
+every `assert()` in the suite to nothing. Measured 2026-08-08: `assert(0)` on
+the first line of `test_map`'s `main()` exited 0. Most of the suite had been
+passing without checking anything, and the green result is what hid it — a
+skipped test is loud, a test that runs and passes vacuously is not. Fixed with
+`-UNDEBUG` per test target plus `tests/test_assert.c`, which fails if the
+mechanism ever goes inert again. With asserts live for the first time, 41/41
+still passed, so nothing real had been hiding underneath.
+
+<details><summary>The original case for the feature (kept — the reasoning is the durable part)</summary>
 
 cdda2img §148 (answered in `2026-08-07a/b/c`). They are building the rip progress
 bar as a live disc map, and after reading the binding they withdrew two requests
@@ -1480,6 +1516,20 @@ Two design calls, both agreed (§149.4): **refuse** `subq_map` without
 `ACCUDISC_SUB_RAW` (`ACCUDISC_ERR_INVAL`) rather than return a uniform map a
 renderer will draw as a lane; and the **severity nibble stays zero**, because Q
 integrity is one CRC-16 and anything else there would be a proxy.
+
+A third emerged during implementation and neither side had spotted it:
+**`crc_ok` must be consulted before `adr`.** `accudisc_q_parse` fills `adr` from
+`q[0]` whether or not the CRC verified (`src/cdda/subq.c:52-53` — it must, that
+byte is the frame-type header), so a corrupt frame routinely presents ADR=2 or
+3. Classify on `adr` first and such a frame is painted `NO_POSITION`, i.e.
+reported as **healthy**, on exactly the frames the lane exists to find. Nothing
+downstream could catch it: the byte is well-formed and names a real state.
+`adsc_subq_byte()` exists as a named function purely so the order is testable,
+and `tests/test_map.c` asserts the CRC really failed *and* `adr` really is still
+2 before checking the verdict — without those two the case would pass while
+testing nothing.
+
+</details>
 
 ### 2. Q lag — MEASURED, no lag on this drive; `tools/qlag.c` shipped
 
