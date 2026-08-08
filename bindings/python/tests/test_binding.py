@@ -417,6 +417,53 @@ def test_subq_map_requires_raw_subchannel():
                                    ffi.NULL) == rc)
 
 
+def test_features_names_what_the_version_cannot():
+    """A binding-only capability signal, because the version cannot carry one.
+
+    `accudisc_version_string()` moves with the C ABI. A change confined to this
+    wrapper leaves it untouched, so a consumer pinning on it — cdda2img does —
+    cannot detect one, and a version guard written for it is permanently false
+    while looking correct.
+
+    Names are added, never removed or repurposed; a name present always means
+    the same thing. This asserts the two that shipped, so removing one is a
+    deliberate act rather than a refactor.
+    """
+    assert isinstance(ad.features, frozenset)
+    assert "caller_map_buffers" in ad.features
+    assert "subq_map" in ad.features
+    assert "no_such_capability" not in ad.features
+
+
+def test_read_annotations_stay_introspectable_strings():
+    """cdda2img detects `caller_map_buffers` from annotation SOURCE TEXT.
+
+    We told them to feature-detect and, before `features` existed, the only
+    signal available was `inspect.signature(Device.read)` — which returns source
+    text only while `from __future__ import annotations` is in force. Drop that
+    import and every annotation becomes a type object; a string-comparing
+    detector then silently reverts to the old code path, on a binding that
+    supports the feature. Silent, and in the wrong direction.
+
+    `features` above is the real fix and they should move to it. This pins the
+    older contract anyway, because it is live in a consumer today and nothing
+    else in this suite would notice it changing.
+    """
+    import inspect
+
+    params = inspect.signature(ad.Device.read).parameters
+    for name in ("status_map", "subq_map"):
+        ann = params[name].annotation
+        assert isinstance(ann, str), (
+            f"{name} annotation is {type(ann).__name__}, not source text — "
+            f"`from __future__ import annotations` was probably dropped, which "
+            f"silently breaks consumers detecting this feature by signature"
+        )
+        # Not pinning the exact spelling: widening to `bool | memoryview` later
+        # must stay detectable. The property is that it is no longer only bool.
+        assert ann != "bool"
+
+
 def test_lane_buffer_dispatches_on_identity_not_truthiness():
     """`bool` is an `int` subclass and every non-empty buffer is truthy.
 

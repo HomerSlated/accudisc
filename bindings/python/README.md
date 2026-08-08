@@ -191,6 +191,19 @@ while t.is_alive():
     time.sleep(0.15)
 ```
 
+**Detecting whether a binding has this**, since a wrapper-only change does not
+move the library version and a version guard for it would be permanently false:
+
+```python
+if "caller_map_buffers" in accudisc.features:
+    dev.read(..., status_map=buf)     # live
+else:
+    dev.read(..., status_map=True)    # post-mortem only
+```
+
+`features` is a `frozenset` of binding-level capability names. Names are added,
+never removed or repurposed.
+
 Any writable buffer works — `bytearray`, `mmap`, or a `memoryview` of one — and
 an `mmap` of a file gives **cross-process** watching, the same mechanism as the
 CLI's `--map-file`. The length must be exact; for one whole-disc buffer pass

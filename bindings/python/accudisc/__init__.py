@@ -55,7 +55,7 @@ __all__ = [
     "version", "library_version", "map_state", "map_severity", "subq_state",
     "anomaly_token",
     "msf_to_lba", "lba_to_msf", "parse_q", "extract_q",
-    "MAX_SPAN_BYTES", "UNTRUSTED_GEOMETRY",
+    "MAX_SPAN_BYTES", "UNTRUSTED_GEOMETRY", "features",
 ]
 
 # ---------------------------------------------------------------------------
@@ -68,6 +68,41 @@ version = (
     lib.ACCUDISC_VERSION_MINOR,
     lib.ACCUDISC_VERSION_PATCH,
 )
+
+#: Binding-only capabilities, for consumers that cannot use :data:`version`.
+#:
+#: The library version moves when the C ABI moves. A change confined to this
+#: wrapper does not touch it — so a consumer pinning on
+#: ``accudisc_version_string()`` cannot see such a change at all, and a version
+#: guard written for one is permanently false while looking correct.
+#:
+#: Membership is the check::
+#:
+#:     if "caller_map_buffers" in accudisc.features:
+#:         dev.read(..., status_map=my_buffer)      # live, watchable
+#:     else:
+#:         dev.read(..., status_map=True)           # post-mortem only
+#:
+#: This exists because cdda2img was told to feature-detect (2026-08-08) and the
+#: only signal we had left them was the *source text* of a type annotation,
+#: read back through ``inspect``. That works, and it is load-bearing interface
+#: by accident: it survives only while ``from __future__ import annotations`` is
+#: in force, since without it the annotation becomes a type object and every
+#: string-comparing detector silently reverts to the old path. They hit the
+#: near-miss (a doubly-quoted ``"'bool'"`` from a stubbed module read as
+#: "supported") and hardened their side; the real fix is ours — an explicit
+#: signal that does not depend on how we happen to spell a parameter.
+#:
+#: Names are added, never removed or repurposed. A name present always means
+#: the same thing.
+features = frozenset({
+    # status_map= / subq_map= accept a caller-allocated writable buffer, which
+    # the engine fills as the read proceeds — the only shape observable while
+    # the read is running. Absent means True/False only, readable after.
+    "caller_map_buffers",
+    # accudisc_read_req.subq_map exists: a per-sector Q-health lane.
+    "subq_map",
+})
 
 
 def library_version() -> tuple[int, int, int]:
