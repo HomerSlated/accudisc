@@ -17,6 +17,7 @@ CMake/ctest gate does not need pytest installed.
 
 from __future__ import annotations
 
+import dataclasses
 import mmap
 import sys
 import types
@@ -415,6 +416,41 @@ def test_subq_map_requires_raw_subchannel():
     req.subq_map = ffi.NULL
     assert (lib.accudisc_read_cdda(ffi.NULL, req, ffi.NULL, ffi.NULL,
                                    ffi.NULL) == rc)
+
+
+def test_public_dataclass_field_names_are_pinned():
+    """Consumers destructure these by name; nothing here noticed a rename.
+
+    cdda2img (§161.2) applied our own criterion back to us and it lands: an
+    artefact is load-bearing for someone, so does anything on OUR side fail when
+    it changes? For `ReadStats`, `Chunk` and `MapState`/`SubQState` the answer
+    was no. A rename would break every consumer with this suite green — the
+    exact shape of defect we had just closed for the type annotation.
+
+    Names, not count, and no `<=`: an extra field is additive and harmless, a
+    RENAMED one is silent breakage, and a set equality on names catches the
+    second without forbidding the first from being noticed here deliberately.
+    """
+    assert {f.name for f in dataclasses.fields(ad.ReadStats)} == {
+        "sectors_read", "sectors_flagged", "c2_bits", "hard_errors",
+        "max_bits_sector", "first_flagged_lba", "last_flagged_lba",
+        "sense_medium", "sense_hardware", "sense_other", "rereads",
+        "sectors_recovered", "sectors_suspect", "slips",
+        "subq_total", "subq_ok",
+    }
+
+    assert {f.name for f in dataclasses.fields(ad.Chunk)} == {
+        "lba", "nsec", "data", "sector_len", "audio_len", "c2_len", "sub_len",
+    }
+
+    # Enum MEMBER names, which consumers write as MapState.HARD and which no
+    # value assertion elsewhere would catch being renamed.
+    assert {m.name for m in ad.MapState} == {
+        "PENDING", "OK", "C2", "HARD", "RECOVERED", "SUSPECT",
+    }
+    assert {m.name for m in ad.SubQState} == {
+        "PENDING", "OK", "BAD", "NO_POSITION", "NO_AUDIO",
+    }
 
 
 def test_features_names_what_the_version_cannot():
