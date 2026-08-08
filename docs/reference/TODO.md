@@ -1344,16 +1344,28 @@ the secondary benefit.
 
 ### 3. Documentation defects this exposed — `[P3]`, cheap
 
-- **The priority chain is not in the header.** `engine.c:552-553` classifies
+- **The priority chain is not in the header — DONE 2026-08-08**, landed beside
+  `ACCUDISC_MAP_STATE`. `engine.c:584-585` classifies
   `hard > suspect > recovered > C2 > ok`, one byte per sector, so **a higher
   state masks a lower one that also applies**. Reachable case: `recov[s]` is set
-  by boundary-overlap consensus (`engine.c:467-487`) *before* `bits[]` is
-  computed (`engine.c:489-492`), and `RECOVERED` outranks `C2`, so a
+  by boundary-overlap consensus (`engine.c:498-517`) *before* `bits[]` is
+  computed (`engine.c:520-523`), and `RECOVERED` outranks `C2`, so a
   consensus-recovered sector whose winning copy still has C2 fired displays as
   `RECOVERED` with the C2 invisible. Consequence for any consumer: **counting
   `C2` cells in the map is not the count of C2-flagged sectors** — that is
-  `stats.sectors_flagged` (`engine.c:582-589`), accounted unconditionally. Map
+  `stats.sectors_flagged` (`engine.c:621-622`), accounted unconditionally. Map
   for the picture, stats for the numbers.
+
+  Written up when a **second** consumer reached it from the other direction:
+  cdda2img (§159.2) checked whether the masking could affect them, concluded
+  correctly that it cannot at their defaults, but enumerated only **two** of the
+  three levers — `c2_retries` (`engine.c:527`) and `verify_passes >= 2`
+  (`engine.c:551`). The third is `overlap_sectors`, which reaches `recov[s]`
+  through `ext` (`engine.c:479`) and `prev_ext_n` with no dependence on the
+  other two. Their conclusion survived only because *all three* are zero at
+  `ACCUDISC_READ_REQ_INIT`. A consumer enabling overlap alone — a plausible
+  profile — gets `RECOVERED` and the masking with it, and the two-lever account
+  would not have predicted that. The header now names all three.
 - **`RECOVERED` vs `OK` is not an ordering**, and the header does not say so.
   About the *bytes*, `RECOVERED` has strictly more evidence (multiple agreeing
   reads, or a C2-clean copy found — `engine.c:495-508` sets it only when C2 went

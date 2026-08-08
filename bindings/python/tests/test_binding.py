@@ -482,6 +482,16 @@ def test_lane_buffer_requires_the_exact_length():
     _refuses(ValueError, "exactly 4", ad._lane_buffer, "m", bytearray(4000), 4, keep)
     _refuses(ValueError, "memoryview", ad._lane_buffer, "m", bytearray(4000), 4, keep)
 
+    # An EMPTY buffer, found by cdda2img (their §159.5) and missed by both
+    # projects' designs. It is the case where the two bugs interlock: an empty
+    # buffer is FALSY, so a truthiness dispatch reads a supplied-but-wrong-length
+    # buffer as "no map at all" — and the length check that exists to catch it
+    # never runs, because dispatch already decided. The guard is disabled by the
+    # bug it guards against. Identity dispatch is what keeps this reachable.
+    _refuses(ValueError, "exactly 4", ad._lane_buffer, "m", bytearray(0), 4, keep)
+    _refuses(ValueError, "exactly 4", ad._lane_buffer, "m",
+             memoryview(bytearray(0)), 4, keep)
+
 
 def test_caller_buffer_is_the_memory_the_request_points_at():
     """The property the whole change exists for, tested without a drive.

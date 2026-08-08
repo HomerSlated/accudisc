@@ -1247,6 +1247,20 @@ ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
 #define ACCUDISC_MAP_RECOVERED 0x4 /* problem seen, clean/agreeing copy won */
 #define ACCUDISC_MAP_SUSPECT   0x5 /* reads disagree — best-effort delivered */
 
+/* ONE BYTE, SO A HIGHER STATE MASKS A LOWER ONE THAT ALSO APPLIES. The engine
+ * classifies hard > suspect > recovered > C2 > ok, and only the winner is
+ * stored. The reachable case: a sector recovered by consensus whose winning
+ * copy still had C2 pointers fired is written RECOVERED, and its C2 is not
+ * visible in the map at all.
+ *
+ * So COUNTING `C2` CELLS IS NOT THE COUNT OF C2-FLAGGED SECTORS — that is
+ * accudisc_read_stats.sectors_flagged, which is accounted unconditionally. Use
+ * the map to draw, use the stats to count.
+ *
+ * Three independent request fields make RECOVERED reachable, and a caller that
+ * watches only one will be surprised by the others: `overlap_sectors`,
+ * `c2_retries`, and `verify_passes >= 2`. With all three at their defaults
+ * (a plain single-pass read) neither RECOVERED nor SUSPECT can occur. */
 #define ACCUDISC_MAP_STATE(b)    ((uint8_t)(b) & 0x0f)
 #define ACCUDISC_MAP_SEVERITY(b) ((uint8_t)(b) >> 4)
 
