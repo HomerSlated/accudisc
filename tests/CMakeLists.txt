@@ -1,3 +1,30 @@
+# assert() IS the assertion mechanism in most of these files, and -DNDEBUG
+# compiles every one of them to nothing. CMAKE_BUILD_TYPE=Release supplies
+# exactly that (CMAKE_C_FLAGS_RELEASE = "-O3 -DNDEBUG"), and install.sh leaves
+# the build directory configured that way — so `ctest` reported a green suite
+# that checked NOTHING. Measured 2026-08-08: an assert(0) on the first line of
+# test_map's main() exited 0.
+#
+# This is the project's signature failure aimed at the safety net itself:
+# well-formed output, wrong referent, nothing downstream able to tell. A skipped
+# test is loud; a test that runs, prints nothing and passes is not.
+#
+# -UNDEBUG rather than switching build type, because the tests must exercise the
+# library AS SHIPPED — optimised, NDEBUG'd internally. Only each test's own
+# translation unit gets asserts back. target/directory compile options land
+# after CMAKE_C_FLAGS_<CONFIG> on the command line, so the -U wins.
+#
+# DIRECTORY scope, not per-target, and that is the whole point: the first
+# version of this fix was a target_compile_options() inside the loop below, and
+# it silently missed test_cli_toc_format, test_sweep and ctdb_ab — three
+# add_executable calls that live outside it. The falsification run used a test
+# INSIDE the loop, so it could not have caught that. Here a new add_executable
+# cannot opt out by being written somewhere else in the file.
+#
+# test_assert deliberately carries no flag of its own, so it is a genuine guard
+# on this line rather than on a copy of it.
+add_compile_options(-UNDEBUG)
+
 # Tests link the static lib and may include internal headers from src/ —
 # they exercise internals the public ABI deliberately hides.
 foreach(t test_version test_cdb test_sense test_toc test_map test_decode
@@ -9,32 +36,15 @@ foreach(t test_version test_cdb test_sense test_toc test_map test_decode
     add_executable(${t} ${t}.c)
     target_link_libraries(${t} PRIVATE accudisc_static)
     target_include_directories(${t} PRIVATE ${PROJECT_SOURCE_DIR}/src)
-    # assert() IS the assertion mechanism in most of these files, and -DNDEBUG
-    # compiles every one of them to nothing. CMAKE_BUILD_TYPE=Release supplies
-    # exactly that (CMAKE_C_FLAGS_RELEASE = "-O3 -DNDEBUG"), and install.sh
-    # leaves the build directory configured that way — so `ctest` then reported
-    # a green suite that checked NOTHING. Measured 2026-08-08: an
-    # `assert(0)` on the first line of test_map's main() exited 0.
-    #
-    # This is the project's signature failure with the safety net itself:
-    # well-formed output, wrong referent, nothing downstream able to tell. A
-    # skipped test is loud; a test that runs, prints nothing and passes is not.
-    #
-    # -UNDEBUG rather than switching build type, because the tests must exercise
-    # the library AS SHIPPED — optimised, NDEBUG'd internally. Only the test's
-    # own translation unit gets asserts back. target_compile_options lands after
-    # CMAKE_C_FLAGS_<CONFIG> on the command line, so the -U wins; test_assert
-    # below proves that rather than trusting it.
-    target_compile_options(${t} PRIVATE -UNDEBUG)
     add_test(NAME ${t} COMMAND ${t})
 endforeach()
 
-# The guard on the guard. Everything above is a claim about compiler flag
-# ordering, and if it silently stopped holding the whole suite would go quiet
-# again in precisely the way it just did. This test aborts if assert() is
-# inert, so the failure is the loud kind.
+# The guard on the guard. add_compile_options(-UNDEBUG) above is a claim about
+# compiler flag ordering, and if it silently stopped holding — a new generator,
+# a new CMake, a build type nobody tried, or someone simply deleting the line —
+# the whole suite would go quiet again in precisely the way it just did, with no
+# output to compare and no test to fail. This one aborts if assert() is inert.
 add_executable(test_assert test_assert.c)
-target_compile_options(test_assert PRIVATE -UNDEBUG)
 add_test(NAME test_assert COMMAND test_assert)
 
 # The version CMake actually built with, so test_version.c can compare the
