@@ -176,6 +176,27 @@ print(result.state_counts())        # audio health, MapState
 print(result.subq_state_counts())   # Q health, SubQState
 ```
 
+Those two maps are readable **after** the call. To draw a disc map *while the
+read runs*, pass your own buffer instead of `True` — you hold the reference
+before the call, so another thread can poll the same bytes the engine is
+writing:
+
+```python
+buf = bytearray(count)
+t = threading.Thread(target=dev.read, kwargs=dict(
+        lba=lba, count=count, sub=ad.Sub.RAW, status_map=buf))
+t.start()
+while t.is_alive():
+    render(buf)          # measured filling 26 -> 1950 of 2000 during one read
+    time.sleep(0.15)
+```
+
+Any writable buffer works — `bytearray`, `mmap`, or a `memoryview` of one — and
+an `mmap` of a file gives **cross-process** watching, the same mechanism as the
+CLI's `--map-file`. The length must be exact; for one whole-disc buffer pass
+`memoryview(buf)[lba:lba + count]`. Note `mmap` slicing needs the memoryview
+form: `m[a:b]` returns immutable `bytes` and is refused.
+
 `subq_map=True` needs `sub=Sub.RAW` and raises `InvalidArgument` otherwise. The
 two lanes are independent — a sector can be audio-clean with a dead Q — and
 their state numbering is parallel but **not interchangeable**: decode the Q lane

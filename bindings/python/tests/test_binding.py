@@ -17,6 +17,7 @@ CMake/ctest gate does not need pytest installed.
 
 from __future__ import annotations
 
+import mmap
 import sys
 import types
 
@@ -414,6 +415,107 @@ def test_subq_map_requires_raw_subchannel():
     req.subq_map = ffi.NULL
     assert (lib.accudisc_read_cdda(ffi.NULL, req, ffi.NULL, ffi.NULL,
                                    ffi.NULL) == rc)
+
+
+def test_lane_buffer_dispatches_on_identity_not_truthiness():
+    """`bool` is an `int` subclass and every non-empty buffer is truthy.
+
+    `if value:` cannot tell `True` from a caller's buffer, so it would allocate
+    a second one and write the map somewhere the caller never sees — which is
+    the exact defect being fixed here, reintroduced one layer down.
+    """
+    keep = []
+    assert ad._lane_buffer("m", False, 4, keep) is None
+    assert ad._lane_buffer("m", None, 4, keep) is None
+
+    own = ad._lane_buffer("m", True, 4, keep)
+    assert own is not None and len(own) == 4
+
+    buf = bytearray(4)
+    cd = ad._lane_buffer("m", buf, 4, keep)
+    # The library must write into the CALLER's object, not a copy of it.
+    cd[0] = 0xAB
+    assert buf[0] == 0xAB, "caller's buffer is not the one the library writes"
+
+
+def _refuses(exc_type, fragment, fn, *args):
+    """Call fn(*args), require exc_type whose message contains `fragment`.
+
+    The fragment is checked because these guards must not merely fail — they
+    must say which argument and what to do instead. A ValueError that says
+    nothing sends the caller to read the source.
+    """
+    try:
+        fn(*args)
+    except exc_type as exc:
+        if fragment not in str(exc):
+            raise AssertionError(
+                f"{exc_type.__name__} raised but message lacks {fragment!r}: "
+                f"{exc}"
+            ) from None
+        return
+    raise AssertionError(f"expected {exc_type.__name__} containing {fragment!r}")
+
+
+def test_lane_buffer_accepts_the_writable_shapes_and_refuses_the_rest():
+    keep = []
+    for obj in (bytearray(4), mmap.mmap(-1, 4), memoryview(bytearray(8))[2:6]):
+        cd = ad._lane_buffer("m", obj, 4, keep)
+        assert len(cd) == 4
+
+    # bytes is the plausible mistake: right length, right type family, and
+    # useless because the library could not write to it.
+    _refuses(TypeError, "writable", ad._lane_buffer, "m", b"\0" * 4, 4, keep)
+    _refuses(TypeError, "int", ad._lane_buffer, "m", 17, 4, keep)
+
+
+def test_lane_buffer_requires_the_exact_length():
+    """Not 'at least', and the LONG case is the dangerous one.
+
+    A caller passing one whole-disc buffer for a 1500-sector span would get
+    those sectors written at offset 0 — a complete, well-formed map of the
+    wrong region, which nothing downstream could detect. The message must name
+    the slice, since slicing is the correct answer rather than a smaller buffer.
+    """
+    keep = []
+    _refuses(ValueError, "exactly 4", ad._lane_buffer, "m", bytearray(3), 4, keep)
+    _refuses(ValueError, "exactly 4", ad._lane_buffer, "m", bytearray(4000), 4, keep)
+    _refuses(ValueError, "memoryview", ad._lane_buffer, "m", bytearray(4000), 4, keep)
+
+
+def test_caller_buffer_is_the_memory_the_request_points_at():
+    """The property the whole change exists for, tested without a drive.
+
+    Attach a caller-owned buffer to a real `accudisc_read_req` exactly as
+    `Device.read` does, then write through the REQUEST's pointer and observe it
+    in the caller's object. If the binding ever copied instead of aliasing, the
+    map would fill correctly and the caller would watch a buffer nobody writes
+    to — the failure would look like a drive that never starts.
+
+    This does NOT test live observation; that needs a drive and is verified on
+    hardware. Named so a pass here cannot be mistaken for it.
+    """
+    keep = []
+    status = bytearray(8)
+    subq = bytearray(8)
+
+    req = ffi.new("accudisc_read_req*")
+    req.size = ffi.sizeof("accudisc_read_req")
+    req.count = 8
+    req.sub = lib.ACCUDISC_SUB_RAW
+    req.status_map = ad._lane_buffer("status_map", status, 8, keep)
+    req.subq_map = ad._lane_buffer("subq_map", subq, 8, keep)
+
+    req.status_map[3] = lib.ACCUDISC_MAP_HARD
+    req.subq_map[3] = lib.ACCUDISC_SUBQ_NO_AUDIO
+    assert status[3] == lib.ACCUDISC_MAP_HARD
+    assert subq[3] == lib.ACCUDISC_SUBQ_NO_AUDIO
+
+    # And the two lanes are distinct memory — one buffer serving both would
+    # also satisfy every assertion above.
+    assert status[3] != subq[3]
+    req.status_map[5] = 0x11
+    assert subq[5] == 0, "the two lanes alias the same memory"
 
 
 def test_subq_map_defaults_off_and_reads_back_none():

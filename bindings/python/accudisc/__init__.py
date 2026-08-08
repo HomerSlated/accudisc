@@ -37,7 +37,7 @@ from __future__ import annotations
 import enum
 import os
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from ._accudisc import ffi, lib
 
@@ -1237,6 +1237,17 @@ class ReadResult:
         ``--map-file``: the CLI mmaps that file and hands the mapping to the
         library as this same buffer (``cli/main.c:1396``), so one decoder
         serves both.
+
+        **Post-mortem when you passed ``status_map=True``.** This object does
+        not exist until :meth:`Device.read` returns, so a thread hoping to watch
+        the rip through it has nothing to poll until the rip is over. Until
+        2026-08-08 this docstring claimed the opposite — "read it live from
+        another thread" — and cdda2img built a live disc map on that sentence
+        before discovering it could not be done. To watch a read in progress,
+        pass your **own** buffer to ``status_map=``; see :meth:`Device.read`.
+
+        When you did pass your own buffer, this returns a view of it, and
+        polling the buffer directly is equivalent.
         """
         if self._map is None:
             return None
@@ -1263,6 +1274,10 @@ class ReadResult:
 
         Independent of :attr:`status_map` rather than derived from it: a sector
         can be audio-clean with a dead Q, or the reverse.
+
+        Same live-vs-post-mortem rule as :attr:`status_map`: ``subq_map=True``
+        is readable only after the call, a caller-supplied buffer can be watched
+        during it.
         """
         if self._subq is None:
             return None
@@ -1282,6 +1297,53 @@ class ReadResult:
         for b in mv:
             counts[SubQState(b & 0x0F)] += 1
         return counts
+
+
+def _lane_buffer(name: str, value, count: int, keepalive: list):
+    """Resolve a ``status_map=`` / ``subq_map=`` argument to library-facing cdata.
+
+    ``False``/``None`` → off. ``True`` → we allocate, and the caller sees the
+    bytes only after the read (the historical behaviour). Anything else is a
+    caller-owned writable buffer we write *into*, which is the only shape that
+    can be watched while the read is running: the caller holds the reference
+    before the call, so there is no handover to get wrong.
+
+    Dispatch is on **identity**, not truthiness, because ``bool`` is an ``int``
+    subclass and every non-empty buffer is truthy — ``if value:`` cannot tell
+    ``True`` from a buffer, and would silently allocate a second one.
+    """
+    if value is False or value is None:
+        return None
+
+    if value is True:
+        buf = ffi.new("uint8_t[]", count)
+        keepalive.append(buf)
+        return buf
+
+    try:
+        cd = ffi.from_buffer("uint8_t[]", value, require_writable=True)
+    except (BufferError, TypeError) as exc:
+        raise TypeError(
+            f"{name}: expected True, False, or a writable buffer supporting "
+            f"the buffer protocol (bytearray, mmap, or a memoryview of one); "
+            f"got {type(value).__name__} — {exc}"
+        ) from exc
+
+    # EXACT, not 'at least'. A caller who allocates one whole-disc buffer and
+    # passes it for a 1500-sector span would otherwise get those sectors written
+    # at offset 0 instead of at the span's offset: a full, well-formed map of
+    # the wrong region, which nothing downstream could detect. Refusing forces
+    # the slice — memoryview(buf)[lba:lba + count] — which is correct by
+    # construction.
+    if len(cd) != count:
+        raise ValueError(
+            f"{name}: buffer is {len(cd)} bytes, need exactly {count} (one per "
+            f"sector). For a whole-disc buffer pass a slice: "
+            f"memoryview(buf)[lba:lba + count]"
+        )
+
+    keepalive.append(cd)
+    return cd
 
 
 # ---------------------------------------------------------------------------
@@ -1889,8 +1951,8 @@ class Device:
         overlap_sectors: int = 0,
         speed_ladder: Sequence[int] | None = None,
         allow_unsafe: bool = False,
-        status_map: bool = False,
-        subq_map: bool = False,
+        status_map: bool | Any = False,
+        subq_map: bool | Any = False,
         cancel: Cancel | None = None,
     ) -> ReadResult:
         """Stream ``count`` sectors from ``lba`` to ``sink``.
@@ -1905,11 +1967,49 @@ class Device:
         detected and raises :class:`RetainedBufferError`. Use it when you
         consume the bytes inside the call; leave it alone otherwise.
 
-        ``status_map=True`` allocates a ``count``-byte map; read it live from
-        another thread through :attr:`ReadResult.status_map`.
+        ``status_map`` and ``subq_map`` each take one of three things, and the
+        choice decides whether you can watch the read or only inspect it after:
 
-        ``subq_map=True`` allocates a second, independent ``count``-byte lane
-        holding Q-subchannel health, read through :attr:`ReadResult.subq_map`.
+        * ``False`` (default) — no map.
+        * ``True`` — we allocate ``count`` bytes and you read them **after this
+          call returns**, through :attr:`ReadResult.status_map` /
+          :attr:`ReadResult.subq_map`. Post-mortem only: the buffer lives in
+          here and the only handle on it is the returned object, which does not
+          exist while there is anything moving to watch.
+        * **a writable buffer you allocated** — exactly ``count`` bytes, which
+          the library writes into as the read proceeds. You hold the reference
+          before the call, so another thread can poll it throughout. This is
+          the live disc-map shape, and the only one that is.
+
+        The live form works because the C call releases the GIL (measured: a
+        spinner thread advanced ~115k ticks during a 6.08 s read), so a polling
+        thread genuinely runs while the drive is busy::
+
+            buf = bytearray(count)
+            t = threading.Thread(target=dev.read, kwargs=dict(
+                    lba=lba, count=count, sub=Sub.RAW, status_map=buf))
+            t.start()
+            while t.is_alive():
+                render(buf)        # the same bytes the engine is writing
+                time.sleep(0.1)
+
+        Any writable object supporting the buffer protocol works — ``bytearray``,
+        ``mmap``, or a ``memoryview`` of one. An ``mmap`` of a file gives
+        **cross-process** watching, the same trick the CLI's ``--map-file``
+        uses, so a separate GUI process can draw the rip.
+
+        Two sharp edges, both of which raise rather than misbehave:
+
+        * The length must be **exact**. For one whole-disc buffer, pass a slice
+          per span: ``memoryview(buf)[lba:lba + count]``. Accepting a longer
+          buffer would write the span's bytes at offset 0 — a well-formed map
+          of the wrong region.
+        * ``mmap`` slicing needs the memoryview form. ``m[a:b]`` returns
+          immutable ``bytes`` and is refused; ``memoryview(m)[a:b]`` is
+          writable and is what you want.
+
+        While the read runs the buffer is exported, so a ``bytearray`` cannot be
+        resized until it finishes (``BufferError``). Allocate it at full size.
         It requires ``sub=Sub.RAW`` and raises :class:`InvalidArgument`
         otherwise — a lane that is uniform because nothing was measured is
         indistinguishable, to a renderer, from one that is uniform because the
@@ -1945,16 +2045,12 @@ class Device:
             req.speed_ladder = rungs
             req.ladder_len = len(speed_ladder)
 
-        map_buf = None
-        if status_map:
-            map_buf = ffi.new("uint8_t[]", count)
-            keepalive.append(map_buf)
+        map_buf = _lane_buffer("status_map", status_map, count, keepalive)
+        if map_buf is not None:
             req.status_map = map_buf
 
-        subq_buf = None
-        if subq_map:
-            subq_buf = ffi.new("uint8_t[]", count)
-            keepalive.append(subq_buf)
+        subq_buf = _lane_buffer("subq_map", subq_map, count, keepalive)
+        if subq_buf is not None:
             req.subq_map = subq_buf
 
         if cancel is not None:
