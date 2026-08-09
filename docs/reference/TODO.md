@@ -7,6 +7,49 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## READ SPEED — ONE SESSION, THEN PERMANENTLY ABANDONED (Keith, 2026-08-08)
+
+> *"We will set aside a session, not today, where the only topic we discuss is
+> read speed. At the end of that session, anything not completed will be
+> permanently abandoned. So that means no hours-long tests."*
+> — and, on the general subject: *"We need to move past this, quickly."*
+
+**The rule is a guillotine, so what goes into that session matters.** The
+discriminator is **does this need the drive?** — not whether the word "speed"
+appears in the title. Filing desk work into the session kills fixes that never
+needed hardware; filing hardware work outside it re-opens the open-ended
+investigation the ruling closed.
+
+**DRIVE-BOUND — this is the session, and items 3–5 cannot be advanced on the
+hardware we own, so expect them to be abandoned by default:**
+
+1. `--speed 16` silently honoured as 8×, unreported — "Known bugs" below, `[P1]`.
+   **Less blocked than that entry says**; see the note there.
+2. The read-engine throughput cap (~5× vs 12–19× raw) — "Speed control" below.
+   The one most likely to be *felt*: every whole-disc read goes through it.
+3. Task 5's A-vs-B uncap discriminator — needs a **CD-RW audio disc we do not
+   have**.
+4. Phase 3 ranged SET STREAMING — needs **other drives**; this one cannot
+   advance it.
+5. The `device.c` latch bug — needs a drive that genuinely lacks 0xB6, i.e. not
+   this one. Falsifiable nowhere on this rig.
+
+**DESK WORK — no drive, NOT session-bound, and must not be abandoned with it:**
+
+- Task 1, remove the SpeedRead guards. Source-only, inventory complete. Gated on
+  one ABI ruling from Keith, stated in that entry.
+- Task 5c, the self-contradicting `--driver auto` advice. Pure logic.
+- Task 5d, document the `speed` / `speed-uncap` availability split.
+- Task 5b, the `LIKELY_OFF` asymmetry. An ABI decision, possibly moot after
+  task 1.
+- Task 4b's residual: the cross-rung timed-window **length** term is still
+  undocumented (the *radius* term was documented 2026-07-28).
+
+**CLOSED — do not re-open, and do not spend session time re-deriving:** the
+`speeds` min/max sweep (hardware-validated 2026-07-28), the
+`probe_speed_ladder` binding (`ea11d56`), task 4a's phantom 48× rung (an answer
+to hand out, not work), and 4b's radius half.
+
 ## NEXT SESSION — PLAN (agreed 2026-07-16). Execute Phase 0 first.
 
 Phases 0/1/3 are a chain (0 gates the rest); Phase 2 is independent and can be
@@ -55,6 +98,11 @@ Two bugs fixed, hardware-verified on the PX-716A.
 Follow-up still open: **device.c latch bug** — `accudisc_set_speed` latches
 streaming off only on ERR_IO or sense key 0x05; HARDWARE ERROR (key 0x04) never
 latches. Moot while 0xB6 works, but wrong on drives that genuinely lack it.
+**Read-speed session, item 5 — and unfalsifiable here**: the bug only presents
+on a drive without working 0xB6, so no test on the PX-716A can reach it. The
+fix is three lines and obvious from the sense-key list; what cannot be done is
+*confirming* it. Decide in that session whether to take it unverified or drop
+it.
 
 ### PHASE 1 — speed + rotation — DONE 2026-07-17 (commits 7e4aced, 702b5ac)
 Hardware-verified on the PX-716A. Shipped: `accudisc_get_performance` +
@@ -198,6 +246,22 @@ on single-extent drives). Revisit the ranged feature in a future session.
   `speed X` / `read --speed X` is therefore a measurement change whose thresholds
   must be validated on the drive; not a safe source-only fix. Do it in a focused
   PX-716A session, reusing `speeds.c`'s timing.
+
+  **Re-assessed 2026-08-09 — this is LESS BLOCKED than the paragraph above
+  says, and the instrument already exists.** The `--sweep` acceptance run of
+  2026-07-28 (table under "Probes / diagnostics") contains this exact defect,
+  measured: the `req=16` rung came back `page2a=8, measured=8.01, spread 0.00`
+  — asked 16, honoured 8, and the timing said so unambiguously, with the flat
+  spread independently predicting a CLV-clamped rung. So the "thresholds must
+  be validated on the drive" objection is already satisfied for at least one
+  point of the ladder by a run that has been accepted.
+
+  What remains is therefore a **cost decision, not a measurement design**:
+  reporting the honoured rate on `speed X` / `read --speed X` means a timed
+  read before every such command. Options: do it only when asked
+  (`--verify-speed`), or report the *quantised* prediction from the measured
+  {4,8,24,32} ladder and say it is a prediction. **Read-speed session, item 1**
+  — and the highest-value item in it, since it is the only one a user meets.
 - **`cdtext` with no FILE reports itself as an unknown command. [P2]** —
   Keith 2026-07-26: *"If a value is mandatory but not provided, and you continue
   anyway, that's a silent failure."* `cli/main.c:1686` dispatches on
@@ -379,6 +443,16 @@ only ~5x on a *clean* disc where raw streaming (`speeds`, bare READ CD) reaches
 speed-control bug, a ripping-throughput one. Suspects: default `chunk_sectors`,
 per-chunk cache-defeat, status-map write cost, a synchronous stall between
 commands. Matters because whole-disc Q baselines run through this path.
+
+**Read-speed session, item 2 — and the one most likely to be felt as a rough
+edge**, because every whole-disc read goes through it and the gap is a factor
+of 2–4 in wall-clock time on a *clean* disc, where no recovery work is being
+done to justify it. It is also the only drive-bound speed item that is
+plausibly fixable in a short session: the four suspects are separable by
+instrumenting the per-chunk loop rather than by long comparative rips, which
+the "no hours-long tests" rule forbids anyway. Isolate the 70 ms first — a
+timing breakdown of one chunk answers which suspect it is, and costs one read
+of a few hundred sectors.
 
 ### SET STREAMING is a streaming *contract*, not a speed knob
 
@@ -1598,7 +1672,45 @@ sector, not sample pairs) and the sign convention is
 
 ## Outstanding — carried from 2026-07-26 (phase 3 landed; these did not)
 
-### 0. RECOVERED sectors were returned WRONG, 9/9 — `[P1]`, cdda2img §89.5, NOT DIAGNOSED
+### 0. RECOVERED sectors were returned WRONG, 9/9 — **DROPPED 2026-08-08 by Keith. Do not chase.**
+
+**Ruling: "If there really is a bug, let it present itself, then we can deal
+with it."** Not closed as fixed and not claimed to be a non-bug — deliberately
+abandoned as an investigation, with the evidence kept below so a recurrence is
+recognisable rather than re-derived.
+
+**The provenance, which is the whole reason it was droppable.** One run, one
+disc, one day: Tracy Chapman, five whole-disc reads 2026-07-26 with the **full
+recovery ladder** — `--retries 3 --c2-retries 4 --verify 1 --overlap 2 --ladder
+40,32,24,8,4`. Never witnessed again.
+
+**It is unreachable on any default read.** The surviving hypothesis after the
+discriminator run (their §90.2) is **H1-local**: the ordinary publish loop is
+correct — proven by byte 0 and 162,882 correct `OK` bytes — and only the
+*recovery* path records at a different index. Every one of the ten anomalous
+bytes was state 4 `RECOVERED`; not one was `OK`, `C2`, `HARD` or `SUSPECT`. With
+`retries`/`c2_retries`/`verify_passes`/`overlap_sectors` at their
+`ACCUDISC_READ_REQ_INIT` zeros, `RECOVERED` cannot occur at all (the three levers
+are named at `ACCUDISC_MAP_STATE`), so no default read can hit this.
+
+**Honest limit on "never seen again":** the disc has been read dozens of times
+since, but not once with those recovery flags. The absence is unrepeated
+conditions, not a repeated negative. That cuts both ways and is exactly why
+"let it present itself" is the cheap policy rather than the risky one.
+
+**Keith's AccurateRip point, checked:** `RECOVERY.md` §12.3 records AR v2 ✅ at
+40/32/8× and ❌ at 24/4× *in that same run*, so the gate did fire and was noticed.
+An undetected silent corruption is not what this was.
+
+**If it ever recurs, the one test worth running** (cdda2img §90.3, needs no drive
+time): find a capture where a sector went `RECOVERED` **and** its delivered bytes
+were correct. Under H1-local the flag sits at +1 from a *correct* sector, so the
+sector it names would be clean. Their data could not supply that case; all nine
+of theirs came back wrong.
+
+<details><summary>Original entry, kept for recognisability (superseded)</summary>
+
+#### RECOVERED sectors were returned WRONG, 9/9 — cdda2img §89.5
 
 **The most serious open claim against the read engine.** Keith ran five
 whole-disc reads of Tracy at 40/32/24/8/4 (`--retries 3 --c2-retries 4
@@ -1791,7 +1903,20 @@ and per-capture counts tracking (1/1 at 40x and 32x, 2/2 at 8x, 4/4 at 4x, 1/2 a
 24x). **Acceptance test for any eventual explanation: one event, one sector apart,
 direction never varies.**
 
+</details>
+
 ### 0b. Recovery rereads use the read mode c2lag.c measured as DIFFERENT on this drive — `[P2]`
+
+> **STAYS OPEN — item 0 being dropped does NOT drop this.** Reviewed
+> 2026-08-09, because the numbering invites exactly that mistake. Item 0 was
+> dropped as a possibly-ephemeral observation from a single run of a single
+> disc. **0b is not an observation at all** — it is a design inconsistency
+> visible by reading two modules against each other, and the measurement it
+> rests on is `c2lag.c`'s own live one on this drive (a streaming pass flagged
+> ~40 sectors where per-sector rereads of the same LBAs flagged zero). It would
+> still be true if item 0 had never been reported. **Not a read-speed item
+> either** — it is about read *mode*, so it does not belong to that session and
+> must not be abandoned with it.
 
 Found reading two modules against each other; independent of the +1 and of the
 speed result. `consensus()` and `c2_rescue()` both do `cache_defeat(r, lba)` then
@@ -1865,9 +1990,31 @@ C2 = `log2(fired bits)` (`engine.c:50`), SUSPECT = `log2(differing bytes)`
 explains §89.5's "unexplained" asymmetry — 40x sev 1 vs 32x sev 3 on the same LBA
 with byte-identical PCM is expected, not anomalous.
 
-### 1. Remove all SpeedRead guards — `[P1]`, USER-DIRECTED, NOT STARTED
+### 1. Remove all SpeedRead guards — USER-DIRECTED, NOT STARTED — **for the read-speed session**
 
-**Keith's ruling 2026-07-26: "Remove all guards for SpeedRead. CDDA is
+**Re-affirmed 2026-08-08**, with the reasoning stated more sharply than the
+original ruling: *"SpeedRead is for CD/DVD-ROM only. Having a guard against
+something the hardware is physically incapable of doing doesn't make any
+sense."* The guard defends against a throughput increase the drive cannot
+produce on CD-DA.
+
+**Scheduled, not open-ended.** This belongs to the single dedicated read-speed
+session (see the banner at the top of this file); anything unfinished when that
+session ends is permanently abandoned.
+
+**One thing to weigh in that session, because it is the only real cost.**
+Removing `allow_unsafe` from `accudisc_read_req` is the first *subtractive* ABI
+change we have made — every other has been additive. The `.size` IN rule
+(`accudisc.h`) cannot help: a 0.5 caller setting `allow_unsafe = 1` would have
+that byte silently reinterpreted as whatever occupies the offset next, which is
+the "well-formed data, wrong referent" failure the size field exists to prevent.
+Two ways out, and the choice is a design decision rather than a detail:
+**(a)** keep the field as a reserved, ignored byte and delete only the
+enforcement — zero ABI cost, honours "remove enforcement only" literally; or
+**(b)** remove it and bump the soname. (a) is the cheaper reading of the ruling
+and does not foreclose (b).
+
+**Original ruling 2026-07-26: "Remove all guards for SpeedRead. CDDA is
 completely unaffected by it. Those guards have no reason to exist."**
 Manual-backed — `private/drives/Plextor/Plextor-716.pdf` **p.15** publishes three
 ceilings for this model by media class: DATA (CD-ROM/CD-RW/CD-R) 48×, **CD-DA
@@ -1910,7 +2057,31 @@ Notes for whoever does it:
   before drive contention was known to produce the same signature). Removing a
   guard is not a reason to delete a measurement.
 
-### 2. `setcap` the INSTALLED binary, not the build-tree one — `[P1]`, **ENABLED 2026-07-29, NOT CLOSED**
+### 2. `setcap` the INSTALLED binary, not the build-tree one — **DONE. Verified 2026-08-08.**
+
+Keith: *"I'm pretty sure that P1.3 was closed weeks ago. Double check the
+installer."* Correct — it shipped and the entry was simply never closed. Read
+back today rather than recalled:
+
+- `ACCUDISC_SETCAP_ON_INSTALL`, default **ON** (`CMakeLists.txt:74`).
+- The install rule is `cli/CMakeLists.txt:28-57`, and its own comment states the
+  point this entry was opened for: `install(TARGETS)` copies the binary and an
+  xattr does not survive the copy, *"so this is not a duplicate of the post-link
+  setcap; it is the only thing that arms what actually gets installed."*
+- **DESTDIR-aware**, which the original entry did not ask for: capabilities do
+  not survive tar/cpio/rsync, so a staging build skips the cap and prints the
+  exact command for the package's post-install script instead of silently
+  producing an unarmed package.
+- Failure is `FATAL_ERROR`, not a warning — deliberate, because an unarmed
+  binary fails *quietly* (the vendor path falls back to generic MMC with no
+  error), so a warn-and-continue would ship something everyone believes is armed.
+- `ACCUDISC_INSTALL_SETCAP_COMMAND` is bare `setcap` rather than the build-time
+  `doas …` form, since `cmake --install` to a system prefix is already root.
+
+Nothing outstanding. The build-tree `setcap` target remains for the
+rebuild-disarms-it case, which is a separate convenience and not this item.
+
+<details><summary>Original entry (superseded — the work landed 2026-07-29)</summary>
 
 `CMakeLists.txt:34-38` already documents this and we have not been doing it. The
 capability binds to the **inode**, so every rebuild that relinks the CLI drops
@@ -1940,6 +2111,8 @@ it. Three independent reasons now, the third new:
 > the engine; neither check can see a dropped capability. The cost is wrong
 > answers, not lost minutes.
 
+</details>
+
 ### 3. Audit `if (!quiet)` around anything that is not progress — `[P2]`
 
 cdda2img passes `-q` on all three read paths (`accudisc_reader.py:335`, `:439`,
@@ -1952,7 +2125,32 @@ the strongest claim on being told something is wrong, not the weakest. Sweep
 prefer a machine-readable token over stderr prose — stderr wording is explicitly
 not a stable interface (`cli-machine-interface.md`).
 
-### 4. The phantom 48× ladder rung — SETTLED 2026-07-26 by whole-disc measurement
+**AUDIT RUN 2026-08-09. Six `!ctx.quiet` sites in `cli/main.c`; one new finding,
+and it is not the one task 1 removes.**
+
+| site | what it gates | verdict |
+|---|---|---|
+| `:1118` | the human progress line | **Fine.** `--progress-fd` carries the same information on a machine channel *outside* the `quiet` test — the pattern the other sites should follow. |
+| `:1489` | "tracks A-B, lba N count M" | Descriptive, not integrity. Leave. |
+| `:1585` | the `LIKELY_ON` uncap warning | The known defect. Removed by task 1. |
+| **`:1622`** | **"read-speed uncap: on (was off)"** | **THE FINDING — see below.** |
+| `:1632` | a newline | Cosmetic. |
+| `:1711` | the CD+G summary | Statistics for a human. Leave. |
+
+**`cli/main.c:1622` is a notice that we MUTATED PERSISTENT DRIVE STATE, and
+`-q` hides it.** It is a strictly worse case than the warning that prompted this
+item, for two reasons. First, it reports something we *did* rather than a risk
+we suspect — and the uncap survives the process, so a machine consumer passing
+`-q` gets its drive silently reconfigured for every later invocation, including
+other tools' (this is the [[drive-contention-flock]] failure mode arriving by a
+different door). Second, **it does not go away with task 1**: that ruling removes
+enforcement while explicitly keeping `speed-uncap`, `--uncap` and the queryable
+state, so this line survives the change that retires `:1585`.
+
+Fix, in the shape `:1118` already demonstrates: emit the state change on a
+machine channel that `quiet` does not gate, and keep the stderr prose as the
+human rendering of it. The `(was %s)` prior value is the part that matters — it
+is what a caller needs to restore the drive, and the push/pop SOP depends on it.
 
 **There is no anomaly. 48 and 40 are the same physical read wearing two labels.**
 Keith ran four whole-disc reads (`--start 0 --count 162892`, uncap on, no vendor
@@ -2039,12 +2237,33 @@ caveat, it operates inside a single table.**
 
 ### 4b. `speeds` biases every table against its own fast rungs — `[P2]`, OUR DEFECT
 
-**Status after task 4 settled:** the *contract* findings below stand and are still
-worth fixing — cross-rung `measured_cx` carries an undocumented radius term, and a
-second undocumented timed-window-length term. Both are real defects in what the
-header promises. **The discriminator instruments are moot** (whole-disc reads avoid
-the confound by construction) and will not be run. Fix option (c), min/avg/max, is
-now the live one and has been raised to `[P2]` under "Probes / diagnostics".
+**RECONCILED 2026-08-09 — this entry is now MOSTLY CLOSED, and what is left is
+one paragraph of documentation.**
+
+- **The radius term: DOCUMENTED 2026-07-28**, which was fix option (a).
+  `accudisc.h:1136-1141` states it outright — rungs are laid out along the span,
+  a descending candidate list puts the fast rungs innermost, and *"treat a modest
+  cross-rung inversion as unproven, not as a measured fact about the rungs."* The
+  header also now says which comparison to trust instead (within a rung, where
+  the bands are a fixed distance apart and the timed length is identical). Option
+  (b), reversing rung order between bands, was considered and rejected: it
+  cancels the bias in the **mean**, and we deliberately do not report a mean.
+- **Fix option (c) landed too** — the min/max sweep, hardware-validated
+  2026-07-28. See "Probes / diagnostics".
+- **The discriminator instruments are moot** (whole-disc reads avoid the confound
+  by construction) and will not be run.
+
+**STILL OPEN — the second confound, and it is DESK WORK, not session work.** The
+timed-window **length** varies across rungs (`want = req * 75` clamped to
+[150, 2250]: 2250 sectors at 32× and above, 1800 at 24×, 1200 at 16×, 600 at 8×,
+300 at 4×), and the header does not say so. What it *does* say —
+`accudisc.h:1143-1145` — is that the timed length is identical **within** a rung,
+across its three bands. That is true, and it is the sentence most likely to be
+read as covering the cross-rung case it says nothing about. So 48-vs-40 is
+length-clean and the documented radius caveat is complete there, but any rule
+spanning 48 down to 4 compares rungs differing in radius **and** in timed span,
+and the second effect has never been measured. Fix: one paragraph beside the
+radius one. Measuring it is optional; **not claiming it is absent is not.**
 
 Found answering cdda2img §97.2. Bare `speeds` probes the **middle half**
 (`cli/main.c:658-662`: `lba = leadout/4`, `count = leadout/2`), so it is *not*
@@ -2111,6 +2330,17 @@ differing in radius *and* in timed span**, and the second effect is unmeasured.
 **REOPENED 2026-07-26 (Keith caught it; cdda2img §95 retracts their §91.1).** This
 entry briefly recorded mechanism B as refuted. **It is not**, and the CD-RW audio
 disc is still the only discriminator. Do not close this again without that disc.
+
+> **Read-speed session, item 3 — and BLOCKED ON MEDIA WE DO NOT HAVE, so expect
+> it to be abandoned by the session's own rule.** Recorded 2026-08-09 so nobody
+> re-derives this. The only discriminator is a **CD-RW audio disc**; no amount of
+> drive time on the discs we own separates A from B, because data and audio media
+> both yield 48 under either mechanism (the table below). If Keith wants this
+> settled he must supply the disc *before* the session — otherwise the honest
+> outcome is to abandon it and leave `adsc_uncap_classify`'s strict `>` documented
+> as unvalidated at the boundary. **It may also go moot with task 1**, if the
+> classifier goes with the guards; check that first, since it costs nothing and
+> could retire the whole entry.
 
 *The invalid step, kept as a worked example of the house failure mode:* all the
 measurements were taken with the uncap **OFF**, and a conclusion was drawn about
@@ -2188,7 +2418,11 @@ survives even so, since task 1 removes enforcement only.
 
 </details>
 
-### 5c. The "--driver auto" advice contradicts itself when a driver WAS named — `[P2]`
+### 5c. The "--driver auto" advice contradicts itself when a driver WAS named — `[P2]`, DESK WORK
+
+**Not read-speed session work** (classified 2026-08-09): it needs no drive and no
+measurement, only the conditional. Do not let the session's abandonment rule take
+it.
 
 cdda2img §91.2, reproduced on an empty tray with `--driver plextor` passed
 explicitly:
@@ -2210,7 +2444,11 @@ Fix: make the suffix conditional on whether a driver was permitted/attempted thi
 invocation. When one was attempted and failed, say so and name the reason instead
 of suggesting a flag.
 
-### 5d. `speed-uncap` needs a disc; `speed` does not — undocumented envelope split — `[P3]`
+### 5d. `speed-uncap` needs a disc; `speed` does not — undocumented envelope split — `[P3]`, DESK WORK
+
+**Not read-speed session work** (classified 2026-08-09): documentation only, and
+the behaviour it documents is already measured. Do not let the session's
+abandonment rule take it.
 
 Also §91.2. The Plextor selftest issues a real vendor opcode, which requires a
 medium, so **`speed-uncap` — report *or* set — is unavailable on an empty drive**.
@@ -2220,7 +2458,7 @@ report overlapping numbers with **different availability envelopes** and nothing
 says so. Document in `accudisc.1` and the header; note that anything assuming it
 can query uncap state before a disc is loaded cannot.
 
-### 5b. `ACCUDISC_UNCAP_OFF` is labelled authoritative but source 3 infers it — `[P3]`
+### 5b. `ACCUDISC_UNCAP_OFF` is labelled authoritative but source 3 infers it — `[P3]`, DESK WORK
 
 Found while writing §bg. `adsc_uncap_classify` (`src/drive/uncap.c:83`) returns
 `LIKELY_ON` **or** `OFF` from the same speed comparison, but only one branch
@@ -2400,7 +2638,30 @@ rebuild has a window where the `.so` is being replaced. Their end-of-run engine
 re-hash catches the mixed-build case; nothing catches the missing-`.so` case.
 Installing properly (task 2) would fix both.
 
-### 9. cdda2img §106 — the CLI is **not** retired; cdda2img's *use* of it is deprecated — `[P2]`
+**STILL LIVE 2026-08-09, but the blocker is gone and the remedy is now one
+symlink.** Verified rather than assumed:
+`/home/kgr/Git/cdda2img/tools/accudisc/accudisc` still resolves to
+`/home/kgr/Git/accudisc/build/cli/accudisc` (symlink dated 2026-07-26), so the
+dependency is real today. But an installed copy now exists —
+`/usr/local/bin/accudisc` with `/usr/local/lib/libaccudisc.so.0` beside it — so
+repointing that symlink fixes it outright, with no build-tree coupling left.
+
+**Two reasons this is note-only and stays `[P3]`.** It is *their* symlink, so
+the change is theirs to make, not ours to make for them. And it is
+self-resolving: item 9's ruling deprecates cdda2img's use of the CLI in favour
+of the Python binding, and the binding loads the installed library, so the
+dependency disappears when that migration completes. Repointing the symlink is
+worth suggesting as an interim, not worth engineering around.
+
+### 9. cdda2img §106 — the CLI is **not** retired; cdda2img's *use* of it is deprecated — **CLOSED on our side**
+
+**Reconciled 2026-08-09: nothing outstanding here is ours.** The ruling below was
+relayed, the `speeds` span was answered from source, and the two pieces of work
+it created have both landed — `ACCUDISC_ERR_NOT_BLANK` (0.4.0, 2026-07-29) and
+the last unbound calls (`probe_speed_ladder` and `write`, both bound 2026-07-29,
+device-verified). What remains is cdda2img completing their migration, which is
+theirs. Kept in full rather than summarised because the ruling itself is the
+durable part and was mis-relayed once already.
 
 > **SETTLED BY KEITH 2026-07-27, and it is not what §106.2 relayed.** cdda2img
 > reported "the CLI is retired", subprocess and fallback gone. The actual
@@ -2618,10 +2879,21 @@ is genuinely inside the same window, and the window is closing.
   §7.2 missed, of which one (`catch_unwind` across `extern "C"`) it did name.
 - Man page (must mirror `docs/reference/ATTRIBUTION.md`).
   **No longer deferred — first cut written 2026-07-26:** `docs/man/accudisc.1`
-  (CLI) and `docs/man/accudisc.8` (library/API). Both are untracked and neither
-  is installed by CMake yet. **Outstanding against this entry:** the pages do not
-  yet mirror `ATTRIBUTION.md` — they credit nothing beyond the MIT statement, so
-  the reference-source credits still need adding.
+  (CLI) and `docs/man/accudisc.8` (library/API).
+
+  **Correction 2026-08-09 — the next two clauses used to say "both are untracked
+  and neither is installed by CMake yet", and both halves are false.** They are
+  tracked (`git ls-files docs/man/` returns `accudisc.1`, `accudisc.8` and
+  `.gitkeep`) and they are installed (`CMakeLists.txt`, `install(FILES
+  docs/man/accudisc.1 …man1)` and the `.8` into `man8`). The line was written
+  when the pages were new and was never revisited; nothing was wrong with the
+  work, only with this record of it.
+
+  **Genuinely outstanding against this entry, and it is the whole of it:** the
+  pages do not mirror `ATTRIBUTION.md`. They credit nothing beyond the MIT
+  statement, so the reference-source credits — QPxTool, cdrtools, REDUMP,
+  PlexTools-derived ATIP codes — still need adding. That obligation is the
+  reason this entry named the man page in the first place.
 - Write / burn (DAO) path — paused; do not start without direction.
   **This line is stale as written.** The DAO path shipped and is
   hardware-verified (`src/write/`, `RECORDING_PLAN.md` §9 phases 1–2 and §11.7/
