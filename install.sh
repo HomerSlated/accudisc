@@ -53,6 +53,17 @@
 # Override any of them yourself with --cmake-arg; yours are passed after ours,
 # and CMake honours the last occurrence.
 #
+# TWO OF THE THREE ARE PUT BACK AFTERWARDS (added 2026-08-09). BUILD_DIR
+# defaults to 'build', which is the developer's own tree, and a CMake cache is
+# sticky — so overrides 1 and 3 used to persist for every later build in that
+# tree, silently. They are now captured before the configure and restored to
+# their PRIOR values after a successful install, per this project's push/pop
+# discipline: restore to prior, never to a factory default, and pop only what
+# you pushed. A tree with no cache has nothing to restore and is left exactly
+# as the install configured it, which is what a first-time installer on another
+# machine needs. Override 2 is not restored: the Python install layout is a
+# property of the installation, not of the build.
+#
 # ---------------------------------------------------------------------------
 # THE PYTHON QUESTION — why a wheel, and not site-packages
 # ---------------------------------------------------------------------------
@@ -553,6 +564,36 @@ if [ -f "$BUILD_DIR/install_manifest.txt" ] && [ "$WANT_SITEDIR" -eq 0 ]; then
     fi
 fi
 
+# ---------------------------------------------------------------------------
+# install: remember the configuration we are about to override
+# ---------------------------------------------------------------------------
+#
+# The three overrides above are right for INSTALLING and wrong for DEVELOPING,
+# and BUILD_DIR defaults to 'build' — the same tree the developer uses. A CMake
+# cache is sticky: once we write SETCAP_AFTER_BUILD=OFF into it, every later
+# bare `cmake -B build` (which is what scripts/sync.py runs) preserves OFF. So
+# one install silently reconfigured the development tree permanently, and the
+# symptom was a binary nobody had disarmed and nobody could arm: builds stopped
+# re-applying cap_sys_rawio, and cdda2img's symlink points into this tree.
+#
+# Measured 2026-08-09: build/cli/accudisc had NO capability while the installed
+# copy had cap_sys_rawio=ep, which is exactly this.
+#
+# So follow the push/pop discipline used everywhere else in this project:
+# restore to the PRIOR value, not to a factory default. If there was no cache,
+# there is nothing to restore and we leave the tree as we found it — which is
+# what keeps this correct for a first-time installer on another machine, who
+# must not be handed SETCAP_AFTER_BUILD=ON and the build failure it causes
+# without a passwordless setcap rule.
+cache_get() {
+    [ -f "$BUILD_DIR/CMakeCache.txt" ] || return 0
+    sed -n "s/^$1:[A-Z]*=//p" "$BUILD_DIR/CMakeCache.txt" | head -n 1
+}
+
+RESTORE_VARS=(ACCUDISC_SETCAP_AFTER_BUILD ACCUDISC_BUILD_TESTS)
+PRIOR_VALUES=()
+for _v in "${RESTORE_VARS[@]}"; do PRIOR_VALUES+=("$(cache_get "$_v")"); done
+
 cmake_args=(
     -B "$BUILD_DIR" -S "$SRC_DIR"
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
@@ -731,6 +772,33 @@ if [ "$WANT_WHEEL" -eq 1 ]; then
     To remove it again:  pipx uninject cdda2img accudisc
     To replace it after a rebuild:  pipx inject --force cdda2img <wheel>
 EOF
+fi
+
+# ---------------------------------------------------------------------------
+# install: put the build tree back the way we found it
+# ---------------------------------------------------------------------------
+#
+# Deliberately AFTER the install, so a failure anywhere above leaves the cache
+# in the state that produced the failure rather than a tidied-up one that no
+# longer reproduces it.
+#
+# This re-configures; it does not rebuild. The restored SETCAP_AFTER_BUILD
+# therefore takes effect on the NEXT link, not now — which is correct, since
+# the binary sitting in the tree at this moment is the one we just built and
+# installed from.
+restore_args=()
+for _i in "${!RESTORE_VARS[@]}"; do
+    _var=${RESTORE_VARS[$_i]}
+    _prior=${PRIOR_VALUES[$_i]}
+    [ -n "$_prior" ] || continue                      # no prior cache: nothing to restore
+    [ "$_prior" = "$(cache_get "$_var")" ] && continue # unchanged: nothing to undo
+    restore_args+=("-D$_var=$_prior")
+done
+
+if [ ${#restore_args[@]} -gt 0 ]; then
+    printf '\n' >&2
+    say "Restoring your build-tree configuration (this does not rebuild)"
+    run cmake -B "$BUILD_DIR" -S "$SRC_DIR" "${restore_args[@]}" >/dev/null
 fi
 
 printf '\n' >&2
