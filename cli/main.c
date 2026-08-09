@@ -878,11 +878,28 @@ static int cmd_speed(accudisc_device *dev, int argc, char **argv)
 
     /* Honoured value: page 2A current is what the drive actually adopted. */
     unsigned max_kbps = 0, cur_kbps = 0;
-    if (accudisc_get_speed(dev, &max_kbps, &cur_kbps) == ACCUDISC_OK)
+    if (accudisc_get_speed(dev, &max_kbps, &cur_kbps) == ACCUDISC_OK) {
         printf("page2A     max %ux (%u kB/s)  current %ux (%u kB/s)\n",
                max_kbps / 176, max_kbps, cur_kbps / 176, cur_kbps);
-    else
+
+        /* SAY IT, do not merely print both numbers and leave the reader to
+         * compare. `speed 16` on a PX-716A adopts 8x, and the two figures sat
+         * on adjacent lines for weeks without anyone noticing — the data was
+         * always here, the NOTICE was not.
+         *
+         * `cur < want` only. A drive adopting something HIGHER than asked is
+         * not this defect (nothing was silently lost) and we have never seen
+         * it; reporting it here would be inventing a case to describe.
+         *
+         * Compared in kB/s-derived integer x, the same quantity printed above,
+         * so the line can never contradict the line it annotates. */
+        unsigned cur_x = cur_kbps / 176;
+        if (want_x > 0 && cur_kbps && cur_x < (unsigned)want_x)
+            printf("quantized  asked %ldx, drive adopted %ux — this drive's "
+                   "ladder has no %ldx rung\n", want_x, cur_x, want_x);
+    } else {
         printf("page2A     unavailable\n");
+    }
 
     /* Nominal curve + rotation classification (disc-independent, RPM-derived;
      * a drive that rejects GET PERFORMANCE reports unknown, never inferred). */
@@ -1594,6 +1611,39 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         if (!ctx.quiet)
             fprintf(stderr, "read-speed uncap: on (was %s)\n",
                     uncap_prior ? "on" : "off");
+    }
+
+    /* Report a quantized --speed, which was silent until 0.6.1: the engine
+     * applies req.speed_x best-effort and discards the outcome, so a request
+     * the drive snapped down (16x -> 8x on the PX-716A) produced a slower read
+     * than asked for with nothing said.
+     *
+     * Done HERE rather than in the library on purpose. Applying the speed is
+     * the engine's job and it still owns it; deciding that a human or a log
+     * should be told is a process convention, and CLAUDE.md / API_PLAN §3 keep
+     * those in the CLI. The set below is redundant with engine.c's own — that
+     * is deliberate, not an oversight: it is the only way to observe the
+     * adopted value BEFORE the read rather than after, by which time a
+     * recovery ladder rung may have moved it. Setting the same speed twice
+     * costs one MODE SELECT and cannot change the outcome.
+     *
+     * After the uncap push, so the ceiling in force is the one the read will
+     * actually run under.
+     *
+     * NOT gated on --quiet. A read that ran at half the requested speed is
+     * exactly the kind of notice the quiet flag must not suppress: quiet means
+     * no human is watching, which strengthens rather than weakens the claim on
+     * being told (see TODO "audit if (!quiet)"). */
+    if (req.speed_x) {
+        unsigned cur_kbps = 0;
+
+        if (accudisc_set_speed(dev, req.speed_x) == ACCUDISC_OK &&
+            accudisc_get_speed(dev, NULL, &cur_kbps) == ACCUDISC_OK &&
+            cur_kbps && cur_kbps / 176 < req.speed_x)
+            fprintf(stderr,
+                    "accudisc: --speed %ux quantized to %ux by the drive; "
+                    "the read will run at the lower rate\n",
+                    req.speed_x, cur_kbps / 176);
     }
 
     accudisc_read_stats st = ACCUDISC_READ_STATS_INIT;

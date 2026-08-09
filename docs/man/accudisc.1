@@ -221,6 +221,22 @@ segment. With
 set an
 .RI N x
 ceiling first, preferring SET STREAMING and falling back to SET CD SPEED.
+.PP
+A drive honours only the rungs its firmware implements, and snaps anything
+else DOWN to the next one it has \(em on a PX\-716A,
+.B speed 16
+adopts 8\(mux. When that happens an extra line is printed:
+.PP
+.RS 4
+.EX
+quantized  asked 16x, drive adopted 8x \(em this drive's ladder has no 16x rung
+.EE
+.RE
+.PP
+The line is absent when the request is honoured, so its presence is the
+signal. See
+.B speeds \-\-sweep
+for the whole ladder in advance, including which settings are real rungs.
 .RS 4
 .TP
 .B \-\-exact
@@ -638,6 +654,16 @@ at the same speed every time. Verify passes themselves stream at the pass speed
 Set the drive read speed to
 .RI X x
 before reading. Best-effort, and never auto-restored afterwards.
+.IP
+If the drive snaps the request down to a lower rung \(em
+.RI 16 x
+becomes 8\(mux on a PX\-716A \(em a notice is written to stderr and the read
+proceeds at the lower rate.
+.B \-q
+does not suppress it: a read running at half the requested speed is a
+data\-integrity notice, and quiet means no human is watching. Use
+.B speeds \-\-sweep
+to learn which settings are real rungs before choosing one.
 .TP
 .B \-\-uncap
 Lift the vendor read-speed cap for this read only, restoring the drive's prior

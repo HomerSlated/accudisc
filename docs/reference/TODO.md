@@ -23,8 +23,13 @@ investigation the ruling closed.
 **DRIVE-BOUND — this is the session, and items 3–5 cannot be advanced on the
 hardware we own, so expect them to be abandoned by default:**
 
-1. `--speed 16` silently honoured as 8×, unreported — "Known bugs" below, `[P1]`.
-   **Less blocked than that entry says**; see the note there.
+1. ~~`--speed 16` silently honoured as 8×, unreported.~~ **DONE 2026-08-09 —
+   and it was never drive-bound.** The ladder detection had existed since
+   2026-07-28 (`ACCUDISC_RUNG_QUANTIZED`); what was missing was a notice on
+   `speed X` / `read --speed X`, which needs a MODE SENSE, not a timed read.
+   Filed here as drive-bound on the strength of this entry's own stale
+   paragraph — **the second time in two days that a wrong TODO nearly cost a
+   fix its session.**
 2. The read-engine throughput cap (~5× vs 12–19× raw) — "Speed control" below.
    The one most likely to be *felt*: every whole-disc read goes through it.
 3. Task 5's A-vs-B uncap discriminator — needs a **CD-RW audio disc we do not
@@ -248,29 +253,48 @@ on single-extent drives). Revisit the ranged feature in a future session.
   track); `toc` emits `pregap <n>`.
 - ~~`features` no-disc false negative (C2_UNSUPPORTED/exit 1) -> UNVERIFIED.~~
   **DONE** in the Phase-1 `features` split; this line was a stale duplicate.
-- `--speed 16` silently honoured as 8x, unreported. [P1] **BLOCKED on hardware.**
-  The honoured rate is not a reliable MMC read-back — the {4,8,24,32} ladder is
-  PX-716A-measured, and the only empirical answer is timed streaming reads (what
-  the `speeds` command already does). A "report the honoured speed" path on
-  `speed X` / `read --speed X` is therefore a measurement change whose thresholds
-  must be validated on the drive; not a safe source-only fix. Do it in a focused
-  PX-716A session, reusing `speeds.c`'s timing.
+- ~~`--speed 16` silently honoured as 8x, unreported. [P1]~~ — **DONE
+  2026-08-09, and most of it had been done weeks earlier under a different
+  entry.**
 
-  **Re-assessed 2026-08-09 — this is LESS BLOCKED than the paragraph above
-  says, and the instrument already exists.** The `--sweep` acceptance run of
-  2026-07-28 (table under "Probes / diagnostics") contains this exact defect,
-  measured: the `req=16` rung came back `page2a=8, measured=8.01, spread 0.00`
-  — asked 16, honoured 8, and the timing said so unambiguously, with the flat
-  spread independently predicting a CLV-clamped rung. So the "thresholds must
-  be validated on the drive" objection is already satisfied for at least one
-  point of the ladder by a run that has been accepted.
+  Keith: *"do we not already determine the real speed ladder from throughput
+  measurements? Again, I thought this was done weeks ago."* Correct on both
+  counts, and this entry was the thing that was wrong.
 
-  What remains is therefore a **cost decision, not a measurement design**:
-  reporting the honoured rate on `speed X` / `read --speed X` means a timed
-  read before every such command. Options: do it only when asked
-  (`--verify-speed`), or report the *quantised* prediction from the measured
-  {4,8,24,32} ladder and say it is a prediction. **Read-speed session, item 1**
-  — and the highest-value item in it, since it is the only one a user meets.
+  **What already existed.** `ACCUDISC_RUNG_QUANTIZED` (`accudisc.h:1213`) and
+  its detection at `src/drive/speeds.c:163-166` — and note *why* that clause is
+  the good one: it is the **only exact clause** in the whole verdict function.
+  No measurement, no cross-rung comparison, no radius term; page 2A came back
+  below the request and the drive has told us directly. It was hardware-
+  validated in the 2026-07-28 `--sweep` acceptance run, which produced the
+  admitted ladder `40,32,24,8,4` with **48 duplicate:40 and 16 quantized:8** —
+  i.e. this exact defect, named, in a run that was signed off.
+
+  **What was actually missing**, and it was small: `speed X` printed the asked
+  and adopted figures on adjacent lines and left the reader to compare them
+  (the data was always there; the *notice* was not), and `read --speed X`
+  reported nothing at all, because `engine.c:447-448` applies the speed
+  best-effort and discards the outcome. Both closed now — a `quantized` stdout
+  line on `speed X`, a stderr notice before the read on `read --speed X`.
+
+  **Neither needed the drive time this entry demanded**, which is the lesson:
+  page 2A read-back is a MODE SENSE, not a timed measurement, so the whole
+  "thresholds must be validated on the drive" objection applied to a design
+  nobody ended up needing. The read-back was already trusted everywhere else in
+  the file. Verified on hardware anyway, all four cases: `speed 16` warns and
+  names 8x; `speed 8` and `speed 24` are silent (no false positives);
+  `read --speed 16` warns and the summary's 58.2 sectors/s independently
+  confirms the 8x ceiling; `-q` does **not** suppress it. Drive restored to 40x.
+
+  The `-q` decision is deliberate and follows the `if (!quiet)` audit item
+  below: a read running at half the requested rate is a data-integrity notice,
+  and quiet means no human is watching — which strengthens the claim on being
+  told, not weakens it.
+
+  Both messages are stderr/stdout prose and therefore **not** a stable
+  interface; `speeds --sweep`'s `verdict=quantized:<x>` token remains the
+  parseable form. Said so in `cli-machine-interface.md` rather than leaving it
+  to be assumed.
 - **`cdtext` with no FILE reports itself as an unknown command. [P2]** —
   Keith 2026-07-26: *"If a value is mandatory but not provided, and you continue
   anyway, that's a silent failure."* `cli/main.c:1686` dispatches on
@@ -525,8 +549,10 @@ ceiling.** Repeatable across eject/load cycles — ZZ Top (pristine) inits at 40
   radius, so the curve is flat), {24,32} are CAV (clamping only the outer
   region). The 9–23 dead zone is the gap between the top CLV rung and the CAV
   floor. **40x is not settable** — it is only reached by free-running at the outer
-  edge. Still open: `speed X` reports what was asked, not what the drive honoured
-  (see the `--speed 16` item above).
+  edge. ~~Still open: `speed X` reports what was asked, not what the drive
+  honoured~~ — **CLOSED 2026-08-09**: `speed X` now prints a `quantized` line
+  naming both figures, and `read --speed X` warns on stderr. See the
+  `--speed 16` item above.
 - **GET PERFORMANCE nominal is RPM-derived, not medium-measured.** Identical
   across no-disc / ABBA / ZZ Top — `end_lba` is always 359999, never the real
   lead-out — but it *does* track SpeedRead. Constant across discs, not across

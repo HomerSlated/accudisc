@@ -309,6 +309,37 @@ measured materially faster than the next lower admitted rung.
   including duplicates and quantized ones. AccuDisc never rewrites a
   caller's ladder from this — `accudisc_read_req.speed_ladder` is untouched.
 
+### Quantization is also reported outside `speeds` (added 2026-08-09)
+
+`speeds --sweep` tells you the whole ladder in advance. These two say so at
+the moment it happens, for a caller that just sets a speed and reads:
+
+- **`speed X`** prints an extra stdout line when the drive adopts less than
+  asked. Line-oriented, first token `quantized`:
+
+  ```
+  quantized  asked 16x, drive adopted 8x — this drive's ladder has no 16x rung
+  ```
+
+  Absent when the drive honours the request, so its presence is the signal.
+  The two numbers it compares are the same ones on the `page2A` line above it.
+
+- **`read --speed X`** writes to **stderr**, since the read's own output owns
+  stdout:
+
+  ```
+  accudisc: --speed 16x quantized to 8x by the drive; the read will run at the lower rate
+  ```
+
+  **`-q` does not suppress this**, unlike the human progress line. A read
+  running at half the requested rate is a data-integrity notice, and quiet
+  means no human is watching — which strengthens the claim on being told.
+
+Both are **stderr/stdout prose and not a stable interface** by this document's
+own rule; parse `speeds --sweep`'s `verdict=quantized:<x>` token if you need
+this programmatically. They are documented here so the behaviour is not a
+surprise, not so it can be depended upon.
+
 ## `write` output
 
 DAO audio burn from a cdrdao `.toc` + raw BIN. `--simulate` runs the whole path
