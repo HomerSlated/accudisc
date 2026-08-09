@@ -33,16 +33,35 @@
 # THE THREE DEFAULTS THIS SCRIPT OVERRIDES, AND WHY
 # ---------------------------------------------------------------------------
 #
-# 1. ACCUDISC_SETCAP_AFTER_BUILD=OFF (CMake default: ON)
+# 1. ACCUDISC_SETCAP_AFTER_BUILD=ON — which is also the CMake default, and is
+#    passed EXPLICITLY anyway. Keith's instruction, 2026-08-09.
 #
-#    The CMake default re-applies cap_sys_rawio to the build-tree binary after
-#    every link, because a file capability binds to the INODE and every relink
-#    produces a fresh one. That is a genuine convenience *on a machine with a
-#    passwordless privilege rule for setcap*, and a hard build failure on every
-#    machine without one — which is every machine but the developer's. So the
-#    distribution default has to be OFF. Nothing is lost: the capability that
-#    matters is the one on the INSTALLED binary (ACCUDISC_SETCAP_ON_INSTALL,
-#    left ON), whose inode is stable and therefore stays armed across rebuilds.
+#    This step re-applies cap_sys_rawio to the build-tree binary after every
+#    link, because a file capability binds to the INODE and every relink
+#    produces a fresh one. Without it the tool has limited function — every
+#    vendor opcode and the whole burn path need CAP_SYS_RAWIO — and the failure
+#    is quiet: a fall back to generic MMC with no error.
+#
+#    WHY EXPLICIT, when it merely restates the CMake default. A bare default is
+#    only consulted when the variable is not already cached. An explicit -D
+#    OVERRIDES a cached OFF. This script used to pass OFF here, so any tree that
+#    ever ran the old version carries OFF and would keep it forever; passing ON
+#    is what actually repairs those trees. That is not hypothetical — it is the
+#    bug this line was changed to fix (see the restore block further down).
+#
+#    THE CONSEQUENCE, STATED PLAINLY: on a machine with no passwordless
+#    privilege rule for ACCUDISC_SETCAP_COMMAND, the post-link step fails and
+#    THE BUILD FAILS WITH IT. That is by design in cli/CMakeLists.txt — a
+#    warn-and-continue would reproduce the very bug this automates away, a
+#    binary everyone believes is armed and is not — but it means anyone
+#    building this who is not us wants:
+#
+#        ./install.sh --cmake-arg -DACCUDISC_SETCAP_AFTER_BUILD=OFF
+#
+#    which works because user --cmake-arg values are passed AFTER ours and
+#    CMake honours the last occurrence. Note that the restore block below
+#    cannot soften this: it runs only after a SUCCESSFUL install, so a build
+#    that fails this way leaves the cache as it was.
 #
 # 2. ACCUDISC_INSTALL_PYTHON=OFF + ACCUDISC_INSTALL_WHEEL=ON (defaults: ON/OFF)
 #
@@ -53,7 +72,7 @@
 # Override any of them yourself with --cmake-arg; yours are passed after ours,
 # and CMake honours the last occurrence.
 #
-# TWO OF THE THREE ARE PUT BACK AFTERWARDS (added 2026-08-09). BUILD_DIR
+# ONE OF THE THREE IS PUT BACK AFTERWARDS (added 2026-08-09). BUILD_DIR
 # defaults to 'build', which is the developer's own tree, and a CMake cache is
 # sticky — so overrides 1 and 3 used to persist for every later build in that
 # tree, silently. They are now captured before the configure and restored to
@@ -590,7 +609,13 @@ cache_get() {
     sed -n "s/^$1:[A-Z]*=//p" "$BUILD_DIR/CMakeCache.txt" | head -n 1
 }
 
-RESTORE_VARS=(ACCUDISC_SETCAP_AFTER_BUILD ACCUDISC_BUILD_TESTS)
+# ACCUDISC_SETCAP_AFTER_BUILD is deliberately NOT in this list, and adding it
+# would be a bug rather than a symmetry. We now force it ON (override 1 above),
+# so restoring the prior value would take a tree whose cache says OFF, repair it
+# during the install, and then put the OFF back — undoing the exact repair the
+# explicit -D exists to perform. Restore-to-prior is right for a setting we
+# override for our own convenience; it is wrong for one we override to FIX.
+RESTORE_VARS=(ACCUDISC_BUILD_TESTS)
 PRIOR_VALUES=()
 for _v in "${RESTORE_VARS[@]}"; do PRIOR_VALUES+=("$(cache_get "$_v")"); done
 
@@ -598,7 +623,7 @@ cmake_args=(
     -B "$BUILD_DIR" -S "$SRC_DIR"
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
     -DCMAKE_INSTALL_PREFIX="$PREFIX"
-    -DACCUDISC_SETCAP_AFTER_BUILD=OFF
+    -DACCUDISC_SETCAP_AFTER_BUILD=ON
     -DACCUDISC_BUILD_TESTS=$( [ "$WANT_TESTS" -eq 1 ] && echo ON || echo OFF )
     -DACCUDISC_INSTALL_PYTHON=$( [ "$WANT_SITEDIR" -eq 1 ] && echo ON || echo OFF )
     -DACCUDISC_INSTALL_WHEEL=$( [ "$WANT_WHEEL" -eq 1 ] && echo ON || echo OFF )

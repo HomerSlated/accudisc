@@ -71,9 +71,10 @@ const char *accudisc_strerror(int err)
     case ACCUDISC_ERR_CANCELLED:   return "cancelled";
     case ACCUDISC_ERR_CRC:         return "checksum failed";
     case ACCUDISC_ERR_NOTFOUND:    return "data absent";
-    case ACCUDISC_ERR_UNSAFE_COMBINATION:
-                                   return "unsafe request for the drive's "
-                                          "current state (would corrupt data)";
+    /* -11 (was ERR_UNSAFE_COMBINATION) is retired as of 0.6.0 and falls to the
+     * default. Deliberately not given a "retired" string: this library never
+     * returns -11 again, so the only way to see one is a caller inventing it,
+     * and "unknown error" is the honest answer to that. */
     case ACCUDISC_ERR_ABI:         return "struct size mismatch — rebuild "
                                           "against this library's header";
     case ACCUDISC_ERR_NOT_BLANK:   return "disc is not blank (nothing written)";

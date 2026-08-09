@@ -643,15 +643,20 @@ before reading. Best-effort, and never auto-restored afterwards.
 Lift the vendor read-speed cap for this read only, restoring the drive's prior
 setting on every exit path. Requires
 .BR \-\-driver .
-.B Cannot be combined with
-.BR \-\-sub :
-the uncap pins the drive's CAV RPM to its outer-edge target across the whole
-disc, and the subchannel channel-clock cannot track that on inner and mid
-tracks, so Q decodes to garbage while the audio stays clean. The combination is
-refused with exit 1. If the uncap merely
-.I appears
-to be on already \(em persistent state left by an earlier session \(em a
-subchannel read warns loudly on stderr and proceeds.
+.PP
+This does
+.B not
+speed up an audio read. The drive governs CD\-DA to 40\(mux regardless of the
+uncap, and mode page 2A reports the request rather than the governed rate, so
+the 48\(mux it exposes is not reachable on an audio disc.
+.PP
+Releases before 0.6.0 refused
+.B \-\-uncap
+together with
+.BR \-\-sub ,
+and warned when the uncap merely appeared to be on. Both are gone: the state
+they defended against is not one the hardware can enter. The combination is now
+ordinary, and neither refused nor warned about.
 .SS Progress and status
 .TP
 .B \-\-map

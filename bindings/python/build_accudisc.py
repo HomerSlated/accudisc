@@ -183,7 +183,10 @@ typedef enum accudisc_err {
     ACCUDISC_ERR_CANCELLED,
     ACCUDISC_ERR_CRC,
     ACCUDISC_ERR_NOTFOUND,
-    ACCUDISC_ERR_UNSAFE_COMBINATION,
+    /* -11 (ACCUDISC_ERR_UNSAFE_COMBINATION) was removed in 0.6.0 and the value
+     * is retired. Absent here deliberately: cffi verifies each named constant
+     * against the real header at import, so leaving it would fail the build
+     * rather than quietly produce a dead attribute. */
     ACCUDISC_ERR_ABI,
     ACCUDISC_ERR_NOT_BLANK,
     ...
@@ -539,7 +542,8 @@ typedef struct accudisc_read_req {
     uint8_t overlap_sectors;
     const uint16_t *speed_ladder;
     uint8_t ladder_len;
-    uint8_t allow_unsafe;
+    /* `uint8_t allow_unsafe` sat here until 0.6.0. It was padding, so its
+     * removal moved nothing after it. */
     uint8_t *status_map;
     const volatile int *cancel;
     uint8_t *subq_map;

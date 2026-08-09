@@ -106,7 +106,9 @@ static void usage(FILE *to)
         "  --speed X      set drive read speed to Xx first (best-effort)\n"
         "  --uncap        lift the vendor read-speed cap for this read only,\n"
         "                 restoring the drive's prior setting afterwards\n"
-        "                 (needs --driver; Plextor: SpeedRead)\n"
+        "                 (needs --driver; Plextor: SpeedRead). Note the\n"
+        "                 drive governs CD-DA to 40x regardless, so this\n"
+        "                 does not make an audio read faster\n"
         "  --map          render a per-sector disc map when done\n"
         "  --map-file F   live status map: F is exactly COUNT bytes, one\n"
         "                 status byte per sector (ACCUDISC_MAP_* encoding,\n"
@@ -1560,42 +1562,12 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         goto out;
     }
 
-    /* SpeedRead is an audio-only accelerator: it pins the drive's CAV RPM to
-     * the outer-edge target across the whole disc, which corrupts the Q
-     * subchannel on inner/mid tracks (measured 0% Q-CRC there; see
-     * drivers/plextor/FEATURES.md). Never lift the cap while capturing sub. */
-    if (uncap && req.sub != ACCUDISC_SUB_NONE) {
-        fprintf(stderr, "accudisc: --uncap cannot be combined with --sub — "
-                        "SpeedRead corrupts the Q subchannel\n");
-        ret = 1;
-        goto out;
-    }
-
-    /* Warn if the uncap already looks enabled for a subchannel read —
-     * persistent drive state a prior session may have left set. We do not
-     * change it (caller's drive); we make the silent loss visible.
-     *
-     * The detection moved into the library (accudisc_speed_uncap_probe): the
-     * old inline test here was `PLEXTOR && max_x > 40`, which is one drive's
-     * stock ceiling used as a universal constant. The probe keys it per model
-     * and says UNKNOWN where we have not verified one. An authoritative ON is
-     * refused outright by accudisc_read_cdda, so reaching that case here means
-     * the library declined to guess and left the policy to us — the CLI's
-     * policy is to warn loudly and proceed. */
-    if (req.sub != ACCUDISC_SUB_NONE && !ctx.quiet) {
-        accudisc_uncap_state u;
-        unsigned mx = 0;
-        if (accudisc_speed_uncap_probe(dev, &u, &mx) == ACCUDISC_OK &&
-            u == ACCUDISC_UNCAP_LIKELY_ON)
-            fprintf(stderr,
-                "accudisc: WARNING: the read-speed uncap appears enabled "
-                "(max read %ux, above this\n"
-                "  model's stock ceiling) with --sub requested; the Q "
-                "subchannel will be corrupted\n"
-                "  on inner/mid tracks. Disable it first:\n"
-                "  accudisc speed-uncap off --driver plextor\n",
-                mx);
-    }
+    /* REMOVED IN 0.6.0, with the library guard they mirrored: a refusal of
+     * `--uncap` alongside `--sub`, and a warning when the uncap merely looked
+     * enabled. Both assumed the uncap makes the drive read CD-DA faster. It
+     * does not — the governor caps CD-DA at 40x regardless, and page 2A shows
+     * the request rather than the governed rate. `--uncap --sub` is now an
+     * ordinary combination and is neither refused nor warned about. */
 
     /* --uncap: lift the firmware read-speed cap for this read only. The
      * setting is persistent drive state, so the prior value is restored

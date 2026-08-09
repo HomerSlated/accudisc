@@ -74,11 +74,12 @@ value	name	meaning
 \-8	ACCUDISC_ERR_CANCELLED	cancelled by flag or sink
 \-9	ACCUDISC_ERR_CRC	checksum failed
 \-10	ACCUDISC_ERR_NOTFOUND	data legitimately absent
-\-11	ACCUDISC_ERR_UNSAFE_COMBINATION	self-defeating request
+\-11	(retired \(em never reuse)	was ERR_UNSAFE_COMBINATION
 \-12	ACCUDISC_ERR_ABI	bad struct \fBsize\fR
 .TE
 .PP
-Three of these carry meaning a caller must not flatten.
+Three of these need more than a table row \(em two carry meaning a caller must
+not flatten, and one is a hole in the numbering.
 .TP
 .B ACCUDISC_ERR_NOTFOUND
 The drive answered and the data legitimately is not there \(em no CD\-Text on
@@ -93,12 +94,16 @@ into
 and a binding that maps every non-OK value onto one exception loses exactly
 that distinction.
 .TP
+.B \-11, retired
+Value \-11 was
 .B ACCUDISC_ERR_UNSAFE_COMBINATION
-The request would return silently corrupt data given the drive's current
-state. It is never returned for a merely unusual request \(em only where the
-corruption is known and measured. Today the one case is capturing subchannel
-while the vendor read-speed uncap is authoritatively on. Where the request
-struct offers an override field, the caller may proceed deliberately.
+until 0.6.0, when it was removed with the guard it reported: a refusal to
+capture subchannel while the vendor read-speed uncap was on. The premise was
+wrong \(em the drive governs CD\-DA to 40\(mux whatever the uncap is set to, and
+mode page 2A reports the request rather than the governed rate. The number is
+retired rather than recycled: a consumer built before 0.6.0 maps \-11 to that
+name, so reassigning it would make such a consumer report the wrong failure for
+the right return value.
 .TP
 .B ACCUDISC_ERR_ABI
 A caller-allocated struct declared a

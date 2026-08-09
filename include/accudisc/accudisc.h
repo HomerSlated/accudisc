@@ -27,7 +27,22 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 5 /* 0.5.0: accudisc_read_req gained subq_map and
+#define ACCUDISC_VERSION_MINOR 6 /* 0.6.0: the FIRST SUBTRACTIVE change. Removed
+                                  * accudisc_read_req.allow_unsafe and
+                                  * ACCUDISC_ERR_UNSAFE_COMBINATION (-11, now
+                                  * retired and never to be reused) along with
+                                  * the SpeedRead subchannel guard they served.
+                                  * The `size` field CANNOT cover this: it makes
+                                  * a SHORT caller safe by zero-extending, and
+                                  * says nothing about a caller that sets a
+                                  * field this build no longer has. sizeof is
+                                  * unchanged at 64 — the byte was padding — so
+                                  * a stale caller's `allow_unsafe = 1` lands in
+                                  * padding and is ignored, which is the benign
+                                  * outcome but is NOT something the ABI
+                                  * machinery guarantees. The minor bump is the
+                                  * only real signal, which is why it is here.
+                                  * 0.5.0: accudisc_read_req gained subq_map and
                                   * grew 56 -> 64 bytes. Purely additive (the
                                   * field is last, an older caller zero-extends
                                   * to NULL), so the soname stays .so.0 — but
@@ -92,13 +107,14 @@ typedef enum accudisc_err {
     ACCUDISC_ERR_NOTFOUND    = -10, /* requested data legitimately absent
                                       (MCN/ISRC/CD-Text/driver/offset) —
                                       never a transport failure */
-    ACCUDISC_ERR_UNSAFE_COMBINATION = -11, /* the request is self-defeating
-                                      against this drive's current state and
-                                      would return silently corrupt data.
-                                      Never returned for a merely unusual
-                                      request — only where the corruption is
-                                      known and measured. Overridable per-call
-                                      where the request offers a field for it. */
+    /* -11 IS RETIRED AND MUST NEVER BE REUSED. It was
+     * ACCUDISC_ERR_UNSAFE_COMBINATION, removed in 0.6.0 with the SpeedRead
+     * guard it existed to report (Keith's ruling, 2026-08-09: the drive cannot
+     * read CD-DA above 40x whatever the uncap says, so the combination it
+     * called unsafe was never unsafe). A future error assigned -11 would be
+     * mapped to "unsafe combination" by every consumer compiled before 0.6.0 —
+     * well-formed data, wrong referent, nothing able to tell. The gap is
+     * cheaper than the collision. */
     ACCUDISC_ERR_ABI         = -12, /* a caller-allocated struct declared a
                                       `size` this library cannot honour: zero
                                       (never initialised), or larger than this
@@ -1367,8 +1383,14 @@ ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
  * The CLI never noticed, because it is rebuilt with the library. A binding
  * compiled against one header and loaded against a different .so would, by
  * running off the end of a struct — and in the worst case by reading garbage
- * into `allow_unsafe`, silently disabling a safety guard. Well-formed data,
- * wrong referent, nothing downstream able to tell.
+ * into a pointer field like `subq_map` or `cancel`, which the library would
+ * then dereference or poll. Well-formed data, wrong referent, nothing
+ * downstream able to tell.
+ *
+ * (This paragraph used to name `allow_unsafe` — a one-byte flag whose garbage
+ * value silently disabled a guard. That field was removed in 0.6.0. The
+ * example changed; the hazard did not, and the pointer version of it is worse,
+ * because a wrong flag misbehaves while a wrong pointer corrupts or crashes.)
  *
  * So each carries its own size as its first field, and the caller sets it:
  *
@@ -1446,15 +1468,14 @@ typedef struct accudisc_read_req {
      * current speed. Caller-owned; must outlive the call. */
     const uint16_t *speed_ladder;
     uint8_t ladder_len;
-    /* Proceed even when the request is known-unsafe against the drive's current
-     * state — today: capturing subchannel with the vendor read-speed uncap on,
-     * which silently corrupts Q (see accudisc_speed_uncap_probe). Without this,
-     * such a read returns ACCUDISC_ERR_UNSAFE_COMBINATION. For diagnostics and
-     * for deliberately measuring the corruption; not for production reads.
-     *
-     * Sits here, wedged against ladder_len, purely to occupy existing padding:
-     * its natural home beside `sub` would shift every following field. */
-    uint8_t allow_unsafe;
+    /* `uint8_t allow_unsafe` was here until 0.6.0. It opted out of a refusal to
+     * capture subchannel while the vendor read-speed uncap was on. Both are
+     * gone: the premise was that the uncap raises the CD-DA read rate, and it
+     * does not — the drive's governor caps CD-DA at 40x regardless, and mode
+     * page 2A reports the REQUEST rather than the governed throughput, so the
+     * 48x that made the combination look dangerous was never reachable on an
+     * audio disc. It occupied padding beside ladder_len, so its removal does
+     * not move any following field. */
     uint8_t *status_map;        /* count bytes, or NULL; see status map above */
     const volatile int *cancel; /* poll: nonzero aborts at the next chunk; or NULL */
     /* count bytes, or NULL; see the Q-subchannel health map above. Requires

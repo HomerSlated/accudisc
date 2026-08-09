@@ -92,8 +92,9 @@ int main(void)
 
     /* ---- import: OLD caller, NEW library — the tail must be invented, not
      * read. The caller's memory past their declared end is poisoned; if the
-     * library reads it, `cancel` becomes a garbage pointer and `allow_unsafe`
-     * a garbage flag. Both are silent failures in the worst direction. ---- */
+     * library reads it, `cancel` becomes a garbage pointer and `status_map` a
+     * garbage destination the engine writes one byte per sector through. Both
+     * are silent failures in the worst direction. ---- */
     {
         /* Cut before the accuracy-strategy block — the layer that grew
          * read_req from 40 to 56 bytes — so everything added since is on the
@@ -124,8 +125,6 @@ int main(void)
         ck(dst.subq_map == NULL,
            "import: short struct zero-extends `subq_map` — the 0.4 caller's "
            "lane stays off");
-        ck(dst.allow_unsafe == 0,
-           "import: short struct zero-extends `allow_unsafe` — the guard stays on");
         ck(dst.speed_ladder == NULL && dst.ladder_len == 0,
            "import: short struct zero-extends the speed ladder");
         ck(dst.size == sizeof(accudisc_read_req),

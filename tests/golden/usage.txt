@@ -91,7 +91,9 @@ read options:
   --speed X      set drive read speed to Xx first (best-effort)
   --uncap        lift the vendor read-speed cap for this read only,
                  restoring the drive's prior setting afterwards
-                 (needs --driver; Plextor: SpeedRead)
+                 (needs --driver; Plextor: SpeedRead). Note the
+                 drive governs CD-DA to 40x regardless, so this
+                 does not make an audio read faster
   --map          render a per-sector disc map when done
   --map-file F   live status map: F is exactly COUNT bytes, one
                  status byte per sector (ACCUDISC_MAP_* encoding,

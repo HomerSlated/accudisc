@@ -44,7 +44,7 @@ from ._accudisc import ffi, lib
 __all__ = [
     "AccuDiscError", "InvalidArgument", "OutOfMemory", "OpenFailed", "IOFailed",
     "SenseError", "ShortResponse", "Unsupported", "NotBlank", "Cancelled", "CrcError",
-    "NotFound", "UnsafeCombination", "AbiMismatch", "RetainedBufferError",
+    "NotFound", "AbiMismatch", "RetainedBufferError",
     "C2", "Sub", "MapState", "SubQState", "Anomaly", "TocSource", "TocDegrade",
     "C2Verdict",
     "DiscKind", "DiscReason", "TrayState", "DiscProbe",
@@ -245,13 +245,12 @@ class NotFound(AccuDiscError):
     """
 
 
-class UnsafeCombination(AccuDiscError):
-    """``ACCUDISC_ERR_UNSAFE_COMBINATION`` — a measured-corrupt request.
-
-    Today the only case is capturing subchannel with the vendor read-speed
-    uncap on, which silently corrupts Q. Override with ``allow_unsafe=True``
-    for diagnostics only.
-    """
+# ``UnsafeCombination`` was here until 0.6.0, paired with ``ERR_UNSAFE_COMBINATION``
+# (-11) and the ``allow_unsafe=`` keyword. All three are gone: the library no
+# longer refuses a subchannel read while the vendor read-speed uncap is on,
+# because the drive governs CD-DA to 40x whatever the uncap says. Nothing raises
+# it, so keeping the class would give callers something to catch that can never
+# occur — worse than its absence, which at least fails loudly at import.
 
 
 class AbiMismatch(AccuDiscError):
@@ -292,7 +291,6 @@ _ERRORS: dict[int, type[AccuDiscError]] = {
     lib.ACCUDISC_ERR_CANCELLED: Cancelled,
     lib.ACCUDISC_ERR_CRC: CrcError,
     lib.ACCUDISC_ERR_NOTFOUND: NotFound,
-    lib.ACCUDISC_ERR_UNSAFE_COMBINATION: UnsafeCombination,
     lib.ACCUDISC_ERR_ABI: AbiMismatch,
 }
 
@@ -1985,7 +1983,6 @@ class Device:
         verify_passes: int = 0,
         overlap_sectors: int = 0,
         speed_ladder: Sequence[int] | None = None,
-        allow_unsafe: bool = False,
         status_map: bool | Any = False,
         subq_map: bool | Any = False,
         cancel: Cancel | None = None,
@@ -2071,7 +2068,6 @@ class Device:
         req.c2_retries = c2_retries
         req.verify_passes = verify_passes
         req.overlap_sectors = overlap_sectors
-        req.allow_unsafe = 1 if allow_unsafe else 0
 
         keepalive: list = []
         if speed_ladder:

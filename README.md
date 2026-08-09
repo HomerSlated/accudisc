@@ -96,12 +96,19 @@ licensed, scriptable tool.
 | SpeedRead | lifts the firmware's CD read-speed cap (PX-716A: 40× → 48×) | `0xE9` mode page `0xBB` | `speed-uncap` subcommand, `read --uncap` |
 | Q-Check | the drive's own C1/C2/CU error-counter census | `0xEA` | `cxscan` subcommand |
 
-Note that SpeedRead is an **audio-only** accelerator: it pins the drive's CAV RPM
-to its outer-edge target across the whole disc, and the subchannel channel-clock
-cannot track that on inner and mid tracks, so Q decodes to garbage while the
-audio stays clean. Measured on a PX-716A over a whole-disc read: 99.2% Q-CRC-ok
-with it off, 40.6% with it on, and 0.0% across the inner/mid band (10–60% of the
-disc). Combining `--uncap` with `--sub` is therefore refused.
+Note that SpeedRead **does not make an audio disc read faster.** The drive's
+governor caps CD-DA at 40× whatever the uncap is set to — the PX-716 manual
+publishes three ceilings by media class, 48× for data and 40× for CD-DA — and
+mode page 2A reports the *requested* figure rather than the governed throughput,
+so the 48× that appears after enabling it is a number rather than a speed. It is
+exposed for completeness of Plextor feature coverage, not as a performance
+option.
+
+Earlier releases refused `--uncap` together with `--sub`, on the theory that the
+uncap raised the RPM and destroyed the Q subchannel. **That guard was removed in
+0.6.0**, along with `ACCUDISC_ERR_UNSAFE_COMBINATION` and the `allow_unsafe`
+field: the state it defended against is not one this hardware can enter. The
+combination is now ordinary and unremarked.
 
 **Reverse-engineered and pinned, not yet wired.** The opcodes, pages and CDB
 framing below are documented in `drivers/plextor/FEATURES.md` and

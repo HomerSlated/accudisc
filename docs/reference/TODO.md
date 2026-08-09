@@ -36,8 +36,10 @@ hardware we own, so expect them to be abandoned by default:**
 
 **DESK WORK — no drive, NOT session-bound, and must not be abandoned with it:**
 
-- Task 1, remove the SpeedRead guards. Source-only, inventory complete. Gated on
-  one ABI ruling from Keith, stated in that entry.
+- ~~Task 1, remove the SpeedRead guards.~~ **DONE 2026-08-09, version 0.6.0.**
+  Keith ruled option (b): removed outright, not kept as a reserved byte. Being
+  desk work is what let it land the same day the ruling came, rather than
+  waiting on a session — which is the whole point of this split.
 - Task 5c, the self-contradicting `--driver auto` advice. Pure logic.
 - Task 5d, document the `speed` / `speed-uncap` availability split.
 - Task 5b, the `LIKELY_OFF` asymmetry. An ABI decision, possibly moot after
@@ -506,13 +508,17 @@ ceiling.** Repeatable across eject/load cycles — ZZ Top (pristine) inits at 40
   ceiling, so its only headroom is the inner radius — exactly where its RPM kills
   Q. The whole-disc A/B showed no throughput gain at all (both 24.2x) while Q
   fell 99.2% → 40.6%.
-  **Partly landed 2026-07-25:** the library refuses a subchannel read when the
-  uncap is *authoritatively* on (`ACCUDISC_ERR_UNSAFE_COMBINATION`, overridable
-  via `allow_unsafe`) and warns when it is only inferred. Escalating to "refuse
-  the uncap for any CD-DA read" is still open and would want the "no throughput
-  gain" claim re-measured on a second drive first — it rests on one A/B.
-  (See also item 1 of the 2026-07-26 outstanding list, which directs the guards
-  be removed.)
+  **ALL OF THE ABOVE IS SUPERSEDED — 2026-08-09, and the guard it describes no
+  longer exists.** Keith's ruling: the drive is physically incapable of reading
+  CD-DA above 40x, the governor ignores SpeedRead for CD-DA entirely, and page 2A
+  reports the request rather than the governed throughput — so **that A/B's two
+  arms both ran at 40x**, and "its RPM kills Q" cannot be what separated them.
+  cdda2img has since measured Q degradation as a property of the DISC, not the
+  speed. The refusal, `allow_unsafe`, `ACCUDISC_ERR_UNSAFE_COMBINATION` and the
+  CLI warning were all removed in 0.6.0 (item 1 of the 2026-07-26 outstanding
+  list, now DONE). The escalation contemplated here — "refuse the uncap for any
+  CD-DA read" — is dead rather than open. **No further speed tests on this
+  question**, by the same ruling.
 - **Honoured speed ladder is discrete: {4, 8, 24, 32}.** 1–3 → 4; 6 → 4; 9–23 →
   8; 28 → 24; 40/48 → 32. Two disjoint regimes, explained by the nominal CAV
   curve starting at 17.00x: {4,8} are CLV (a ceiling below 17x binds at every
@@ -1997,7 +2003,48 @@ C2 = `log2(fired bits)` (`engine.c:50`), SUSPECT = `log2(differing bytes)`
 explains §89.5's "unexplained" asymmetry — 40x sev 1 vs 32x sev 3 on the same LBA
 with byte-identical PCM is expected, not anomalous.
 
-### 1. Remove all SpeedRead guards — USER-DIRECTED, NOT STARTED — **for the read-speed session**
+### 1. Remove all SpeedRead guards — **DONE 2026-08-09, version 0.6.0**
+
+**Keith ruled option (b): remove `allow_unsafe` entirely**, not the reserved-byte
+compromise. Done, with everything the inventory below listed, plus four sites it
+did not: `__all__` and the `_ERRORS` map in the Python binding, the binding's
+`pyproject.toml` version, and the man page's error table.
+
+Ruling verbatim, and it settles the mechanism as well as the scope: *"SpeedRead
+cannot possibly ever be 'unsafe', as the hardware is physically incapable of
+reading CDDA at speeds >40x, and the governor completely ignores the SpeedRead
+setting for CDDA. The Q channel corruption you measured was at 40x, not 48x. The
+page2a reading shows the request, not the governor controlled throughput."* Plus
+a standing instruction: **no further speed tests** — cdda2img has since measured
+Q degradation as a property of the disc rather than the speed, and "higher speeds
+= more Q misreads" is already common knowledge.
+
+What went, in full: the library refusal (`src/read/engine.c`),
+`accudisc_read_req.allow_unsafe`, `ACCUDISC_ERR_UNSAFE_COMBINATION` and its
+`strerror` case, the CLI's `--uncap`+`--sub` interlock and its `LIKELY_ON`
+pre-read warning, the guard-specific assertions in `tests/test_uncap.c` and
+`tests/test_abi.c`, and the Python `UnsafeCombination` class plus the
+`allow_unsafe=` keyword.
+
+What deliberately stayed: `accudisc_speed_uncap_probe/set/get/push/pop`, the
+`speed-uncap` subcommand, `--uncap`, the stock-ceiling table and
+`adsc_uncap_classify`. **Reporting a drive's configuration is not the same as
+refusing to work in it**, and the standing goal is 100 % Plextor feature
+coverage.
+
+**Two things this produced that outlive the task.** `-11` is **retired and must
+never be reused** — a consumer built before 0.6.0 maps it to "unsafe
+combination", so reassigning it would make that consumer report the wrong
+failure for the right return value. `tests/test_uncap.c` now pins the
+retirement via `accudisc_strerror(-11) == "unknown error"`, and
+`test_binding.py` pins it from the Python side. And `sizeof(accudisc_read_req)`
+stayed 64 because the byte was padding — verified by compiling, not assumed —
+which made this removal free **by luck of layout, not by the `size` rule**. The
+IN rule protects a caller that is SHORT; it says nothing about one that sets a
+field this build no longer has. Recorded in API_PLAN §8 row 10 so the next
+subtractive change does not generalise from this one.
+
+<details><summary>The task as it stood before it was done (kept: the ABI analysis is the durable part)</summary>
 
 **Re-affirmed 2026-08-08**, with the reasoning stated more sharply than the
 original ruling: *"SpeedRead is for CD/DVD-ROM only. Having a guard against
@@ -2073,6 +2120,14 @@ Notes for whoever does it:
   unexplained data with its confounds named (n=1 per arm, damaged media, taken
   before drive contention was known to produce the same signature). Removing a
   guard is not a reason to delete a measurement.
+
+*(Three of these notes proved wrong in detail when the work was done: the size
+was 64 not 56, the minor bumped to 6 not 3, and `test_abi.c`'s short-struct case
+needed no re-pointing because `cancel`, `status_map` and `subq_map` already
+assert the same zero-extension semantic three times over. The ledger row and the
+FEATURES.md fix were both done as instructed.)*
+
+</details>
 
 ### 2. `setcap` the INSTALLED binary, not the build-tree one — **DONE. Verified 2026-08-08.**
 

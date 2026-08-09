@@ -97,7 +97,26 @@ What *is* owed: a mapping table in `cli-machine-interface.md` so binding authors
 reproduce equivalent **semantics** (e.g. "`rc > 0` from `accudisc_write` is the
 exit-3 condition") without reproducing the mechanism.
 
-## 4. Phase 1 — the two silent-failure guards `[P1]` — **WRITTEN 2026-07-25, refusal unexercised**
+## 4. Phase 1 — the two silent-failure guards `[P1]` — **ONE LANDED, ONE REMOVED 2026-08-09**
+
+> **Guard 4.1 (SpeedRead + subchannel) NO LONGER EXISTS.** Removed in 0.6.0 by
+> Keith's ruling: the drive governs CD-DA to 40× whatever the uncap is set to,
+> and mode page 2A reports the requested figure rather than the governed rate,
+> so the dangerous state the guard refused was never reachable on an audio disc.
+> Everything below about 4.1 — the refusal, `allow_unsafe`,
+> `ACCUDISC_ERR_UNSAFE_COMBINATION`, the CLI interlock and the pre-read warning
+> — describes code that has been deleted. It is kept because §9.1/§9.2's
+> reasoning about *detection* (three sources, authoritative vs inferred) is
+> still live: the state is still probed and reported, just never enforced.
+>
+> **Guard 4.2 (read-only fd + vendor opcodes) STANDS.** It reports a condition
+> rather than predicting a failure, and is correct under both the setcap and the
+> default regimes.
+>
+> The section's old status line read *"WRITTEN 2026-07-25, refusal
+> unexercised"*. That never changed, and is now permanent: the end-to-end
+> refusal never executed once in its lifetime. Worth remembering the next time a
+> guard is justified by an inference from its parts.
 
 Highest value, smallest change, no hardware needed to write (hardware needed to
 confirm). Do these first and independently; they are useful even if the rest of
@@ -134,7 +153,7 @@ issues a MODE SENSE(10), and it runs at the head of *every* subchannel read; the
 inferred state it would compute cannot change the refusal, so the split keeps
 the guard free of any extra drive command.
 
-### 4.1 SpeedRead + subchannel
+### 4.1 SpeedRead + subchannel — **REMOVED 2026-08-09; historical from here**
 
 `accudisc_read_cdda` must refuse `sub != ACCUDISC_SUB_NONE` while the vendor
 read-speed uncap is on. Today the CLI interlocks at `cli/main.c:1502`; the
@@ -568,6 +587,23 @@ message when the rewrite lands. Do not dribble it out.
 | 8 | **Version 0.2.0 → 0.3.0**, and the Python binding's skew check tightened from `major.minor` to the full triple | **DONE 2026-07-29** | No — but they **pin on `accudisc_version_string()`**, so the number they hold moves |
 | 9 | `accudisc_read_req` gains `uint8_t *subq_map` (56 → **64** bytes) and the header gains `ACCUDISC_SUBQ_*`; new CLI flag `--subq-map-file`; Python `read(subq_map=True)`, `ReadResult.subq_map`, `SubQState`, `subq_state()`. **Version 0.4.0 → 0.5.0** | **DONE 2026-08-08** | No — additive on every surface. The field is **last**, so a 0.4 caller's shorter struct zero-extends to NULL and behaves exactly as before (the IN rule, §7.1); the CLI flag is new; the binding keyword defaults off. Requires `sub=RAW`, else `ERR_INVAL` |
 
+| 10 | **The SpeedRead subchannel guard is GONE.** Removed: `accudisc_read_req.allow_unsafe`, `ACCUDISC_ERR_UNSAFE_COMBINATION` (**-11, retired, never to be reused**), the library refusal, the CLI's `--uncap`+`--sub` interlock and its pre-read warning, and the Python `UnsafeCombination` class and `allow_unsafe=` keyword. **Version 0.5.0 → 0.6.0** | **DONE 2026-08-09** | **Yes, for a compiled caller — this is our first SUBTRACTIVE change.** `sizeof(accudisc_read_req)` is unchanged at 64 (the byte was padding), so a stale caller setting `allow_unsafe = 1` writes into padding and is ignored — benign, but by luck of layout, not by the `size` rule, which only protects a caller that is SHORT. A Python consumer catching `accudisc.UnsafeCombination` gets `AttributeError` at import. Neither applies to cdda2img: their tree references neither name (grepped 2026-08-09) |
+
+**Row 10 is the one row here that the `size` field cannot make safe, and it is
+worth saying why in the ledger rather than only in the header.** Every previous
+change was additive: a field appended at the end, where an older caller's
+shorter struct zero-extends and behaves as it always did. The IN rule covers
+that completely. It does not cover *removal* — a caller that sets a field this
+build no longer has is not short, it is wrong, and there is no length to check.
+Here the consequence is harmless because the removed byte was padding, so
+nothing else moved into its offset. Had it been a real field, a stale caller's
+`1` would have landed in whatever succeeded it. **The lesson to carry: check
+whether a removed field was padding before assuming a removal is free, and never
+generalise from this row.** Keith ruled the guard out on 2026-08-09 — the drive
+governs CD-DA to 40× regardless of the uncap, and page 2A reports the request
+rather than the governed rate, so the state the guard defended against is one
+the hardware cannot enter.
+
 **Row 8 is the correction of a rule this document stated and we then did not
 follow.** §8's own text says a layout change means "bumping
 `ACCUDISC_VERSION_MINOR` so the .so version moves with the layout". Between rows
@@ -751,7 +787,14 @@ on every call (`src/device.c:244`) — nothing is cached at open — so the prob
 does see an uncap that a prior session left on after our handle was created,
 which is the entire reason source 3 exists.
 
-### 9.2 — Refuse or warn?
+### 9.2 — Refuse or warn? — **superseded: neither, as of 0.6.0**
+
+> The answer this section reached was "refuse on certainty, report on
+> inference". The refusal is gone (see §4's banner) and so is the CLI's warning
+> on `LIKELY_ON`. What survives is the **detection**, which callers still query
+> through `accudisc_speed_uncap_probe` — so the three-source split and the
+> authoritative-vs-inferred distinction below remain accurate. Only the policy
+> built on top of them was removed.
 
 **Resolved by the split above: refuse on certainty, report on inference.**
 

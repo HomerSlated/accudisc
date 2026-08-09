@@ -399,28 +399,22 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     if (req->subq_map && req->sub != ACCUDISC_SUB_RAW)
         return ACCUDISC_ERR_INVAL;
 
-    /* The vendor read-speed uncap destroys the Q subchannel on inner/mid tracks
-     * while leaving the audio and C2 streams clean and reporting no error — so
-     * a subchannel capture taken with it on succeeds and lies. Refuse.
+    /* REMOVED IN 0.6.0: a refusal to capture subchannel while the vendor
+     * read-speed uncap was authoritatively on, overridable via
+     * req->allow_unsafe. Keith's ruling, 2026-08-09.
      *
-     * Only on the AUTHORITATIVE states. ACCUDISC_UNCAP_LIKELY_ON is an
-     * inference from a speed number against a one-model table; refusing on it
-     * would make subchannel unreadable on any drive we fail to recognise, which
-     * is a worse failure than the one being prevented and is not ours to
-     * impose. The caller has accudisc_speed_uncap_probe and can set policy.
-     * See API_PLAN §9.2 — the hole is reported, deliberately, not closed. */
-    if (req->sub != ACCUDISC_SUB_NONE && !req->allow_unsafe) {
-        /* The authoritative-only query, not the full probe: this runs at the
-         * head of every subchannel read, and the full probe would issue a MODE
-         * SENSE(10) to compute a LIKELY_ON/UNKNOWN that cannot change the
-         * outcome here. No extra drive command on the hot path. */
-        accudisc_uncap_state u = adsc_uncap_authoritative(dev);
-        if (u == ACCUDISC_UNCAP_ON) {
-            adsc_dev_log(dev, "refusing subchannel read: the vendor read-speed "
-                              "uncap is on and corrupts Q on inner/mid tracks");
-            return ACCUDISC_ERR_UNSAFE_COMBINATION;
-        }
-    }
+     * The guard rested on a premise that is false. It assumed the uncap raises
+     * the CD-DA read rate, and it cannot: the drive's governor caps CD-DA at
+     * 40x whatever the uncap is set to, and mode page 2A reports the REQUESTED
+     * figure rather than the governed throughput — so the 48x that appeared to
+     * make the combination dangerous was a number, not a speed. The Q damage
+     * that motivated the guard was measured at 40x, on both sides of the A/B.
+     * A guard against a state the hardware cannot enter costs its callers a
+     * refusal and buys nothing.
+     *
+     * The queryable state stays: accudisc_speed_uncap_probe/set/get/push/pop,
+     * the `speed-uncap` subcommand and `--uncap` are untouched. Reporting a
+     * drive's configuration is not the same as refusing to work in it. */
 
     r.dev = dev;
     r.req = req;

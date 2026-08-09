@@ -84,17 +84,19 @@ int main(void)
     check("NULL vendor", NULL, "DVDR   PX-716A", 48, ACCUDISC_UNCAP_UNKNOWN);
     check("NULL product", "PLEXTOR", NULL, 48, ACCUDISC_UNCAP_UNKNOWN);
 
-    /* --- the value the read-engine refusal actually keys on -----------------
+    /* --- the authoritative state, which is now REPORTED rather than enforced -
      *
-     * accudisc_read_cdda refuses on adsc_uncap_authoritative(dev) == ON, so a
-     * polarity slip here would disable the guard (or refuse every subchannel
-     * read) without any test above noticing. Exercisable with no hardware: with
-     * drv == NULL, source 2 returns ERR_UNSUPPORTED before touching the
-     * transport, so a zeroed handle reaches only source 1.
+     * Until 0.6.0 accudisc_read_cdda refused a subchannel read on
+     * adsc_uncap_authoritative(dev) == ON, and these cases guarded that
+     * polarity. The refusal is gone; the classifier is not, because callers
+     * still query it through accudisc_speed_uncap_probe/get and the CLI still
+     * reports it. A polarity slip is therefore no longer a disabled guard but a
+     * wrong answer to a direct question — still worth pinning, and the only
+     * thing keeping ON and OFF apart now that no code path branches on them.
      *
-     * What this still does NOT cover is the end-to-end refusal returning
-     * ACCUDISC_ERR_UNSAFE_COMBINATION from a real read — that needs a drive and
-     * is the outstanding hardware item. */
+     * Exercisable with no hardware: with drv == NULL, source 2 returns
+     * ERR_UNSUPPORTED before touching the transport, so a zeroed handle reaches
+     * only source 1. */
     struct {
         int set;
         accudisc_uncap_state want;
@@ -220,29 +222,31 @@ int main(void)
         }
     }
 
-    /* The error the guard returns must have a real message: a caller printing
-     * "unknown error" cannot act on it, which defeats a guard whose whole
-     * purpose is to explain a refusal. */
-    const char *msg = accudisc_strerror(ACCUDISC_ERR_UNSAFE_COMBINATION);
-    if (!msg || strcmp(msg, "unknown error") == 0) {
+    /* -11 IS RETIRED AND MUST STAY RETIRED.
+     *
+     * This pair of checks used to assert that ERR_UNSAFE_COMBINATION had a
+     * message and did not collide with another code. Both went with the guard
+     * in 0.6.0. What replaces them protects the more important property: that
+     * nothing ever takes the vacated number.
+     *
+     * A consumer compiled before 0.6.0 maps -11 to "unsafe combination". If a
+     * future error is assigned -11, that consumer reports the wrong failure for
+     * the right return value, with nothing on either side able to detect it —
+     * the same well-formed-but-wrong-referent shape the size field exists to
+     * prevent, arriving through the error space instead of the struct layout.
+     *
+     * accudisc_strerror's switch covers every ASSIGNED code and falls through
+     * to "unknown error" otherwise, so asking it about -11 is a direct test of
+     * whether -11 is assigned. Reusing the number makes this fail. */
+    const char *retired = accudisc_strerror(-11);
+    if (!retired || strcmp(retired, "unknown error") != 0) {
         printf("FAIL %-46s strerror gives \"%s\"\n",
-               "ERR_UNSAFE_COMBINATION has a message", msg ? msg : "(null)");
+               "-11 stays retired (was UNSAFE_COMBINATION)",
+               retired ? retired : "(null)");
         fails++;
     } else {
-        printf("ok   %-46s \"%s\"\n", "ERR_UNSAFE_COMBINATION has a message",
-               msg);
-    }
-
-    /* And it must not collide with an existing code — a duplicate value would
-     * silently alias two unrelated failures. */
-    if (ACCUDISC_ERR_UNSAFE_COMBINATION == ACCUDISC_ERR_NOTFOUND ||
-        ACCUDISC_ERR_UNSAFE_COMBINATION == ACCUDISC_ERR_CRC ||
-        ACCUDISC_ERR_UNSAFE_COMBINATION == ACCUDISC_ERR_UNSUPPORTED) {
-        printf("FAIL %-46s value collides\n", "ERR_UNSAFE_COMBINATION unique");
-        fails++;
-    } else {
-        printf("ok   %-46s %d\n", "ERR_UNSAFE_COMBINATION unique",
-               (int)ACCUDISC_ERR_UNSAFE_COMBINATION);
+        printf("ok   %-46s \"%s\"\n",
+               "-11 stays retired (was UNSAFE_COMBINATION)", retired);
     }
 
     printf(fails ? "\n%d failure(s)\n" : "\nall passed\n", fails);

@@ -13,9 +13,38 @@ book type) are not observable without a burn — the write/burn path is paused.
 
 | # | Feature (manual) | Opcode / page | Identified | Working | Notes |
 |---|------------------|---------------|:---------:|:-------:|-------|
-| 1 | **SpeedRead** (uncap CD read speed) | `0xE9` MODE, page `0xBB` | ☑ | ☑ | **Fully verified**: SET ON flips mode-page-2A max read speed 40×→48× (7056→8467 kB/s); SET OFF restores 40×. Value at CDB[3], state echoed at resp[2]. **⚠ Corrupts the Q subchannel** — see below. |
+| 1 | **SpeedRead** (uncap CD read speed) | `0xE9` MODE, page `0xBB` | ☑ | ☑ | **Fully verified**: SET ON flips mode-page-2A max read speed 40×→48× (7056→8467 kB/s); SET OFF restores 40×. Value at CDB[3], state echoed at resp[2]. Page 2A reports the REQUEST, not the governed rate — see below. |
 
-### ⚠ SpeedRead destroys subchannel Q on inner/mid tracks (session 4, live)
+### The mechanism below is REFUTED. The measurement is kept; the explanation was wrong.
+
+**Keith's ruling, 2026-08-09**, on the drive he owns and against the PX-716
+manual (p.15, three published ceilings by media class: DATA 48×, **CD-DA and
+CD-R audio 40×**, CD-RW audio 32×):
+
+> SpeedRead is for CD/DVD-ROM only. The hardware is physically incapable of
+> reading CD-DA above 40×, and the governor ignores the SpeedRead setting for
+> CD-DA entirely. The page-2A reading shows the request, not the
+> governor-controlled throughput. **The Q corruption below was measured at 40×,
+> not 48×.**
+
+So the table that follows is a real, back-to-back, whole-disc A/B and stays on
+the record — but the *cause* assigned to it in the next paragraph cannot be
+right, because the state it blames (a 48× CAV RPM on an audio disc) is not a
+state this drive can enter. Both arms ran at the same governed speed. Whatever
+separated them, it was not SpeedRead raising the rate.
+
+Further, cdda2img subsequently measured Q degradation directly and found it to
+be **a property of the disc, not of the speed**. Two other confounds were
+already recorded against this A/B and still stand: n=1 per arm, on damaged
+media, taken before drive contention was known to produce the same signature
+(see [[drive-contention-flock]] — a second process on the drive collapses Q
+while audio stays clean, which is exactly the shape of the ON row).
+
+**No further speed testing is to be done on this question** (Keith, same
+ruling): higher speeds meaning more Q misreads is already common knowledge, and
+the remaining questions are not worth the drive time.
+
+### The measurement, kept as data (session 4, live)
 
 Measured on the PX-716A reading ABBA *Gold* whole-disc (`read --start 0 --sub
 raw`), SpeedRead ON vs OFF, same command, same ~24.2× average, back-to-back:
@@ -25,7 +54,9 @@ raw`), SpeedRead ON vs OFF, same command, same ~24.2× average, back-to-back:
 | **ON**    | **40.6 %**     | 55 %  | **0.0 %** (dead)   | ~99 %           |
 | **OFF**   | **99.2 %**     | 98 %  | ~99–100 %          | ~99 %           |
 
-Cause: SpeedRead pins the drive's CAV RPM to its 48×-outer target across the
+**Cause (REFUTED — see the ruling above; kept because it is what we believed and
+why, and the reasoning shows where it went wrong).** SpeedRead pins the drive's
+CAV RPM to its 48×-outer target across the
 whole disc. On inner tracks the linear velocity is far below what that RPM
 implies and the subchannel channel-clock cannot track it, so Q decodes to
 garbage; the outer tracks (linear speed matches RPM) stay clean. The **audio
@@ -34,8 +65,11 @@ Q-only, and silent. An *isolated* read of an inner LBA is clean even at
 `--speed 40`, because the drive then spins only as fast as that radius needs;
 the corruption requires the sustained high RPM of a full-disc SpeedRead pass.
 
-**Rule for the read engine: never enable SpeedRead when `--sub` is requested.**
-SpeedRead is an audio-only accelerator.
+**~~Rule for the read engine: never enable SpeedRead when `--sub` is
+requested.~~ WITHDRAWN 0.6.0.** This rule was enforced in three places — a
+library refusal (`ACCUDISC_ERR_UNSAFE_COMBINATION`), a CLI interlock on
+`--uncap --sub`, and a pre-read warning. All were removed with the mechanism
+that justified them. `--uncap` with `--sub` is now an ordinary combination.
 
 **Relation to the cdda2img 47 % Q loss (their §9) — NOT established.** Their
 incident predates AccuDisc's SpeedRead support, so SpeedRead cannot have been

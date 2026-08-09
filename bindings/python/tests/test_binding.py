@@ -139,8 +139,13 @@ def test_struct_sizes_match_api_plan():
 def test_error_codes_are_the_headers():
     assert lib.ACCUDISC_ERR_INVAL == -1
     assert lib.ACCUDISC_ERR_NOTFOUND == -10
-    assert lib.ACCUDISC_ERR_UNSAFE_COMBINATION == -11
     assert lib.ACCUDISC_ERR_ABI == -12
+    # -11 is RETIRED (was ERR_UNSAFE_COMBINATION, removed in 0.6.0) and must
+    # never be reassigned: a consumer built before 0.6.0 maps it to that name.
+    # cffi only exposes constants the cdef names, so the direct test is that no
+    # error class claims -11 — which is what a reassignment would produce.
+    assert -11 not in ad._ERRORS, "-11 was reused; see accudisc.h's retirement note"
+    assert not hasattr(lib, "ACCUDISC_ERR_UNSAFE_COMBINATION")
     for code, cls in ad._ERRORS.items():
         exc = cls(code)
         assert exc.code == code
@@ -862,7 +867,7 @@ def test_read_marshals_every_optional_argument():
         dev.read(0, 10, sink=None, c2=ad.C2.PTRS, sub=ad.Sub.RAW,
                  speed_ladder=[32, 16, 8], status_map=True, cancel=flag,
                  retries=3, c2_retries=4, verify_passes=2, overlap_sectors=2,
-                 chunk_sectors=16, speed_x=8, any_type=True, allow_unsafe=True)
+                 chunk_sectors=16, speed_x=8, any_type=True)
     except ad.InvalidArgument:
         pass  # reached the library with every field set: the point of the test
     except Exception as exc:  # noqa: BLE001
