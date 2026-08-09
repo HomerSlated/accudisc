@@ -208,6 +208,13 @@ to copy. **Status: UNKNOWN — investigate further later (more drives,
 GET-PERFORMANCE-derived extents), NOT "impossible".** (See memory
 `dont-conclude-impossible`.)
 
+**Read-speed session, item 4 — and not advanceable on this rig.** The one
+experiment that would move it is "try another drive", and we have one drive. So
+the session cannot resolve this, and under its abandonment rule it will lapse by
+default. That is an acceptable outcome for a deferred feature; what would not be
+acceptable is letting the lapse be recorded as *"impossible"* rather than
+*"unknown, never retested"* — the distinction this entry exists to protect.
+
 **Interim (agreed 2026-07-17):** the CALLER (cdda2img) owns the "repeat reads
 across an LBA range on a speed ladder" loop, invoking AccuDisc per iteration with
 a WHOLE-DISC speed. AccuDisc already supports this: `read --start L --count N
@@ -1998,9 +2005,19 @@ something the hardware is physically incapable of doing doesn't make any
 sense."* The guard defends against a throughput increase the drive cannot
 produce on CD-DA.
 
-**Scheduled, not open-ended.** This belongs to the single dedicated read-speed
-session (see the banner at the top of this file); anything unfinished when that
-session ends is permanently abandoned.
+**CORRECTED 2026-08-09 — this paragraph used to say the task "belongs to the
+single dedicated read-speed session … anything unfinished when that session ends
+is permanently abandoned", and that was wrong in a way that could have destroyed
+the task.** It is **DESK WORK**: source-only, no drive, no measurement — see the
+banner at the top of this file, which lists it as such. Nothing about it consumes
+session time, so nothing about it should be exposed to the session's abandonment
+rule. And it is a **standing directive from Keith**, given 2026-07-26 and
+re-affirmed 2026-08-08; a scheduling note is not licence to let a directive
+lapse.
+
+What is true is that it is **gated**, which is a different thing from scheduled:
+it needs the ABI ruling below before anyone writes code. A gate waits for an
+answer; a schedule waits for a clock. This one waits for an answer.
 
 **One thing to weigh in that session, because it is the only real cost.**
 Removing `allow_unsafe` from `accudisc_read_req` is the first *subtractive* ABI
@@ -2198,7 +2215,7 @@ would characterise a confound the settled method avoids by construction. 4b's
 
 <details><summary>Original entry (superseded)</summary>
 
-### 4a. The phantom 48× ladder rung — `[P2]`, live on both sides
+### 4a. The phantom 48× ladder rung — (SUPERSEDED — historical, no work outstanding)
 
 API_PLAN §9.3. With the uncap on, page 2A genuinely reports 48, `accudisc speeds`
 genuinely returns `req=48 page2a=48`, and a ladder admitting rungs on the strict
@@ -2645,6 +2662,22 @@ symlink.** Verified rather than assumed:
 dependency is real today. But an installed copy now exists —
 `/usr/local/bin/accudisc` with `/usr/local/lib/libaccudisc.so.0` beside it — so
 repointing that symlink fixes it outright, with no build-tree coupling left.
+
+**And there is a second, larger reason to repoint it, found while checking the
+first.** `getcap` on both binaries: `/usr/local/bin/accudisc` carries
+`cap_sys_rawio=ep`; **`build/cli/accudisc` carries nothing.** So cdda2img's
+symlink currently resolves to an *unprivileged* binary, and every vendor-opcode
+path it tries — the Plextor selftest, therefore the whole uncap surface — fails
+for want of a capability that is sitting on the installed copy it is not using.
+This is not new damage from any one rebuild; it is the steady state, because
+`ACCUDISC_SETCAP_AFTER_BUILD` is OFF in this build tree while
+`ACCUDISC_SETCAP_ON_INSTALL` is ON. The build tree is the *unarmed* artefact by
+configuration, and their symlink points at it.
+
+Worth telling them explicitly rather than filing: a caller seeing generic-MMC
+fallback on a drive that has a working driver would reasonably suspect our
+driver gating, and the actual cause is which of two binaries their symlink
+names.
 
 **Two reasons this is note-only and stays `[P3]`.** It is *their* symlink, so
 the change is theirs to make, not ours to make for them. And it is
