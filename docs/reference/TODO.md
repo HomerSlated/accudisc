@@ -32,6 +32,8 @@ hardware we own, so expect them to be abandoned by default:**
    fix its session.**
 2. The read-engine throughput cap (~5× vs 12–19× raw) — "Speed control" below.
    The one most likely to be *felt*: every whole-disc read goes through it.
+   **After 2026-08-09 this is the ONLY remaining drive-bound item that this rig
+   can actually advance** — 3, 4 and 5 need hardware we do not have.
 3. Task 5's A-vs-B uncap discriminator — needs a **CD-RW audio disc we do not
    have**.
 4. Phase 3 ranged SET STREAMING — needs **other drives**; this one cannot
@@ -47,15 +49,30 @@ hardware we own, so expect them to be abandoned by default:**
   waiting on a session — which is the whole point of this split.
 - Task 5c, the self-contradicting `--driver auto` advice. Pure logic.
 - Task 5d, document the `speed` / `speed-uncap` availability split.
-- Task 5b, the `LIKELY_OFF` asymmetry. An ABI decision, possibly moot after
-  task 1.
+- Task 5b, the `LIKELY_OFF` asymmetry. An ABI decision. **Checked 2026-08-09
+  after task 1: NOT moot.** Task 1 removed the enforcement, but
+  `adsc_uncap_classify` survives by design and still returns `LIKELY_ON` or
+  `OFF` from the same comparison with the hedge on only one branch — and now
+  that nothing *enforces* on it, reporting it accurately is the whole of its
+  job.
 - Task 4b's residual: the cross-rung timed-window **length** term is still
   undocumented (the *radius* term was documented 2026-07-28).
 
 **CLOSED — do not re-open, and do not spend session time re-deriving:** the
 `speeds` min/max sweep (hardware-validated 2026-07-28), the
 `probe_speed_ladder` binding (`ea11d56`), task 4a's phantom 48× rung (an answer
-to hand out, not work), and 4b's radius half.
+to hand out, not work), 4b's radius half, and — as of 2026-08-09 — the
+SpeedRead guard removal (0.6.0), the quantized-speed CLI notice, and the
+`speed_requested_x`/`speed_honoured_x` API signal (0.7.0).
+
+**One thing the API signal deliberately does NOT cover, recorded so it is not
+mistaken for done:** those two fields are the **pass** speed. `speed_ladder`
+moves the speed per rung mid-read and no per-rung record of what was honoured
+exists. cdda2img raised exactly this (§163.3) and was told so plainly rather
+than being left to infer it from a field that looks wider than it is. The
+pre-flight answer is `probe_speed_ladder`'s `ACCUDISC_RUNG_QUANTIZED`. If a
+per-rung *record* is ever wanted it needs per-rung storage and is a new item —
+**not** a widening of these fields.
 
 ## NEXT SESSION — PLAN (agreed 2026-07-16). Execute Phase 0 first.
 
