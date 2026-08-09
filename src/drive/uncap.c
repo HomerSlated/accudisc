@@ -79,7 +79,32 @@ accudisc_uncap_state adsc_uncap_classify(const char *vendor,
 
         /* Above this model's verified stock ceiling: something lifted it, and
          * on every model in this table the only thing that does is the uncap.
-         * Still an inference from a speed number, so it is reported as one. */
+         * Still an inference from a speed number, so it is reported as one.
+         *
+         * THE STRICT `>` IS UNVALIDATED AT EQUALITY, and this is the only
+         * place that says so — read this before changing the operator.
+         *
+         * With the uncap ON we do not know whether page 2A reports (A) the
+         * drive's DATA ceiling regardless of the loaded medium, or (B) the
+         * loaded medium's class lifted by one. Every disc we own reads 48
+         * under both, so nothing here separates them. The PX-716 manual
+         * publishes three ceilings for this model — data 48x, CD-DA 40x,
+         * CD-RW audio 32x — and under B a CD-RW AUDIO disc would report 40
+         * against a stock 40, making this `>` false and returning
+         * ACCUDISC_UNCAP_OFF while the uncap is genuinely ON.
+         *
+         * Left unresolved DELIBERATELY (Keith, 2026-08-09): settling it needs
+         * a CD-RW audio disc we do not have, and the reason to care went with
+         * the guard. Until 0.6.0 this value gated a subchannel refusal, so a
+         * false OFF meant permitting a read we believed corrupted Q. Nothing
+         * enforces on it now — the worst case is a status line reading OFF
+         * while the uncap is on, about a setting that does not affect CD-DA
+         * reads. Report-only, so a wrong answer misinforms rather than
+         * misbehaves.
+         *
+         * If a CD-RW audio disc ever passes through: load it, turn the uncap
+         * on, and read max_x. 48 confirms A and this operator is right; 40
+         * confirms B and it is wrong at the boundary. */
         return max_x > stock_ceilings[i].stock_x ? ACCUDISC_UNCAP_LIKELY_ON
                                                  : ACCUDISC_UNCAP_OFF;
     }

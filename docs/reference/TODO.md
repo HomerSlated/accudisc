@@ -32,14 +32,19 @@ hardware we own, so expect them to be abandoned by default:**
    fix its session.**
 2. The read-engine throughput cap (~5× vs 12–19× raw) — "Speed control" below.
    The one most likely to be *felt*: every whole-disc read goes through it.
-   **After 2026-08-09 this is the ONLY remaining drive-bound item that this rig
-   can actually advance** — 3, 4 and 5 need hardware we do not have.
-3. Task 5's A-vs-B uncap discriminator — needs a **CD-RW audio disc we do not
-   have**.
+   **This is the ONLY remaining drive-bound item this rig can advance.**
+3. ~~Task 5's A-vs-B uncap discriminator~~ — **DROPPED 2026-08-09 by Keith**
+   (*"Is this another SpeedRead test? Because if it is, please remove it."*).
+   The limitation it would have settled is now documented at the comparison in
+   `src/drive/uncap.c`, which is where it is load-bearing.
 4. Phase 3 ranged SET STREAMING — needs **other drives**; this one cannot
    advance it.
 5. The `device.c` latch bug — needs a drive that genuinely lacks 0xB6, i.e. not
    this one. Falsifiable nowhere on this rig.
+
+**So the session is now ONE item.** 3 is dropped; 4 and 5 need hardware that
+does not exist here and will lapse by the abandonment rule. Unless something
+new appears, "the read-speed session" means item 2 and the desk list below.
 
 **DESK WORK — no drive, NOT session-bound, and must not be abandoned with it:**
 
@@ -2470,96 +2475,57 @@ So 48-vs-40 is length-clean (radius is the whole confound there, which is why th
 correction above is complete), but **any rule spanning 48 down to 4 compares rungs
 differing in radius *and* in timed span**, and the second effect is unmeasured.
 
-### 5. Stock-ceiling table — PARTLY closed. The A-vs-B discriminator is REOPENED `[P3]`
+### 5. Stock-ceiling table — CLOSED 2026-08-09. The A-vs-B discriminator is DROPPED by Keith.
 
-**REOPENED 2026-07-26 (Keith caught it; cdda2img §95 retracts their §91.1).** This
-entry briefly recorded mechanism B as refuted. **It is not**, and the CD-RW audio
-disc is still the only discriminator. Do not close this again without that disc.
+**Keith, 2026-08-09:** *"Is this another SpeedRead test? Because if it is, please
+remove it."* It was. Dropped, and not to be reopened without a new reason that is
+not "we could find out".
 
-> **Read-speed session, item 3 — and BLOCKED ON MEDIA WE DO NOT HAVE, so expect
-> it to be abandoned by the session's own rule.** Recorded 2026-08-09 so nobody
-> re-derives this. The only discriminator is a **CD-RW audio disc**; no amount of
-> drive time on the discs we own separates A from B, because data and audio media
-> both yield 48 under either mechanism (the table below). If Keith wants this
-> settled he must supply the disc *before* the session — otherwise the honest
-> outcome is to abandon it and leave `adsc_uncap_classify`'s strict `>` documented
-> as unvalidated at the boundary. **It may also go moot with task 1**, if the
-> classifier goes with the guards; check that first, since it costs nothing and
-> could retire the whole entry.
+**It was never a timed speed test** — nothing in it reads a disc against a clock;
+it is a mode-page-2A reading under a swapped disc. But it is a test *about
+SpeedRead*, and the ruling covers it.
+
+**The severity was inherited from a consumer that no longer exists.** This entry
+called mechanism B a *"silent false negative on the safety value"*, and that was
+accurate while `LIKELY_ON` gated the subchannel refusal. Task 1 removed that
+refusal (0.6.0), so nothing makes a safety decision from the classifier any more.
+The worst case collapsed from "we permit a read we believe corrupts Q" to "a
+status line reads OFF while the uncap is ON" — about a setting since established
+not to harm CD-DA reads at all. That is not worth acquiring media for. **Note the
+severity fell without anyone re-examining this entry; a hazard rating is a
+property of the consumer, not of the code.**
+
+**What we know, and it is most of it.** With the uncap OFF, `max_x` is
+media-invariant: 40 across audio (Tracy), data (closed CD-R, Taiyo Yuden, profile
+0x0009) and an empty tray. `stock_ceilings[]` records the **stock** ceiling, which
+*is* the uncap-off value, so one row per model is correct and `(model)` stays the
+key. No code change was ever indicated.
+
+**What stays unvalidated, stated in the code rather than left in a backlog.**
+With the uncap ON, whether page-2A `max_x` reports the drive's data ceiling (A) or
+the loaded medium's class lifted by one (B) is undetermined, because every disc we
+own reads 48 under both. Only a CD-RW audio disc separates them, and under B it
+would yield 40, making `uncap.c`'s strict `>` return `UNCAP_OFF` while the uncap
+is on. `src/drive/uncap.c` now carries that limitation at the comparison itself,
+where someone changing the operator will see it.
+
+<details><summary>The full A-vs-B analysis, kept because the reasoning error inside it is instructive</summary>
 
 *The invalid step, kept as a worked example of the house failure mode:* all the
 measurements were taken with the uncap **OFF**, and a conclusion was drawn about
-what the uncap **DOES**. B is defined (§bg.2) as "the uncap lifts the media ceiling
-by one class" — a claim about the *transformation*, carrying no commitment about
-the uncap-off reading. B is perfectly consistent with "stock 40 whatever is loaded;
-uncapped, media ceiling + one class". A prediction B never made was refuted.
-*Accepted uncritically on this side too* (§bj.1 called their reasoning right), so
-the fault is not theirs alone: a well-formed measurement answering a different
-question than the one asked.
-
-**SURVIVES — genuinely settled, all uncap-OFF questions:**
-
-- `max_x` is media-invariant **with the uncap off**: 40 across audio (Tracy), data
-  (closed CD-R, Taiyo Yuden, profile 0x0009) and **empty tray**.
-- `stock_ceilings[]` records the **stock** ceiling, which *is* the uncap-off value,
-  so **one row per model is correct and `(model)` stays the key**. No code change.
-- **§bg.3's false-ON is empty.** It needs a stock drive (uncap off); data disc,
-  uncap off, `max_x` 40 → `OFF`, correct.
-
-**STILL OPEN — A vs B, and the hazard is a silent false negative:** with the uncap
-**on**, Keith measured the data disc going 40 → 48, so the uncap does move `max_x`.
-But data is already the top class, so A and B agree on every medium touched so far:
+what the uncap **DOES**. B is defined (cdda2img §bg.2) as "the uncap lifts the
+media ceiling by one class" — a claim about the *transformation*, carrying no
+commitment about the uncap-off reading. B is perfectly consistent with "stock 40
+whatever is loaded; uncapped, media ceiling + one class". A prediction B never
+made was refuted. *Accepted uncritically on this side too* (§bj.1 called their
+reasoning right), so the fault is not theirs alone: a well-formed measurement
+answering a different question than the one asked.
 
 | medium, uncap ON | A: reports data ceiling | B: media ceiling + one class | observed |
 |---|---|---|---|
 | data disc | 48 | 48 (already top) | **48** |
 | audio disc | 48 | 40 → 48 | **48** (§au.1) |
-| **CD-RW audio** | **48** | **32 → 40** | **NOT MEASURED** |
-
-Under B that disc yields `max_x` 40, `40 > 40` is false at `uncap.c:83`'s strict
-`>`, and `adsc_uncap_classify` returns `ACCUDISC_UNCAP_OFF` **while the uncap is
-on** — the silent false negative on the safety value. Live and unmeasured.
-
-Task 5b below is independent of all of this and unaffected.
-
-**Drive state changed (§95.4):** Keith has left SpeedRead **ON** (page 2A now
-`48x (8467 kB/s)`, curve `20.0x..48.0x`) with the Taiyo Yuden CD-R reloaded. Any
-`speeds` table taken from now on is an uncapped reading.
-
-<details><summary>Original open question (superseded)</summary>
-
-cdda2img §88.2, open question, **not a known defect**. `stock_ceilings[]`
-(`src/drive/uncap.c:43-48`) has one row, PX-716A → 40, derived from observed
-ON/OFF transitions on audio media. The manual publishes three ceilings for the
-same model by media class. If page-2A `max_x` tracks the loaded media class, a
-CD-RW audio disc would report 32 against a stock 40, and `adsc_uncap_classify`
-must decide whether 32 < 40 means OFF or means "a class this table does not
-model". If `max_x` is media-invariant the question evaporates.
-
-**Sharpened 2026-07-26 (reply §bg).** The low reading they framed it around is
-the *benign* branch: 32 < 40 resolves to OFF and the uncap really is off. Two
-worse branches, both untested, both invisible so far because every page-2A
-reading either side has taken was with an **audio disc loaded**:
-
-- **False negative.** One observation (40 off / 48 on, audio media) fits two
-  mechanisms. **A:** the uncap reports the *data* ceiling regardless of media →
-  CD-RW audio goes to 48, `48 > 40`, `LIKELY_ON`, row is fine. **B:** the uncap
-  lifts the media ceiling by one class → CD-RW audio goes to 40, and `uncap.c:83`
-  uses strict `>`, so equality returns `ACCUDISC_UNCAP_OFF` **while the uncap is
-  on**. Our data cannot separate A from B.
-- **False positive, on a stock drive.** Uncap OFF + a **data** disc: if `max_x`
-  is media-derived it reads the data figure, `> 40`, → `LIKELY_ON` on a drive
-  nobody touched. cdda2img refuses on `LIKELY_ON`.
-
-Discriminator asked for in §bg.4 — page-2A `max_x`, uncap off, under three tray
-states: audio / data / **empty** (no media class to derive from, so it is
-diagnostic alone). Same number under all three ⇒ media-invariant, close this.
-Their CD-RW audio disc then settles A vs B. Not run by us: it needs disc swaps
-and Tracy is loaded for their §9.3 ladder work.
-
-**Only matters if the classifier survives task 1** — if the whole inference path
-goes with the guards, close this as moot. Note the *reporting* path plausibly
-survives even so, since task 1 removes enforcement only.
+| **CD-RW audio** | **48** | **32 → 40** | **NEVER MEASURED — and now never will be** |
 
 </details>
 
@@ -2766,13 +2732,16 @@ zero-copy opt-in.
   `sizeof(accudisc_toc)`; the C side arguably should too, since API_PLAN §7.1
   claims size-less structs are pinned there and this one is not.
 
-### 7. cdda2img §88 — ANSWERED 2026-07-26 (§bg)
+### 7. cdda2img §88 — CLOSED 2026-08-09. Nothing is owed either way.
 
 Premise conceded (we quoted the manual's three ceilings in our own §au.1 and
 then built a one-row table), the question sharpened into the A/B discriminator
 and the false-positive direction, and the three-tray-state measurement requested.
-**Waiting on them** for the readings — see task 5. Outbox
-`cdda2img/private/AccuDisc.md`; last sent §bg.
+
+**The "waiting on them" this entry recorded is retired**: task 5 is dropped, so
+we are no longer waiting for a CD-RW audio reading and they should not spend a
+disc producing one. The three-tray-state measurement they were asked for was in
+service of a question nobody is now asking. Nothing to chase, nothing owed.
 
 ### 8. Their binary depends on our `build/` existing — `[P3]`, note only
 
