@@ -444,8 +444,27 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
     unsigned passes = req->verify_passes >= 2 ? req->verify_passes : 1;
 
-    if (req->speed_x)
-        accudisc_set_speed(dev, req->speed_x);
+    /* Apply the pass speed and record what the drive actually adopted, so a
+     * quantized request (16x -> 8x on a PX-716A) is observable in the stats
+     * rather than only in CLI prose. See accudisc_read_stats' four-state note.
+     *
+     * The read-back is gated on the SET SUCCEEDING. Page 2A always reports some
+     * current speed, and after a failed set that value describes the drive's
+     * prior state — exporting it as the honoured speed would report a
+     * quantization that never happened. Leaving honoured at 0 says "asked, no
+     * answer", which is the truth in that case.
+     *
+     * Best-effort throughout: a drive that will not report page 2A leaves
+     * honoured at 0 and the read proceeds, exactly as before this field
+     * existed. Nothing here can fail the read. */
+    if (req->speed_x) {
+        r.st.speed_requested_x = req->speed_x;
+        if (accudisc_set_speed(dev, req->speed_x) == ACCUDISC_OK) {
+            unsigned cur_kbps = 0;
+            if (accudisc_get_speed(dev, NULL, &cur_kbps) == ACCUDISC_OK)
+                r.st.speed_honoured_x = (uint16_t)(cur_kbps / 176);
+        }
+    }
 
     uint8_t *buf = malloc((size_t)(chunk + overlap) * r.sector_len);
     uint8_t *buf2 = passes > 1 ? malloc((size_t)chunk * r.sector_len) : NULL;

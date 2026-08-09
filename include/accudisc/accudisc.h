@@ -27,7 +27,15 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 6 /* 0.6.0: the FIRST SUBTRACTIVE change. Removed
+#define ACCUDISC_VERSION_MINOR 7 /* 0.7.0: accudisc_read_stats gained
+                                  * speed_requested_x/speed_honoured_x and grew
+                                  * 136 -> 144 bytes. Additive at the END of an
+                                  * OUT struct, so a shorter caller is refused
+                                  * rather than truncated (adsc_abi_export) and
+                                  * simply never sees the fields — soname stays
+                                  * .so.0. Bumped because the layout moved,
+                                  * which is what the minor is for.
+                                  * 0.6.0: the FIRST SUBTRACTIVE change. Removed
                                   * accudisc_read_req.allow_unsafe and
                                   * ACCUDISC_ERR_UNSAFE_COMBINATION (-11, now
                                   * retired and never to be reused) along with
@@ -1554,6 +1562,44 @@ typedef struct accudisc_read_stats {
      * subq_ok is the pregap/index/MSF metadata lost on this pass. */
     uint64_t subq_total;      /* Q frames examined (delivered sectors w/ raw sub) */
     uint64_t subq_ok;         /* frames whose CRC-16 verified */
+
+    /* THE HONOURED PASS SPEED. A drive implements only certain rungs and snaps
+     * anything else DOWN to the next one it has — a PX-716A asked for 16x
+     * adopts 8x — so a read can silently run at half the requested rate. These
+     * two make that observable without a second drive command by the caller,
+     * and without re-reading their own request struct.
+     *
+     * FOUR STATES, and the zero cases are NOT the same:
+     *
+     *   requested == 0                  no speed was requested (drive-managed)
+     *   requested == N, honoured == 0   asked, but no answer: either the set
+     *                                   failed or page 2A did not read back.
+     *                                   NOT "it ran at 0x", and not evidence
+     *                                   the request was honoured
+     *   honoured  <  requested          QUANTIZED — this is the signal
+     *   honoured  == requested          honoured
+     *
+     * So the test is `honoured && honoured < requested`. The CLI derives it
+     * exactly that way; anything else will disagree with it eventually.
+     *
+     * `honoured` is populated ONLY when the speed set returned OK. A failed set
+     * still leaves page 2A reporting some current speed, quite possibly below
+     * the request, and exporting that as "quantized" would describe a set that
+     * never happened — a different failure needing a different response.
+     *
+     * SCOPE: the PASS speed (req->speed_x), read back once immediately after
+     * it is applied. RECOVERY-LADDER RUNGS ARE NOT COVERED — speed_ladder moves
+     * the speed mid-read, and a per-rung answer needs per-rung storage. Use
+     * accudisc_probe_speed_ladder, whose ACCUDISC_RUNG_QUANTIZED verdict is
+     * exactly that question asked per rung, before the read. */
+    uint16_t speed_requested_x; /* echo of req->speed_x; 0 = none asked */
+    uint16_t speed_honoured_x;  /* page 2A current after the set; 0 = unknown */
+    /* These two took the struct 136 -> 144 (measured, both compiled), and left
+     * 4 bytes of tail padding behind: the next two uint16_t, or one uint32_t,
+     * are free. Growth is safe here because this is an OUT struct — the caller
+     * declares `size`, adsc_abi_export REFUSES rather than truncates when we
+     * have less than they declared, and a shorter caller simply never sees
+     * these fields. That is the opposite direction from the IN rule. */
 } accudisc_read_stats;
 
 /* Blocking. Streams req->count sectors from req->lba into sink (which may be

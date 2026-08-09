@@ -1613,39 +1613,6 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                     uncap_prior ? "on" : "off");
     }
 
-    /* Report a quantized --speed, which was silent until 0.6.1: the engine
-     * applies req.speed_x best-effort and discards the outcome, so a request
-     * the drive snapped down (16x -> 8x on the PX-716A) produced a slower read
-     * than asked for with nothing said.
-     *
-     * Done HERE rather than in the library on purpose. Applying the speed is
-     * the engine's job and it still owns it; deciding that a human or a log
-     * should be told is a process convention, and CLAUDE.md / API_PLAN §3 keep
-     * those in the CLI. The set below is redundant with engine.c's own — that
-     * is deliberate, not an oversight: it is the only way to observe the
-     * adopted value BEFORE the read rather than after, by which time a
-     * recovery ladder rung may have moved it. Setting the same speed twice
-     * costs one MODE SELECT and cannot change the outcome.
-     *
-     * After the uncap push, so the ceiling in force is the one the read will
-     * actually run under.
-     *
-     * NOT gated on --quiet. A read that ran at half the requested speed is
-     * exactly the kind of notice the quiet flag must not suppress: quiet means
-     * no human is watching, which strengthens rather than weakens the claim on
-     * being told (see TODO "audit if (!quiet)"). */
-    if (req.speed_x) {
-        unsigned cur_kbps = 0;
-
-        if (accudisc_set_speed(dev, req.speed_x) == ACCUDISC_OK &&
-            accudisc_get_speed(dev, NULL, &cur_kbps) == ACCUDISC_OK &&
-            cur_kbps && cur_kbps / 176 < req.speed_x)
-            fprintf(stderr,
-                    "accudisc: --speed %ux quantized to %ux by the drive; "
-                    "the read will run at the lower rate\n",
-                    req.speed_x, cur_kbps / 176);
-    }
-
     accudisc_read_stats st = ACCUDISC_READ_STATS_INIT;
     double t0 = mono_now();
     int err = accudisc_read_cdda(dev, &req, read_sink, &ctx, &st);
@@ -1653,6 +1620,28 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
 
     if (!ctx.quiet)
         fputc('\n', stderr);
+
+    /* Quantized pass speed, DERIVED FROM THE STATS the library exported rather
+     * than re-measured here — one source of truth, so the CLI can never
+     * disagree with an API consumer looking at the same read.
+     *
+     * The test is the header's: honoured must be NONZERO and below requested. A
+     * zero honoured means "asked, no answer" (the set failed, or page 2A did
+     * not read back), which is not evidence of quantization.
+     *
+     * Reported even when the read then failed, and before the error return
+     * below, because a read that ran at half the requested rate is worth
+     * knowing about whether or not it completed.
+     *
+     * NOT gated on --quiet: quiet means no human is watching, which strengthens
+     * the claim on being told something ran wrong, not weakens it (see the
+     * `if (!quiet)` audit item in TODO.md). */
+    if (st.speed_honoured_x && st.speed_honoured_x < st.speed_requested_x)
+        fprintf(stderr,
+                "accudisc: --speed %ux quantized to %ux by the drive; "
+                "the read ran at the lower rate\n",
+                st.speed_requested_x, st.speed_honoured_x);
+
     if (err != ACCUDISC_OK) {
         ret = fail_dev(dev, "read", err);
         goto out;

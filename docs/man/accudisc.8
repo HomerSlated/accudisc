@@ -376,6 +376,35 @@ Q-subchannel CRC census
 counted only for raw-subchannel reads. The subchannel has no CIRC protection;
 its per-frame CRC\-16 is its only integrity check and it fails independently of
 the audio C2 figures.
+.PP
+It also reports the pass speed the drive actually adopted:
+.I speed_requested_x
+echoes the request and
+.I speed_honoured_x
+is what mode page 2A reported after it was set. Drives implement only certain
+rungs and snap anything else DOWN to the next one they have \(em a PX\-716A
+asked for 16\(mux runs at 8\(mux \(em so a read can silently take twice as long
+as intended.
+.PP
+.B "A zero honoured speed means NO ANSWER"
+\(em nothing was requested, the set failed, or page 2A did not read back. It
+does not mean the read ran at 0\(mux, and it is not evidence the request was
+honoured. Test
+.IR "honoured && honoured < requested" .
+A bare
+.B <
+reports a missing answer as quantized; assuming a zero means honoured reports it
+as fine. Both are wrong, in opposite directions, from the same zero.
+.PP
+These cover the
+.B pass
+speed only.
+.I speed_ladder
+moves the speed mid-read for recovery rungs; for a per-rung answer use
+.BR accudisc_probe_speed_ladder ()
+and its
+.B ACCUDISC_RUNG_QUANTIZED
+verdict, which asks the same question before the read.
 .SH DEVICE AND DISC INTERROGATION
 Selected calls; the header is the full list and carries the per-call semantics.
 .TP

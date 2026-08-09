@@ -132,7 +132,7 @@ def test_struct_sizes_match_api_plan():
     fail something.
     """
     assert ffi.sizeof("accudisc_read_req") == 64
-    assert ffi.sizeof("accudisc_read_stats") == 136
+    assert ffi.sizeof("accudisc_read_stats") == 144  # 136 -> 144 in 0.7.0
     assert ffi.sizeof("accudisc_chunk") == 32
 
 
@@ -442,6 +442,7 @@ def test_public_dataclass_field_names_are_pinned():
         "sense_medium", "sense_hardware", "sense_other", "rereads",
         "sectors_recovered", "sectors_suspect", "slips",
         "subq_total", "subq_ok",
+        "speed_requested_x", "speed_honoured_x",
     }
 
     assert {f.name for f in dataclasses.fields(ad.Chunk)} == {
@@ -473,7 +474,41 @@ def test_features_names_what_the_version_cannot():
     assert isinstance(ad.features, frozenset)
     assert "caller_map_buffers" in ad.features
     assert "subq_map" in ad.features
+    assert "speed_honoured" in ad.features
     assert "no_such_capability" not in ad.features
+
+
+def test_speed_quantized_needs_a_nonzero_honoured_speed():
+    """Zero honoured means NO ANSWER, and must not read as "not quantized".
+
+    Four distinct states share two fields, and three of them involve a zero:
+    nothing requested; requested but the set failed or page 2A did not read
+    back; quantized; honoured. The dangerous confusion is the second against
+    the fourth — a missing answer silently presenting as "the drive gave you
+    what you asked for", which is the wrong direction to be wrong in.
+
+    Built device-free from the dataclass rather than from a read, because the
+    property IS the contract and a drive that quantizes is not always present.
+    """
+    def stats(**kw):
+        base = dict.fromkeys(
+            (f.name for f in dataclasses.fields(ad.ReadStats)), 0)
+        base.update(kw)
+        return ad.ReadStats(**base)
+
+    # The signal itself.
+    assert stats(speed_requested_x=16, speed_honoured_x=8).speed_quantized
+
+    # No answer. Would be TRUE under a naive `honoured < requested`, which is
+    # the bug this asserts against: 0 < 16 without the nonzero guard.
+    assert not stats(speed_requested_x=16, speed_honoured_x=0).speed_quantized
+
+    # Honoured exactly, and nothing asked at all.
+    assert not stats(speed_requested_x=16, speed_honoured_x=16).speed_quantized
+    assert not stats(speed_requested_x=0, speed_honoured_x=0).speed_quantized
+
+    # A drive adopting MORE than asked is not this defect — nothing was lost.
+    assert not stats(speed_requested_x=8, speed_honoured_x=16).speed_quantized
 
 
 def test_read_annotations_stay_introspectable_strings():

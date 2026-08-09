@@ -581,6 +581,8 @@ typedef struct accudisc_read_stats {
     uint64_t slips;
     uint64_t subq_total;
     uint64_t subq_ok;
+    uint16_t speed_requested_x;
+    uint16_t speed_honoured_x;
     ...;
 } accudisc_read_stats;
 

@@ -336,9 +336,20 @@ the moment it happens, for a caller that just sets a speed and reads:
   means no human is watching — which strengthens the claim on being told.
 
 Both are **stderr/stdout prose and not a stable interface** by this document's
-own rule; parse `speeds --sweep`'s `verdict=quantized:<x>` token if you need
-this programmatically. They are documented here so the behaviour is not a
-surprise, not so it can be depended upon.
+own rule. Two supported ways to get the same fact programmatically:
+
+- **`accudisc_read_stats.speed_requested_x` / `.speed_honoured_x`** (0.7.0) —
+  what the read itself adopted. The CLI's notice above is *derived from these*
+  rather than measured separately, so an API consumer and the CLI cannot
+  disagree about the same read. Python: `ReadStats.speed_quantized`, with the
+  `features` name `speed_honoured`.
+
+  **`speed_honoured_x == 0` means NO ANSWER**, not "ran at 0x" and not "the
+  request was honoured": nothing asked, the set failed, or page 2A did not read
+  back. Test `honoured && honoured < requested`. A bare `<` reports a missing
+  answer as quantized; assuming equality means honoured reports it as fine.
+- **`speeds --sweep`'s `verdict=quantized:<x>`** — the whole ladder in advance,
+  per rung, before committing to a read.
 
 ## `write` output
 

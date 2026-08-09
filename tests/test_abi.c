@@ -47,7 +47,7 @@ _Static_assert(sizeof(accudisc_chunk) == 32, "accudisc_chunk grew: soname bump")
  * moves with the layout, and adding a row to API_PLAN §8. Tripping these is a
  * reminder, not a defect. */
 _Static_assert(sizeof(accudisc_read_req) == 64, "read_req grew — see above");
-_Static_assert(sizeof(accudisc_read_stats) == 136, "read_stats grew — see above");
+_Static_assert(sizeof(accudisc_read_stats) == 144, "read_stats grew — see above");
 _Static_assert(sizeof(accudisc_write_opts) == 24, "write_opts grew — see above");
 
 /* The size field landed in padding, so adding it did NOT move sizeof. Pinned

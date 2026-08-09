@@ -102,6 +102,13 @@ features = frozenset({
     "caller_map_buffers",
     # accudisc_read_req.subq_map exists: a per-sector Q-health lane.
     "subq_map",
+    # ReadStats carries speed_requested_x/speed_honoured_x and the derived
+    # `speed_quantized` property: the drive's ADOPTED pass speed, so a caller
+    # can tell that a read ran slower than it asked without issuing its own
+    # MODE SENSE. Absent means those attributes do not exist — and note that
+    # absent is NOT the same as "not quantized", which is why this needs a
+    # feature name rather than a getattr default.
+    "speed_honoured",
 })
 
 
@@ -1031,6 +1038,29 @@ class ReadStats:
     slips: int
     subq_total: int
     subq_ok: int
+    speed_requested_x: int
+    speed_honoured_x: int
+
+    @property
+    def speed_quantized(self) -> bool:
+        """The drive adopted a LOWER speed than :meth:`Device.read` asked for.
+
+        Drives implement only certain rungs and snap anything else down to the
+        next one they have — a PX-716A asked for 16x runs at 8x — so a read can
+        silently take twice as long as intended.
+
+        ``speed_honoured_x == 0`` means *no answer* (nothing was requested, the
+        set failed, or page 2A did not read back), which is **not** evidence the
+        request was honoured. Hence the nonzero test: a missing answer must not
+        read as "fine".
+
+        This is the PASS speed only. Recovery-ladder rungs move the speed
+        mid-read and are not covered — use
+        :meth:`Device.probe_speed_ladder` and its ``RungVerdict.QUANTIZED``,
+        which asks the same question per rung, before the read.
+        """
+        return bool(self.speed_honoured_x
+                    and self.speed_honoured_x < self.speed_requested_x)
 
     @property
     def subq_bad(self) -> int:
@@ -2613,4 +2643,6 @@ def _stats_from_c(s) -> ReadStats:
         slips=s.slips,
         subq_total=s.subq_total,
         subq_ok=s.subq_ok,
+        speed_requested_x=s.speed_requested_x,
+        speed_honoured_x=s.speed_honoured_x,
     )

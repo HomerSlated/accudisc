@@ -295,6 +295,36 @@ on single-extent drives). Revisit the ranged feature in a future session.
   interface; `speeds --sweep`'s `verdict=quantized:<x>` token remains the
   parseable form. Said so in `cli-machine-interface.md` rather than leaving it
   to be assumed.
+
+  **Completed the same day by an API signal — 0.7.0.** Keith: *"it's up to the
+  calling app to produce its own notices, but AccuDisc must send some kind of
+  machine readable signal via the API."* Correct, and CLI prose was never a
+  substitute: every non-CLI consumer would have had to issue its own MODE SENSE
+  and reimplement the comparison. `accudisc_read_stats` now carries
+  `speed_requested_x` / `speed_honoured_x` (136 → 144 bytes, additive at the end
+  of an **OUT** struct, so a shorter caller is refused rather than truncated).
+  **The CLI's notice is now derived from those stats** rather than measured
+  separately — one source of truth, so the CLI and an API consumer cannot
+  disagree about the same read. The duplicate set/read-back the CLI briefly had
+  is gone.
+
+  **The trap is the zero, and it is why this needed two fields rather than one
+  "honoured" number.** `speed_honoured_x == 0` means *no answer* — nothing
+  asked, the set failed, or page 2A did not read back. A bare `honoured <
+  requested` reports that as quantized (`0 < 16`); treating zero as "fine"
+  reports a genuinely failed set as honoured. Both wrong, opposite directions,
+  same zero. The test is `honoured && honoured < requested`, stated in the
+  header, implemented in `ReadStats.speed_quantized`, and pinned by a
+  device-free test covering all four states plus the adopted-more-than-asked
+  case.
+
+  Also: the read-back only happens when the set **returned OK**. Page 2A always
+  reports something, and after a failed set that something describes the prior
+  state — exporting it would report a quantization that never occurred.
+
+  Verified on hardware through the binding: `asked 16x -> requested=16
+  honoured=8 quantized=True`, `asked 8x -> honoured=8 quantized=False`, `asked
+  none -> 0/0 quantized=False`. Drive restored to 40x.
 - **`cdtext` with no FILE reports itself as an unknown command. [P2]** —
   Keith 2026-07-26: *"If a value is mandatory but not provided, and you continue
   anyway, that's a silent failure."* `cli/main.c:1686` dispatches on

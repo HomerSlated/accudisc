@@ -589,6 +589,23 @@ message when the rewrite lands. Do not dribble it out.
 
 | 10 | **The SpeedRead subchannel guard is GONE.** Removed: `accudisc_read_req.allow_unsafe`, `ACCUDISC_ERR_UNSAFE_COMBINATION` (**-11, retired, never to be reused**), the library refusal, the CLI's `--uncap`+`--sub` interlock and its pre-read warning, and the Python `UnsafeCombination` class and `allow_unsafe=` keyword. **Version 0.5.0 → 0.6.0** | **DONE 2026-08-09** | **Yes, for a compiled caller — this is our first SUBTRACTIVE change.** `sizeof(accudisc_read_req)` is unchanged at 64 (the byte was padding), so a stale caller setting `allow_unsafe = 1` writes into padding and is ignored — benign, but by luck of layout, not by the `size` rule, which only protects a caller that is SHORT. A Python consumer catching `accudisc.UnsafeCombination` gets `AttributeError` at import. Neither applies to cdda2img: their tree references neither name (grepped 2026-08-09) |
 
+| 11 | `accudisc_read_stats` gains `speed_requested_x` / `speed_honoured_x` (136 → **144** bytes): the pass speed the drive ACTUALLY adopted, so a quantized `--speed` (16× → 8× on a PX-716A) is machine-detectable. Python: `ReadStats.speed_quantized` + `features` name `speed_honoured`. **Version 0.6.0 → 0.7.0** | **DONE 2026-08-09** | No — additive at the END of an **OUT** struct, which is the safe direction: `adsc_abi_export` REFUSES a caller declaring more than we have and never truncates, so a 0.6 caller simply never sees the fields. Their CLI parsing is untouched |
+
+**Row 11's trap is the zero, and any consumer reading these two fields must be
+told about it.** `speed_honoured_x == 0` means **no answer** — nothing was
+requested, or the set failed, or page 2A did not read back. It does *not* mean
+"ran at 0×", and it is *not* evidence the request was honoured. So the test is
+`honoured && honoured < requested`, never a bare `<`: a bare comparison makes a
+missing answer report as quantized (`0 < 16`), and the opposite phrasing makes it
+report as fine. Both are wrong, in opposite directions, from the same zero. The
+header states the four states explicitly and the Python property implements
+exactly that test; anything hand-rolled will eventually disagree with the CLI.
+
+Scope worth stating too: this is the **pass** speed only. `speed_ladder` moves
+the speed mid-read for recovery rungs and is not covered — that question is
+`accudisc_probe_speed_ladder`'s `ACCUDISC_RUNG_QUANTIZED`, asked per rung,
+before the read.
+
 **Row 10 is the one row here that the `size` field cannot make safe, and it is
 worth saying why in the ledger rather than only in the header.** Every previous
 change was additive: a field appended at the end, where an older caller's
