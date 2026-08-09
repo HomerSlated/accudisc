@@ -1,12 +1,24 @@
-/* The read-speed uncap classifier: does the per-model stock-ceiling table say
- * the right thing, including for models it has never heard of?
+/* The read-speed uncap's state, and the ONE property that now matters: that we
+ * only ever report it when someone who can actually answer has.
  *
- * The point of this test is the UNKNOWN cases. A table lookup that returns the
- * right answer for the one drive we own is easy; the failure this guards
- * against is the previous implementation's, which compared against a bare
- * `> 40` and therefore answered confidently about every drive in the world
- * from one drive's measurements. An unknown model must come back UNKNOWN and
- * never OFF — "we cannot tell" and "it is off" lead to opposite decisions.
+ * This file used to be mostly a table test. `adsc_uncap_classify` inferred the
+ * uncap's state by comparing page 2A's advertised maximum against a per-model
+ * stock ceiling, and most of the cases here pinned that table's UNKNOWN
+ * behaviour for models it had never heard of. Both are gone as of 0.8.0 — see
+ * the note at the top of src/drive/uncap.c.
+ *
+ * Worth recording what those deleted tests were good at, because it was not
+ * nothing: they correctly guarded the previous implementation's real defect, a
+ * bare `max_x > 40` that answered confidently about every drive in the world
+ * from one drive's measurements. They enforced "unknown model -> UNKNOWN, never
+ * OFF", which is the right rule. What no test here could catch is that the
+ * quantity being compared did not answer the question at all: page 2A reports
+ * the largest request the drive ACCEPTS, not what it delivers, and on CD-DA the
+ * governor caps the rate regardless. A well-tested inference from the wrong
+ * quantity still tests correctly, which is the whole lesson.
+ *
+ * What remains is source 1/2 polarity and the retirement of the value the
+ * inference used to return.
  */
 
 #include <stdio.h>
@@ -19,80 +31,47 @@ static int fails;
 static const char *name(accudisc_uncap_state s)
 {
     switch (s) {
-    case ACCUDISC_UNCAP_OFF:       return "OFF";
-    case ACCUDISC_UNCAP_ON:        return "ON";
-    case ACCUDISC_UNCAP_LIKELY_ON: return "LIKELY_ON";
-    case ACCUDISC_UNCAP_UNKNOWN:   return "UNKNOWN";
+    case ACCUDISC_UNCAP_OFF:     return "OFF";
+    case ACCUDISC_UNCAP_ON:      return "ON";
+    case ACCUDISC_UNCAP_UNKNOWN: return "UNKNOWN";
     }
     return "?";
 }
 
-static void check(const char *what, const char *vendor, const char *product,
-                  unsigned max_x, accudisc_uncap_state want)
-{
-    accudisc_uncap_state got = adsc_uncap_classify(vendor, product, max_x);
-
-    if (got != want) {
-        printf("FAIL %-46s got %s, want %s\n", what, name(got), name(want));
-        fails++;
-    } else {
-        printf("ok   %-46s %s\n", what, name(got));
-    }
-}
-
 int main(void)
 {
-    /* The one verified row. FEATURES.md feature 1: SpeedRead ON flips page-2A
-     * max read 40x -> 48x on the PX-716A, SET OFF restores 40x — measured live
-     * in both directions, which is the table's entry rule. */
-    check("PX-716A at 48x -> uncapped", "PLEXTOR", "DVDR   PX-716A", 48,
-          ACCUDISC_UNCAP_LIKELY_ON);
-    check("PX-716A at 40x -> stock", "PLEXTOR", "DVDR   PX-716A", 40,
-          ACCUDISC_UNCAP_OFF);
-    check("PX-716A at 41x -> just over stock", "PLEXTOR", "DVDR   PX-716A", 41,
-          ACCUDISC_UNCAP_LIKELY_ON);
+    /* 2 IS RETIRED (was ACCUDISC_UNCAP_LIKELY_ON) and must never be reused: a
+     * consumer built before 0.8.0 reads a 2 as "likely on", so reassigning it
+     * would misreport with nothing able to detect it. No enumerator may take
+     * the value, and UNKNOWN must stay at 3 rather than sliding down to fill
+     * the hole — sliding is exactly how the value gets reused by accident. */
+    if (ACCUDISC_UNCAP_UNKNOWN != 3) {
+        printf("FAIL %-46s UNKNOWN is %d, must stay 3\n",
+               "2 stays retired (was LIKELY_ON)",
+               (int)ACCUDISC_UNCAP_UNKNOWN);
+        fails++;
+    } else if (ACCUDISC_UNCAP_OFF == 2 || ACCUDISC_UNCAP_ON == 2) {
+        printf("FAIL %-46s an enumerator took 2\n",
+               "2 stays retired (was LIKELY_ON)");
+        fails++;
+    } else {
+        printf("ok   %-46s OFF=0 ON=1 [2 retired] UNKNOWN=3\n",
+               "2 stays retired (was LIKELY_ON)");
+    }
 
-    /* Below stock is still "not uncapped". A drive reporting under its own
-     * ceiling is odd, but it is unambiguously not lifted. */
-    check("PX-716A at 32x -> below stock", "PLEXTOR", "DVDR   PX-716A", 32,
-          ACCUDISC_UNCAP_OFF);
-
-    /* INQUIRY padding must not defeat the lookup: drives pad fixed-width
-     * fields, so "DVDR   PX-716A" and "DVDR PX-716A" are the same drive. */
-    check("PX-716A, single-spaced product", "PLEXTOR", "DVDR PX-716A", 48,
-          ACCUDISC_UNCAP_LIKELY_ON);
-    check("PX-716A, trailing pad", "PLEXTOR", "DVDR   PX-716A   ", 48,
-          ACCUDISC_UNCAP_LIKELY_ON);
-
-    /* THE CASES THAT MATTER. Each of these would have returned a confident
-     * (and possibly wrong) answer under a bare `max_x > 40`. */
-    check("another Plextor, 48x, not in table", "PLEXTOR", "DVDR   PX-760A",
-          48, ACCUDISC_UNCAP_UNKNOWN);
-    check("another Plextor, 40x, not in table", "PLEXTOR", "DVDR   PX-760A",
-          40, ACCUDISC_UNCAP_UNKNOWN);
-    check("non-Plextor at 48x", "HL-DT-ST", "DVDRAM GH24NSD1", 48,
-          ACCUDISC_UNCAP_UNKNOWN);
-    check("right product, wrong vendor", "PIONEER", "DVDR   PX-716A", 48,
-          ACCUDISC_UNCAP_UNKNOWN);
-
-    /* max_x == 0 means page 2A could not be read — nothing to judge. */
-    check("speed unreadable (0x)", "PLEXTOR", "DVDR   PX-716A", 0,
-          ACCUDISC_UNCAP_UNKNOWN);
-
-    /* Defensive: the probe passes dev->id fields, which are always non-NULL,
-     * but the classifier is public within the library. */
-    check("NULL vendor", NULL, "DVDR   PX-716A", 48, ACCUDISC_UNCAP_UNKNOWN);
-    check("NULL product", "PLEXTOR", NULL, 48, ACCUDISC_UNCAP_UNKNOWN);
-
-    /* --- the authoritative state, which is now REPORTED rather than enforced -
+    /* --- the state, which is now REPORTED rather than enforced ---------------
      *
      * Until 0.6.0 accudisc_read_cdda refused a subchannel read on
      * adsc_uncap_authoritative(dev) == ON, and these cases guarded that
-     * polarity. The refusal is gone; the classifier is not, because callers
-     * still query it through accudisc_speed_uncap_probe/get and the CLI still
-     * reports it. A polarity slip is therefore no longer a disabled guard but a
-     * wrong answer to a direct question — still worth pinning, and the only
-     * thing keeping ON and OFF apart now that no code path branches on them.
+     * polarity. The refusal is gone; the query is not, because callers still
+     * reach it through accudisc_speed_uncap_probe/get and the CLI still reports
+     * it. A polarity slip is therefore no longer a disabled guard but a wrong
+     * answer to a direct question — still worth pinning, and the only thing
+     * keeping ON and OFF apart now that no code path branches on them.
+     *
+     * The UNKNOWN row carries more weight since 0.8.0: with the inference gone
+     * it is what an untouched handle without a driver ALWAYS returns, so this
+     * is the case pinning that we report absence rather than guessing.
      *
      * Exercisable with no hardware: with drv == NULL, source 2 returns
      * ERR_UNSUPPORTED before touching the transport, so a zeroed handle reaches
@@ -124,24 +103,28 @@ int main(void)
         }
     }
 
-    /* The authoritative query must never invent the inferred value — that is
-     * source 3's, and returning it here would make the read engine refuse on
-     * an inference, which is precisely the design decision being avoided. */
+    /* No handle state may produce anything outside the three live values. This
+     * replaces a check that `LIKELY_ON` never leaked out of the authoritative
+     * path; with that value retired, the general form is the useful one — it
+     * also catches the retired 2 reappearing through this function. */
     {
         struct accudisc_device d;
-        int leaked = 0;
+        int bad = 0;
         for (int s = -1; s <= 1; s++) {
+            accudisc_uncap_state got;
             memset(&d, 0, sizeof(d));
             d.uncap_set = s;
-            if (adsc_uncap_authoritative(&d) == ACCUDISC_UNCAP_LIKELY_ON)
-                leaked = 1;
+            got = adsc_uncap_authoritative(&d);
+            if (got != ACCUDISC_UNCAP_OFF && got != ACCUDISC_UNCAP_ON &&
+                got != ACCUDISC_UNCAP_UNKNOWN)
+                bad = 1;
         }
-        if (leaked) {
-            printf("FAIL %-46s returned LIKELY_ON\n",
-                   "authoritative never yields LIKELY_ON");
+        if (bad) {
+            printf("FAIL %-46s returned a retired or unknown value\n",
+                   "only OFF/ON/UNKNOWN are ever returned");
             fails++;
         } else {
-            printf("ok   %-46s\n", "authoritative never yields LIKELY_ON");
+            printf("ok   %-46s\n", "only OFF/ON/UNKNOWN are ever returned");
         }
     }
 

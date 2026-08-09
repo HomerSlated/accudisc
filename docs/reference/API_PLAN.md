@@ -591,6 +591,18 @@ message when the rewrite lands. Do not dribble it out.
 
 | 11 | `accudisc_read_stats` gains `speed_requested_x` / `speed_honoured_x` (136 → **144** bytes): the pass speed the drive ACTUALLY adopted, so a quantized `--speed` (16× → 8× on a PX-716A) is machine-detectable. Python: `ReadStats.speed_quantized` + `features` name `speed_honoured`. **Version 0.6.0 → 0.7.0** | **DONE 2026-08-09** | No — additive at the END of an **OUT** struct, which is the safe direction: `adsc_abi_export` REFUSES a caller declaring more than we have and never truncates, so a 0.6 caller simply never sees the fields. Their CLI parsing is untouched |
 
+| 12 | **The uncap's driver-free INFERENCE is gone.** Removed `stock_ceilings[]`, `adsc_uncap_classify`, and `ACCUDISC_UNCAP_LIKELY_ON` (**enum value 2, retired**). `accudisc_speed_uncap_probe` still reports `max_x` but draws no verdict from it; with no driver the answer is now `UNKNOWN`. **Version 0.7.0 → 0.8.0** | **DONE 2026-08-09** | **Only for code switching on `accudisc_uncap_state`.** No struct moved. `UNKNOWN` is pinned at **3** so the hole cannot close by sliding. A consumer that treated `LIKELY_ON` as "on" now sees `UNKNOWN` in that case and must not read it as "off" — but cdda2img references none of these symbols (grepped 2026-08-09) |
+
+**Row 12 is the second subtractive change, and its lesson is not the removal.**
+The inference was thoroughly tested — a per-model table, UNKNOWN for unrecognised
+drives, INQUIRY padding handled, the works — and every one of those tests was
+correct. What none of them could see is that **the quantity being compared did
+not answer the question.** Mode page 2A reports the largest request the drive
+*accepts*; on CD-DA the governor caps the delivered rate regardless, so a raised
+maximum was never evidence the uncap was on. A well-tested inference from the
+wrong quantity still passes its tests. Before adding a check, ask what its input
+*is*, not just whether the comparison is right.
+
 **Row 11's trap is the zero, and any consumer reading these two fields must be
 told about it.** `speed_honoured_x == 0` means **no answer** — nothing was
 requested, or the set failed, or page 2A did not read back. It does *not* mean
@@ -762,14 +774,21 @@ not flatten that.** Three sources, consulted in order:
 |---|---|---|---|
 | 1 | this handle called `accudisc_speed_uncap_set(dev, 1)` | certain | `ON` |
 | 2 | driver attached → `speed_uncap_get` | certain | `ON` / `OFF` |
-| 3 | no driver → INQUIRY + mode page 2A `max_x` vs a per-model stock ceiling | inference | `LIKELY_ON` / `OFF` / `UNKNOWN` |
+| ~~3~~ | ~~no driver → INQUIRY + mode page 2A `max_x` vs a per-model stock ceiling~~ | **REMOVED 0.8.0** | — |
+
+> **Source 3 no longer exists** (2026-08-09). `max_x` is what the drive
+> *accepts*, not what it delivers, and on CD-DA the governor caps regardless —
+> so the comparison was not evidence. With no driver and no set of our own the
+> answer is `UNKNOWN`. The `LIKELY_ON` enumerator (**2**) is retired and must
+> not be reused. The snippet below is the pre-0.8.0 shape, kept because the rest
+> of this section reasons about it.
 
 ```c
 typedef enum {
     ACCUDISC_UNCAP_OFF = 0,   /* authoritative */
     ACCUDISC_UNCAP_ON,        /* authoritative */
-    ACCUDISC_UNCAP_LIKELY_ON, /* max_x above this model's verified stock ceiling */
-    ACCUDISC_UNCAP_UNKNOWN,   /* no driver, model not in table, or query failed */
+    ACCUDISC_UNCAP_LIKELY_ON, /* REMOVED 0.8.0; value 2 retired */
+    ACCUDISC_UNCAP_UNKNOWN,   /* now = 3 explicitly, and the ONLY no-answer value */
 } accudisc_uncap_state;
 
 ACCUDISC_API int accudisc_speed_uncap_probe(accudisc_device *dev,

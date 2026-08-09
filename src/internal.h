@@ -57,16 +57,17 @@ int adsc_dev_identify(struct accudisc_device *dev);
  * fields ("DVDR   PX-716A" vs "DVDR PX-716A"). Always NUL-terminates. */
 void adsc_inquiry_normalize(const char *src, char *dst, size_t cap);
 
-/* The driver-free half of accudisc_speed_uncap_probe: given INQUIRY strings and
- * the drive's reported maximum read speed in Nx, decide whether the vendor
- * read-speed uncap looks enabled. Pure — no device, no I/O — so the whole table
- * is testable without hardware. See src/drive/uncap.c. */
-accudisc_uncap_state adsc_uncap_classify(const char *vendor,
-                                         const char *product, unsigned max_x);
+/* `adsc_uncap_classify` was declared here until 0.8.0: the driver-free
+ * inference from page 2A's advertised maximum against a per-model stock
+ * ceiling. Removed with the table — see the note at the top of
+ * src/drive/uncap.c for why the quantity it compared could not answer the
+ * question it was asked. */
 
-/* The uncap's state from authoritative sources only (this handle set it, or an
- * attached driver says so) — ON, OFF or UNKNOWN, never LIKELY_ON. Costs no MODE
- * SENSE, so the read engine can consult it per read; the full probe cannot. */
+/* The uncap's state. ON or OFF only when this handle set it or an attached
+ * driver answers; UNKNOWN otherwise, and UNKNOWN is not "off". Costs no MODE
+ * SENSE. Since 0.8.0 these are the only sources there are, so
+ * accudisc_speed_uncap_probe returns the same verdict and differs only in also
+ * reporting max_x. */
 accudisc_uncap_state adsc_uncap_authoritative(accudisc_device *dev);
 
 /* The device-free half of accudisc_probe_speed_ladder: the window layout.

@@ -21,95 +21,41 @@
 
 #include "../internal.h"
 
-/* Stock (un-uncapped) maximum CD read speed per drive model, in Nx.
+/* SOURCE 3 (INFERENCE) WAS REMOVED HERE — 0.8.0, Keith's ruling 2026-08-09.
  *
- * ENTRY RULE, and the reason this table is short: a row exists only where the
- * uncap transition has been observed in BOTH directions on that model — on
- * raising max_x, and off restoring it. That is what makes "max_x is at stock,
- * therefore the uncap is off" a deduction rather than a hope. A model we have
- * not tested that way does not get a guessed row; it resolves to UNKNOWN.
+ * What stood here: a per-model `stock_ceilings[]` table and
+ * `adsc_uncap_classify`, which compared mode page 2A's advertised maximum read
+ * speed against a model's known stock ceiling and returned LIKELY_ON when it
+ * was higher. It let us guess whether a vendor read-speed uncap was on without
+ * a driver attached.
  *
- * This replaces a bare `max_x > 40` — which is this one drive's stock ceiling
- * promoted to a universal constant. Any drive whose stock ceiling is above 40x
- * would trip that test with the uncap off, and we own one drive, so we cannot
- * bound how many such drives exist.
+ * Keith: "You should neither be querying nor returning a value for something
+ * that is unreachable without a driver. And you certainly shouldn't be
+ * inferring it. The existence, accessibility, and value of the SpeedRead
+ * setting is completely irrelevant. You request a speed, and the governor tells
+ * you what you can have. That is your authoritative data. You don't need to
+ * test, guess, infer, or query anything else."
+ *
+ * The inference was unsound at its root, not merely imprecise. Page 2A reports
+ * the REQUEST, not the governed throughput, so `max_x` above a stock ceiling
+ * says a higher number was accepted into a register — never that the drive can
+ * or will deliver it. On CD-DA it demonstrably will not: the governor caps
+ * regardless, which our own throughput ladder shows unambiguously. So the
+ * quantity being compared was not evidence about the drive's behaviour at all.
+ *
+ * Removing it also deletes a whole question rather than answering one. The
+ * A-vs-B media-class ambiguity — whether the uncap lifts the reported ceiling
+ * by media class or reports the data ceiling throughout — existed ONLY because
+ * this comparison existed. No table, no boundary, no unvalidated `>`, and no
+ * disc to go and buy.
+ *
+ * Sources 1 and 2 remain and are genuinely authoritative: we set it through
+ * this handle, or an attached driver answers. With neither, the honest answer
+ * is UNKNOWN, which the enum already carries and which callers already handle.
  */
-struct stock_ceiling {
-    const char *vendor;
-    const char *product;
-    unsigned stock_x; /* mode page 2A maximum read speed with the uncap OFF */
-};
 
-static const struct stock_ceiling stock_ceilings[] = {
-    /* PX-716A: SpeedRead ON flips page-2A max read 40x -> 48x (7056 -> 8467
-     * kB/s), SET OFF restores 40x. Verified live, both directions, session 4 —
-     * drivers/plextor/FEATURES.md feature 1. */
-    { "PLEXTOR", "DVDR PX-716A", 40 },
-};
-
-/* Page 2A reports kB/s; 1x CD = 176 kB/s. Integer division is deliberate — we
- * compare against a whole-Nx ceiling and the drive's figure is approximate. */
+/* Page 2A reports kB/s; 1x CD = 176 kB/s. */
 #define KBPS_PER_X 176u
-
-/* The table decision, split out from the I/O around it so it can be tested
- * against every model and speed without a drive attached — the same seam, and
- * the same reason, as cli/format.c. Do NOT give this an accudisc_device
- * parameter: the moment it can query the drive, it stops being testable.
- *
- * Returns LIKELY_ON / OFF for a known model, UNKNOWN for one we have not
- * verified or for max_x == 0 (nothing to judge). */
-accudisc_uncap_state adsc_uncap_classify(const char *vendor,
-                                         const char *product, unsigned max_x)
-{
-    char v[32], p[32], want_p[32];
-
-    if (!vendor || !product || max_x == 0)
-        return ACCUDISC_UNCAP_UNKNOWN;
-
-    adsc_inquiry_normalize(vendor, v, sizeof(v));
-    adsc_inquiry_normalize(product, p, sizeof(p));
-
-    for (size_t i = 0; i < sizeof(stock_ceilings) / sizeof(stock_ceilings[0]);
-         i++) {
-        adsc_inquiry_normalize(stock_ceilings[i].product, want_p,
-                               sizeof(want_p));
-        if (strcmp(v, stock_ceilings[i].vendor) != 0 ||
-            strcmp(p, want_p) != 0)
-            continue;
-
-        /* Above this model's verified stock ceiling: something lifted it, and
-         * on every model in this table the only thing that does is the uncap.
-         * Still an inference from a speed number, so it is reported as one.
-         *
-         * THE STRICT `>` IS UNVALIDATED AT EQUALITY, and this is the only
-         * place that says so — read this before changing the operator.
-         *
-         * With the uncap ON we do not know whether page 2A reports (A) the
-         * drive's DATA ceiling regardless of the loaded medium, or (B) the
-         * loaded medium's class lifted by one. Every disc we own reads 48
-         * under both, so nothing here separates them. The PX-716 manual
-         * publishes three ceilings for this model — data 48x, CD-DA 40x,
-         * CD-RW audio 32x — and under B a CD-RW AUDIO disc would report 40
-         * against a stock 40, making this `>` false and returning
-         * ACCUDISC_UNCAP_OFF while the uncap is genuinely ON.
-         *
-         * Left unresolved DELIBERATELY (Keith, 2026-08-09): settling it needs
-         * a CD-RW audio disc we do not have, and the reason to care went with
-         * the guard. Until 0.6.0 this value gated a subchannel refusal, so a
-         * false OFF meant permitting a read we believed corrupted Q. Nothing
-         * enforces on it now — the worst case is a status line reading OFF
-         * while the uncap is on, about a setting that does not affect CD-DA
-         * reads. Report-only, so a wrong answer misinforms rather than
-         * misbehaves.
-         *
-         * If a CD-RW audio disc ever passes through: load it, turn the uncap
-         * on, and read max_x. 48 confirms A and this operator is right; 40
-         * confirms B and it is wrong at the boundary. */
-        return max_x > stock_ceilings[i].stock_x ? ACCUDISC_UNCAP_LIKELY_ON
-                                                 : ACCUDISC_UNCAP_OFF;
-    }
-    return ACCUDISC_UNCAP_UNKNOWN; /* model not in the table: not "off" */
-}
 
 /* Sources 1 and 2 only — the two that can yield an authoritative answer, and
  * the two that cost no MODE SENSE. Split out because accudisc_read_cdda calls
@@ -117,7 +63,10 @@ accudisc_uncap_state adsc_uncap_classify(const char *vendor,
  * authoritative ON, so computing the *inferred* state there would be a drive
  * command issued into the hot path for a value that cannot change the outcome.
  *
- * Yields ON, OFF, or UNKNOWN. Never LIKELY_ON — that is source 3's to give. */
+ * Yields ON, OFF, or UNKNOWN. Since 0.8.0 these are the ONLY sources, so this
+ * is also what accudisc_speed_uncap_probe returns — the split between the two
+ * entry points is now about cost (this one issues no MODE SENSE) rather than
+ * about authority. */
 accudisc_uncap_state adsc_uncap_authoritative(accudisc_device *dev)
 {
     int on = 0;
@@ -182,22 +131,21 @@ int accudisc_speed_uncap_probe(accudisc_device *dev,
         *max_x = 0;
     *state = adsc_uncap_authoritative(dev);
 
-    /* 3. Driver-free inference from the reported ceiling. accudisc_get_speed
-     *    issues a fresh MODE SENSE(10) on every call rather than caching at
-     *    open (src/device.c), which is what lets this see state a prior session
-     *    left behind. Read it even when the state is already settled, because
-     *    the caller asked for max_x. */
+    /* max_x is still reported, and is still worth reading — but it is now a
+     * REPORTED FIGURE HANDED BACK VERBATIM, never an input to a verdict. It is
+     * page 2A's advertised maximum, i.e. the largest request the drive will
+     * accept, which is not a claim about what it will deliver. Callers wanting
+     * deliverable rates want accudisc_probe_speed_ladder, which times reads.
+     *
+     * Deliberately read even when *state is already settled: the caller asked
+     * for it. accudisc_get_speed issues a fresh MODE SENSE(10) rather than
+     * caching at open (src/device.c). */
     if (accudisc_get_speed(dev, &max_kbps, NULL) == ACCUDISC_OK)
         mx = max_kbps / KBPS_PER_X;
     if (max_x)
         *max_x = mx;
 
-    if (*state != ACCUDISC_UNCAP_UNKNOWN || mx == 0)
-        return ACCUDISC_OK; /* already decided, or nothing to infer from */
-
-    if (adsc_dev_identify(dev) != ACCUDISC_OK)
-        return ACCUDISC_OK; /* stays UNKNOWN — an answer, not a failure */
-
-    *state = adsc_uncap_classify(dev->id.vendor, dev->id.product, mx);
+    /* No third source. UNKNOWN stays UNKNOWN — see the note at the top of this
+     * file. We do not guess at a setting only a driver can answer for. */
     return ACCUDISC_OK;
 }

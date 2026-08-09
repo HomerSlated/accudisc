@@ -27,7 +27,18 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 7 /* 0.7.0: accudisc_read_stats gained
+#define ACCUDISC_VERSION_MINOR 8 /* 0.8.0: SUBTRACTIVE. Removed the uncap's
+                                  * driver-free INFERENCE — the stock-ceiling
+                                  * table, adsc_uncap_classify, and the
+                                  * ACCUDISC_UNCAP_LIKELY_ON value it returned
+                                  * (2, now retired and never to be reused).
+                                  * accudisc_speed_uncap_probe still reports
+                                  * max_x but no longer draws a verdict from it:
+                                  * page 2A reports what the drive ACCEPTS, not
+                                  * what it delivers, so the comparison was not
+                                  * evidence. No struct moved; the ENUM did, and
+                                  * a consumer switching on it needs to know.
+                                  * 0.7.0: accudisc_read_stats gained
                                   * speed_requested_x/speed_honoured_x and grew
                                   * 136 -> 144 bytes. Additive at the END of an
                                   * OUT struct, so a shorter caller is refused
@@ -411,37 +422,55 @@ ACCUDISC_API int accudisc_counter_census(accudisc_device *dev,
 ACCUDISC_API int accudisc_speed_uncap_get(accudisc_device *dev, int *on);
 ACCUDISC_API int accudisc_speed_uncap_set(accudisc_device *dev, int on);
 
-/* How confidently we know the uncap's state. The distinction is load-bearing:
- * the uncap corrupts the Q subchannel (see accudisc_read_cdda), and refusing a
- * read on a guess is a worse failure than performing one — it would leave a
- * caller unable to read subchannel at all on a drive we merely fail to
- * recognise, with nothing to diagnose it from. So the library refuses only on
- * the authoritative values and reports the inferred one. */
+/* Whether the uncap's state is KNOWN. Every value here is now authoritative or
+ * absent; there is no hedged one.
+ *
+ * This enum used to carry a third, inferred value, and the change is worth
+ * understanding before adding another. The inference compared page 2A's
+ * advertised maximum read speed against a per-model stock ceiling — but page 2A
+ * reports the largest request the drive ACCEPTS, not what it delivers. On CD-DA
+ * the governor caps the rate regardless of the uncap, so a raised maximum was
+ * never evidence about the drive's behaviour. An inference drawn from a
+ * quantity that does not answer the question is not a weak answer; it is a
+ * different question's answer wearing this one's type.
+ *
+ * The setting is also only reachable through a vendor driver. With no driver
+ * and no set of our own, UNKNOWN is the whole truth, and callers get it. */
 typedef enum accudisc_uncap_state {
     ACCUDISC_UNCAP_OFF = 0,   /* authoritative */
     ACCUDISC_UNCAP_ON,        /* authoritative */
-    ACCUDISC_UNCAP_LIKELY_ON, /* inferred: the drive's reported maximum read
-                               * speed exceeds this model's known stock ceiling.
-                               * Treat as on for safety decisions; do not treat
-                               * as proof. */
-    ACCUDISC_UNCAP_UNKNOWN    /* no driver, and the model is not one whose stock
-                               * ceiling we have verified. Not "off". */
+    /* 2 IS RETIRED AND MUST NEVER BE REUSED. It was ACCUDISC_UNCAP_LIKELY_ON,
+     * an INFERENCE from page 2A's advertised maximum against a per-model stock
+     * ceiling, removed in 0.8.0 with the table behind it. Anything compiled
+     * before 0.8.0 reads a 2 as "likely on", so a future state assigned 2 would
+     * be misreported by that consumer with nothing able to detect it. Every
+     * value below is now authoritative or absent — there is no longer a
+     * hedged one. */
+    ACCUDISC_UNCAP_UNKNOWN = 3 /* nobody who can answer has: no driver attached
+                                * and we did not set it through this handle.
+                                * NOT "off" — it is the absence of an answer,
+                                * and a caller must not read it as one. */
 } accudisc_uncap_state;
 
-/* Determine whether the vendor read-speed uncap is currently on, WITHOUT
- * requiring an attached driver. Resolution order, most authoritative first:
+/* Report the vendor read-speed uncap's state, and the drive's advertised
+ * maximum read speed. Two sources, both authoritative:
  *
- *   1. this handle set it (accudisc_speed_uncap_set on this dev)  -> ON
+ *   1. this handle set it (accudisc_speed_uncap_set on this dev)  -> ON / OFF
  *   2. a driver is attached and answers speed_uncap_get           -> ON / OFF
- *   3. INQUIRY + mode page 2A maximum read speed, compared against this
- *      model's verified stock ceiling        -> LIKELY_ON / OFF / UNKNOWN
+ *   otherwise                                                     -> UNKNOWN
  *
- * Step 3 exists because the uncap is persistent DRIVE state: a previous
- * session, or another tool entirely, can have left it on before this handle
- * existed. It is keyed per model rather than against a fixed speed, because a
- * fixed threshold is one drive's stock ceiling masquerading as a constant.
- * Models whose ceiling we have not verified in both directions resolve to
- * UNKNOWN rather than being guessed at.
+ * A third source existed until 0.8.0: an inference from max_x against a
+ * per-model stock ceiling, so that a setting left on by a previous session
+ * could be spotted without a driver. It is gone, and UNKNOWN is now the answer
+ * in that case. The uncap is reachable only through a vendor driver, and
+ * inferring an unreachable setting from a number that reports what the drive
+ * ACCEPTS rather than what it delivers produced a well-formed value that was
+ * not evidence of anything.
+ *
+ * WHAT TO USE INSTEAD, because the underlying need was real: nothing about the
+ * uncap tells you what a read will achieve. accudisc_probe_speed_ladder TIMES
+ * reads at each candidate speed and reports the rate the drive actually
+ * delivered, which is the question anyone querying this was really asking.
  *
  * max_x, if non-NULL, receives the drive's reported maximum read speed in Nx
  * (0 when it could not be read). Returns ACCUDISC_OK whenever *state was set —

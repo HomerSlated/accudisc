@@ -33,10 +33,11 @@ hardware we own, so expect them to be abandoned by default:**
 2. The read-engine throughput cap (~5× vs 12–19× raw) — "Speed control" below.
    The one most likely to be *felt*: every whole-disc read goes through it.
    **This is the ONLY remaining drive-bound item this rig can advance.**
-3. ~~Task 5's A-vs-B uncap discriminator~~ — **DROPPED 2026-08-09 by Keith**
-   (*"Is this another SpeedRead test? Because if it is, please remove it."*).
-   The limitation it would have settled is now documented at the comparison in
-   `src/drive/uncap.c`, which is where it is load-bearing.
+3. ~~Task 5's A-vs-B uncap discriminator~~ — **DISSOLVED 2026-08-09.** Dropped
+   first (*"Is this another SpeedRead test? Because if it is, please remove
+   it."*), then the whole inference behind it was removed in 0.8.0 on Keith's
+   follow-up ruling, which took the question with it. Nothing to document and
+   nothing to settle.
 4. Phase 3 ranged SET STREAMING — needs **other drives**; this one cannot
    advance it.
 5. The `device.c` latch bug — needs a drive that genuinely lacks 0xB6, i.e. not
@@ -54,12 +55,12 @@ new appears, "the read-speed session" means item 2 and the desk list below.
   waiting on a session — which is the whole point of this split.
 - Task 5c, the self-contradicting `--driver auto` advice. Pure logic.
 - Task 5d, document the `speed` / `speed-uncap` availability split.
-- Task 5b, the `LIKELY_OFF` asymmetry. An ABI decision. **Checked 2026-08-09
-  after task 1: NOT moot.** Task 1 removed the enforcement, but
-  `adsc_uncap_classify` survives by design and still returns `LIKELY_ON` or
-  `OFF` from the same comparison with the hedge on only one branch — and now
-  that nothing *enforces* on it, reporting it accurately is the whole of its
-  job.
+- ~~Task 5b, the `LIKELY_OFF` asymmetry.~~ **MOOT 2026-08-09 — and note it took
+  TWO checks to become so.** After task 1 I checked and it was still live: the
+  classifier survived, so `OFF` could still arrive by inference while being
+  documented as authoritative. The 0.8.0 removal deleted the inferring branch
+  entirely, so every value the enum can now return really is authoritative or
+  `UNKNOWN`. The asymmetry the item described no longer has a source.
 - Task 4b's residual: the cross-rung timed-window **length** term is still
   undocumented (the *radius* term was documented 2026-07-28).
 
@@ -566,9 +567,11 @@ ceiling.** Repeatable across eject/load cycles — ZZ Top (pristine) inits at 40
 - **Free damage triage.** At init, `current_x < max_x` is the drive's own quality
   verdict on the medium — an absolute, vendor-authored signal costing zero reads.
   **Caveat:** it only holds with the read-speed uncap OFF, or a pristine disc
-  reads 40 < 48 and is falsely flagged. `accudisc_speed_uncap_probe` (landed
-  2026-07-25) answers ON/OFF/LIKELY_ON/UNKNOWN without a driver attached; triage
-  built on it must treat UNKNOWN as "do not flag", never as "off".
+  reads 40 < 48 and is falsely flagged. `accudisc_speed_uncap_probe` answers
+  **ON/OFF/UNKNOWN** (`LIKELY_ON` removed 0.8.0), and **without a driver it can
+  now only say UNKNOWN** — so triage built on it must treat UNKNOWN as "do not
+  flag", never as "off", which since 0.8.0 is the common case rather than the
+  edge one.
 - **SpeedRead does NOT defeat the governor.** Measured on both discs including a
   full eject/load re-init with SpeedRead on: the ceiling holds (40x pristine, 32x
   scratched). The two act on **orthogonal axes** — the governor caps DATA RATE,
@@ -2105,10 +2108,12 @@ pre-read warning, the guard-specific assertions in `tests/test_uncap.c` and
 `allow_unsafe=` keyword.
 
 What deliberately stayed: `accudisc_speed_uncap_probe/set/get/push/pop`, the
-`speed-uncap` subcommand, `--uncap`, the stock-ceiling table and
-`adsc_uncap_classify`. **Reporting a drive's configuration is not the same as
-refusing to work in it**, and the standing goal is 100 % Plextor feature
-coverage.
+`speed-uncap` subcommand and `--uncap`. **Reporting a drive's configuration is
+not the same as refusing to work in it**, and the standing goal is 100 % Plextor
+feature coverage. (The stock-ceiling table and `adsc_uncap_classify` were also
+kept at this point, and removed a few hours later in 0.8.0 — see task 5. The
+distinction that survived both rulings: *reporting what a driver tells us* is
+legitimate; *inferring it from an advertised speed* was not.)
 
 **Two things this produced that outlive the task.** `-11` is **retired and must
 never be reused** — a consumer built before 0.6.0 maps it to "unsafe
@@ -2475,59 +2480,52 @@ So 48-vs-40 is length-clean (radius is the whole confound there, which is why th
 correction above is complete), but **any rule spanning 48 down to 4 compares rungs
 differing in radius *and* in timed span**, and the second effect is unmeasured.
 
-### 5. Stock-ceiling table — CLOSED 2026-08-09. The A-vs-B discriminator is DROPPED by Keith.
+### 5. Stock-ceiling table and the whole driver-free inference — REMOVED 2026-08-09 (0.8.0)
 
-**Keith, 2026-08-09:** *"Is this another SpeedRead test? Because if it is, please
-remove it."* It was. Dropped, and not to be reopened without a new reason that is
-not "we could find out".
+**Keith's second ruling, after reading our explanation of the A-vs-B item.**
+Three corrections, and the middle one is a directive about the code rather than
+about the backlog:
 
-**It was never a timed speed test** — nothing in it reads a disc against a clock;
-it is a mode-page-2A reading under a swapped disc. But it is a test *about
-SpeedRead*, and the ruling covers it.
+1. *"The drive is physically incapable of reading CD-RW Audio at > 32x. The
+   governor enforces that, regardless of what is requested. The page2a value is
+   the request, not the throughput."*
+2. *"You should neither be querying nor returning a value for something that is
+   unreachable without a driver. And you certainly shouldn't be inferring it.
+   The existence, accessibility, and value of the SpeedRead setting is
+   completely irrelevant. You request a speed, and the governor tells you what
+   you can have. That is your authoritative data."*
+3. The "we silently permit a read we believe corrupts Q" framing was **already
+   false** — CD-DA cannot be read at 48x on this drive, the governor quantizes
+   silently, and the throughput ladder confirms it.
 
-**The severity was inherited from a consumer that no longer exists.** This entry
-called mechanism B a *"silent false negative on the safety value"*, and that was
-accurate while `LIKELY_ON` gated the subchannel refusal. Task 1 removed that
-refusal (0.6.0), so nothing makes a safety decision from the classifier any more.
-The worst case collapsed from "we permit a read we believe corrupts Q" to "a
-status line reads OFF while the uncap is ON" — about a setting since established
-not to harm CD-DA reads at all. That is not worth acquiring media for. **Note the
-severity fell without anyone re-examining this entry; a hazard rating is a
-property of the consumer, not of the code.**
+**So the entire inference is gone, not just the open question about it.**
+Removed: `stock_ceilings[]`, `adsc_uncap_classify`, and
+`ACCUDISC_UNCAP_LIKELY_ON` (enum value **2, retired, never to be reused**).
+`accudisc_speed_uncap_probe` still reports `max_x` — handed back verbatim as a
+reported figure — but draws no verdict from it. With no driver and no set of our
+own, the answer is `UNKNOWN`, which is the truth.
 
-**What we know, and it is most of it.** With the uncap OFF, `max_x` is
-media-invariant: 40 across audio (Tracy), data (closed CD-R, Taiyo Yuden, profile
-0x0009) and an empty tray. `stock_ceilings[]` records the **stock** ceiling, which
-*is* the uncap-off value, so one row per model is correct and `(model)` stays the
-key. No code change was ever indicated.
+**Why this was wrong at the root, and it is worth keeping.** The comparison was
+`max_x > stock_x`, and `max_x` is what the drive **accepts**, never what it
+delivers. A raised advertised maximum was therefore not evidence about the
+drive's behaviour at all — so no amount of care with the threshold, the table,
+or that strict `>` could have made it sound. **A well-tested inference from the
+wrong quantity still passes its tests:** the deleted table tests were good ones
+(they correctly enforced "unknown model → UNKNOWN, never OFF", guarding a real
+prior defect where a bare `max_x > 40` answered confidently about every drive in
+the world), and not one of them could see that the quantity did not answer the
+question. That is [[silent-narrowing]] one level up — a right value about the
+wrong thing.
 
-**What stays unvalidated, stated in the code rather than left in a backlog.**
-With the uncap ON, whether page-2A `max_x` reports the drive's data ceiling (A) or
-the loaded medium's class lifted by one (B) is undetermined, because every disc we
-own reads 48 under both. Only a CD-RW audio disc separates them, and under B it
-would yield 40, making `uncap.c`'s strict `>` return `UNCAP_OFF` while the uncap
-is on. `src/drive/uncap.c` now carries that limitation at the comparison itself,
-where someone changing the operator will see it.
+**And the A-vs-B question dissolved rather than being answered.** It only
+existed because the comparison existed. No table, no boundary, no unvalidated
+`>`, no CD-RW audio disc to acquire. Retracted with cdda2img (§2026-08-09b) so
+they do not spend a disc on it either.
 
-<details><summary>The full A-vs-B analysis, kept because the reasoning error inside it is instructive</summary>
-
-*The invalid step, kept as a worked example of the house failure mode:* all the
-measurements were taken with the uncap **OFF**, and a conclusion was drawn about
-what the uncap **DOES**. B is defined (cdda2img §bg.2) as "the uncap lifts the
-media ceiling by one class" — a claim about the *transformation*, carrying no
-commitment about the uncap-off reading. B is perfectly consistent with "stock 40
-whatever is loaded; uncapped, media ceiling + one class". A prediction B never
-made was refuted. *Accepted uncritically on this side too* (§bj.1 called their
-reasoning right), so the fault is not theirs alone: a well-formed measurement
-answering a different question than the one asked.
-
-| medium, uncap ON | A: reports data ceiling | B: media ceiling + one class | observed |
-|---|---|---|---|
-| data disc | 48 | 48 (already top) | **48** |
-| audio disc | 48 | 40 → 48 | **48** (§au.1) |
-| **CD-RW audio** | **48** | **32 → 40** | **NEVER MEASURED — and now never will be** |
-
-</details>
+**What survives, unchanged:** sources 1 and 2 (we set it through this handle; an
+attached driver answers), `speed_uncap_get/set/push/pop`, the `speed-uncap`
+subcommand and `--uncap`. Those report or change a setting through the only
+interface that actually knows it.
 
 ### 5c. The "--driver auto" advice contradicts itself when a driver WAS named — `[P2]`, DESK WORK
 
@@ -2569,20 +2567,26 @@ report overlapping numbers with **different availability envelopes** and nothing
 says so. Document in `accudisc.1` and the header; note that anything assuming it
 can query uncap state before a disc is loaded cannot.
 
-### 5b. `ACCUDISC_UNCAP_OFF` is labelled authoritative but source 3 infers it — `[P3]`, DESK WORK
+### 5b. `ACCUDISC_UNCAP_OFF` was authoritative-by-label, inferred-in-fact — MOOT 2026-08-09 (0.8.0)
 
-Found while writing §bg. `adsc_uncap_classify` (`src/drive/uncap.c:83`) returns
-`LIKELY_ON` **or** `OFF` from the same speed comparison, but only one branch
-carries the hedge: `accudisc.h:319` documents `ACCUDISC_UNCAP_OFF = 0` as
-*authoritative*, and sources 1–2 do produce it authoritatively. A consumer cannot
-tell a driver-confirmed off from a speed-inferred off — they collapse to one
-value, and there is no `LIKELY_OFF`. Independent of the media-class question
-above; the asymmetry exists even if `max_x` turns out media-invariant.
+The defect: `adsc_uncap_classify` returned `LIKELY_ON` **or** `OFF` from one
+speed comparison, but only one branch carried a hedge — `accudisc.h` documented
+`ACCUDISC_UNCAP_OFF` as *authoritative*, and sources 1–2 did produce it that
+way. A consumer could not tell a driver-confirmed off from a speed-inferred one;
+they collapsed to a single value and there was no `LIKELY_OFF`. Proposed fix was
+a fourth enum value.
 
-Cheapest fix is a fourth enum value; that is an ABI addition, so it wants the
-same treatment as any other (existing consumers must keep compiling, and
-`LIKELY_OFF` must not silently read as `OFF = 0`). cdda2img told not to build on
-the distinction yet.
+**Resolved by deletion instead, and the sequence is the point.** Checked once
+after task 1 removed the SpeedRead enforcement: still live, because the
+classifier survived the guard that consumed it. Checked again after 0.8.0
+removed the inference itself: now moot, because the branch that could produce an
+inferred `OFF` is gone. Every value the enum returns is authoritative or
+`UNKNOWN`.
+
+**Worth keeping:** two "is this moot now?" checks gave opposite answers a few
+hours apart, and both were correct at the time. A mootness judgement is only
+valid against the tree that existed when it was made — re-check rather than
+inherit, and the cheap ones are worth re-running after any removal upstream.
 
 ### 6. Phase 4 — the Python binding — FIRST CUT LANDED 2026-07-27
 

@@ -605,17 +605,26 @@ toggle it;
 .B accudisc_speed_uncap_probe()
 reports it as
 .BR ACCUDISC_UNCAP_OFF ", " ACCUDISC_UNCAP_ON
-(both authoritative),
-.B ACCUDISC_UNCAP_LIKELY_ON
-(inferred from the drive's reported maximum exceeding this model's known stock
-ceiling) or
+or
 .B ACCUDISC_UNCAP_UNKNOWN
-(no driver, and the model's stock ceiling has not been verified \(em which is
-not
-.RI \(lq off \(rq).
-The library refuses a read only on the authoritative values, because refusing
-on a guess would leave a caller unable to capture subchannel at all on a drive
-we merely fail to recognise.
+\(em the last meaning nobody who can answer has: no driver is attached and we
+did not set it through this handle. It is the absence of an answer and must not
+be read as
+.RI \(lq off \(rq.
+.IP
+A fourth value,
+.BR ACCUDISC_UNCAP_LIKELY_ON ,
+was removed in 0.8.0 along with the inference behind it, which compared the
+drive's advertised maximum read speed against a per-model stock ceiling. Mode
+page 2A reports the largest request the drive
+.BR accepts ,
+not what it delivers, and on CD\-DA the governor caps the rate regardless \(em
+so a raised maximum was never evidence about the drive's behaviour. Its
+enumerator value
+.RB ( 2 )
+is retired and must not be reused. For what a read will actually achieve, use
+.BR accudisc_probe_speed_ladder (),
+which times reads rather than reading advertisements.
 .IP
 The setting is
 .B persistent drive state:
