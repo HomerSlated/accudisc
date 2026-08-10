@@ -852,11 +852,43 @@ read-only open, not a speed matter.
   ambiguous.
 
 - ~~**`speeds`: report min/avg/max as well as the current single figure.**~~ —
-  **CODE DONE 2026-07-28, NOT YET HARDWARE-VALIDATED.** `--sweep` /
-  `points=3` landed: each rung timed at inner, middle and outer, `min=`/`max=`
-  appended, `measured=` kept as the middle band. **The acceptance test has not
-  been run** — see "What is still owed" at the end of this item. Three
-  numbers appearing is not evidence the instrument measures what it claims.
+  **DONE AND HARDWARE-VALIDATED 2026-07-28; the bands became first-class and
+  the DEFAULT at 0.9.0, 2026-08-10.** `--sweep` / `points=3` landed first: each
+  rung timed at inner, middle and outer, `min=`/`max=` appended, `measured=`
+  kept as the middle band. The acceptance-test result is at the end of this
+  item — read it rather than this line, since three numbers appearing is not
+  evidence the instrument measures what it claims.
+
+  > **This header said "NOT YET HARDWARE-VALIDATED … the acceptance test has
+  > not been run" until 2026-08-10**, contradicting the passing table 150 lines
+  > below it inside the same item, and pointing at a "What is still owed"
+  > section that had been deleted when the test passed. Recorded rather than
+  > quietly fixed: an item long enough to disagree with itself is one where the
+  > **summary at the top is the part that goes stale**, because the evidence
+  > gets appended at the bottom where it was produced. A reader who stopped at
+  > the header would have concluded the instrument was unproven.
+
+  **What 0.9.0 changed** (`accudisc_speed_rung` 14 → 20 bytes, API_PLAN §8 row
+  13): the probe was measuring three per-band rates and then discarding them,
+  publishing only `measured` (middle), `min` and `max`. `band_cx[3]` keeps
+  them, the CLI prints `inner=`/`middle=`/`outer=`, and the sweep is now what
+  a bare `speeds` does — `--quick` is the old single-band probe.
+
+  **Why the sweep had to become the default**, in one observation: Keith's bare
+  `speeds` on 2026-08-10 reported `req=40 measured=17.46` against
+  `req=32 measured=18.23`. A default that shows 32× beating 40× is displaying
+  the phantom-rung radius artefact this entire item exists to remove, and the
+  library already refuses to draw a `verdict=` from it. The confounded
+  measurement should not be the one you get for free.
+
+  **`min`/`max` are kept beside the bands, and are not redundant.** They are
+  order statistics; the bands are locations. `min == inner` only while the
+  curve rises monotonically with radius — the healthy CAV case, hence the case
+  where confusing them is invisible. The very first run after the field landed
+  produced the counter-example without being asked to: `req=8` came back
+  `inner=8.73 middle=8.02 outer=8.01`, `max` on the **inner** band. Had the CLI
+  printed `inner=min_cx` it would have passed every test written from the
+  recorded (monotonic) PX-716A vector.
 
   Decisions taken, with the reasoning, since each closed off an alternative:
 

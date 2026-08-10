@@ -44,10 +44,13 @@ static void usage(FILE *to)
         "  media          identify recordable media from ATIP:\n"
         "                 manufacturer, ATIP code, capacity, CD-R/RW\n"
         "  speeds         probe which speed settings the drive really\n"
-        "                 honours: [--start L] [--ladder LIST] [--sweep]\n"
+        "                 honours: [--start L] [--ladder LIST] [--quick]\n"
         "                 — timed streaming reads per rung; page 2A vs\n"
-        "                 measured. --sweep times each rung in each third\n"
-        "                 of the span (whole disc) and adds min=/max=\n"
+        "                 measured. Each rung is timed in each third of\n"
+        "                 the disc (inner/middle/outer) and judged into an\n"
+        "                 admitted ladder. --quick times one band per rung\n"
+        "                 instead: 3x faster, no gradient, no verdicts.\n"
+        "                 --sweep is accepted and is now the default\n"
         "  c2lag          probe the drive's C2-bitmap/audio alignment\n"
         "                 [--start L] [--count N] [--speed X] — point it at\n"
         "                 a DAMAGED span (C2 must fire); report-only\n"
@@ -625,13 +628,22 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
     uint16_t cand[16];
     uint8_t ncand = 0;
     long start = -1;
-    int sweep = 0;
+    int quick = 0;
+    int asked_sweep = 0;
 
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--start") && i + 1 < argc)
             start = strtol(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "--quick"))
+            quick = 1;
         else if (!strcmp(argv[i], "--sweep"))
-            sweep = 1;
+            /* The sweep is the default since 0.9.0. Still accepted, and
+             * silently: it is in the documented interface, and a caller
+             * that spells out what it wants should not be punished with a
+             * line of chatter on every invocation. Recorded, though —
+             * having asked for it explicitly changes what happens when the
+             * span turns out to be too small. */
+            asked_sweep = 1;
         else if (!strcmp(argv[i], "--ladder") && i + 1 < argc) {
             char *p = argv[++i];
             while (*p && ncand < 16) {
@@ -668,52 +680,98 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
             cand[ncand++] = (uint16_t)(max_x ? max_x : 1);
     }
 
-    /* Default span. Without --sweep: the middle half of the disc — a
-     * representative CAV radius, with headroom for one fresh window per
-     * rung. With --sweep the bands ARE the point, so the span opens out
-     * to the whole disc to make them inner/middle/outer rather than three
-     * samples of the same neighbourhood. --start overrides the start in
-     * both cases and keeps its existing meaning (the start of the probed
-     * span, never a centre point). */
-    uint32_t lba = start >= 0 ? (uint32_t)start : (sweep ? 0 : toc.leadout_lba / 4);
-    uint32_t count = toc.leadout_lba > lba ? toc.leadout_lba - lba : 0;
-    if (!sweep && count > toc.leadout_lba / 2 && start < 0)
-        count = toc.leadout_lba / 2;
-
     /* Three bands. Deliberately a statement rather than a conditional
      * expression: tests/exit_codes.sh scans this file for exit-code
      * ternaries by shape, and a ternary yielding 3 here is
      * indistinguishable from one no matter what it means. Keeping the
      * band count out of that shape keeps the scan honest. */
-    uint8_t points = 1;
-    if (sweep)
-        points = 3;
+    uint8_t points = 3;
+    if (quick)
+        points = 1;
 
-    /* The bands are inner/middle/outer of the PROBED SPAN, which is the
-     * whole disc only by default. --start narrows it, and three bands of
-     * the last sixth of a disc are still three well-formed numbers with
-     * nothing to mark them as local — so say what was actually measured
-     * rather than let the word "outer" stand unqualified. */
-    if (sweep && start >= 0)
-        fprintf(stderr, "accudisc: speeds: --sweep bands are thirds of the "
-                        "probed span (LBA %u..%u), not of the disc\n",
-                lba, lba + count);
+    /* Default span, which follows from the band count. At points == 3 the
+     * bands ARE the point, so the span is the whole disc to make them
+     * inner/middle/outer rather than three samples of one neighbourhood;
+     * --quick takes the middle half, a representative CAV radius with
+     * headroom for one fresh window per rung. --start overrides the start
+     * in both cases and keeps its existing meaning (the start of the
+     * probed span, never a centre point). */
+    uint32_t lba = start >= 0 ? (uint32_t)start : (quick ? toc.leadout_lba / 4 : 0);
+    uint32_t count = toc.leadout_lba > lba ? toc.leadout_lba - lba : 0;
+    if (quick && count > toc.leadout_lba / 2 && start < 0)
+        count = toc.leadout_lba / 2;
 
     accudisc_speed_rung rungs[16];
     err = accudisc_probe_speed_ladder(dev, lba, count, cand, ncand, points,
                                       rungs);
-    if (err == ACCUDISC_ERR_INVAL && sweep)
+
+    /* Too many rungs for the span. The probe refuses at the layout stage,
+     * before it touches the drive, so a retry costs nothing.
+     *
+     * Which way to go depends on who asked for the sweep, and the split is
+     * not a hedge. Typing --sweep is a request for the bands; narrowing it
+     * to one band would hand back a well-formed table answering a smaller
+     * question, which is the failure mode this whole probe exists to
+     * avoid — so that stays a refusal. Getting the sweep by DEFAULT is not
+     * a request for anything, and the fall-back is visible in the output
+     * rather than silent: no band figures, no verdict=, no ladder line. */
+    if (err == ACCUDISC_ERR_INVAL && points > 1 && !asked_sweep) {
+        /* "Retrying", not "falling back to": the retry can fail too — one
+         * band per rung still has to fit — and a message in the past tense
+         * ahead of an error would read as the fallback having worked. */
+        fprintf(stderr, "accudisc: speeds: %u rungs x 3 bands do not fit in "
+                        "%u sectors — retrying with one band per rung, which "
+                        "gives no gradient and no admitted ladder (or drop "
+                        "rungs with --ladder, or widen the span)\n",
+                ncand, count);
+        points = 1;
+        err = accudisc_probe_speed_ladder(dev, lba, count, cand, ncand,
+                                          points, rungs);
+    } else if (err == ACCUDISC_ERR_INVAL && points > 1) {
         fprintf(stderr, "accudisc: speeds: --sweep needs a larger span — "
                         "%u rungs x 3 bands do not fit in %u sectors "
-                        "(drop rungs with --ladder, or widen with "
-                        "--start)\n", ncand, count);
+                        "(drop rungs with --ladder, widen with --start, "
+                        "or accept one band with --quick)\n", ncand, count);
+    }
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "speed probe", err);
+
+    /* The bands are thirds of the PROBED SPAN, which is the whole disc only
+     * by default. --start narrows it, and three bands of the last sixth of a
+     * disc are still three well-formed numbers with nothing to mark them as
+     * local — so say what was actually measured rather than let the word
+     * "outer" stand unqualified. Emitted here, after the probe, so it is
+     * tied to output that actually carries band names: a run that fell back
+     * to one band prints no inner=/outer= to caveat. */
+    if (points > 1 && start >= 0)
+        fprintf(stderr, "accudisc: speeds: inner/middle/outer are thirds of "
+                        "the probed span (LBA %u..%u), not of the disc\n",
+                lba, lba + count);
 
     for (uint8_t i = 0; i < ncand; i++) {
         printf("speed req=%u page2a=%u measured=%u.%02u",
                rungs[i].requested_x, rungs[i].reported_x,
                rungs[i].measured_cx / 100, rungs[i].measured_cx % 100);
+        /* The per-band figures, named by WHERE they were taken. Only at
+         * points == 3 do the names mean anything: one band is not the
+         * inner third of anything, and calling it `inner=` would be a
+         * geometric claim about a window chosen for cache-freshness.
+         *
+         * Each band stands alone — an exact figure for one place — so a
+         * band that failed drops its own token and leaves its neighbours
+         * printed. That is the opposite of the min/max rule below, and
+         * deliberately: a RANGE over two of three bands is a narrower
+         * claim wearing the same shape, while `inner=` over the inner
+         * band is just true. */
+        if (points > 1) {
+            static const char *const bname[3] = { "inner", "middle", "outer" };
+
+            for (uint8_t b = 0; b < 3; b++)
+                if (rungs[i].band_cx[b])
+                    printf(" %s=%u.%02u", bname[b],
+                           rungs[i].band_cx[b] / 100,
+                           rungs[i].band_cx[b] % 100);
+        }
         /* min/max are printed only when a gradient was actually
          * measured. Their absence says "not measured", which a printed
          * 0.00 would not — it would read as a rung that stalled. */

@@ -41,6 +41,17 @@ static void ck(int cond, const char *what)
  * than something a new field does quietly. */
 _Static_assert(sizeof(accudisc_chunk) == 32, "accudisc_chunk grew: soname bump");
 
+/* FROZEN for a sharper reason: accudisc_speed_rung is an OUT ARRAY with no
+ * size field, so its size is the STRIDE the library writes at. A caller built
+ * against a smaller version does not get truncated rows, it gets its buffer
+ * walked past the end — the one growth in this header where the failure is
+ * memory corruption rather than a wrong number. It went 6 -> 10 -> 14 -> 20;
+ * every one of those was a hard break requiring both sides rebuilt, and this
+ * assertion is here so the next one cannot happen without saying so. */
+_Static_assert(sizeof(accudisc_speed_rung) == 20,
+               "accudisc_speed_rung grew: hard ABI break, rebuild every "
+               "consumer and say so in API_PLAN §8");
+
 /* NOT frozen — these two are allowed to grow; that is what the size field is
  * for. Pinned only so that growing them is *noticed*: a new field here means
  * updating the number below, bumping ACCUDISC_VERSION_MINOR so the .so version

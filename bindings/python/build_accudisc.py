@@ -495,6 +495,7 @@ typedef struct accudisc_speed_rung {
     uint16_t max_cx;
     uint16_t equiv_x;
     uint8_t  verdict;
+    uint16_t band_cx[3];
     ...;
 } accudisc_speed_rung;
 

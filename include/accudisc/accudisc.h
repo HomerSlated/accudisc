@@ -27,7 +27,15 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 8 /* 0.8.0: SUBTRACTIVE. Removed the uncap's
+#define ACCUDISC_VERSION_MINOR 9 /* 0.9.0: accudisc_speed_rung gained band_cx[3]
+                                  * — the per-radius figures the sweep already
+                                  * measured and then threw away, keeping only
+                                  * their min and max. 14 -> 20 bytes. THIS IS A
+                                  * HARD BREAK: the rung is an OUT ARRAY with no
+                                  * size field, so a caller allocating 14-byte
+                                  * elements against a 20-byte library is
+                                  * overrun, not truncated. Rebuild both sides.
+                                  * 0.8.0: SUBTRACTIVE. Removed the uncap's
                                   * driver-free INFERENCE — the stock-ceiling
                                   * table, adsc_uncap_classify, and the
                                   * ACCUDISC_UNCAP_LIKELY_ON value it returned
@@ -1186,6 +1194,13 @@ ACCUDISC_API int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba,
  *   points == 3. It is the same quantity in both cases, and the same
  *   quantity it has always been.
  *
+ * - band_cx[] is where to read the shape. measured_cx/min_cx/max_cx are
+ *   three summaries of it and cannot be inverted back into it: min and max
+ *   say how far the rate moved, never WHERE it was fastest. On a healthy
+ *   CAV rung that is a distinction without a difference — and that is the
+ *   point, because a run where it does make a difference is a run where
+ *   something happened that the summaries silently absorb.
+ *
  * - CROSS-RUNG COMPARISON CARRIES A RADIUS TERM. Rungs are laid out along
  *   the span, so rung i and rung j are measured at different radii, and on
  *   a CAV drive radius alone changes the rate. With the conventional
@@ -1265,6 +1280,30 @@ typedef struct accudisc_speed_rung {
     uint16_t equiv_x;      /* for DUPLICATE/QUANTIZED: the rung this one
                             * collapses onto. 0 otherwise. */
     uint8_t  verdict;      /* ACCUDISC_RUNG_* */
+    uint16_t band_cx[3];   /* the rate in each band, centi-x, IN SPAN ORDER:
+                            * [0] lowest LBA, [2] highest. With a whole-disc
+                            * span that is inner/middle/outer. 0 = that band
+                            * did not measure; at points == 1 only [0] is
+                            * filled and it holds the same figure as
+                            * measured_cx.
+                            *
+                            * NOT interchangeable with min_cx/max_cx, and the
+                            * difference is the reason this field exists.
+                            * min/max are ORDER STATISTICS, these are
+                            * LOCATIONS. They coincide only while the curve
+                            * rises monotonically with radius — which is the
+                            * normal CAV case and therefore exactly the case
+                            * that would hide a mix-up. When they disagree
+                            * (a governor step part-way across the disc, one
+                            * cache-served band, another process on the bus)
+                            * the disagreement is itself the finding, and it
+                            * is unreachable from min/max alone.
+                            *
+                            * min_cx/max_cx keep their all-or-nothing rule:
+                            * one failed band withdraws the pair. A band
+                            * figure is an exact claim about one band, so it
+                            * stands on its own and is reported whether or
+                            * not its neighbours did. */
 } accudisc_speed_rung;
 
 ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,

@@ -2,7 +2,7 @@
 .\" SPDX-License-Identifier: MIT
 .\" Manual page for libaccudisc, the AccuDisc public C API.
 .\" Requires the tbl(1) preprocessor (see the '\" t line above).
-.TH ACCUDISC 8 "2026-07-29" "AccuDisc 0.4.0" "AccuDisc Library Reference"
+.TH ACCUDISC 8 "2026-08-10" "AccuDisc 0.9.0" "AccuDisc Library Reference"
 .SH NAME
 libaccudisc, accudisc \- AccuDisc CD\-DA capture and recording library
 .SH SYNOPSIS
@@ -39,7 +39,7 @@ as do the absolute verification gates (AccurateRip, CTDB).
 .SH VERSIONING
 .nf
 .B #define ACCUDISC_VERSION_MAJOR 0
-.B #define ACCUDISC_VERSION_MINOR 3
+.B #define ACCUDISC_VERSION_MINOR 9
 .B #define ACCUDISC_VERSION_PATCH 0
 .PP
 .B const char *accudisc_version_string(void);
@@ -48,8 +48,23 @@ as do the absolute verification gates (AccurateRip, CTDB).
 .PP
 The macros describe the header a caller compiled against; the functions report
 the library actually linked. Comparing them detects header/library skew. The
-current version is 0.4.0 and the soname remains
+current version is 0.9.0 and the soname remains
 .IR libaccudisc.so.0 .
+.PP
+Compare the
+.B full triple,
+not
+.IR major.minor .
+Three layout changes once landed inside a single 0.2.0 \(em
+.B accudisc_speed_rung
+went 6 \(-> 10 bytes and
+.B accudisc_write_opts
+gained a size field \(em so a binding compiled against one of them and loaded
+against another compared equal and found nothing wrong. The lesson is not that
+the check was too coarse: a version check of any granularity is worth exactly
+what the discipline of bumping it is worth, and never substitutes for the
+per-struct size guards described under
+.BR "ABI SIZE NEGOTIATION" .
 .SH ERROR MODEL
 Every fallible function returns
 .B ACCUDISC_OK
@@ -184,8 +199,9 @@ not with the caller's runtime free. Everything else is caller-allocated.
 and
 .B accudisc_read_stats
 are caller-allocated, transparent, cross FFI boundaries, and have both grown in
-place across this project's history (the request 32 \(-> 40 \(-> 56 bytes, the
-stats 80 \(-> 104 \(-> 128). The CLI never noticed, because it is rebuilt with
+place across this project's history (the request 32 \(-> 40 \(-> 56 \(-> 64
+bytes, the stats 80 \(-> 104 \(-> 128 \(-> 136 \(-> 144). The CLI never
+noticed, because it is rebuilt with
 the library. A binding compiled against one header and loaded against a
 different shared object would have run off the end of a struct \(em in the worst
 case reading garbage into a safety flag, producing well-formed data with the
@@ -243,11 +259,30 @@ as some released header saw it.
 Structs that do
 .I not
 carry a size are frozen: growing one is a soname bump, and the test suite pins
-their sizes so that growth cannot happen by accident.
+their sizes so that growth cannot happen by accident. There are two, and the
+hazard is different in each.
+.TP
 .B accudisc_chunk
-is the one that matters, because there the hazard runs the other way \(em the
-library allocates it and the sink reads it. It has been 32 bytes since it was
-introduced.
+The library allocates it and the caller's sink reads it, so the hazard runs the
+opposite way from
+.B accudisc_read_req
+and a size field would not help. 32 bytes since it was introduced.
+.TP
+.B accudisc_speed_rung
+An OUT
+.B array,
+which makes its size the
+.I stride
+the library writes at. A caller built against a smaller version does not get
+truncated rows \(em it gets its buffer written past the end. This is the one
+growth in the library where the failure is memory corruption rather than a
+wrong number, and no run-time check can catch it: there is no size field to
+disagree about, and the first element looks correct. It has gone 6 \(-> 10
+\(-> 14 \(-> 20 bytes (0.9.0 added
+.BR band_cx [3]),
+and every one of those required both sides rebuilt together. Bindings pin
+.BR sizeof ()
+so a stale extension fails at import rather than mid-probe.
 .SH READING
 .nf
 .B int accudisc_read_cdda(accudisc_device *dev,

@@ -2,7 +2,7 @@
 .\" SPDX-License-Identifier: MIT
 .\" Manual page for the accudisc command-line tool.
 .\" Requires the tbl(1) preprocessor (see the '\" t line above).
-.TH ACCUDISC 1 "2026-07-29" "AccuDisc 0.4.0" "User Commands"
+.TH ACCUDISC 1 "2026-08-10" "AccuDisc 0.9.0" "User Commands"
 .SH NAME
 accudisc \- precision Red Book CD\-DA reader and writer
 .SH SYNOPSIS
@@ -235,7 +235,7 @@ quantized  asked 16x, drive adopted 8x \(em this drive's ladder has no 16x rung
 .PP
 The line is absent when the request is honoured, so its presence is the
 signal. See
-.B speeds \-\-sweep
+.B speeds
 for the whole ladder in advance, including which settings are real rungs.
 .RS 4
 .TP
@@ -306,16 +306,42 @@ Probe which speed settings the drive really honours, by timed streaming reads
 at each rung. One line per candidate:
 .PP
 .RS 4
-speed req=<x> page2a=<x> measured=<x.xx> [min=<x.xx> max=<x.xx>]
+speed req=<x> page2a=<x> measured=<x.xx> [inner= middle= outer=] [min= max=]
 .RE
 .PP
 .I measured
 is ground truth;
 .I page2a
 is shown so quantization and clamping are visible. Every rung gets its own
-cache-fresh window, disjoint from every other. On a CAV drive the measured rate
-is radius-dependent, so the default probe location is the middle half of the
-disc. The drive is left at the last candidate tested.
+cache-fresh window, disjoint from every other. The drive is left at the last
+candidate tested.
+.PP
+By default each rung is timed three times \(em once in each third of the disc
+\(em and reported as
+.IR inner ", " middle " and " outer ,
+because on a CAV drive the rate is radius-dependent and a single figure carries
+a radius term it cannot declare.
+.I measured
+is the
+.I middle
+band, the same quantity it has always been. See
+.B \-\-quick
+for the single-band probe.
+.PP
+.I min
+and
+.I max
+are the slowest and fastest of the three. They are
+.B order statistics, not locations,
+and they are printed alongside the named bands rather than in place of them
+because the difference is only invisible while the curve rises monotonically
+with radius \(em which is the ordinary case and therefore the one that would
+hide a mix-up. When a governor step part-way across the disc, a cache-served
+band, or another process on the bus disturbs a rung,
+.I min
+is no longer
+.IR inner ,
+and that disagreement is itself the finding.
 .PP
 Because the rungs are laid out along the probed span, a comparison
 .I between
@@ -325,8 +351,11 @@ inversion as unproven rather than measured.
 .RS 4
 .TP
 .BI \-\-start " LBA"
-Where to probe. Default: one quarter of the way into the disc, or 0 under
-.BR \-\-sweep .
+Where to probe. Default: 0, or one quarter of the way into the disc under
+.BR \-\-quick .
+Narrowing the span makes the bands thirds of whatever was probed rather than
+of the disc, which is noted on stderr \(em three bands of the last sixth of a
+disc are still three well-formed numbers with nothing to mark them as local.
 .TP
 .BI \-\-ladder " LIST"
 Comma-separated candidate speeds, at most 16, e.g.
@@ -334,35 +363,36 @@ Comma-separated candidate speeds, at most 16, e.g.
 Default: 52,48,40,32,24,16,8,4 filtered to those at or below the drive's page
 2A maximum.
 .TP
-.B \-\-sweep
-Time every rung three times \(em once in each third of the probed span \(em and
-append
-.I min
-and
-.I max
-to each line. The span defaults to the whole disc under this flag, which is what
-makes the three bands inner, middle and outer;
-.B \-\-start
-narrows it, and the bands are then thirds of whatever was probed, which is
-noted on stderr.
+.B \-\-quick
+Time each rung once, in the middle half of the disc, instead of once per third.
+Three times faster, and it reports
 .I measured
-continues to report the middle band, so it is the same quantity with or without
-this flag. Unlike the cross-rung comparison above, the spread
+alone: no
+.IR inner / middle / outer ,
+no
+.IR min / max ,
+no verdicts and no admitted ladder. This was the default before 0.9.0.
+.B \-\-sweep
+is still accepted and now selects the default, which is the sweep.
+.IP
+A probe that cannot fit three bands per rung in the span falls back to this
+automatically and says so, since the loss is visible in the output. Asking for
+the sweep explicitly is refused instead of narrowed.
+.PP
+Unlike the cross-rung comparison above, the spread
 .I within
 a rung is sound: the three bands are equally spaced for every rung, the timed
 length is identical across them, and one speed setting covers all three. On a
 CAV rung that spread is the CAV curve itself, so a rung that comes out flat is
-either clamped to CLV or is not being measured properly. Costs three times the
-probe time, widens the span to the whole disc, and needs room for every
-rung in every band \(em too many rungs in too small a span is refused rather
-than measured with overlapping windows. Absent
+either clamped to CLV or is not being measured properly. Absent
 .I min
 and
 .I max
 on a line mean no gradient was obtained for that rung, which is not the same as
-a gradient of zero.
-.IP
-This flag also decides which settings are
+a gradient of zero \(em and unlike them, a single band figure stands alone, so
+a band that failed drops only its own token.
+.PP
+The sweep also decides which settings are
 .I real
 rungs, appending
 .I verdict=admitted
@@ -662,7 +692,7 @@ proceeds at the lower rate.
 .B \-q
 does not suppress it: a read running at half the requested speed is a
 data\-integrity notice, and quiet means no human is watching. Use
-.B speeds \-\-sweep
+.B speeds
 to learn which settings are real rungs before choosing one.
 .TP
 .B \-\-uncap

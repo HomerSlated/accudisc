@@ -593,6 +593,19 @@ message when the rewrite lands. Do not dribble it out.
 
 | 12 | **The uncap's driver-free INFERENCE is gone.** Removed `stock_ceilings[]`, `adsc_uncap_classify`, and `ACCUDISC_UNCAP_LIKELY_ON` (**enum value 2, retired**). `accudisc_speed_uncap_probe` still reports `max_x` but draws no verdict from it; with no driver the answer is now `UNKNOWN`. **Version 0.7.0 → 0.8.0** | **DONE 2026-08-09** | **Only for code switching on `accudisc_uncap_state`.** No struct moved. `UNKNOWN` is pinned at **3** so the hole cannot close by sliding. A consumer that treated `LIKELY_ON` as "on" now sees `UNKNOWN` in that case and must not read it as "off" — but cdda2img references none of these symbols (grepped 2026-08-09) |
 
+| 13 | `accudisc_speed_rung` gains `band_cx[3]` — the per-radius rates the sweep already measured and discarded, keeping only their min and max (14 → **20** bytes). CLI: `speeds` prints `inner=`/`middle=`/`outer=` and **the three-band sweep is now the DEFAULT**, with `--quick` for the old single-band probe and `--sweep` accepted as a no-op. Python: `SpeedRung.bands_cx`/`bands_x`/`monotonic` + `features` name `speed_bands`. **Version 0.8.0 → 0.9.0** | **DONE 2026-08-10** | **YES — a HARD ABI BREAK, the worst-shaped one in this table.** The rung is an OUT **ARRAY** with no `size` field, so its size *is* the stride: a caller that allocates 14-byte elements and calls a 20-byte library has its buffer written past the end. Not truncation, not a wrong number — memory corruption, and nothing at runtime catches it. Rebuild the binding (`pip install` the new wheel) before running anything against 0.9.0; `tests/test_binding.py` pins `sizeof` so a stale extension fails at import rather than in the middle of a probe. **Two behavioural changes on top of the ABI**: their `speeds` regex must treat `inner=`/`middle=`/`outer=` as appended optional keys, and **`measured=`'s VALUE moves** on a default invocation (the span opened from the middle half to the whole disc, so it is now the middle *third of the disc*) — same quantity, different place; `--quick` reproduces the old figure |
+
+**Row 13 keeps `min_cx`/`max_cx` alongside the bands, and the redundancy is
+deliberate.** They are not the same claim: min/max are ORDER STATISTICS, the
+bands are LOCATIONS, and they coincide only while the rate rises monotonically
+with radius. That is the healthy CAV case, so it is precisely the case in which
+substituting one for the other is invisible — printing `inner=min_cx` would have
+passed every test built from the recorded PX-716A vector, which is monotonic.
+The first hardware run after the field landed produced the counter-example
+unprompted: a `req=8` rung came back `inner=8.73 middle=8.02 outer=8.01`, so
+`max` was the **inner** band. Keeping both is also what lets a consumer detect
+that, which no summary can.
+
 **Row 12 is the second subtractive change, and its lesson is not the removal.**
 The inference was thoroughly tested — a per-model table, UNKNOWN for unrecognised
 drives, INQUIRY padding handled, the works — and every one of those tests was

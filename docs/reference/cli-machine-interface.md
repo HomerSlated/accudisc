@@ -239,48 +239,66 @@ measurement of the same drive by cdda2img.
 One line per candidate rung (tokens; new keys may be appended):
 
 ```
-speed req=<x> page2a=<x> measured=<x.xx> [min=<x.xx> max=<x.xx>]
+speed req=<x> page2a=<x> measured=<x.xx> [inner=<x.xx> middle=<x.xx> outer=<x.xx>] [min=<x.xx> max=<x.xx>]
 ```
 
 `req` = the setting asked for, `page2a` = what mode page 2A reports after
 the set (0 = unavailable), `measured` = achieved rate from a timed
 streaming read at that rung's own cache-fresh window. `measured` is the
 ground truth; `page2a` is shown so quantization/clamping is visible (e.g.
-a drive snapping req=16 to 8). Measured rates are radius-dependent on CAV
-drives (default probe location: the middle half of the disc). The drive is
-left at the last candidate tested. Rungs with equal `measured` are one
-rung for ladder purposes.
+a drive snapping req=16 to 8). The drive is left at the last candidate
+tested. Rungs with equal `measured` are one rung for ladder purposes.
 
-`min`/`max` are appended by `--sweep` (added 2026-07-28), which times each
-rung once in each third of the probed span instead of once overall. Under
-this flag the span defaults to the whole disc, which is what makes those
-thirds inner/middle/outer; `--start` narrows it and the bands become thirds
-of the narrowed span, noted on stderr. Three points that parsers must not
-get wrong:
+**The three-band sweep is the DEFAULT as of 0.9.0.** Each rung is timed
+once in each third of the probed span, which defaults to the whole disc —
+so the thirds are inner/middle/outer. `--start` narrows the span and the
+bands become thirds of the narrowed span, noted on stderr. `--sweep` is
+still accepted and now selects the default; `--quick` is the old
+single-band behaviour (3x faster, and `measured` is then the only rate
+token on the line).
 
-- **`measured` is unchanged, in both senses.** Under `--sweep` it reports
+`inner`/`middle`/`outer` were added at 0.9.0 and are the per-band figures
+themselves. Four points that parsers must not get wrong:
+
+- **`measured` is unchanged, in both senses.** Under the sweep it reports
   the *middle* band — the same quantity it has always reported, not the
   mean of the three. Appending keys is within this document's stability
   guarantee; silently redefining `measured` would not be, so it was not
-  done.
-- **`min`/`max` appear per line, not per invocation.** A rung whose bands
-  did not all produce a measurement omits them. Absence means "no gradient
-  obtained", which a printed `0.00` would have made indistinguishable from
-  a stalled rung. Parse them as optional.
-- **Compare `min`/`max` within a rung, never across rungs.** The rungs sit
-  at different radii, so cross-rung comparison carries a radius term that
-  runs against the fast rungs under the default descending ladder. The
-  within-rung spread is the sound one: equal band spacing, identical timed
-  length, one speed setting.
+  done. **Its VALUE moved at 0.9.0** because the default span opened from
+  the middle half to the whole disc, and the middle third of the disc is
+  not the middle of the middle half. That is a different measurement
+  location, not a different quantity; `--quick` reproduces the old figure.
+- **`min`/`max` are ORDER STATISTICS; `inner`/`middle`/`outer` are
+  LOCATIONS.** They are both printed because they are not the same claim.
+  `min == inner` and `max == outer` only while the rate rises monotonically
+  with radius, which is the healthy CAV case and therefore exactly the case
+  in which a mix-up is invisible. Measured on the PX-716A the day the field
+  landed: a `req=8` rung came back `inner=8.73 middle=8.02 outer=8.01`, so
+  `max` was the *inner* band. **Never label `min` as the inner figure.**
+- **All four band-derived keys appear per line, not per invocation — but
+  under different rules.** `min`/`max` are withdrawn as a *pair* if any
+  band failed, because a range over two of three bands is a narrower claim
+  wearing the same shape. A band key is dropped *individually*, because a
+  rate for one place is an exact claim that does not need its neighbours.
+  Absence always means "not measured", which a printed `0.00` would have
+  made indistinguishable from a stalled rung. Parse all four as optional.
+- **Compare within a rung, never across rungs.** The rungs sit at different
+  radii, so cross-rung comparison carries a radius term that runs against
+  the fast rungs under the default descending ladder. The within-rung
+  spread is the sound one: equal band spacing, identical timed length, one
+  speed setting.
 
-Exit status is unaffected. `--sweep` costs 3x the probe time and needs a
-span large enough for every rung in every band; too many rungs in too small
-a span exits 2 with a stderr message rather than measuring overlapping
-windows.
+Exit status is unaffected. The sweep costs 3x the probe time and needs a
+span large enough for every rung in every band. When the *default* sweep
+does not fit, the probe retries at one band per rung and says so on stderr
+— the loss is visible in the output, since the band keys, `verdict=` and
+the `ladder admitted=` line all disappear. When `--sweep` was typed
+explicitly it exits 2 instead: narrowing an explicit request would return a
+well-formed table answering a smaller question.
 
-### The admitted ladder (`--sweep` only, added 2026-07-28)
+### The admitted ladder (added 2026-07-28; default since 0.9.0)
 
-`--sweep` also appends `verdict=` per rung and emits one summary line:
+The sweep also appends `verdict=` per rung and emits one summary line:
 
 ```
 speed req=<x> … verdict=admitted
@@ -298,9 +316,10 @@ measured materially faster than the next lower admitted rung.
 
 - **`ladder admitted=` is the line to consume.** Same order as the input
   ladder, so the default comes back fastest-first, ready to step down. It
-  prints `none` if nothing was admitted; it is **absent entirely** without
-  `--sweep`, as are all `verdict=` tokens, because a verdict from point
-  samples is a guess. Do not treat a missing ladder line as an empty ladder.
+  prints `none` if nothing was admitted; it is **absent entirely** under
+  `--quick` (or when the default sweep fell back to one band), as are all
+  `verdict=` tokens, because a verdict from point samples is a guess. Do not
+  treat a missing ladder line as an empty ladder.
 - **Verdicts are per disc, not per drive.** A rung admitted on a short disc
   may be unreachable on a longer one, and media whose rate falls off toward
   the outer edge (observed on a CD-R here) can invalidate a rung admitted
@@ -311,7 +330,7 @@ measured materially faster than the next lower admitted rung.
 
 ### Quantization is also reported outside `speeds` (added 2026-08-09)
 
-`speeds --sweep` tells you the whole ladder in advance. These two say so at
+`speeds` tells you the whole ladder in advance. These two say so at
 the moment it happens, for a caller that just sets a speed and reads:
 
 - **`speed X`** prints an extra stdout line when the drive adopts less than
@@ -348,8 +367,8 @@ own rule. Two supported ways to get the same fact programmatically:
   request was honoured": nothing asked, the set failed, or page 2A did not read
   back. Test `honoured && honoured < requested`. A bare `<` reports a missing
   answer as quantized; assuming equality means honoured reports it as fine.
-- **`speeds --sweep`'s `verdict=quantized:<x>`** — the whole ladder in advance,
-  per rung, before committing to a read.
+- **`speeds`' `verdict=quantized:<x>`** — the whole ladder in advance, per
+  rung, before committing to a read.
 
 ## `write` output
 

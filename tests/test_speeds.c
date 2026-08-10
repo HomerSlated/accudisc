@@ -83,15 +83,23 @@ static void check_disjoint(uint32_t count, uint8_t ncand, uint8_t points,
  * the cross-rung radius term, and invented numbers would let a rule that
  * ignores it pass.
  */
+
+/* band_cx is left {0,0,0} throughout this file on purpose. The run predates
+ * the field, so its per-band figures were never recorded — and filling them
+ * in from min/max would be inventing data, since that mapping holds only
+ * while the curve is monotonic, which is the very assumption band_cx exists
+ * to stop us baking in. adsc_speeds_admit reads min_cx/max_cx and never the
+ * bands, so a zeroed field here is a fact about the vector, not a gap in the
+ * coverage. */
 static accudisc_speed_rung tracy[] = {
     /* req  page2a  measured  min    max  */
-    { 48, 48, 2301, 1715, 2767, 0, 0 },
-    { 40, 40, 2373, 1808, 2828, 0, 0 },
-    { 32, 32, 1955, 1514, 2309, 0, 0 },
-    { 24, 24, 1498, 1175, 1757, 0, 0 },
-    { 16,  8,  801,  801,  801, 0, 0 },
-    {  8,  8,  801,  800,  801, 0, 0 },
-    {  4,  4,  401,  401,  401, 0, 0 },
+    { 48, 48, 2301, 1715, 2767, 0, 0, {0, 0, 0} },
+    { 40, 40, 2373, 1808, 2828, 0, 0, {0, 0, 0} },
+    { 32, 32, 1955, 1514, 2309, 0, 0, {0, 0, 0} },
+    { 24, 24, 1498, 1175, 1757, 0, 0, {0, 0, 0} },
+    { 16,  8,  801,  801,  801, 0, 0, {0, 0, 0} },
+    {  8,  8,  801,  800,  801, 0, 0, {0, 0, 0} },
+    {  4,  4,  401,  401,  401, 0, 0, {0, 0, 0} },
 };
 #define TRACY_N ((uint8_t)(sizeof tracy / sizeof tracy[0]))
 
@@ -183,8 +191,8 @@ static void admit_checks(void)
     /* page2a below the request is the drive's own statement. It must win
      * even when the measured rate would otherwise look admissible. */
     accudisc_speed_rung snap[2] = {
-        {  8,  8,  801,  800,  801, 0, 0 },
-        { 40,  8, 2373, 1808, 2828, 0, 0 }, /* absurd, but page2a says 8 */
+        {  8,  8,  801,  800,  801, 0, 0, {0, 0, 0} },
+        { 40,  8, 2373, 1808, 2828, 0, 0, {0, 0, 0} }, /* page2a says 8 */
     };
     adsc_speeds_admit(snap, 2, 3, 3);
     check(snap[1].verdict == ACCUDISC_RUNG_QUANTIZED && snap[1].equiv_x == 8,
@@ -230,8 +238,8 @@ static void admit_checks(void)
     /* And the rule must still be ABLE to say duplicate — a check that can
      * only ever pass is worthless. Two rungs at genuinely the same rate. */
     accudisc_speed_rung same[2] = {
-        { 32, 32, 1955, 1514, 2309, 0, 0 },
-        { 40, 40, 1960, 1519, 2314, 0, 0 }, /* +0.05x: nothing */
+        { 32, 32, 1955, 1514, 2309, 0, 0, {0, 0, 0} },
+        { 40, 40, 1960, 1519, 2314, 0, 0, {0, 0, 0} }, /* +0.05x: nothing */
     };
     adsc_speeds_admit(same, 2, 3, 3);
     check(same[1].verdict == ACCUDISC_RUNG_DUPLICATE && same[1].equiv_x == 32,

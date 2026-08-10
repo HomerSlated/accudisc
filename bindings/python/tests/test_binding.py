@@ -1041,11 +1041,12 @@ def test_probe_c2_lag_refuses_an_lba_past_leadout():
 # ---------------------------------------------------------------------------
 
 
-def _rung(req, rep, measured, mn, mx, equiv, verdict):
+def _rung(req, rep, measured, mn, mx, equiv, verdict, bands=(0, 0, 0)):
     """A C rung row, built in C memory so _rung_from_c sees the real layout."""
     r = ffi.new("accudisc_speed_rung*")
     r.requested_x, r.reported_x, r.measured_cx = req, rep, measured
     r.min_cx, r.max_cx, r.equiv_x, r.verdict = mn, mx, equiv, verdict
+    r.band_cx = bands
     return r[0]
 
 
@@ -1056,9 +1057,10 @@ def test_speed_rung_struct_size_is_pinned():
     library does not corrupt one field, it corrupts every element past the
     first. There is nothing at runtime to catch that, so it is pinned here.
     Binding the probe is what made this a real version break (API_PLAN §8
-    row 6) — growing it now costs a soname bump.
+    row 6) — growing it now costs a soname bump. 14 -> 20 at 0.9.0 was the
+    first one paid for (band_cx[3], API_PLAN §8 row 13).
     """
-    assert ffi.sizeof("accudisc_speed_rung") == 14, (
+    assert ffi.sizeof("accudisc_speed_rung") == 20, (
         "accudisc_speed_rung changed size — this is no longer a free ABI "
         "break; bump the version and tell cdda2img before updating this pin"
     )
@@ -1080,6 +1082,50 @@ def test_a_measured_gradient_survives():
     assert r.min_x == 18.05 and r.max_x == 28.22
     assert r.spread_cx == 1017
     assert r.verdict is ad.Verdict.ADMITTED
+
+
+def test_bands_are_locations_not_order_statistics():
+    """The reason band_cx exists, stated as a case min/max cannot express.
+
+    A rung whose MIDDLE band is the fastest — a governor step part-way across
+    the disc, or one cache-served band. min/max are identical to the healthy
+    monotonic case reported below, so anything reading only the summaries sees
+    two indistinguishable rungs. The bands separate them.
+    """
+    bumped = ad._rung_from_c(_rung(40, 40, 2822, 1805, 2822, 0, 1,
+                                   bands=(1805, 2822, 2000)))
+    healthy = ad._rung_from_c(_rung(40, 40, 2000, 1805, 2822, 0, 1,
+                                    bands=(1805, 2000, 2822)))
+
+    assert (bumped.min_cx, bumped.max_cx) == (healthy.min_cx, healthy.max_cx), (
+        "the premise of this test: the summaries must be EQUAL, or it is not "
+        "testing what the summaries cannot see"
+    )
+    assert bumped.bands_cx != healthy.bands_cx
+    assert bumped.monotonic is False and healthy.monotonic is True
+    assert healthy.bands_x == (18.05, 20.0, 28.22)
+
+
+def test_a_band_stands_alone_but_a_range_does_not():
+    """Per-band None, unlike min/max which are withdrawn as a pair.
+
+    An exact rate for one place does not need its neighbours to be valid, so a
+    failed outer band must not take the inner and middle down with it.
+    """
+    r = ad._rung_from_c(_rung(40, 40, 2000, 0, 0, 0, 0, bands=(1805, 2000, 0)))
+    assert r.bands_cx == (1805, 2000, None)
+    assert r.bands_x == (18.05, 20.0, None)
+    assert r.min_cx is None and r.max_cx is None, (
+        "an incomplete sweep must still withdraw the RANGE"
+    )
+    assert r.monotonic is None, "two bands cannot answer a question about three"
+
+
+def test_one_band_is_not_the_inner_third():
+    """points == 1 fills band 0 only — and it is the whole span, not a third."""
+    r = ad._rung_from_c(_rung(8, 8, 801, 0, 0, 0, 0, bands=(801, 0, 0)))
+    assert r.bands_cx == (801, None, None)
+    assert r.monotonic is None, "one band is not a gradient"
 
 
 def test_points_two_is_refused_not_rounded_down():

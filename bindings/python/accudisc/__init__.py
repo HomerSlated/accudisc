@@ -109,6 +109,12 @@ features = frozenset({
     # absent is NOT the same as "not quantized", which is why this needs a
     # feature name rather than a getattr default.
     "speed_honoured",
+    # SpeedRung carries bands_cx/bands_x/monotonic: the per-radius rates the
+    # sweep measures, before min/max summarise them. Absent means only the
+    # summaries exist — and since min/max equal the outer/inner bands on every
+    # well-behaved CAV rung, a caller cannot detect the difference from the
+    # values, only from this name.
+    "speed_bands",
 })
 
 
@@ -816,6 +822,21 @@ class SpeedRung:
     struct signals "not measured" with a 0, and a 0.00 handed to a caller
     reads as a rung that stalled. The CLI solves the same problem by omitting
     the ``min=``/``max=`` tokens entirely.
+
+    ``bands_cx`` is the same measurement before it was summarised: the rate in
+    each band, **in span order**, so with the default whole-disc span that is
+    inner, middle, outer. Read it in preference to ``min``/``max`` whenever the
+    question is about the *shape* of the curve — the summaries record how far
+    the rate moved but not where it was fastest, and the two only look
+    interchangeable while the curve rises monotonically with radius. A run
+    where they disagree is a run where something happened (a governor step
+    part-way across the disc, a cache-served band, another process on the bus),
+    and the summaries absorb it without trace.
+
+    The per-element ``None`` follows the same rule as ``min``/``max`` for the
+    same reason, but is decided **per band**: a band that did not measure is
+    ``None`` and its neighbours keep their figures, because a rate for one
+    place is an exact claim that does not need the others to be valid.
     """
 
     requested_x: int
@@ -825,10 +846,40 @@ class SpeedRung:
     max_cx: int | None
     equiv_x: int             #: for DUPLICATE/QUANTIZED, the rung this collapses onto
     verdict: Verdict
+    #: centi-x per band in span order. At ``points == 1`` there is one band:
+    #: ``[0]`` repeats :attr:`measured_cx` and the other two are ``None``. It
+    #: is **not** the inner third of anything — the names inner/middle/outer
+    #: only mean what they say at ``points == 3``.
+    bands_cx: tuple[int | None, int | None, int | None] = (None, None, None)
 
     @property
     def measured_x(self) -> float:
         return self.measured_cx / 100.0
+
+    @property
+    def bands_x(self) -> tuple[float | None, float | None, float | None]:
+        """:attr:`bands_cx` in x, preserving ``None`` for an unmeasured band."""
+        b = self.bands_cx
+        return (
+            None if b[0] is None else b[0] / 100.0,
+            None if b[1] is None else b[1] / 100.0,
+            None if b[2] is None else b[2] / 100.0,
+        )
+
+    @property
+    def monotonic(self) -> bool | None:
+        """Did the rate rise with radius across all three bands?
+
+        ``None`` when fewer than three bands measured — not ``False``, which
+        would be a claim about a curve we do not have. ``False`` is the
+        interesting answer: on a CAV rung the rate should climb outward, so a
+        rung that does not is reporting something other than geometry, and
+        ``min``/``max`` cannot tell you that it happened.
+        """
+        b = self.bands_cx
+        if any(x is None for x in b):
+            return None
+        return b[0] <= b[1] <= b[2]  # type: ignore[operator]
 
     @property
     def min_x(self) -> float | None:
@@ -2439,6 +2490,10 @@ def _rung_from_c(r) -> SpeedRung:
     (the engine only fills them when EVERY band measured), so testing either
     is equivalent — `or` rather than `and` so a future half-filled row surfaces
     as None instead of a bare 0.
+
+    band_cx gets the same 0 -> None mapping but element by element, matching
+    the C contract: min/max are withdrawn as a pair when any band failed,
+    while a band figure stands alone.
     """
     measured = r.min_cx or r.max_cx
     return SpeedRung(
@@ -2449,6 +2504,7 @@ def _rung_from_c(r) -> SpeedRung:
         max_cx=r.max_cx if measured else None,
         equiv_x=r.equiv_x,
         verdict=Verdict(r.verdict),
+        bands_cx=tuple(r.band_cx[i] or None for i in range(3)),  # type: ignore[arg-type]
     )
 
 

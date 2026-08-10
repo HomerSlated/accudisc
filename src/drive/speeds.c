@@ -239,6 +239,7 @@ int accudisc_probe_speed_ladder(accudisc_device *dev, uint32_t lba,
         r->measured_cx = 0;
         r->min_cx = 0;
         r->max_cx = 0;
+        r->band_cx[0] = r->band_cx[1] = r->band_cx[2] = 0;
 
         /* One speed set per rung, covering all of its bands. */
         accudisc_set_speed(dev, candidates[i]); /* best-effort by design */
@@ -268,6 +269,16 @@ int accudisc_probe_speed_ladder(accudisc_device *dev, uint32_t lba,
          * into a different quantity would leave every existing parser
          * working while reading something else. */
         r->measured_cx = cx_band[points / 2];
+
+        /* The bands themselves, in span order — reported before they are
+         * summarised, because the summaries below are lossy in a way that
+         * matters: min/max record how far the rate moved but not where it
+         * was fastest, and the two only look equivalent while the curve
+         * rises monotonically. Copied one by one rather than by memcpy so
+         * this loop is bounded by `points` and never publishes a band that
+         * was not measured this pass. */
+        for (uint8_t b = 0; b < points; b++)
+            r->band_cx[b] = cx_band[b];
 
         if (points > 1) {
             uint16_t lo = cx_band[0], hi = cx_band[0];
