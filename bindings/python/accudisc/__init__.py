@@ -154,8 +154,22 @@ def _check_version_skew() -> None:
     does not surface as a failure, it surfaces as well-formed calls about the
     wrong bytes.
 
-    This is a backstop, never the primary defence — that is the per-struct
-    ``size`` field, which holds regardless of what the version says.
+    Usually a backstop, with the per-struct ``size`` field as the primary
+    defence — that one holds regardless of what the version says.
+
+    **For structs with no ``size`` field the hierarchy inverts and this becomes
+    the only defence.** ``accudisc_speed_rung`` is the case: it is an OUT ARRAY
+    whose size IS the stride the library writes at, so a short caller is
+    overrun rather than truncated, and there is nothing downstream to notice.
+    For those structs "always bump the version" is not discipline, it is a
+    load-bearing invariant — and §113.2 above is the standing proof it can be
+    violated. cdda2img identified this inversion (their §166) after forcing a
+    mismatch with ``LD_LIBRARY_PATH``, which beats ``DT_RUNPATH``.
+
+    Note where this runs: :meth:`Device.__init__`, before ``accudisc_open``. A
+    bare ``import accudisc`` never reaches it, so an import that succeeds is
+    evidence of nothing. Any probe of this guard must open a device — ``/dev/null``
+    is enough, since the check precedes the open.
     """
     compiled, loaded = version, library_version()
     if compiled != loaded:

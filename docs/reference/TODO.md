@@ -598,6 +598,16 @@ ceiling.** Repeatable across eject/load cycles — ZZ Top (pristine) inits at 40
   list, now DONE). The escalation contemplated here — "refuse the uncap for any
   CD-DA read" — is dead rather than open. **No further speed tests on this
   question**, by the same ruling.
+  **Independently confirmed by the vendor's own tool, 2026-08-11.** PlexTools
+  Professional XL V3.16 lists the `20–48X CAV` SpeedRead band in the **Mode 1
+  column only** — Mode 2, Audio CD and CD-RW are blank on that row, while every
+  other rung is offered to all four. So Plextor does not offer the SpeedRead
+  band for audio either. This does not merely agree with the ruling, it splits
+  it: the ×1.2 scaling above is **real as a mechanism** (it is a published row)
+  and false only in its *applicability to CD-DA*. Mechanism confirmed, scope
+  denied — the guards were removed correctly rather than by luck. Transcribed in
+  `docs/research/cav-read-speed-geometry.md` §1.2, which also settles that
+  `req=16 → page2a=8` is a rung that does not exist rather than a refusal.
 - **Honoured speed ladder is discrete: {4, 8, 24, 32}.** 1–3 → 4; 6 → 4; 9–23 →
   8; 28 → 24; 40/48 → 32. Two disjoint regimes, explained by the nominal CAV
   curve starting at 17.00x: {4,8} are CLV (a ceiling below 17x binds at every

@@ -348,6 +348,23 @@ Because the rungs are laid out along the probed span, a comparison
 rungs carries a radius term: with the default descending ladder the fast rungs
 are measured innermost, which biases against them. Treat a modest cross-rung
 inversion as unproven rather than measured.
+.PP
+A rung normally reports
+.B below
+its own requested speed, and that is geometry rather than a fault. Under CAV the
+rate rises with radius, so an advertised
+.RI \(dq N x\(dq
+is the rate at an outer radius the drive chooses \(em on the PX\-716 the vendor
+tool documents it as address
+.BR 68:00:00 ,
+near the edge of a full-length disc. A disc whose lead-out falls short of that
+address cannot reach
+.I N
+at any setting or in any band, however healthy it is. Judge a rung by the shape
+of its bands against the length of the disc, not by the gap between
+.I outer
+and
+.IR req .
 .RS 4
 .TP
 .BI \-\-start " LBA"

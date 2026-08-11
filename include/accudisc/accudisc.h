@@ -1215,6 +1215,18 @@ ACCUDISC_API int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba,
  *   so a rung that comes out flat is either clamped (CLV) or not being
  *   measured properly.
  *
+ * - A RUNG NORMALLY READS BELOW ITS OWN REQUESTED SPEED, AND THAT IS
+ *   GEOMETRY RATHER THAN A FAULT. Under CAV the rate is proportional to
+ *   radius, and a drive's advertised "Nx" is the rate at some outer radius
+ *   the drive chooses; a disc whose lead-out falls short of that radius
+ *   cannot reach Nx at any setting, in any band, however healthy it is.
+ *   The shortfall is therefore not evidence of overhead, media or wear
+ *   until the geometry has been subtracted. Judge a rung by the SHAPE of
+ *   band_cx[] against the disc's length, never by the gap between the
+ *   outer band and `req`. Where vendor documentation exists it states the
+ *   two constants this needs: the address at which the nominal rate is
+ *   reached, and the rung's rate at the innermost radius.
+ *
  * - Rungs whose measured_cx collapse to the same value are
  *   indistinguishable on this rig (bus or firmware limited) and one of
  *   them suffices in a recovery ladder.

@@ -779,7 +779,7 @@ if [ "$WANT_WHEEL" -eq 1 ]; then
     itself a pipx application, inject it into that application's venv:
 
         pipx install /path/to/cdda2img      # a checkout: not on PyPI yet
-        pipx inject cdda2img "\$(ls $wheel_dir/accudisc-*.whl)"
+        pipx inject cdda2img $wheel_dir/accudisc-$VERSION-*.whl
         cdda2img doctor
 
     'inject' rather than a separate install because a pipx application runs in
@@ -789,14 +789,41 @@ if [ "$WANT_WHEEL" -eq 1 ]; then
     Into an ordinary virtualenv instead:
 
         python3 -m venv .venv && . .venv/bin/activate
-        pip install $wheel_dir/accudisc-*.whl
+        pip install $wheel_dir/accudisc-$VERSION-*.whl
 
-    Glob the name — do not hardcode it. It carries the version and ABI tags,
-    so it changes whenever either does.
+    Glob the ABI and platform tags — never the version. The tags change with
+    the interpreter and the machine and are tedious to type; the version is
+    the one field that must not be left to whatever else is in the directory.
+    Nothing removes old wheels, so an unversioned glob can match several, and
+    'ls' orders them lexically rather than by version — which stops agreeing
+    with version order as soon as a minor number reaches double digits
+    (accudisc-0.10.0 sorts BEFORE accudisc-0.5.0).
 
     To remove it again:  pipx uninject cdda2img accudisc
-    To replace it after a rebuild:  pipx inject --force cdda2img <wheel>
+    To replace it after a rebuild:
+        pipx inject --force cdda2img $wheel_dir/accudisc-$VERSION-*.whl
 EOF
+
+    # Same posture as --print-wheel: glob, count, and say what was found rather
+    # than assume. Deliberately a warning and not a deletion — these are
+    # root-owned files under the prefix, another venv may still be pinned to an
+    # older one, and pinning the commands above already removes the hazard.
+    shopt -s nullglob
+    all_wheels=("$wheel_dir"/accudisc-*.whl)
+    shopt -u nullglob
+    stale_wheels=()
+    for w in "${all_wheels[@]}"; do
+        case "${w##*/}" in
+            accudisc-"$VERSION"-*) ;;
+            *) stale_wheels+=("${w##*/}") ;;
+        esac
+    done
+    if [ ${#stale_wheels[@]} -gt 0 ]; then
+        printf '\n' >&2
+        warn "${#stale_wheels[@]} wheel(s) from other versions are in that directory:"
+        printf '        %s\n' "${stale_wheels[@]}" >&2
+        printf '    Nothing here deletes them, and the commands above are pinned to\n    %s so they cannot be picked up by accident. Remove them by hand if\n    you want the directory to hold one version.\n' "$VERSION" >&2
+    fi
 fi
 
 # ---------------------------------------------------------------------------
