@@ -92,8 +92,12 @@ Two external inputs. Nothing is fitted to AccuDisc's measurements.
   follows from it.
 
 The three rungs disagree about that radius by about 3 mm, because the published
-floors (17, 14, 10) are rounded to whole multiples of 1X. That disagreement is
-the model's real error bar and is reported rather than averaged away.
+floors (17, 14, 10) are printed as whole multiples of 1X. That disagreement is
+reported below rather than averaged away — but it is a **lower bound** on the
+model's error bar, not the whole of it. **Read §3.1 before carrying any of this
+to another disc:** `c` is a property of the individual disc rather than of the
+format, and the floors may be truncated rather than exact, which widens the range
+of geometries consistent with this table.
 
 Reproduce with `tools/cav_speed_model.py`:
 
@@ -110,7 +114,10 @@ nominal reached at MSF 68:00:00 = LBA 305850
   40x rung, floor 17x  ->  nominal radius 58.82 mm
   32x rung, floor 14x  ->  nominal radius 57.14 mm
   24x rung, floor 10x  ->  nominal radius 60.00 mm
-  mean nominal radius 58.66 mm; c = 0.009205 mm^2/sector
+
+geometry: c = 0.009205 mm^2/sector (from the curve above)
+  implies pitch 1,6 um at v = 1.36 m/s (ECMA §11.4 allows 1.20-1.40)
+
 disc: lead-out LBA 162892 = MSF 36:11, outer radius 46.09 mm
   this disc's own ceiling on each rung (rate at its lead-out):
     40x rung -> 31.43x maximum, anywhere on this disc
@@ -205,31 +212,81 @@ two runs of the same disc**, because for a fixed disc every quantity here is a
 constant, and a constant cannot explain a difference. If an admitted ladder moves
 between runs, nothing on this page is a candidate cause.
 
-The effect is also strongly size-dependent, and small for a full-length disc,
-because radius grows as the *square root* of area — the curve is nearly flat at
-the outer edge. Computed with `tools/cav_speed_model.py`:
+**Note also that MSF `68:00:00` is LBA 305850, while a disc holding 68:00 of
+audio has its lead-out at LBA 306000** — a 68-minute disc *reaches* the address
+rather than falling short of it. That off-by-a-lead-out is easy to get backwards,
+and it inverts the conclusion.
+
+### `c` belongs to the disc, not to the format — and this bounds everything above
+
+An earlier revision of this section printed a table of "40x ceiling by disc
+length", derived by holding `c` fixed and varying the lead-out. **That table was
+unsound and has been removed.** `c` is not a property of CD-DA; it is a property
+of the individual disc:
 
 ```
- disc length  leadout LBA  40x ceiling    lost
-       64:00       288000       39.03x   0.97x
-       66:00       297000       39.52x   0.48x
-       67:00       301500       39.77x   0.23x
-       68:00       306000       40.01x  -0.01x
-       74:00       333000       41.43x  -1.43x
-       36:11       162825       31.43x   8.57x
+c = pitch * v / (75 * pi)      mm^2 per sector
 ```
 
-A disc of 64 minutes or more loses under 1x from the 40x rung. The 8.57x on our
-36-minute test disc is what makes the effect visible at all; on an ordinary
-album-length disc it is close to nothing. **Note also that MSF `68:00:00` is LBA
-305850, while a disc holding 68:00 of audio has its lead-out at LBA 306000** — a
-68-minute disc *reaches* the address rather than falling short of it. That
-particular off-by-a-lead-out is easy to get backwards, and it inverts the
-conclusion.
+ECMA-130 §11.3 allows a pitch of 1,6 µm ± 0,1 and §11.4 a scanning velocity of
+1,20–1,40 m/s, so a legal disc's `c` spans **0,00764 – 0,01010, a factor of
+1,32.** That tolerance is precisely *how* a 79-minute disc exists: tighten the
+pitch, slow the velocity, and more playing time fits inside the same 58 mm. Two
+consequences, and the first is what broke the table:
 
-This section exists because the model was applied, within a day of being written,
-to an observation it could not speak to. A result that explains something real
-gets reached for again, and the boundary is not visible from inside the result.
+- **A disc's outer radius is not a function of its playing time.** Longer discs
+  do not extend further out; they pack tighter. Holding `c` fixed and increasing
+  the lead-out models a disc growing past the edge of the medium, which is why
+  the removed table claimed a 74:00 disc reaches r = 60,75 mm — beyond ECMA's
+  d5/2 = 59 mm outer bound for the whole information area. No disc has that
+  radius. `tools/cav_speed_model.py` now reports that as OUT OF DOMAIN rather
+  than printing it.
+- **The `c` fitted from one disc may not be carried to another.** Ours is not a
+  nominal-geometry disc: the cleanest independent estimate from our own bands
+  (below) is ~0,0093, against ~0,0082 for a 74:00 disc spanning r 25→58 mm.
+
+### What the measurements pin on their own
+
+Within one rung, the ratio between two bands depends only on `c` — not on the
+nominal radius, the published curve, or any efficiency term. Solving for `c` from
+those ratios is the one estimate the measurements make by themselves
+(`--fit-c`):
+
+```
+    inner->outer: c = 0.009653   (1.05x the c in use)
+   middle->outer: c = 0.009299   (1.01x the c in use)
+   inner->middle: c = 0.009797   (1.06x the c in use)
+```
+
+`middle->outer` is the least contaminated — it is the only pair that excludes the
+inner band, whose known depression (§4) inflates any slope measured from it, and
+it agrees with the `c` used above to **1%**. So the geometry constant is
+independently confirmed *for this disc*, and the two pairs that touch the inner
+band disagree in exactly the direction §4 predicts.
+
+### The floors do not pin `c` as tightly as §2 assumes
+
+The model takes the published floors (17, 14, 10) as exact. They are printed as
+whole multiples of 1x, and on a **nominal-geometry** disc the physics gives
+17,84 / 14,28 / 10,71 — which truncate to exactly 17 / 14 / 10, three for three
+(`--sensitivity` runs this test). So the panel may simply be truncating, in which
+case the floors are consistent with a nominal disc too and do not select between
+the two readings.
+
+This does not undo §2. Nine band figures are predicted to 1,22% with **no
+parameter fitted to them**, which tests the model's *shape* — rate ∝ √(r₀²+cn) —
+and that result stands however the floors are read. What it does mean is that the
+agreement confirms the shape more strongly than it confirms this particular `c`,
+and that the sensitivity table in §2 understates the range, because it varies the
+nominal radius while holding the floors exact.
+
+### Why this section exists
+
+The model was applied, within a day of being written, to an observation it could
+not speak to; then its own author extended it across disc lengths it could not
+cover. Both errors produced well-formed numbers. A result that explains something
+real gets reached for again, and its boundary is never visible from inside the
+result — so the boundary has to be written down beside it.
 
 ## 4. Known residual, not investigated
 
