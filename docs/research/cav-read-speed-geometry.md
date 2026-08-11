@@ -197,6 +197,40 @@ mean. Re-run the tool rather than trusting the table if that code moves.
   number from the wrong place on the disc. This is the artefact the default
   sweep exists to remove.
 
+## 3.1 The limit of this model — read before applying it to anything
+
+This accounts for the **absolute** shortfall on a given disc: why a rung reads
+below its nameplate at all. It has **zero explanatory power for a change between
+two runs of the same disc**, because for a fixed disc every quantity here is a
+constant, and a constant cannot explain a difference. If an admitted ladder moves
+between runs, nothing on this page is a candidate cause.
+
+The effect is also strongly size-dependent, and small for a full-length disc,
+because radius grows as the *square root* of area — the curve is nearly flat at
+the outer edge. Computed with `tools/cav_speed_model.py`:
+
+```
+ disc length  leadout LBA  40x ceiling    lost
+       64:00       288000       39.03x   0.97x
+       66:00       297000       39.52x   0.48x
+       67:00       301500       39.77x   0.23x
+       68:00       306000       40.01x  -0.01x
+       74:00       333000       41.43x  -1.43x
+       36:11       162825       31.43x   8.57x
+```
+
+A disc of 64 minutes or more loses under 1x from the 40x rung. The 8.57x on our
+36-minute test disc is what makes the effect visible at all; on an ordinary
+album-length disc it is close to nothing. **Note also that MSF `68:00:00` is LBA
+305850, while a disc holding 68:00 of audio has its lead-out at LBA 306000** — a
+68-minute disc *reaches* the address rather than falling short of it. That
+particular off-by-a-lead-out is easy to get backwards, and it inverts the
+conclusion.
+
+This section exists because the model was applied, within a day of being written,
+to an observation it could not speak to. A result that explains something real
+gets reached for again, and the boundary is not visible from inside the result.
+
 ## 4. Known residual, not investigated
 
 All three inner bands read low (−1.22%, −0.48%, −0.97%) while the six
