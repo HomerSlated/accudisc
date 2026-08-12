@@ -33,6 +33,14 @@ follows that:
     it does not fail quietly — it computes a radius no disc has, which is what
     the domain check below reports.
 
+AND `v` IS NOT RECOVERABLE FROM `c`, WHICH BOUNDS EVERY CROSS-DISC CLAIM. `c`
+fixes only the PRODUCT pitch*v. That matters because "x" is an absolute DATA
+rate (75 sectors/s), not a linear velocity, so the rate delivered at radius r is
+proportional to r/v -- and `v` cancels within one disc but never between two.
+Transferring the drive's nameplate from the disc the vendor characterised to a
+disc of a different length therefore carries a band, not a number. This tool
+prints the band and refuses the number; see cross_disc_ceiling().
+
 The default `c` is derived from the drive's published curve (see DEFAULT_CURVE):
 under CAV, floor/nominal = r0/r_nominal, so each rung is an independent estimate
 of the radius at the nominal address, and `c` follows. That is a statement about
@@ -99,6 +107,47 @@ def pitch_velocity_for(c: float) -> tuple[float, float]:
     """One (pitch, velocity) pair consistent with c -- at nominal pitch."""
     v = c * math.pi * 75.0 / (1.6e-3) / 1000.0
     return 1.6, v
+
+
+def velocity_window(c: float) -> tuple[float, float]:
+    """The scanning velocities a disc with this c may legally have, m/s.
+
+    `c` fixes only the PRODUCT pitch*v, so v is not recoverable from it. What is
+    left is a window: ECMA's pitch tolerance at one end, its velocity tolerance
+    at the other. That window is the whole of the uncertainty in any cross-disc
+    transfer of the drive's nameplate -- see cross_disc_ceiling().
+    """
+    prod = c * 75.0 * math.pi                      # pitch[mm] * v[mm/s]
+    return (max(VELOCITY_RANGE[0], prod / (PITCH_UM_RANGE[1] * 1e-3) / 1000.0),
+            min(VELOCITY_RANGE[1], prod / (PITCH_UM_RANGE[0] * 1e-3) / 1000.0))
+
+
+def cross_disc_ceiling(nominal_x: float, r: float, r_own_nom: float,
+                       r_ref: float, c: float, c_ref: float) -> dict:
+    """Rate at radius r on a disc that is NOT the one the vendor characterised.
+
+    Three control laws are consistent with everything we can observe, and they
+    disagree. The vendor's note gives an ADDRESS; a rung is an angular velocity,
+    which fixes a RADIUS; and `x` is a data rate, so at fixed RPM the rate also
+    scales with 1/v -- a term that cancels within one disc and never cancels
+    between two. We cannot see the firmware, so we do not get to pick:
+
+      address  the drive delivers nominal at LBA 305850 on any disc
+      radius   the drive delivers nominal at the reference disc's radius
+      rpm      the drive holds the reference disc's RPM; x scales as r/v
+
+    `r_own_nom` is this disc's radius at the nominal ADDRESS; `r_ref` is the
+    reference disc's. Returns the three, `rpm` as a range because v is only
+    bounded, not known.
+    """
+    v_lo, v_hi = velocity_window(c)
+    vr_lo, vr_hi = velocity_window(c_ref)
+    at_radius = nominal_x * r / r_ref
+    return {
+        "address": nominal_x * r / r_own_nom,
+        "radius": at_radius,
+        "rpm": (at_radius * vr_lo / v_hi, at_radius * vr_hi / v_lo),
+    }
 
 
 class Geometry:
@@ -223,10 +272,35 @@ def main() -> int:
               f"outer bound. Plausible\n"
               f"        only for a full-length disc; otherwise the c is too "
               f"large for this length.")
+    geo_ref = Geometry(c_curve, lba_nom)
+    # The criterion is "is this the disc the vendor characterised", and only the
+    # ABSENCE of --c answers it. Comparing c to c_curve would not: two different
+    # discs may share a c, and their scanning velocities are still independently
+    # uncertain, so the cross-disc band below still applies to them.
     print("  this disc's own ceiling on each rung (rate at its lead-out):")
-    for nom, _f in DEFAULT_CURVE:
-        print(f"    {nom:>2}x rung -> {geo.rate(nom, lo):.2f}x maximum, "
-              f"anywhere on this disc")
+    if args.c is None:
+        for nom, _f in DEFAULT_CURVE:
+            print(f"    {nom:>2}x rung -> {geo.rate(nom, lo):.2f}x maximum, "
+                  f"anywhere on this disc")
+    else:
+        print("    UNDER-DETERMINED -- this is not the disc the vendor")
+        print("    characterised, and the three control laws consistent with")
+        print("    the published note disagree (see cross_disc_ceiling):\n")
+        print(f"    {'rung':>5} {'address':>9} {'radius':>9} "
+              f"{'fixed RPM':>16}")
+        for nom, _f in DEFAULT_CURVE:
+            f = cross_disc_ceiling(nom, r_out, geo.r_nominal,
+                                   geo_ref.r_nominal, c, c_curve)
+            print(f"    {nom:>4}x {f['address']:>8.2f}x {f['radius']:>8.2f}x "
+                  f"{f['rpm'][0]:>7.2f}..{f['rpm'][1]:.2f}x")
+        v_lo, v_hi = velocity_window(c)
+        vr_lo, vr_hi = velocity_window(c_curve)
+        print(f"\n    v is not recoverable from c (c fixes pitch*v only): this")
+        print(f"    disc {v_lo:.3f}-{v_hi:.3f} m/s, the reference disc "
+              f"{vr_lo:.3f}-{vr_hi:.3f} m/s.")
+        print("    Do not quote a single number from this block. The SHAPE of")
+        print("    the table below is unaffected -- v and the reference cancel")
+        print("    within one disc, and only the absolute scale is at issue.")
     print(f"window layout: speeds.c @ {LAYOUT_REV}, "
           f"ncand={args.ncand} points={args.points}\n")
 

@@ -245,6 +245,52 @@ consequences, and the first is what broke the table:
   nominal-geometry disc: the cleanest independent estimate from our own bands
   (below) is ~0,0093, against ~0,0082 for a 74:00 disc spanning r 25→58 mm.
 
+### `v` is not recoverable from `c`, so no cross-disc rate is a number
+
+The withdrawn table was one instance of a wider limit, and the general form only
+became visible when the table was gone. `c` fixes the **product** pitch·v and
+nothing more. That would be harmless if "x" were a linear velocity, but it is an
+**absolute data rate** — 75 sectors/s — so the rate delivered at radius `r` under
+CAV is
+
+```
+x = omega * r / v
+```
+
+and `v` is the *disc's own* scanning velocity. Within one disc `v` is a constant
+and cancels: the model's shape, rate ∝ √(r₀²+cn), is untouched, and so is every
+figure in §2. Between two discs it does not cancel, and it cannot be measured
+from our side.
+
+Three control laws are consistent with everything observable, and they disagree:
+
+| law | nominal is delivered at | on a 77:09 disc, 40× rung |
+|---|---|---|
+| **address** | LBA 305850, whatever radius that is | 42,09× |
+| **radius** | the reference disc's radius, 58,65 mm | 39,55× |
+| **fixed RPM** | the reference disc's angular velocity | 40,72–46,15× |
+
+The vendor's note gives an **address**, but an address is what you write when you
+have characterised **one** disc — it is a measurement report, not a control law,
+and promoting it to one is the same move the withdrawn table made. The RPM law is
+a range rather than a point precisely because `v` is only bounded.
+
+**The dominant term is ignorance of the *reference* disc, not of the disc in
+hand.** For a 77:09 disc `c` = 0,007889 admits v ∈ 1,200–1,239 m/s, a 3,3%
+window; the reference disc's `c` = 0,009205 admits 1,276–1,400 m/s, **9,7%**. The
+long disc pins itself from both sides — ECMA's floor at one end, the medium's
+58 mm at the other — while the reference disc is pinned at neither. The transfer
+band is the *ratio* of the two windows, so the widths compose multiplicatively
+(1,033 × 1,097 = 1,133, exactly the 13,3% above) and the shares are log-widths:
+ln(1,097)/ln(1,133) = **74%** of it is the reference disc. So the
+residual here is a **missing vendor constant, not a missing measurement**: no
+bench time narrows it, and the drive's own documentation would.
+
+`tools/cav_speed_model.py` prints all three whenever `--c` is supplied and
+declines to pick. The criterion is the presence of `--c`, not `c ≠ c_curve`:
+`c` cannot establish disc identity, since two different discs may share a `c`
+while their velocities remain independently uncertain.
+
 ### What the measurements pin on their own
 
 Within one rung, the ratio between two bands depends only on `c` — not on the
