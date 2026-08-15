@@ -27,7 +27,19 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 9 /* 0.9.0: accudisc_speed_rung gained band_cx[3]
+#define ACCUDISC_VERSION_MINOR 10 /* 0.10.0: the offset portal. New
+                                  * accudisc_offset_for_inquiry /
+                                  * accudisc_offset_for_device and the
+                                  * accudisc_offset_info they fill; new
+                                  * ACCUDISC_ERR_AMBIGUOUS (-14). Additive in
+                                  * layout, but accudisc_read_offset CHANGED
+                                  * MEANING: a drive whose sources disagree now
+                                  * returns ERR_AMBIGUOUS where it used to
+                                  * return whichever row the table listed first.
+                                  * That is a silent-wrong-answer path closing,
+                                  * and a caller mapping error codes to actions
+                                  * needs the bump to notice it.
+                                  * 0.9.0: accudisc_speed_rung gained band_cx[3]
                                   * — the per-radius figures the sweep already
                                   * measured and then threw away, keeping only
                                   * their min and max. 14 -> 20 bytes. THIS IS A
@@ -149,6 +161,11 @@ typedef enum accudisc_err {
                                       does not know. Distinct from ERR_INVAL
                                       because it means "rebuild against this
                                       header", not "fix your arguments". */
+    ACCUDISC_ERR_AMBIGUOUS   = -14, /* the answer exists but is not unique, and
+                                     * picking one would be a guess. Today: an
+                                     * offset key whose sources disagree. The
+                                     * candidates come back with the error so the
+                                     * caller can choose; see accudisc_offset_info */
     ACCUDISC_ERR_NOT_BLANK   = -13 /* accudisc_write refused: the loaded disc
                                       is not blank. Nothing was written.
                                       Split out of ERR_UNSUPPORTED in 0.4.0.
@@ -226,9 +243,88 @@ typedef struct accudisc_drive_id {
 ACCUDISC_API int accudisc_drive_identify(accudisc_device *dev,
                                          accudisc_drive_id *out);
 
+/* --- Drive offsets: the single portal ---------------------------------
+ *
+ * AccuDisc REPORTS offsets and never applies one. The caller stores the number
+ * and corrects exactly once, at storage — one offset domain, one site for the
+ * shift. A library able to apply would give every consumer a second such site,
+ * and double correction is silent: the output is well-formed PCM, wrong by
+ * twice the offset, and no downstream gate can see it.
+ *
+ * THE UNIT IS A SAMPLE = ONE STEREO FRAME = 4 BYTES, 588 per sector. This is
+ * REDUMP's unit and AccurateRip's, and the reason the splice arithmetic is
+ * `track_start * 2352 + read_offset * 4`. A reader who assumes 2 bytes is wrong
+ * by exactly 2x. Sign convention: POSITIVE means the drive reads early.
+ *
+ * The table is compiled from the two live primary sources on the development
+ * cycle (tools/gen_offsets.py) — READ offsets only; a write offset is a
+ * measurement (accudisc_measure_write_offset), never a table lookup. There is no runtime lookup of any kind, online or
+ * otherwise. Where sources disagree the query says so and refuses to pick;
+ * where nothing holds the drive it says that instead. Both are explicit
+ * outcomes rather than a default, because a plausible wrong offset is worse
+ * than no offset. */
+
+/* Which collections hold the returned value. Presence, not confidence: only
+ * AccurateRip publishes per-drive counts, so a "combined score" across the
+ * three would be dominated by whichever source can count — ranking a
+ * corroborated drive below an uncorroborated one. */
+#define ACCUDISC_OFFSET_SRC_REDUMP 0x01u
+#define ACCUDISC_OFFSET_SRC_AR     0x02u
+
+#define ACCUDISC_OFFSET_F_CONFLICT    0x01u /* sources disagree; see values[] */
+#define ACCUDISC_OFFSET_F_ADJUDICATED 0x04u /* sources disagreed and two or more
+                                             * agreed on this value; the losing
+                                             * value(s) were dropped at build
+                                             * time. Reported, not hidden. */
+
+/* Not a value any drive can have: INT32_MIN. Deliberately NOT 0 — zero is a
+ * legitimate offset for hundreds of real drives, so a caller that ignored the
+ * return code and used a zeroed field would apply a plausible wrong
+ * correction. This one cannot be mistaken for a measurement. */
+#define ACCUDISC_OFFSET_NONE       (-2147483647 - 1)
+#define ACCUDISC_OFFSET_MAX_VALUES 4
+
+#define ACCUDISC_OFFSET_INFO_INIT { .size = sizeof(accudisc_offset_info) }
+
+typedef struct accudisc_offset_info {
+    uint32_t size;           /* = sizeof(accudisc_offset_info). NOT optional */
+    int32_t  read_offset;    /* samples; ACCUDISC_OFFSET_NONE unless the call
+                              * returned ACCUDISC_OK */
+    uint16_t ar_submissions; /* AccurateRip's count, 0 if AR does not hold it */
+    uint8_t  ar_agree_pct;   /* AccurateRip's own agreement rate for the drive,
+                              * 0 if unknown. A WITHIN-source measure, so unlike
+                              * cross-source agreement it does not depend on the
+                              * sources being independent — which is unsettled */
+    uint8_t  sources;        /* ACCUDISC_OFFSET_SRC_* bitmask */
+    uint8_t  flags;          /* ACCUDISC_OFFSET_F_* bitmask */
+    uint8_t  n_values;       /* values[] filled; 1 unless ERR_AMBIGUOUS */
+    int32_t  values[ACCUDISC_OFFSET_MAX_VALUES];       /* every value found */
+    uint8_t  value_sources[ACCUDISC_OFFSET_MAX_VALUES]; /* who holds each one */
+} accudisc_offset_info;
+
+/* Look up a drive by INQUIRY strings, WITHOUT a device. The table is drive
+ * knowledge, not a hardware operation, so asking about a drive that is not in
+ * the tray is a normal thing to want — a caller with a corpus of captures from
+ * many drives cannot open any of them.
+ *
+ * Returns ACCUDISC_OK (one value, in read_offset), ACCUDISC_ERR_AMBIGUOUS (the
+ * sources disagree: n_values/values/value_sources are filled, read_offset stays
+ * ACCUDISC_OFFSET_NONE, and the caller must choose and pass its choice through
+ * its own configuration), or ACCUDISC_ERR_NOTFOUND (no source holds it). */
+ACCUDISC_API int accudisc_offset_for_inquiry(const char *vendor,
+                                             const char *product,
+                                             accudisc_offset_info *out);
+
+/* The same query, keyed on an open device's INQUIRY. */
+ACCUDISC_API int accudisc_offset_for_device(accudisc_device *dev,
+                                            accudisc_offset_info *out);
+
 /* Manufacturing read offset in samples for the identified drive (positive:
  * the drive reads early), from the built-in offset table.
- * ACCUDISC_ERR_NOTFOUND when the model is unknown. */
+ * ACCUDISC_ERR_NOTFOUND when the model is unknown, and since 0.10.0
+ * ACCUDISC_ERR_AMBIGUOUS when the sources disagree — previously such a drive
+ * silently returned whichever row the table listed first. Prefer
+ * accudisc_offset_for_inquiry, which can report what the disagreement was. */
 ACCUDISC_API int accudisc_read_offset(accudisc_device *dev, int32_t *samples);
 
 /* ATIP (Absolute Time In Pregroove) of a recordable disc: the lead-in start

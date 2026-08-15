@@ -28,7 +28,7 @@ add_compile_options(-UNDEBUG)
 # Tests link the static lib and may include internal headers from src/ —
 # they exercise internals the public ABI deliberately hides.
 foreach(t test_version test_cdb test_sense test_toc test_map test_decode
-        test_c2lag test_media test_cuesheet test_tocparse test_index_map
+        test_c2lag test_media test_offsets test_cuesheet test_tocparse test_index_map
         test_rotation test_tocsrc test_disc test_session test_toc_hostile test_rw
         test_resid test_audio_diff test_write_intake test_cdtext_blob
         test_cdtext_encode test_discinfo test_alloc_even test_uncap test_plan

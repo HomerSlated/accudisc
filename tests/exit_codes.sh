@@ -42,6 +42,7 @@ cmd_c2lag:c2lag
 cmd_media:media
 cmd_write:write
 cmd_disc:disc
+report_offset:offset
 dump_blob:read'
 
 # The exit-3 bullet list: from its heading to the next one.

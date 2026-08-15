@@ -25,6 +25,14 @@ Exit 3 per subcommand:
   format. No output file is written. A drive that *rejects* the request
   (CHECK CONDITION) is exit 2 — deliberately not conflated with absence.
 - `scan`: neither an MCN nor any ISRC was found.
+- `offset`: no source holds this drive (`read_offset unknown`, nothing else), or
+  the sources disagree (`read_offset unknown`, then `conflict N` and one
+  `value <signed> <sources>` line per candidate). Both are *absence of a usable
+  answer* rather than failure, and both are deliberately distinguished from
+  exit 0 with a number: an offset applied wrongly is silent, so the caller must
+  choose explicitly and pass its choice through its own configuration.
+  `read_offset` is one **signed** integer — there is no separate sign field,
+  because two representations of one fact can disagree.
 - `pregaps`: at least one track boundary decoded as `UNKNOWN` — the approach to
   it was too damaged to place INDEX 00, so the pregap is undetermined rather
   than absent. Every other boundary in the listing is still valid.

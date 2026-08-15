@@ -7,9 +7,21 @@ anything listed here must also be credited in the man page when it exists.
 ## Data
 
 - **Drive read-offset table** (`src/drive/offsets_db.inc`): user-submitted
-  factual offset measurements collected by the **REDUMP Disc Preservation
-  Project** (https://redump.org), converted from the table shipped with
-  redumper. Regenerated via `tools/gen_offsets.py`.
+  factual offset measurements from two independent collections, merged by
+  `tools/gen_offsets.py`:
+  - the **REDUMP Disc Preservation Project** (https://redump.org), via the
+    table shipped with redumper;
+  - the **AccurateRip drive offset list**
+    (http://www.accuraterip.com/driveoffsets.htm), which also supplies the
+    per-drive submission count and agreement percentage. Fetched by
+    `tools/fetch_ar_offsets.py` on the development cycle — a developer tool,
+    excluded from the distribution; the library itself never uses a network.
+
+  Offsets are facts about hardware, not creative expression. EAC's OffsetBase
+  was evaluated as a third source and **rejected**: the only surviving copy is a
+  2004 archive of a page that no longer exists, and EAC itself reads offsets
+  from AccurateRip — so it is an ancestor of one of the sources above rather
+  than an independent check on it.
 
 ## Techniques and command knowledge
 

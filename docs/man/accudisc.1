@@ -95,6 +95,46 @@ and the
 method in use \(em
 .RI \(lq "generic MMC" \(rq
 or the attached driver's name and description.
+.SS offset
+Report the drive's read offset from the compiled table. With
+.BI \-\-vendor " V"
+and
+.BI \-\-product " P"
+the answer comes from the table alone and
+.B no drive is opened
+\(em the table is knowledge about drives, so a caller holding captures from
+hardware that is not present can still ask about it.
+.PP
+AccuDisc reports the offset and never applies it. Correct once, at storage: a
+library that could apply would give every consumer a second site where the shift
+might happen, and a double correction is silent \(em well-formed audio, wrong by
+twice the offset.
+.PP
+The unit is a
+.B sample
+= one stereo frame = 4 bytes, 588 per sector; this is the unit REDUMP and
+AccurateRip both use, and the reason the splice arithmetic is
+.IR "track_start * 2352 + read_offset * 4" .
+A positive offset means the drive reads early.
+.I read_offset
+is one
+.B signed
+integer; there is no separate sign field, because two representations of one
+fact can disagree.
+.PP
+Exit 3 when no source holds the drive, and also when the sources
+.B disagree
+\(em then
+.I read_offset
+is
+.IR unknown ,
+followed by
+.BI conflict " N"
+and one
+.I value
+line per candidate with its sources. Nothing here picks between them: an offset
+applied wrongly is silent, so the choice is the caller's and must be passed back
+through the caller's own configuration.
 .SS disc
 Pre-flight guard: classify the loaded disc as rippable audio, a blank to burn,
 or neither. One token line on stdout:
@@ -1113,9 +1153,13 @@ this is the summary it requires here.
 .TP
 .B Data
 The drive read-offset table holds user-submitted factual offset measurements
-collected by the
+from two independent collections: the
 .B REDUMP Disc Preservation Project
-(<https://redump.org>), converted from the table shipped with redumper. The ATIP
+(<https://redump.org>), via the table shipped with redumper, and the
+.B AccurateRip
+drive offset list (<http://www.accuraterip.com/driveoffsets.htm>), which also
+supplies the per-drive submission count and agreement percentage. Both are
+merged on the development cycle; the library itself never uses a network. The ATIP
 media catalogue behind
 .B media
 compiles public ATIP manufacturer codes, informed by the PlexTools Professional

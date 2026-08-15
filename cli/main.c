@@ -17,6 +17,10 @@ static void usage(FILE *to)
         "\n"
         "commands:\n"
         "  info           identify the drive (INQUIRY)\n"
+        "  offset         drive read offset from the compiled table\n"
+        "                 [--vendor V --product P] answers WITHOUT a drive.\n"
+        "                 Reports; never applies. Exit 3 if the sources\n"
+        "                 disagree (every value printed) or none holds it\n"
         "  disc           pre-flight guard: is the loaded disc rippable audio,\n"
         "                 a blank to burn, or neither (exit 3)\n"
         "  toc            list tracks (LBA); prefers the full TOC and degrades\n"
@@ -175,6 +179,132 @@ static int cmd_info(accudisc_device *dev)
         printf("read_offset unknown\n");
     printf("access %s\n", accudisc_access_method(dev));
     return 0;
+}
+
+/* Render a source bitmask as a stable, comma-separated token list. Never
+ * empty — a row exists because some source holds it. */
+static void print_sources(unsigned mask)
+{
+    int n = 0;
+
+    if (mask & ACCUDISC_OFFSET_SRC_REDUMP)
+        printf("%sredump", n++ ? "," : "");
+    if (mask & ACCUDISC_OFFSET_SRC_AR)
+        printf("%saccuraterip", n++ ? "," : "");
+    if (!n)
+        printf("none");
+}
+
+/* The offset portal. AccuDisc reports; the caller stores and applies.
+ *
+ * One signed integer carries the offset — there is deliberately no separate
+ * sign field, because two representations of one fact can disagree and a
+ * consumer reading '+' beside a negative magnitude would be well-formed while
+ * wrong. The '+' below is rendering, not data. */
+static int report_offset(int rc, const accudisc_offset_info *info_in)
+{
+    const accudisc_offset_info *p = info_in;
+    accudisc_offset_info info = *p;
+
+    if (rc == ACCUDISC_ERR_NOTFOUND) {
+        printf("read_offset unknown\n");
+        fprintf(stderr,
+                "accudisc: no source holds this drive. Supply an offset "
+                "yourself; zero is the only defensible default, and it is a\n"
+                "          guess rather than a measurement.\n");
+        return 3;
+    }
+    if (rc == ACCUDISC_ERR_AMBIGUOUS) {
+        printf("read_offset unknown\nconflict %u\n", info.n_values);
+        for (unsigned i = 0; i < info.n_values; i++) {
+            printf("value %+d ", info.values[i]);
+            print_sources(info.value_sources[i]);
+            putchar('\n');
+        }
+        fprintf(stderr,
+                "accudisc: the sources disagree for this drive and the value is "
+                "UNVERIFIED.\n"
+                "          Nothing here picks one. Choose from the values above "
+                "and re-run\n"
+                "          passing your choice explicitly — it may still be "
+                "wrong.\n");
+        return 3;
+    }
+    if (rc != ACCUDISC_OK) {
+        fprintf(stderr, "accudisc: offset lookup: %s\n", accudisc_strerror(rc));
+        return 2;
+    }
+
+    printf("read_offset %+d\n", info.read_offset);
+    printf("sources ");
+    print_sources(info.sources);
+    printf("\nar_submissions %u\nar_agree_pct %u\n",
+           info.ar_submissions, info.ar_agree_pct);
+    printf("adjudicated %d\n",
+           (info.flags & ACCUDISC_OFFSET_F_ADJUDICATED) ? 1 : 0);
+
+    if (info.flags & ACCUDISC_OFFSET_F_ADJUDICATED)
+        fprintf(stderr,
+                "accudisc: sources disagreed for this drive; this value is the "
+                "one two or more of them agreed on.\n");
+    return 0;
+}
+
+/* Parse the shared flags. Returns 1 when both strings were given (a device-free
+ * query), 0 when neither was (ask the drive), -1 on a usage error. */
+static int offset_args(int argc, char **argv, const char **vendor,
+                       const char **product)
+{
+    *vendor = *product = NULL;
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--vendor") && i + 1 < argc)
+            *vendor = argv[++i];
+        else if (!strcmp(argv[i], "--product") && i + 1 < argc)
+            *product = argv[++i];
+        else
+            return -1;
+    }
+    if (*vendor && *product)
+        return 1;
+    if (*vendor || *product) {
+        fprintf(stderr, "accudisc: --vendor and --product go together\n");
+        return -1;
+    }
+    return 0;
+}
+
+/* The device-free half, dispatched BEFORE any device is opened. The table is
+ * drive knowledge rather than a hardware operation, so a caller holding
+ * captures from drives that are not in the tray — or in the machine — can still
+ * ask about them. Requiring a device here would make the one portal useless to
+ * exactly the callers that most need it. */
+static int cmd_offset_free(const char *vendor, const char *product)
+{
+    accudisc_offset_info info = ACCUDISC_OFFSET_INFO_INIT;
+    int rc = accudisc_offset_for_inquiry(vendor, product, &info);
+
+    printf("vendor %s\nproduct %s\n", vendor, product);
+    return report_offset(rc, &info);
+}
+
+static int cmd_offset(accudisc_device *dev, int argc, char **argv)
+{
+    accudisc_offset_info info = ACCUDISC_OFFSET_INFO_INIT;
+    const char *vendor, *product;
+    accudisc_drive_id id;
+    int err;
+
+    if (offset_args(argc, argv, &vendor, &product) < 0) {
+        usage(stderr);
+        return 1;
+    }
+    /* The both-given case never reaches here — main() handles it before the
+     * open — so this is the ask-the-drive path. */
+    err = accudisc_drive_identify(dev, &id);
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "identify", err);
+    printf("vendor %s\nproduct %s\n", id.vendor, id.product);
+    return report_offset(accudisc_offset_for_device(dev, &info), &info);
 }
 
 /* Plextor Q-Check style census. The scan itself — cadence, counter lifetime,
@@ -1858,6 +1988,21 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    /* `offset --vendor V --product P` answers from the compiled table alone.
+     * Dispatched here, before accudisc_open, so it works with no drive
+     * attached — the point of the device-free portal. */
+    if (!strcmp(command, "offset")) {
+        const char *ov, *op;
+        int form = offset_args(nrest, rest, &ov, &op);
+
+        if (form < 0) {
+            usage(stderr);
+            return 1;
+        }
+        if (form == 1)
+            return cmd_offset_free(ov, op);
+    }
+
     /* Vendor opcodes and WRITE(10)/SEND CUE SHEET are blocked by the kernel's
      * SG_IO filter on read-only fds, so a permitted driver or the write
      * command implies a read-write open. */
@@ -1883,6 +2028,8 @@ int main(int argc, char **argv)
     int rc;
     if (!strcmp(command, "info"))
         rc = cmd_info(dev);
+    else if (!strcmp(command, "offset"))
+        rc = cmd_offset(dev, nrest, rest);
     else if (!strcmp(command, "disc"))
         rc = cmd_disc(dev);
     else if (!strcmp(command, "toc"))

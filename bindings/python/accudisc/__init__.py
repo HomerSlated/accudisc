@@ -42,6 +42,8 @@ from typing import Any, Callable, Iterable, Sequence
 from ._accudisc import ffi, lib
 
 __all__ = [
+    "DriveOffset",
+    "offset_for",
     "AccuDiscError", "InvalidArgument", "OutOfMemory", "OpenFailed", "IOFailed",
     "SenseError", "ShortResponse", "Unsupported", "NotBlank", "Cancelled", "CrcError",
     "NotFound", "AbiMismatch", "RetainedBufferError",
@@ -647,6 +649,82 @@ class Sense:
         if not self.valid:
             return "no sense"
         return f"sense key {self.key:#x} asc {self.asc:#04x} ascq {self.ascq:#04x}"
+
+
+@dataclass(frozen=True, slots=True)
+class DriveOffset:
+    """What the compiled table knows about one drive's read offset.
+
+    ``read_offset`` is ``None`` when the sources DISAGREE — deliberately, and it
+    is the whole reason this type exists. There is no "probably right" value to
+    hand back: an offset applied wrongly shifts the audio silently, so the
+    candidates are surfaced in ``values`` and the choice is the caller's.
+
+    The unit is a sample = one stereo frame = 4 bytes, 588 per sector. Positive
+    means the drive reads early. AccuDisc never applies it; correct once, at
+    storage, so there is exactly one site where the shift can happen.
+    """
+
+    vendor: str
+    product: str
+    read_offset: int | None
+    sources: frozenset[str]
+    ar_submissions: int
+    ar_agree_pct: int
+    adjudicated: bool
+    values: tuple[tuple[int, frozenset[str]], ...] = ()
+
+    @property
+    def conflicting(self) -> bool:
+        return self.read_offset is None and bool(self.values)
+
+    def __str__(self) -> str:
+        if self.read_offset is None:
+            if not self.values:
+                return f"{self.vendor} {self.product}: no source holds this drive"
+            cands = ", ".join(
+                f"{v:+d} ({'+'.join(sorted(s))})" for v, s in self.values
+            )
+            return f"{self.vendor} {self.product}: UNVERIFIED — {cands}"
+        return f"{self.vendor} {self.product}: {self.read_offset:+d} samples"
+
+
+def offset_for(vendor: str, product: str) -> DriveOffset | None:
+    """Look a drive up by INQUIRY strings, WITHOUT opening a device.
+
+    Returns ``None`` when no source holds the drive. A drive whose sources
+    disagree comes back as a :class:`DriveOffset` with ``read_offset is None``
+    and every candidate in ``values`` — not as an exception, because
+    disagreement is data the caller has to act on rather than a failure.
+    """
+    info = ffi.new("accudisc_offset_info*")
+    info.size = ffi.sizeof("accudisc_offset_info")
+    rc = lib.accudisc_offset_for_inquiry(
+        vendor.encode(), product.encode(), info
+    )
+    if rc == lib.ACCUDISC_ERR_NOTFOUND:
+        return None
+
+    def names(mask: int) -> frozenset[str]:
+        out = set()
+        if mask & lib.ACCUDISC_OFFSET_SRC_REDUMP:
+            out.add("redump")
+        if mask & lib.ACCUDISC_OFFSET_SRC_AR:
+            out.add("accuraterip")
+        return frozenset(out)
+
+    values = tuple(
+        (info.values[i], names(info.value_sources[i])) for i in range(info.n_values)
+    )
+    if rc == lib.ACCUDISC_ERR_AMBIGUOUS:
+        return DriveOffset(vendor, product, None, names(info.sources),
+                           0, 0, False, values)
+    _check(rc, None)
+    return DriveOffset(
+        vendor, product, info.read_offset, names(info.sources),
+        info.ar_submissions, info.ar_agree_pct,
+        bool(info.flags & lib.ACCUDISC_OFFSET_F_ADJUDICATED), values,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1581,14 +1659,20 @@ class Device:
         """Manufacturing read offset in samples, or ``None`` if unknown.
 
         Absence is not failure: an unlisted drive returns ``None``, and the
-        caller decides whether to proceed with an uncorrected offset.
+        caller decides whether to proceed with an uncorrected offset. A drive
+        whose sources DISAGREE also returns ``None`` here — use
+        :func:`offset_for` to see the candidates and choose between them.
+
+        One sample is one stereo frame of 4 bytes (588 per sector), the unit
+        REDUMP and AccurateRip both use. Positive means the drive reads early.
         """
-        out = ffi.new("int32_t*")
-        rc = lib.accudisc_read_offset(self._handle, out)
-        if rc == lib.ACCUDISC_ERR_NOTFOUND:
-            return None
-        _check(rc, self)
-        return out[0]
+        info = self.offset_info
+        return info.read_offset if info is not None else None
+
+    @property
+    def offset_info(self) -> DriveOffset | None:
+        """The full offset record for this drive, or ``None`` if unlisted."""
+        return offset_for(*self.identify()[:2])
 
     @property
     def access_method(self) -> str:

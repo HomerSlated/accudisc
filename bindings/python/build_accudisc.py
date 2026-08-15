@@ -189,6 +189,7 @@ typedef enum accudisc_err {
      * rather than quietly produce a dead attribute. */
     ACCUDISC_ERR_ABI,
     ACCUDISC_ERR_NOT_BLANK,
+    ACCUDISC_ERR_AMBIGUOUS,
     ...
 } accudisc_err;
 
@@ -221,6 +222,30 @@ typedef struct accudisc_drive_id {
 
 int accudisc_drive_identify(accudisc_device *dev, accudisc_drive_id *out);
 int accudisc_read_offset(accudisc_device *dev, int32_t *samples);
+
+#define ACCUDISC_OFFSET_SRC_REDUMP ...
+#define ACCUDISC_OFFSET_SRC_AR ...
+#define ACCUDISC_OFFSET_F_CONFLICT ...
+#define ACCUDISC_OFFSET_F_ADJUDICATED ...
+#define ACCUDISC_OFFSET_NONE ...
+#define ACCUDISC_OFFSET_MAX_VALUES ...
+
+typedef struct accudisc_offset_info {
+    uint32_t size;
+    int32_t  read_offset;
+    uint16_t ar_submissions;
+    uint8_t  ar_agree_pct;
+    uint8_t  sources;
+    uint8_t  flags;
+    uint8_t  n_values;
+    int32_t  values[4];
+    uint8_t  value_sources[4];
+    ...;
+} accudisc_offset_info;
+
+int accudisc_offset_for_inquiry(const char *vendor, const char *product,
+                                accudisc_offset_info *out);
+int accudisc_offset_for_device(accudisc_device *dev, accudisc_offset_info *out);
 
 int accudisc_driver_attach(accudisc_device *dev, const char *name,
                            const char *dir);
