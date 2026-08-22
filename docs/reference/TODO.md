@@ -55,25 +55,33 @@ drops REDUMP values on two arms, kept apart in the report:
     unknown provenance — kept, listed, rule NOT applied             15 rows
 
 No agreement threshold: absence is the signal. A threshold would keep
-`Philips DVD-ROM PCDV632` (+116, one submission, 100% agreement, withdrawn) —
-**and that row turned out to be the best argument for the rule as written.**
-Keith identified it 2026-08-22 as a *standalone consumer DVD player* (the
-DVP630/632/642 family), not a PC drive: no USB or any host interface, a
-proprietary ribbon to the mechanism, and an OEM mechanism would not report a
-consumer SKU even if someone wired one up. A real probe of it is close to
-impossible; a knockoff reporting a fake ID is the likelier reading. It is a
-category error of the same kind as the virtual-device rows, and it carried a
-PERFECT agreement score — one submission agreeing with itself. Agreement
-measures consistency among submissions and says nothing about whether the thing
-submitted was a PC drive. Absence from the live list caught it; no quality
-score could have.
+`Philips DVD-ROM PCDV632` (+116, one submission, 100% agreement, withdrawn).
 
-Corpus context, and a caution against reading the name instead: `PCDV` is a real
-Philips PC-drive family still live in AccurateRip — `PCDV5016L2` (+6, 13 subs),
-`PCDV5016P1` (+738, 15), `PCDV6116` (+691, 2). The family numbers four digits;
-`632` is three, matching the consumer player line. Consistent with Keith's
-reading, and NOT what condemned the row — name-shape reasoning was wrong twice
-on the night this was written.
+**That row is a real PC drive, and the rule drops it anyway. State the trade
+rather than hiding it.** A 2006 snapshot of `cclo.ntu.net/mac/Mac.htm` lists it
+in a Pentium III build — `光碟機: Philips PCDV632 6X DVD`, an optical drive
+beside an Adaptec AHA 2940 U2W and IBM SCSI disks — so it is a genuine Philips
+6X DVD-ROM, consistent with the `PCDV` family still live in AccurateRip
+(`PCDV5016L2` +6/13 subs, `PCDV5016P1` +738/15, `PCDV6116` +691/2). An earlier
+identification of it as a standalone consumer player (DVP630/632/642) was Keith's
+and he withdrew it; this note carried that claim for one commit.
+
+So the case against the row is narrower than "it is not a drive", and it still
+holds: ONE submission, and AccurateRip withdrew it. We do not republish what the
+source retracted, and a real drive does not make a lone measurement of it good.
+What the rule costs here is a plausible offset for a rare drive; what it buys is
+that no caller receives a number its own publisher has taken down.
+
+The agreement figure remains useless for gating and this row shows why, whatever
+the hardware turns out to be: **100% on a single submission is agreement with
+oneself.** Agreement measures consistency AMONG submissions. It cannot rank a
+row that has only one.
+
+And a caution on method: name-shape reasoning was wrong three times over this
+rule — the box read `PCRW` not `CDRW`, `CDRW` turned out to be a legitimate
+Philips INQUIRY prefix (12 live rows, 403 submissions), and `PCDV632`'s
+three-digit model number proved nothing. Only the counts and the retraction were
+ever load-bearing.
 The 15 unknowns are the rows a whole-field vendor rewrite cannot reach, where
 AccurateRip prints the vendor run into the product (`SATA LG ELECTRONICSBD-RE B`).
 They are named on every run — a join that resolves everything by letting misses
