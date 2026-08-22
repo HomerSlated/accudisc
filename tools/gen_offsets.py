@@ -103,6 +103,10 @@ from pathlib import Path
 SRC_REDUMP, SRC_AR = 1, 2
 F_CONFLICT, F_ADJUDICATED = 1, 4
 
+# Fraction of REDUMP rows allowed to miss the provenance join before the run is
+# refused. See apply_retractions() for why a ceiling exists at all.
+UNKNOWN_PROVENANCE_CEILING = 0.05
+
 # EXACT whole-field vendor rewrites, applied to BOTH sources before keying.
 # Reviewed by hand, one line per decision, never inferred — see the module
 # docstring for the measurement behind each and for why similarity matching is
@@ -345,6 +349,31 @@ def apply_retractions(redump, prov, ar, stats):
     stats["redump_superseded"] = sum(1 for d in dropped if d[0] == "SUPERSEDED")
     stats["redump_unknown_provenance"] = len(unjoined)
 
+    # THE FLOOR. Making --redump-provenance required stops the flag being
+    # forgotten and nothing else: a TRUNCATED or wrong-format file parses
+    # perfectly, yields a small prov map, sends every unmatched row down the
+    # "unknown provenance, keep it" branch, and emits the pre-rule table with a
+    # zero exit status. Measured: 100 lines of the real file produce 4531
+    # unknowns, 0 retractions, and a table byte-identical to the unfiltered one.
+    #
+    # So the rule has to assert its own reach. 15 of 4595 rows (0.33%) fail to
+    # join against the correct input, all of them the glued-vendor residue; the
+    # ceiling here is fifteen times that, which no legitimate corpus drift
+    # approaches and which truncation exceeds by orders of magnitude.
+    rate = len(unjoined) / max(len(redump), 1)
+    print(f"  provenance reach: {len(redump) - len(unjoined)}/{len(redump)} rows"
+          f" joined ({rate * 100:.2f}% unknown)")
+    if rate > UNKNOWN_PROVENANCE_CEILING:
+        sys.exit(
+            f"provenance covers too little of the REDUMP table: {len(unjoined)} of "
+            f"{len(redump)} rows ({rate * 100:.1f}%) do not join, ceiling is "
+            f"{UNKNOWN_PROVENANCE_CEILING * 100:.0f}%.\n"
+            "The retraction rule cannot run on a partial import — refusing to emit "
+            "a table that would look correct and carry withdrawn rows.\n"
+            "Recover the full file with: "
+            "git -C <redumper> show 15f369e^:driveoffsets.txt"
+        )
+
     for reason, vendor, product, off, subs, pct, a in sorted(dropped, key=lambda d: (d[0], d[1], d[2])):
         detail = (f"AccurateRip now holds {a['offset']:+d} on {a['submissions']} subs"
                   if a else "absent from the live AccurateRip list")
@@ -526,7 +555,16 @@ def emit(rows: list[Row], out: Path, stats: dict, dropped: list) -> None:
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     print(f"\n{out}: {len(rows)} entries")
-    for k in sorted(stats):
+    # Zero counters are printed, not omitted: a missing line reads as "this
+    # generator does not count that", which is exactly the wrong conclusion to
+    # invite about conflicts once the retraction rule has removed them all.
+    for k in ("conflicting_keys", "adjudicated", "unresolved_conflicts",
+              "redump_retracted", "redump_superseded",
+              "redump_unknown_provenance"):
+        print(f"  {k:26s} {stats.get(k, 0)}")
+    for k in sorted(set(stats) - {"conflicting_keys", "adjudicated",
+                                  "unresolved_conflicts", "redump_retracted",
+                                  "redump_superseded", "redump_unknown_provenance"}):
         print(f"  {k:26s} {stats[k]}")
     for label, mask in (("REDUMP", SRC_REDUMP), ("AccurateRip", SRC_AR)):
         print(f"  rows held by {label:12s} {sum(1 for r in rows if r.sources & mask)}")

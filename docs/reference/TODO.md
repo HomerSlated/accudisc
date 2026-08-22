@@ -92,6 +92,13 @@ away.
   does not normalise near-identical strings — `SIimtype` survives beside
   `Slimtype` — so the display name is not the key. Firmware revision is the
   obvious candidate and is **not established**.
+- **`ERR_AMBIGUOUS` now has no test exercising it.** The TEAC case was the only
+  one, and it has been replaced by an assertion that the path is NOT taken. The
+  multi-value branch of `accudisc_offset_for_inquiry` — `n > 1`, `values[]`,
+  `value_sources[]`, the `ar_submissions` clearing — is live code with no
+  regression guard behind it, and the product-only key change is what will make
+  it load-bearing again. Wants a synthetic fixture (a small table the test
+  compiles against) BEFORE that change, not after.
 - The product-only keying change (2026-08-19 point 5) is still to do, and the
   dedup and `values[]` capacity work below are its prerequisites rather than
   standalone fixes. Note `ACCUDISC_OFFSET_MAX_VALUES` writes are bounded by the
