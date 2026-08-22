@@ -126,7 +126,14 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 0
+#define ACCUDISC_VERSION_PATCH 1 /* 0.12.1: ar_submissions got more accurate,
+                                  * not different in meaning. AccurateRip lists
+                                  * some drives twice; where the duplicate rows
+                                  * AGREE on the offset their counts are now
+                                  * summed instead of the largest being kept.
+                                  * 91 rows carry a higher count, one carries a
+                                  * lower agreement (the weighted mean of 100%
+                                  * and 75%), and NO offset moved. */
 
 #if defined(_WIN32)
 #  define ACCUDISC_API __declspec(dllexport)

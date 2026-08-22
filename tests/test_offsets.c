@@ -129,6 +129,32 @@ int main(void)
            == (ACCUDISC_OFFSET_SRC_REDUMP | ACCUDISC_OFFSET_SRC_AR));
     assert(info.ar_submissions == 1065);
 
+    /* --- AccurateRip duplicates that AGREE are pooled, not selected -------
+     * AccurateRip lists 4878 rows under 4799 keys; 69 of the duplicated keys
+     * carry the SAME offset in every row. Keeping only the largest discards
+     * real measurements — "DVD RW" is listed at 298 and 267, both +6, and used
+     * to ship as 298 when 565 people had measured it. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("", "DVD RW", &info) == ACCUDISC_OK);
+    assert(info.read_offset == 6);
+    assert(info.ar_submissions == 565);
+
+    /* Agreement across a pool is the submission-WEIGHTED mean, which is the only
+     * average that keeps "percent of submissions agreeing" meaning what it says.
+     * TSSTCORP CDDVDW SE-218GN is the corpus's one pooled key whose rows differ
+     * on agreement: 193 at 100% and 4 at 75%.
+     *
+     *     weighted   (193*100 + 4*75) / 197 = 99
+     *     flat mean  (100 + 75) / 2         = 88   <- wrong, and plausible
+     *
+     * 88 is what an unweighted average gives, and nothing downstream could tell
+     * it from the truth — which is why this assertion names the number. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("TSSTCORP", "CDDVDW SE-218GN", &info)
+           == ACCUDISC_OK);
+    assert(info.ar_submissions == 197);
+    assert(info.ar_agree_pct == 99);
+
     /* --- absence is explicit, never a default ---------------------------- */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
     assert(accudisc_offset_for_inquiry("NOSUCHVENDOR", "NOSUCH 9000", &info)

@@ -195,43 +195,92 @@ def read_ar(path: Path) -> list[dict]:
     So the duplicates are resolved HERE, within the source, by AccurateRip's own
     count, before any cross-source comparison sees them. Ties keep the first row
     and are reported, because a tie is not a resolution.
+
+    RESOLUTION IS NOT SELECTION WHEN THE ROWS AGREE. Most duplicates do agree:
+    of 75 duplicated names, 66 carry the SAME offset in every row. Keeping only
+    the largest of those throws away real measurements — 930 submissions, 4.9%
+    of the total across those keys. `DVD RW` is listed at 298 and 267, both +6,
+    and shipped as 298 when 565 people measured it. The counts are not rival
+    claims there; they are one claim, reported twice.
+
+    So rows are POOLED BY (key, offset) first — submissions summed, agreement
+    taken as the submission-weighted mean, which is the only average that keeps
+    "percent of submissions agreeing" meaning what it says — and only then does
+    the largest pool win the key. Selection between DIFFERENT offsets is
+    unchanged and still by count; it just now compares pooled totals rather than
+    whichever single row happened to be biggest.
+
+    Why the counts are duplicated at all is unknown. AccurateRip does not
+    normalise near-identical names (SIimtype survives beside Slimtype), and the
+    pairs are not always lopsided — 298|267, 136|197|12 — so the display name is
+    not its key. Firmware revision is the obvious candidate and is NOT
+    established. Pooling is right either way: whatever distinguishes the rows,
+    it is not something a drive reports in the two fields we can match on.
     """
     rows = json.loads(path.read_text(encoding="utf-8"))["rows"]
-    best: dict[str, dict] = {}
-    collapsed = 0
+
+    # key -> offset -> [submissions, submissions*pct, first row seen, largest row]
+    #
+    # The LARGEST single row is carried alongside the sum on purpose: it is what
+    # this function used to return, so it is the only honest baseline for saying
+    # how much pooling recovers. Measured against the first row instead — which
+    # is what a naive counter does — the same change reports 12955 submissions
+    # rather than 933, a number that is arithmetically correct and describes a
+    # behaviour nothing ever had.
+    pools: dict[str, dict[int, list]] = defaultdict(dict)
     for r in rows:
         key = fold(r["vendor"], r["product"])
-        prev = best.get(key)
-        if prev is None:
-            best[key] = r
-            continue
-        collapsed += 1
-        if r["submissions"] > prev["submissions"]:
-            if prev["offset"] != r["offset"]:
-                print(
-                    f"  AR duplicate {r['vendor']!r} {r['product']!r}: "
-                    f"{prev['offset']:+d}/{prev['submissions']} subs superseded by "
-                    f"{r['offset']:+d}/{r['submissions']} subs"
-                )
-            best[key] = r
-        elif r["submissions"] == prev["submissions"] and r["offset"] != prev["offset"]:
-            print(
-                f"  AR TIE {r['vendor']!r} {r['product']!r}: "
-                f"{prev['offset']:+d} vs {r['offset']:+d}, both "
-                f"{r['submissions']} subs — keeping the first"
-            )
-        elif prev["offset"] != r["offset"]:
-            print(
-                f"  AR duplicate {r['vendor']!r} {r['product']!r}: "
-                f"{r['offset']:+d}/{r['submissions']} subs discarded for "
-                f"{prev['offset']:+d}/{prev['submissions']} subs"
-            )
-    if collapsed:
-        print(f"  ({collapsed} AccurateRip duplicate row(s) resolved by submission count)")
-    return list(best.values())
+        pool = pools[key].get(r["offset"])
+        if pool is None:
+            pools[key][r["offset"]] = [r["submissions"],
+                                       r["submissions"] * (r["agree_pct"] or 0),
+                                       r, r["submissions"]]
+        else:
+            pool[0] += r["submissions"]
+            pool[1] += r["submissions"] * (r["agree_pct"] or 0)
+            pool[3] = max(pool[3], r["submissions"])
+
+    pooled_rows, merged, recovered, contested = [], 0, 0, 0
+    for key, by_offset in pools.items():
+        for pool in by_offset.values():
+            subs, weighted, first = pool[0], pool[1], pool[2]
+            # Agreement as the submission-WEIGHTED mean: 193 rows at 100% and 4
+            # at 75% pool to 99, not to a meaningless flat-average 87. A zero
+            # count carries no weight, so it keeps whatever the row stated.
+            pool[1] = round(weighted / subs) if subs else (first["agree_pct"] or 0)
+
+        winner_off, winner = max(by_offset.items(), key=lambda kv: kv[1][0])
+        losers = [(o, p) for o, p in by_offset.items() if o != winner_off]
+        ties = [o for o, p in losers if p[0] == winner[0]]
+
+        row = dict(winner[2])
+        if winner[0] != winner[3]:
+            merged += 1
+            recovered += winner[0] - winner[3]
+        row["submissions"] = winner[0]
+        row["agree_pct"] = winner[1]
+        pooled_rows.append(row)
+
+        if losers:
+            contested += 1
+            for o, p in sorted(losers):
+                print(f"  AR duplicate {row['vendor']!r} {row['product']!r}: "
+                      f"{o:+d}/{p[0]} subs discarded for "
+                      f"{winner_off:+d}/{winner[0]} subs")
+            if ties:
+                print(f"  AR TIE {row['vendor']!r} {row['product']!r}: "
+                      f"{winner_off:+d} vs "
+                      + ", ".join(f"{o:+d}" for o in sorted(ties))
+                      + f", all {winner[0]} subs — keeping the first")
+
+    print(f"  AccurateRip: {len(rows)} rows -> {len(pooled_rows)} keys; "
+          f"{merged} key(s) pooled agreeing duplicates, recovering {recovered} "
+          f"submission(s) over keeping the largest row alone; "
+          f"{contested} key(s) had rival offsets")
+    return pooled_rows
 
 
-def read_provenance(path: Path) -> dict[str, tuple[int, int, int]]:
+def read_provenance(path: Path) -> dict[str, dict[int, tuple[int, int]]]:
     """AccurateRip's list AS REDUMP IMPORTED IT, with the columns that import dropped.
 
     WHY THIS FILE EXISTS. REDUMP's offset table is not a second measurement of the

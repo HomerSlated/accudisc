@@ -81,11 +81,24 @@ away.
 
 ### Left open
 
-- **`gen_offsets.py` keeps only the highest-submission row of an AccurateRip
-  duplicate.** For the 66 duplicate keys whose rows AGREE on the offset that
-  discards 930 submissions, 4.9% of their total — `DVD RW` ships as 298
-  measurements when 565 people measured +6. Summing is the honest aggregate when
-  the offset is identical; the differing 9 must still resolve by count.
+- ~~`gen_offsets.py` keeps only the highest-submission row of an AccurateRip
+  duplicate.~~ **DONE 2026-08-22 (0.12.1).** Rows are pooled by (key, offset) —
+  submissions summed, agreement as the submission-WEIGHTED mean — and only then
+  does the largest pool win the key. 69 keys pooled, **933 submissions**
+  recovered against the previous behaviour, 91 table rows changed, exactly one
+  agreement percentage moved (`TSSTCORP CDDVDW SE-218GN`, 193 at 100% plus 4 at
+  75% -> 197 at 99%; a flat mean would say 88), and NO offset changed.
+
+  Two figures in the section above were quoted as 66 keys / 930 submissions.
+  Those were measured on the RAW (vendor, product) key; the generator keys with
+  `fold()`, which also pools rows AccurateRip split differently between the two
+  fields. 69 / 933 is the same finding counted the way the code counts it.
+
+  The recovery figure needs its baseline stated or it is nonsense: measured
+  against the FIRST row rather than the LARGEST — which is what a naive counter
+  does, and what the first version of this one did — the identical change
+  reports **12955** submissions. Arithmetically correct, and it describes a
+  behaviour the generator never had.
 - **What AccurateRip keys on is unknown.** 4878 rows carry 4802 distinct
   vendor+product names; 75 names appear more than once, and the counts are not
   always lopsided (`DVD RW` 298|267, `SLIMTYPE DVD A DS8A4S` 136|197|12). It
