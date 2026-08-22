@@ -25,8 +25,15 @@ REDUMP keys on the INQUIRY vendor; AccurateRip sometimes keys on the marketing
 name for the same company. Unaliased, that splits one drive into two rows and
 makes the catalogues look far more divergent than they are. Measured here:
 
-    alias OFF   shared 3503   REDUMP-only 1086   AR-only 1299
-    alias ON    shared 4526   REDUMP-only   63   AR-only  276
+    alias OFF   shared 3501   REDUMP-only 1086   AR-only 1298
+    alias ON    shared 4554   REDUMP-only   33   AR-only  245
+
+(Recomputed 2026-08-16 against the shipped THREE-entry alias list. The figures
+this docstring carried until then — 4526/63/276 — were measured before FREECOM_
+was added, so they described a two-alias configuration that no longer ships; the
+FREECOM_ entry accounts for exactly the 63 -> 33 shift. A residual difference of
+two keys between that run and this one is unexplained and immaterial to every
+conclusion below, but it is not zero and is recorded rather than rounded away.)
 
 HL-DT-ST is Hitachi-LG; MATSHITA is Panasonic. Of 650 REDUMP HL-DT-ST rows, 649
 match an AccurateRip "LG Electronics" row and all 649 AGREE on the offset, with
@@ -109,11 +116,16 @@ def norm(s: str) -> str:
 def fold(vendor: str, product: str) -> str:
     """The build-time join key: aliased, case-folded, whitespace-collapsed.
 
-    Case folding and aliasing are right for pooling evidence across sources at
-    build time and WRONG for the runtime lookup, which compares against bytes a
-    drive actually reported. The runtime stays case-sensitive and alias-free;
-    only this tool folds, and it emits every spelling it saw so either
-    convention still matches at runtime.
+    Case folding matches the runtime, which folds too (adsc_inquiry_normalize
+    in src/drive/offsets.c) — vendors are not consistent about capitalisation
+    and "AOpen"/"AOPEN" are one company. Measured before adopting it: of 5888
+    emitted rows, ZERO pairs differed only by case, so folding collides nothing.
+
+    ALIASING is the part that stays build-time-only, and the distinction is not
+    cosmetic. Case is a spelling of one string; an alias asserts that two
+    DIFFERENT strings name one company, which is a human judgement (see
+    VENDOR_ALIAS). The runtime must never make it, so this tool emits every
+    aliased spelling it saw as its own row and the lookup matches literally.
     """
     v = norm(vendor).upper()
     v = VENDOR_ALIAS.get(v, v)
@@ -230,25 +242,28 @@ def merge(redump, ar) -> tuple[list[Row], dict]:
     claims: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
     ar_meta: dict[str, dict] = {}
 
-    # EVERY distinct exact spelling of a key is kept, not just the first seen.
-    # The folded key is right for pooling evidence and wrong for emission: the
-    # runtime compares against the bytes a drive reported, case and all, so
-    # collapsing ("", "DVDROM GO-D1600B") and ("DVDROM", "GO-D1600B") into one
-    # row would leave a drive reporting the other form unmatched. Aliasing makes
-    # this load-bearing rather than incidental — HL-DT-ST and LG Electronics are
-    # one key here and two distinct INQUIRY strings in the field, and BOTH must
-    # be present for either drive to match.
+    # EVERY distinct spelling of a key is kept, not just the first seen. Case is
+    # NOT a distinction here — both this key and the runtime fold it — but the
+    # vendor/product SPLIT and the alias are, so ("", "DVDROM GO-D1600B") and
+    # ("DVDROM", "GO-D1600B") remain two rows: a drive reporting either form has
+    # to match. Aliasing makes this load-bearing rather than incidental —
+    # HL-DT-ST and LG ELECTRONICS are one key here and two distinct INQUIRY
+    # strings in the field, and BOTH must be present for either drive to match.
+    #
+    # Stored upper-cased so the emitted table is already in the runtime's
+    # comparison form; the set then collapses spellings that differed only by
+    # case, of which this corpus currently has none.
     spellings: dict[str, set[tuple[str, str]]] = defaultdict(set)
 
     for vendor, product, off in redump:
         key = fold(vendor, product)
         claims[key][off] |= SRC_REDUMP
-        spellings[key].add((norm(vendor), norm(product)))
+        spellings[key].add((norm(vendor).upper(), norm(product).upper()))
 
     for a in ar:
         key = fold(a["vendor"], a["product"])
         claims[key][a["offset"]] |= SRC_AR
-        spellings[key].add((norm(a["vendor"]), norm(a["product"])))
+        spellings[key].add((norm(a["vendor"]).upper(), norm(a["product"]).upper()))
         ar_meta[key] = a
 
     rows: list[Row] = []

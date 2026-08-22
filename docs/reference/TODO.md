@@ -7,6 +7,343 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## OFFSET DICTIONARY — the design Keith settled (2026-08-19)
+
+**Supersedes the 2026-08-16 section below on two points.** The `nnXnnX` question
+is closed — the rules *are* overzealous, but for a reason nobody had yet stated —
+and "drop the bad entries" has been replaced by "consolidate and warn". Read this
+first; the older section is kept for the evidence in it.
+
+### The design, in Keith's words
+
+> *"For actual drive detection, we will use only the unique product identifier
+> (which is why it can't be missing or generic), and only verify the vendor if
+> present and not conflicting (unless it's a recognised alias)."*
+
+and, the same evening, the correction that changes the goal:
+
+> *"I really only need to drop entries that are genuinely unusable, because there
+> are multiple identical entries with different offsets. But we already agreed
+> that, in those cases, we simply print a warning and the list of possible values.
+> So maybe I don't need to drop any entries at all, I just need to consolidate
+> genuine duplication. […] The tool should be genuinely useful, not ignore data
+> without good justification."*
+
+### Sequence of work he set
+
+1. Accumulate vendor names, verified by dumping the vendor-less list and reading
+   it (`name_reduce.py --no-vendor`, added 2026-08-19).
+2. Then identify entries with no product name, or only a generic one.
+3. **no vendor AND no product** is the only candidate set for dropping.
+4. Vendor-less rows that *do* carry a real product: research the vendor by hand
+   and attach it **for information only** — never for matching, since no drive
+   reports it.
+5. Detection keys on the **product identifier alone**; the vendor only narrows,
+   and only when present, non-conflicting, or a recognised alias.
+
+### THE LOOKUP IS ALREADY BUILT — check before designing it again
+
+`accudisc_offset_info` (public header, shipped 0.10.0) already carries everything
+"consolidate and warn" needs:
+
+- `ERR_AMBIGUOUS` (-14) + `n_values` + `values[]` + `value_sources[]` — the
+  warn-and-list path, already the behaviour on a disagreeing key.
+- `ar_submissions` — the confidence signal, so a caller can see a row rests on
+  one measurement without the table having to judge it.
+- `ar_agree_pct` — AccurateRip's WITHIN-source agreement, valid even though the
+  two corpora are not independent of each other.
+- `sources` — carries the non-independence warning in its own comment.
+
+So point 5 changes the **key** (`src/drive/offsets.c`, `tools/gen_offsets.py`),
+not the API surface. Shape:
+
+    product key -> candidate set -> narrow by vendor (aliases apply)
+                -> 1 left: OK   |   >1 left: ERR_AMBIGUOUS with values[]
+
+### Measured 2026-08-19 — do not re-derive
+
+**Product-only keying is safe.** Redump's structured product column, the only
+corpus half with a real vendor/product split:
+
+    distinct RAW product strings : 4349
+    ambiguous on offset          :   20   (0.46%)
+       vendor differs (resolvable):  14
+       vendor same  (unresolvable):   6
+
+**But the key must be the RAW product, never the reduced string.** The reduction
+strips tokens that are occasionally the only discriminator:
+
+    AOpen 12X DVD-ROM-AMH  -> reduced "DVD-ROM-AMH"  +691
+    AOpen 16XDVD-ROM-AMH   -> reduced "DVD-ROM-AMH"  +102
+
+Two different readers, 589 samples apart, merged into one key by the dictionary.
+Keith: *"16XDVD-ROM-AMH is most likely the actual product identifier, despite its
+partially generic appearance. So my nnXnnX rule is overzealous. Some products just
+have very literal and unimaginative identifiers."* `tests/test_offsets.c` already
+asserts both values — that test is the regression guard, keep it.
+
+This closes the `nnXnnX` question from 2026-08-16. **Reduction is for AUDITING and
+for deciding whether a product string is generic; it is never the detection key.**
+The `\d{1,3}X` -> `\d{1,2}X` narrowing measured on 2026-08-16 stays unapplied and
+is now low-priority rather than wrong.
+
+**The 6 that the vendor cannot resolve** — pre-existing conflicts, not
+consequences of the new rule; today's vendor+product key does not fix them either:
+
+    PIONEER  BD-RW BDR-206      +0  / +667
+    PIONEER  DVD-RW DVR-221L    +6  / +667
+    SONY     CD-RW CRX175E      +0  / +120
+    SLIMTYPE DVD A DS8A1H       +0  / +594
+    PLEXTOR  DVDR PX-740A       +6  / +618
+    ATAPI    DVD A DH16AFSH     -12 / +6    (AR holds +6, 9 submissions)
+
+`+667` was checked for being a systematic artefact and is NOT: it is the third
+most common offset in the corpus (926 rows, behind +6 and +102) — the
+LG/HL-DT-ST family value. A pattern found by looking only at conflicts describes
+conflicts, not the corpus.
+
+**`ATAPI CD-ROM`, the entry that started the vendor discussion:**
+
+    Redump  ATAPI | CD-ROM   +680
+    AR      ATAPI CD-ROM     +680   1 submission
+
+One entry, one offset, held by both tables — but the tables are not independent,
+so that is one witness, and `ar_submissions = 1` already says so to any caller.
+Under today's vendor+product key it is unique and usable. Under point 5's
+product-only key the product `CD-ROM` alone is held by FIVE Redump rows carrying
+FOUR offsets:
+
+    52XATAPI CD-ROM  +108      BCD 32XH CD-ROM   +12
+    ATAPI    CD-ROM  +680      BCD 44XH CD-ROM   +12
+                               BCD24XHM CD-ROM  -1164
+
+so it becomes ERR_AMBIGUOUS and the vendor narrows it back to one. That is
+Keith's rule working as designed — and it means **generic product strings
+self-identify by colliding**, so they may need no filter at all.
+
+**The no-vendor population** (`--no-vendor`): 1591 of 9504 rows, 811 distinct
+names, 676 of which still reduce to a model string. Dominated by drives whose
+FIRMWARE reports no vendor, not by junk — the most-submitted vendor-less rows are
+Lite-On's iHAS/iHBS family reporting vendor `ATAPI`:
+
+    1556  +6    ATAPI iHAS124 F        1023  +6  Dell DVD+--RW DW316
+    1182  +696  ATAPI iHOS104           739  +6  Slimtype DVD A DS8A5SH
+    1172  +6    ATAPI iHAS124 B         418  +6  TS8XDVDS TRANSCEND
+
+An empty vendor field measures whether the firmware author filled it in, never
+the quality of the drive. `SLIMTYPE` alone is 232 rows — 14.6% of the vendor-less
+set from one missing keep rule.
+
+**Submission counts separate the populations but cannot gate:**
+
+    subs      all AR   no-vendor
+    1          12.6%      25.7%
+    100+       21.4%      10.5%
+
+Twice as likely to rest on a single submission, half as likely to have 100+ — but
+86 vendor-less rows have 100+. Use it as an ORDERING for the audit, so real
+missing vendors float to the top; never as a filter.
+
+### Corruption forensics — three mechanisms, told apart by arithmetic
+
+XOR the suspect against the real name; the popcount says which:
+
+    'PLEXTOR'   vs 'PLEXTOB'    1 diff,  XOR 0x10        single bit flip
+    'HL-DT-ST'  vs 'HL)DP-ST'   2 diffs, XOR 0x04 twice  same bit, twice
+    'Slimtype'  vs 'SIimtype'   1 diff,  XOR 0x25        3 bits - not electrical
+    'Nakamichi' vs 'Nakamich'   0 diffs, 9 -> 8 chars    T10 field width
+
+Single-bit differences are bus or media corruption during a real probe, so those
+rows are corrupt COPIES of drives already in the table — deletions, not new
+vendors. A 3-bit XOR at an `l`/`I` position is a human reading a rendered name
+(`SIimtype eBAU108 7 L`, 1 submission, sitting beside `Slimtype eBAU108 7 L` at
+120). Truncation is not an error at all: measured on Redump's columns, vendor
+max = 8 (1561 rows at exactly 8) and product max = 16 (919 rows at exactly 16) —
+the T10 INQUIRY field widths. `Nakamich` is `Nakamichi` truncated, and Nakamichi
+genuinely made PC drives (MJ-4.8 / MJ-5.16 five-disc ATAPI and SCSI changers), so
+the vendor is real; "Dragon 05" as a model is still unverified.
+
+Also present and **not hardware**: five virtual-device rows — `Oh!Soft
+VirtualDVD-ROM +667`, `DiscSoft VirtualWritable +6` (DAEMON Tools), `NECVMWar
+VMware SATA CD02` and `CD05` (+6). An emulator returns image bytes and has no
+read offset at all; +667 on one of them is a measurement artefact that would shift
+real output by 2668 bytes. A category error rather than a name-quality judgement,
+and the cleanest deletion rule available.
+
+### `values[]` holds 4 and product-only keying already overflows it — measured
+
+`ACCUDISC_OFFSET_MAX_VALUES` is **4** (public header). `accudisc_offset_for_inquiry`
+appends one value per MATCHING ROW and **does not dedup identical values**
+(`src/drive/offsets.c:102-131`); it clamps `n_values` to the array while `n` keeps
+counting, so an over-wide conflict reports `conflict 4`, lists four values, and
+says nothing about the ones dropped. Silent truncation of the very list
+`cli/main.c:217` tells the user to choose from.
+
+Today that is unreachable: of 5888 table rows there are 5887 distinct
+(vendor, product) keys and exactly **one** key held twice — the single
+ERR_AMBIGUOUS drive. The generator already merges rows carrying the same value
+(0 identical (vendor, product, offset) triples in the built table).
+
+Under point 5's product-only key, measured on the built table:
+
+    5 rows  4 distinct  "CD-ROM"          <- OVERFLOWS values[4]
+    4 rows  3 distinct  "DVD-ROM"
+    4 rows  2 distinct  "DVD RW"
+    4 rows  1 distinct  "DVDRAM GT20L"    <- 4 rows, ONE value: pure duplication
+    3 rows  2 distinct  "GCE-8483B"
+
+Exactly one product overflows, and three more sit at the limit. Note the last
+shape: 4 rows agreeing on one offset would today be reported as a 4-way CONFLICT,
+because the lookup counts rows rather than distinct values. **Deduping identical
+values in the lookup fixes the overflow and the false conflict at once**, and is
+Keith's "consolidate genuine duplication" expressed in code rather than in the
+table — `DVDRAM GT20L` is four vendor spellings of one drive, not a disagreement.
+
+After deduping, the widest real conflict is `CD-ROM` at 4 distinct values, which
+fits exactly. That is zero headroom, and AccurateRip's rows carry no vendor/product
+split, so whatever derives their product identifier can only add. Decide: dedup in
+the lookup (needed either way), and then either grow the array (a layout change —
+minor bump, the `size` field handles it) or add a "list truncated" flag. Growing
+it silently is the wrong fix alone: a caller must be able to tell a complete list
+from a clipped one.
+
+### Two API decisions implied by point 5, neither settled
+
+1. **What comes back when the vendor conflicts.** Under "reports, never applies"
+   the offset should still return, flagged as not corroborated. A silent
+   `ERR_NOTFOUND` is indistinguishable from an unknown drive, so the caller
+   cannot tell "no data" from "data we distrust". Likely a new
+   `ACCUDISC_OFFSET_F_*` bit.
+2. **Researched vendors must not share a field with reported ones.** The point-4
+   vendors are, by construction, strings no drive will ever report. Put them in
+   the column the matcher reads and a future change starts matching on them,
+   sending every affected drive to NOTFOUND — well-formed, silent, and invisible
+   to tests. Separate field, or a per-row flag.
+
+### Tooling added 2026-08-19
+
+`name_reduce.py --no-vendor` — rows no vendor `keep` rule claims, grouped by
+LEADING token. The grouping is structural, not a guess: `offset_dump_all.py`
+builds column 4 as `f"{vendor} {product}"`, so token 0 is the vendor position.
+`--limit 0 --examples 0` lifts both caps. Reduction output and `--stats` totals
+verified byte-identical after the change.
+
+Two traps closed while adding it, both worth keeping:
+
+- **The vendor set is DECLARED, not inferred.** Two of the 55 keep rules guard
+  structure (`[A-Za-z0-9]`, `V\d+`), so "a keep rule fired" is not "a vendor was
+  recognised" — it over-counts by 567 rows, with a well-formed number nothing
+  downstream could catch. Marked `struct:` in the note column; `vendor_keeps()`
+  excludes them. Inferring from `keep` vs `keepre` works today and rots the first
+  time a brand needs a regex spelling.
+- **`check_note()`** rejects a note carrying both `cs:` and `struct:` (only the
+  leading prefix is honoured, so the other would be silently ignored) and
+  `struct:` on a non-keep rule. All three rejection paths were made to fail before
+  being trusted.
+
+## OFFSET DICTIONARY — Keith's redirection: the test is a VENDOR, not a speed string (2026-08-16) — PARTLY SUPERSEDED, see above
+
+**Superseded in part by the 2026-08-19 section above** — the `nnXnnX`
+proposal below is settled there, and "drop the bogus entries" has become
+"consolidate and warn". The evidence in this section still stands.
+
+The exclusion dictionary
+(`tools/drive_name_terms.tsv`, 159 rules) transferred from cdda2img today and is
+verified working in this tree. Before it drives anything, Keith redirected the
+approach:
+
+> *"I'm starting to lean towards the idea that maybe we should drop the nnXnnX
+> type rule. The real test for whether an entry is bogus, or at least unusable,
+> is if there's no recognisable vendor name, e.g. the ones that merely identify
+> as 'ATAPI CD-ROM', etc."*
+
+### The change of principle
+
+The dictionary as inherited asks *"what tokens are not identifiers?"*, strips
+them, and blanks a row if nothing survives. Keith's test asks a different and
+simpler question: **does this row name a manufacturer we recognise?** If not, the
+entry cannot bear an authoritative offset whatever else is in the string, because
+many unrelated drives report `ATAPI CD-ROM` and they do not share an offset.
+
+Consequences to work through, none of them decided:
+
+- The ~92 `token` drops and the speed `regex` rules may become largely
+  unnecessary — if the gate is vendor recognition, stripping `52X32X52` earns
+  nothing. **Dropping the `nnXnnX` rules is the specific proposal.**
+- The 53 `keep` rules (vendor names) stop being a guard and become **the whole
+  mechanism**. That list then becomes the highest-value artefact in the tool and
+  needs reviewing as such, together with the vendor ALIAS pairs it interacts with
+  (`tools/gen_offsets.py:86-90`).
+- `blank-if-all-kept` inverts its justification: today a row of nothing-but-vendor
+  blanks because a bare vendor is not a drive. Under the new test that is still
+  true, so `ASUS` / `PIONEER` / `Lenovo` should still go — the rule survives but
+  for a different reason, and that should be stated rather than inherited.
+- Whether the reduced string still exists at all. If the gate is "recognisable
+  vendor, yes/no", the output may be a **filter decision** rather than a reduced
+  name — which would retire the raw-first/reduced-fallback machinery and the
+  "reduced string is never a key" hazard along with it.
+
+### Evidence from tonight, so it is not re-derived
+
+- **The list is 356 rows / 187 distinct names.** A reviewable dump with offsets,
+  submission counts and per-corpus provenance was written to
+  `/var/tmp/accudisc-offsets-handover/blanked_review.txt` — regenerate rather
+  than trust it, `/var/tmp` is not backed up. `name_reduce.py --blanked` is the
+  flag; the join back to offsets is by ROW POSITION (output is 1:1 row-aligned
+  with the input TSV), not by string match.
+- **One proven false positive under the current rules:** `HP DVD Writer 840x`,
+  +102, 25 AR submissions. `drive_name_terms.tsv:122` is `regex \d{1,3}X`, and
+  the three-digit bound eats the model number. Minimal pair, measured:
+
+  ```
+    HP DVD Writer 840x   -> (blank)
+    HP DVD Writer 840    -> HP 840
+    HP DVD Writer 1260x  -> HP 1260x     (4 digits, escapes the rule)
+  ```
+
+  Narrowing to `\d{1,2}X` was tested and is surgical: 356 -> 354 blanked rows,
+  **exactly one** name changes, the rule keeps 151 of its 153 hits, and nothing
+  else moves across 9,504 rows. **NOT APPLIED** — it may be moot if the rule is
+  dropped entirely, which is the proposal above. Note the rule's own examples
+  (`52X, 16X, 40X, 48X, 56X`) are all two-digit, and no optical drive speed has
+  ever been three-digit (CD 56x, DVD 24x, BD 16x).
+- The `split (\d{1,3}X)([A-Z][A-Z0-9-]+)` rule carries the identical bound. Inert
+  on this corpus, same latent bug.
+- **165 of the 187 blanked names are held by BOTH corpora and all 165 agree on
+  the offset.** This is NOT evidence the entries are sound — it is the
+  non-independence finding again (documented on `accudisc_offset_info.sources` in
+  the public header). Two tables agreeing about `ATAPI CD-ROM` is one guess
+  counted twice, and it argues *for* dropping them.
+- Four judgement calls left with Keith, unresolved: `HL-DT-ST` /
+  `LG Electronics LENOVO BURNER` (+102, 11 subs — a product name, not a model
+  number); `Memorex CD-ROM 52X v2` (a revision marker with no model to qualify);
+  truncated trailing letters (`Optiarc DVD RW A`, `PIONEER DVD-RW D`,
+  `Slimtype DVD A`), which are the same shape the `keepre` guard exists to
+  protect on `DRW-24B1ST`; and bare vendors, which should go.
+
+### Also outstanding on offsets
+
+- **Integration shape, still undecided:** (a) build-time filter dropping
+  identifier-less rows, (b) runtime raw-first with reduced-form fallback, or
+  both. Keith's redirection may retire (b) entirely — settle the principle first.
+- **Point 3 of Keith's eight — write-offset measurement — NOT STARTED.** The only
+  unstarted item, and the one thing that did not transfer, because a
+  burn-and-read-back is a procedure rather than a table. Reference implementation
+  is cdda2img's `src/cdda2img/write_offset.py` (`cdda2img setup --write-offset`),
+  explicitly protected from the handover deletion. Read it before writing ours;
+  rewrite, never copy.
+- **Uncommitted in the tree:** the case-folding change (Keith's ruling —
+  upper-case the table, upper-case the query) across `accudisc.h`,
+  `src/drive/offsets.c`, `offsets_db.inc`, `tests/test_offsets.c`,
+  `tools/gen_offsets.py`; 42/42 green; verified lossless (0 of 5888 rows differ
+  only by case). Deserves **0.11.0** — a lowercase INQUIRY string that returned
+  `ERR_NOTFOUND` now returns `OK`, the same "meaning changed, layout did not"
+  case that justified 0.10.0. Plus four untracked handover tools. `24ac59e` is
+  still unpushed underneath all of it.
+- **Device path not hardware-verified since the case change.** Run
+  `accudisc --device /dev/sr0 offset` against the real PX-716A under
+  `flock /var/tmp/sr0.lock`.
+
 ## READ SPEED — ONE SESSION, THEN PERMANENTLY ABANDONED (Keith, 2026-08-08)
 
 > *"We will set aside a session, not today, where the only topic we discuss is

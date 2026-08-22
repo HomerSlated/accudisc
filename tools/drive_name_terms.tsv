@@ -1,0 +1,269 @@
+# drive_name_terms.tsv -- the term dictionary read by tools/name_reduce.py
+#
+# Tab-separated, four columns.  Blank lines and lines starting with # are ignored.
+# Rules are applied by KIND, never in file order, so a rule can be added anywhere.
+#
+#   kind    what it matches                                    repl
+#   ------  -------------------------------------------------  ----------------
+#   keep    a whole token, matched literally, that NO other     unused
+#           rule may touch and that --report hides
+#   token   a whole token, matched literally                   unused
+#   regex   a whole token, matched by regex (implicit fullmatch)  unused
+#   split   a whole token; the token becomes its capture groups  unused
+#   strip   a substring inside a token, rewritten by repl       replacement text
+#
+# Matching is case-insensitive.  Put "cs:" at the start of the note to make one
+# rule case-sensitive.
+#
+# Put "struct:" at the start of a keep/keepre rule's note to say it guards
+# STRUCTURE rather than a brand -- a revision letter, a class designator.  Such
+# a rule is excluded from the vendor set --no-vendor tests against, so that
+# "a keep rule fired" is not mistaken for "a vendor was recognised".  A note
+# carries at most one of these prefixes.
+#
+# For a `strip` rule an EMPTY repl column is meaningful, not missing: it deletes
+# the matched substring.  Write the tabs out in full so the note lands in column
+# 4.  A pattern cannot contain a literal tab -- use \t.
+#
+# Because every rule matches a WHOLE token, the "\s+ either side" you would need
+# in a flat regex is structural here -- do not write \s, ^ or $ in a pattern.
+# (`pre` is the one exception: it sees the whole line, before tokenising.)
+#
+# PRECEDENCE.  Rules are grouped by kind and the groups run in this order:
+#
+#   pre  ->  split  ->  [keep guard]  ->  strip  ->  token/regex  ->  first
+#        ->  dedup  ->  blank if every surviving token is kept
+#
+# Within a group, order does not matter.  Between groups it does:
+#   * `keep`/`keepre` protect a token from `strip` and from `token`/`regex`.
+#   * `first` overrides `keep` -- position is what tells a leading class
+#     designator from a trailing revision suffix, and both are single letters.
+#   * The final blank-if-all-kept pass is why a vendor with no model number
+#     yields an empty line.  Disable it with --keep-vendor-only.
+#
+# Grow this file from the report, not from the corpus:
+#     uv run python tools/name_reduce.py --report
+#     uv run python tools/name_reduce.py --stats     # 0 hits = a dead rule
+#     uv run python tools/name_reduce.py --blanked   # names that vanished
+#
+kind	pattern	repl	note
+
+# --- speed specifications -------------------------------------------------
+# 1-2 digits, X, 1-2 digits, then any number of Xnn continuations, with an
+# optional trailing X (as in "DVDRW PATA 20X20X12X").
+regex	\d{1,2}X\d{1,2}(?:X\d{1,2})*X?		16X52X32X52, 24X10X40, 20X20X12X
+# A speed run glued to a following word with no delimiter must be separated
+# before either half can be matched as a token: "16X52X32X52COMBO".
+split	(\d{1,2}X\d{1,2}(?:X\d{1,2})*X?)([A-Z]{2,})		speed run fused to a word
+
+# --- interface and marketing nouns ---------------------------------------
+token	DVDRW		writer class, carried by nearly every model
+token	COMBO		marketing noun
+
+# --- vendors: SIGNAL, never strip ----------------------------------------
+# Decision (2026-08-16): vendor names are kept.  The reduced strings feed the
+# naming-variant matching in tools/offset_exclusives.py, whose ALIASES table
+# exists precisely to reconcile HL-DT-ST <-> LG ELECTRONICS and MATSHITA <->
+# PANASONIC.  Stripping vendors would collapse that distinction and make the
+# alias table meaningless, so these are `keep` rules, not merely absent ones:
+# a later broad rule cannot eat them by accident.
+#
+# Derived from column 2 of the dump, not hand-guessed -- regenerate candidates
+# with:  uv run python tools/name_reduce.py --vendors
+# Only single-token entries appearing in >=10 rows are here; device-class words
+# in that column (DVDRW, SATA, CD-RW, E-IDE, ATAPI) are deliberately excluded.
+# Matching is case-insensitive, so hp/HP and Compaq/COMPAQ need one rule each.
+keep	HL-DT-ST		650 rows
+keep	Matshita		375 rows
+keep	TSSTcorp		284 rows
+keep	PIONEER		273 rows
+keep	hp		227 + 98 rows
+keep	TEAC		176 rows
+keep	SONY		159 rows
+keep	Optiarc		159 rows
+keep	ASUS		155 rows
+keep	PHILIPS		122 rows
+keep	PLEXTOR		107 rows
+keep	LITE-ON		96 rows
+keep	TOSHIBA		81 rows
+keep	PLDS		76 rows
+keep	SAMSUNG		65 rows
+keep	NEC		64 rows
+keep	Memorex		55 rows
+keep	BENQ		40 rows
+keep	CREATIVE		33 rows
+keep	AOPEN		33 rows
+keep	TDK		31 rows
+keep	FREECOM		31 rows
+keep	IOMEGA		29 rows
+keep	COMPAQ		29 + 16 rows
+keep	MITSUMI		27 rows
+keep	LG		27 rows
+keep	RICOH		24 rows
+keep	QSI		19 rows
+keep	LITEON		17 rows
+keep	OPTORITE		13 rows
+keep	YAMAHA		13 rows
+keep	HITACHI		12 rows
+keep	GIGABYTE		11 rows
+keep	JLMS		10 rows
+keep	PBDS		10 rows
+# AccurateRip-side vendor tokens.  Column 2 is Redump-only, so these cannot be
+# derived from --vendors: AccurateRip writes the names ALIASES maps onto.
+keep	Electronics		AR half of HL-DT-ST <-> LG Electronics
+keep	Panasonic		AR half of Matshita <-> Panasonic
+
+# --- single letters and digits: SIGNAL, never strip ----------------------
+# These are hardware-revision suffixes and product-class designators, and they
+# are the ONLY thing separating some entries.  ASUS DRW-24B1ST exists in six
+# forms -- bare, a, c, g, i, j -- each a distinct AccurateRip row with its own
+# submission count (742, 690, 648, 19, 393, 747).  Stripping the suffix merges
+# six drives into one, and --stats would show that as a rule working well.
+# Guarded with keepre because no literal list can cover the space safely.
+keepre	[A-Za-z0-9]		struct: 1-char tokens: revisions (…24B1ST c) and classes (DVD W …)
+keepre	V\d+		struct: v1/v2 revision markers -- same role as a letter suffix
+
+# --- speed specifications, bare form -------------------------------------
+# The digits-X-digits rule above does not cover a lone "52X" / "16X".
+regex	\d{1,3}X		52X, 16X, 40X, 48X, 56X
+split	(\d{1,3}X)([A-Z][A-Z0-9-]+)		lowercase-x fusions, e.g. 12xDVD-ROM
+
+# --- product types -------------------------------------------------------
+# Device class, never a brand or a model number.  Removed from both corpora
+# identically, so naming-variant matching is unaffected.
+token	DVD		
+token	DVD-ROM		
+token	DVDROM		
+token	DVDRAM		
+token	DVD-RAM		
+token	DVD+-RAM		
+token	DVD-RW		
+token	DVD+RW		
+token	DVD+-RW		
+token	DVD+--RW		
+token	DVD_RW		
+token	DVD-R		
+token	DVDR		
+token	DVDRRW		
+token	DVD-CDRW		
+token	DVD-16X		
+token	CD		
+token	CD-ROM		
+token	CDROM		
+token	CD-RW		
+token	CDRW		
+token	CD-R		
+token	CD-R-RW		
+token	R-RW		
+token	RW		
+token	ROM		
+token	RAM		
+token	BD		
+token	BD-RE		
+token	BD-RW		
+token	BDRW		
+token	BD-ROM		
+token	BD-R		
+token	BD-MLT		
+token	BD-CMB		
+token	MLT		
+token	DRV		
+token	DC		product-class designator, as in "ATAPI DVD DC"
+token	DD		product-class designator, as in "ATAPI DVD DD"
+token	CDDVDW		
+token	CD-DVDW		
+token	CDW-DVD		
+token	CDRW-DVD		
+token	CDRWDVD		
+token	RW-DVD		
+token	BDDVDRW		
+token	BDDVDW		
+token	DVDWBD		
+token	DVDRWBD		
+token	IDE-CD		
+token	IDE-DVD		
+token	ODD-DVD		
+token	WRITER		
+token	CDWRITER		
+token	CD-WRITER		
+token	CD-WRITER+		
+token	DRIVE		
+token	DEVICE		
+token	DUAL		
+token	MAX		speed qualifier, as in "CD-ROM MAX 52X"
+
+# --- interface and bus ---------------------------------------------------
+token	ATA		
+token	ATAPI		
+token	SATA		
+token	ESATA		
+token	PATA		
+token	IDE		
+token	E-IDE		
+token	USB		
+
+# --- vendors below the >=10-row cutoff, seen surviving in --report --------
+keep	IBM		
+keep	IMATION		
+keep	LENOVO		
+keep	MSI		
+keep	ARTEC		
+keep	CYBERDRV		
+keep	HLDS		
+keep	BTC		
+keep	QPS		
+keep	LOGITEC		
+keep	GOLDSTAR		
+keep	POLAROID		
+keep	MAD		"MAD DOG" -- two tokens
+keep	DOG		"MAD DOG" -- two tokens
+keep	FREECOM_	  	offset_exclusives.py deliberately leaves this variant visible
+
+# --- second pass, from the report after the batch above ------------------
+token	ATAPI-CD		
+token	COMBI		as in "COMBI RW16x10-DVD"
+token	BURNER		
+token	Slimtype		form factor, not a brand -- col 2 records what the drive reported
+token	2.0		the tail of "USB 2.0"
+keep	MOSER		Moser Baer, a vendor
+
+# --- leading class designators (positional) ------------------------------
+# A single letter or digit at the FRONT of a name is a product-class marker
+# left behind once the class word is gone ("ATAPI DVD A DH16A6S" -> "A DH16A6S").
+# The same character at the END is a hardware revision and must survive, so
+# this rule is positional.  It overrides the keepre guard by design.
+first	[A-Za-z0-9]		leading designator; trailing ones stay (see keepre above)
+
+# --- third pass: terms from the corpus, confirmed present ----------------
+token	VIRSCSI		
+token	DVD-CD-ROM		
+token	CD-DVD-ROM		
+token	CD-DVD		
+token	DVD-		trailing-hyphen fragment, as in "16X DVD- ROM"
+token	-ROM		leading-hyphen fragment
+token	DVDR-RW		
+token	DVD+--R		
+token	VD-DVR		
+token	BRID		
+token	Storage		
+token	Optical		
+token	TYPE-C-3.0		
+token	USB3.1-SATA		
+token	USB300		
+regex	\d{1,3}(?:-\d{1,3})+X?		16-12-40X, 40-12-48X, 48-16-48X
+regex	CDROM\.\d{1,3}X		CDROM.40X, CDROM.48X, CDROM.52X
+regex	ROM-DRIVE-\d{1,3}MAX		ROM-DRIVE-48MAX, -50MAX, -56MAX
+# Product type fused to a model number with no delimiter.
+split	(DVD\+--R-RW|DVD\+--RW|DVD\+--R)([0-9][A-Z0-9]*)		DVD+--RW16B6 -> DVD+--RW | 16B6
+split	(TSSTcorp)(CD-DVDW)		vendor fused to product type
+split	(ZIP)(CD-DVDROM)		
+
+# --- cross-token normalisation (whole-line, runs first) ------------------
+# A speed spec written with a space cannot be seen by a token rule: "16 X" is
+# two tokens, and neither half is safe to drop alone -- leading numbers are
+# usually model numbers (900, 6116, 1260v).  Rejoin it, then the speed rule
+# above removes it as one token.
+pre	\b(\d{1,3}) X\b	\1X	hits exactly 2 names: "ATAPI 16 X DVDROM VA100", "DVDROM 8 X"
+# Vendor-position placeholders, not brands: they mark the ABSENCE of a vendor.
+token	GENERIC		"GENERIC CDRCB02" -- 55 rows
+token	OEM		"OEM CD-ROM 48SSB" -- 14 rows

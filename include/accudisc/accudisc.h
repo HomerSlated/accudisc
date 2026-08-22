@@ -27,7 +27,18 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 10 /* 0.10.0: the offset portal. New
+#define ACCUDISC_VERSION_MINOR 11 /* 0.11.0: offset matching became
+                                  * case-INSENSITIVE. No struct moved and no
+                                  * error code changed — what changed is which
+                                  * drives MATCH. A firmware reporting "AOpen"
+                                  * against a table row storing "AOPEN" used to
+                                  * return ERR_NOTFOUND and now returns its
+                                  * offset, so a caller that cached "this drive
+                                  * is unknown" is holding a stale answer.
+                                  * Verified lossless first: of 5888 rows, ZERO
+                                  * pairs differ only by case, so folding
+                                  * collides nothing that was distinct.
+                                  * 0.10.0: the offset portal. New
                                   * accudisc_offset_for_inquiry /
                                   * accudisc_offset_for_device and the
                                   * accudisc_offset_info they fill; new
@@ -294,8 +305,22 @@ typedef struct accudisc_offset_info {
     uint8_t  ar_agree_pct;   /* AccurateRip's own agreement rate for the drive,
                               * 0 if unknown. A WITHIN-source measure, so unlike
                               * cross-source agreement it does not depend on the
-                              * sources being independent — which is unsettled */
-    uint8_t  sources;        /* ACCUDISC_OFFSET_SRC_* bitmask */
+                              * sources being independent — which they are NOT;
+                              * see `sources` below */
+    uint8_t  sources;        /* ACCUDISC_OFFSET_SRC_* bitmask.
+                              *
+                              * PRESENCE, NOT CORROBORATION. Both bits set means
+                              * both tables carry this value — it does NOT mean
+                              * two independent parties measured it. Measured
+                              * 2026-08-16: 99.3% of REDUMP's keys are also in
+                              * AccurateRip, they differ on exactly ONE of 4554
+                              * shared keys, and of 617 AccurateRip rows resting
+                              * on a SINGLE submission, 494 of the 496 whose key
+                              * REDUMP also holds carry REDUMP's identical
+                              * offset. One person's one measurement reproduced
+                              * exactly in a separate table, 494 times, is not
+                              * what independent observation looks like. Weight
+                              * this flag as "two tables", never "two witnesses" */
     uint8_t  flags;          /* ACCUDISC_OFFSET_F_* bitmask */
     uint8_t  n_values;       /* values[] filled; 1 unless ERR_AMBIGUOUS */
     int32_t  values[ACCUDISC_OFFSET_MAX_VALUES];       /* every value found */
@@ -306,6 +331,15 @@ typedef struct accudisc_offset_info {
  * knowledge, not a hardware operation, so asking about a drive that is not in
  * the tray is a normal thing to want — a caller with a corpus of captures from
  * many drives cannot open any of them.
+ *
+ * MATCHING is case-INSENSITIVE and collapses whitespace runs, so pass the
+ * INQUIRY bytes as the drive reported them and do not pre-normalise: real
+ * drives pad these fixed fields ("DVDR   PX-716A") and vendors disagree with
+ * themselves about capitalisation ("AOpen" and "AOPEN" are one company). The
+ * table is stored upper-cased and the query is folded to match. Aliasing is
+ * NOT done here — HL-DT-ST and LG ELECTRONICS are one company but two INQUIRY
+ * strings, and the table carries a row for each rather than the lookup
+ * asserting the identity.
  *
  * Returns ACCUDISC_OK (one value, in read_offset), ACCUDISC_ERR_AMBIGUOUS (the
  * sources disagree: n_values/values/value_sources are filled, read_offset stays

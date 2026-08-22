@@ -7,13 +7,20 @@
  * and its output is committed.
  *
  * Matching: INQUIRY vendor/product with whitespace runs collapsed, since drives
- * pad the fixed INQUIRY fields ("DVDR   PX-716A" vs "DVDR PX-716A"). Matching is
- * CASE-SENSITIVE on purpose — the comparison is against bytes a drive actually
- * reported, not against a curated name. (The generator folds case, but only to
- * pool evidence across sources; it emits every distinct spelling it saw so
- * either firmware convention still matches here.)
+ * pad the fixed INQUIRY fields ("DVDR   PX-716A" vs "DVDR PX-716A"), and
+ * CASE-FOLDED — the table is generated upper-cased and the query is upper-cased
+ * to meet it. Vendors are not consistent with themselves ("AOpen"/"AOPEN"), so
+ * a case-sensitive compare answers only for the casing the firmware happened to
+ * use and silently misses the other. What the lookup does NOT do is alias:
+ * HL-DT-ST and LG ELECTRONICS are one company and two INQUIRY strings, and the
+ * generator emits a row for each rather than the lookup asserting the identity.
+ *
+ * The `sources` bitmask reports PRESENCE in each table, not corroboration by
+ * independent parties — the two tables are measurably not independent. The
+ * evidence is on accudisc_offset_info.sources in the public header.
  */
 
+#include <ctype.h>
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
@@ -36,9 +43,22 @@ static const struct offset_entry offsets[] = {
 
 #define OFFSETS_N (sizeof(offsets) / sizeof(offsets[0]))
 
-/* Collapse whitespace runs to single spaces, trim ends. Shared with the other
- * INQUIRY-keyed tables in this module (see src/drive/uncap.c) — declared in
- * internal.h so the matching rule stays one implementation, not two that drift. */
+/* The INQUIRY matching rule, one implementation: collapse whitespace runs to
+ * single spaces, trim ends, and UPPER-CASE.
+ *
+ * Case folding is deliberate and is the whole rule, not a convenience. Vendors
+ * are not consistent about it — this corpus carries "AOpen" and "AOPEN",
+ * "Plextor" and "PLEXTOR", "hp" and "HP" for the same companies — so a
+ * case-sensitive compare turns one drive into two keys and answers only for
+ * whichever casing the firmware happened to use. The generator emits the table
+ * already upper-cased; folding here as well makes that a property the lookup
+ * enforces rather than one it trusts the generator to have preserved.
+ *
+ * Verified lossless before the change: of 5888 table rows, ZERO pairs differ
+ * only by case, so folding collides nothing that was previously distinct.
+ *
+ * ASCII-only by intent. INQUIRY fields are single-byte and this must not depend
+ * on locale — toupper() with a negative char is undefined, hence the cast. */
 void adsc_inquiry_normalize(const char *src, char *dst, size_t cap)
 {
     size_t o = 0;
@@ -52,7 +72,7 @@ void adsc_inquiry_normalize(const char *src, char *dst, size_t cap)
         if (in_space && o > 0)
             dst[o++] = ' ';
         in_space = 0;
-        dst[o++] = *src;
+        dst[o++] = (char)toupper((unsigned char)*src);
     }
     dst[o] = '\0';
 }

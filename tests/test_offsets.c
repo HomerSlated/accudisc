@@ -43,12 +43,38 @@ int main(void)
            == ACCUDISC_OK);
     assert(info.read_offset == 30);
 
-    /* --- matching is case-sensitive, deliberately ------------------------
-     * The comparison is against bytes a drive reported, not a curated name.
-     * The generator emits every spelling it saw rather than folding here. */
+    /* --- matching is case-INSENSITIVE, deliberately -----------------------
+     * Vendors are not consistent about capitalisation — this corpus carries
+     * "AOpen" and "AOPEN", "hp" and "HP" for one company — so a case-sensitive
+     * compare splits one drive into two keys and answers only for whichever
+     * casing the firmware used. The table is emitted upper-cased and the lookup
+     * folds, so every casing a drive can report reaches the same row.
+     *
+     * This assertion was INVERTED on 2026-08-16: it previously required
+     * NOTFOUND. Verified lossless before changing it — of 5888 rows, zero pairs
+     * differed only by case, so nothing that was distinct became ambiguous. */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
     assert(accudisc_offset_for_inquiry("plextor", "dvdr px-716a", &info)
-           == ACCUDISC_ERR_NOTFOUND);
+           == ACCUDISC_OK);
+    assert(info.read_offset == 30);
+
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("PlExToR", "dVdR   Px-716a", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 30);
+
+    /* Folding must not make DIFFERENT drives collide. These two really are
+     * distinct products — a 12x and a 16x AOpen reader with different offsets —
+     * and the speed token is the only thing separating them. If a future
+     * "cleaning" step ever strips it, these two assertions fail together. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("AOPEN", "12X DVD-ROM-AMH", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 691);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("aopen", "16XDVD-ROM-AMH", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 102);
 
     /* --- a key whose sources disagree ------------------------------------
      * TEAC DW-224E-CN: REDUMP says +120, AccurateRip says +102, and nothing
