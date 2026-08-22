@@ -131,6 +131,54 @@ away.
   does not normalise near-identical strings — `SIimtype` survives beside
   `Slimtype` — so the display name is not the key. Firmware revision is the
   obvious candidate and is **not established**.
+- **A. UNDERSCORE-INSENSITIVE KEYING in `fold()` — Keith said do it, 2026-08-22.**
+  `HL-DT-ST DVDRAM_GHA2N` (+667) was dropped as RETRACTED while
+  `LG Electronics DVDRAM GHA2N` (+667, 71 subs) is live: the same drive, an
+  underscore against a space, so the provenance join missed it. Measured before
+  being proposed, and DO NOT re-derive:
+
+        distinct keys today                       4822
+        underscore-folding would merge      26 groups / 52 keys
+           groups agreeing on the offset          26
+           groups disagreeing                      0
+
+  Zero disagreements — the same shape the case-fold change measured. 59 live
+  AccurateRip products contain underscores (Lenovo `USB_SATA_Burner3`, LG
+  `BD-RE_BT20N`). **Every distinct spelling must still be EMITTED**, exactly as
+  with case: the fold pools evidence and joins provenance, it never collapses
+  what a drive can report. Expect `redump_retracted` to fall 8 -> 7.
+
+- **B. A REVIEWED REBADGE TABLE — Keith said build it WITH the rescue-only
+  guard, 2026-08-22.** Rebadged drives report the REBADGE string over INQUIRY,
+  so dropping a rebadge row strands its owner even when we hold the right offset
+  under the OEM name. The worked case:
+
+        Philips PCDV632   +116   1 sub, RETRACTED and dropped
+        Toshiba SD-M1212  +116  38 subs, live       <- the same drive
+
+  `archive.rpc1.org/farzeno/club-internet/dvd/dvdfi.htm`: "Philips PCDV632
+  (6X/32X) (Known firmware : 1P16) Toshiba SD-M1212 OEM drive RPC-1". The
+  relation is predictive where it can be checked — `Philips PCA532` (+116, 1 sub)
+  is a Toshiba SD-M1202 rebadge and SD-M1202 is +116 on 19 submissions; both
+  survived and both ship.
+
+  Shape: product-level alias, exactly parallel to `VENDOR_ALIAS` — EXACT
+  whole-field mapping, one line per human decision, never a similarity match.
+  Applied only when the two rows AGREE on the offset; a disagreement means the
+  mapping or the data is wrong and gets REPORTED, not applied.
+
+  **THE GUARD, and it is the whole of Keith's condition: rescue only, never
+  synthesise.** A rebadge alias may keep a row that EXISTS in the corpus. It may
+  never emit a row for a rebadge nobody submitted — the same page names
+  `Memorex MD6032` and `DVD-632` as SD-M1212 rebadges and neither is in either
+  corpus, so emitting them would publish an offset nobody measured under a name
+  nobody reported. That is the "researched data must not share a field with
+  reported data" hazard recorded further down this file.
+
+  Do NOT try to rescue by "a live row shares this offset" — measured and
+  useless: +116 has 43 live rows, +6 has 1888 rows across 206302 submissions.
+  The link is the rebadge, which is human knowledge and not in the numbers.
+
 - **`ERR_AMBIGUOUS` now has no test exercising it.** The TEAC case was the only
   one, and it has been replaced by an assertion that the path is NOT taken. The
   multi-value branch of `accudisc_offset_for_inquiry` — `n > 1`, `values[]`,
