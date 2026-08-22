@@ -76,34 +76,58 @@ int main(void)
            == ACCUDISC_OK);
     assert(info.read_offset == 102);
 
-    /* --- a key whose sources disagree ------------------------------------
-     * TEAC DW-224E-CN: REDUMP says +120, AccurateRip says +102, and nothing
-     * adjudicates. The contract is that no single number comes back. */
+    /* --- the key that used to disagree, and why it no longer does --------
+     * TEAC DW-224E-CN was the table's one unresolvable conflict: REDUMP +120
+     * against AccurateRip +102, nothing to adjudicate between them. It was
+     * never two opinions. REDUMP's offset table is AccurateRip's list imported
+     * once in 2022 and frozen, and that import carried this row as
+     *
+     *     TEAC - DW-224E-CN   +120   2 submissions   50% agree
+     *
+     * — AccurateRip's own value at the time, resting on two submissions that
+     * disagreed with each other. AccurateRip has since settled it at +102 on
+     * seven agreeing submissions. The generator drops a REDUMP value its source
+     * has superseded, so one number comes back now.
+     *
+     * `sources` is the assertion that matters: AR ALONE. If the REDUMP claim
+     * were still being merged this would read as both, and the +120 would be
+     * back in values[]. */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
     assert(accudisc_offset_for_inquiry("TEAC", "DW-224E-CN", &info)
-           == ACCUDISC_ERR_AMBIGUOUS);
-    assert(info.flags & ACCUDISC_OFFSET_F_CONFLICT);
-    assert(info.n_values == 2);
-    assert(info.values[0] != info.values[1]);
-    /* THE point of the whole struct: a caller that ignored the return code must
-     * not find something it can apply. Zero would be applicable and wrong. */
-    assert(info.read_offset == ACCUDISC_OFFSET_NONE);
-    assert(info.read_offset != 0);
-    /* Each candidate carries its own provenance, and between them they cover
-     * both sources — otherwise the caller cannot tell who claims what. */
-    assert((info.value_sources[0] | info.value_sources[1])
-           == (ACCUDISC_OFFSET_SRC_REDUMP | ACCUDISC_OFFSET_SRC_AR));
-    assert(info.value_sources[0] != info.value_sources[1]);
+           == ACCUDISC_OK);
+    assert(info.read_offset == 102);
+    assert(info.n_values == 1);
+    assert(info.sources == ACCUDISC_OFFSET_SRC_AR);
+    assert((info.flags & ACCUDISC_OFFSET_F_CONFLICT) == 0);
 
-    /* --- an adjudicated key reports that it was adjudicated ---------------
-     * PIONEER BD-RW BDR-206 is +667 on 1065 AccurateRip submissions and +0 on
-     * 4. The resolution is visible rather than silent, which is the difference
-     * between adjudication and a first-match rule. */
+    /* --- a retracted row is ABSENT, not merely unfavoured -----------------
+     * PHILIPS CDRW5232P1 (+732, 2 submissions, 50% agree in the 2022 import)
+     * is gone from AccurateRip's live list entirely. A withdrawn measurement
+     * must not reach a caller as data.
+     *
+     * THIS IS THE GUARD ON THE GENERATOR'S INPUTS. Regenerate the table without
+     * --redump-provenance and the rule cannot run; the row comes back and this
+     * assertion fails, which is the whole reason that argument is required
+     * rather than optional. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("PHILIPS", "CDRW5232P1", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+    assert(info.read_offset == ACCUDISC_OFFSET_NONE);
+
+    /* --- AccurateRip's own count decides, and REDUMP no longer contradicts --
+     * PIONEER BD-RW BDR-206 is +667 on 1065 AccurateRip submissions; the same
+     * page also listed +0 on 4, and REDUMP's frozen copy held the +0. Reading
+     * the last row printed, or treating the two as comparable evidence, inverts
+     * a 1065-to-4 verdict while looking perfectly well-formed. Both sources
+     * now hold +667 — REDUMP because its stale value was withdrawn, which is
+     * why this key reports BOTH rather than AR alone. */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
     assert(accudisc_offset_for_inquiry("PIONEER", "BD-RW BDR-206", &info)
            == ACCUDISC_OK);
     assert(info.read_offset == 667);
-    assert(info.flags & ACCUDISC_OFFSET_F_ADJUDICATED);
+    assert(info.sources
+           == (ACCUDISC_OFFSET_SRC_REDUMP | ACCUDISC_OFFSET_SRC_AR));
+    assert(info.ar_submissions == 1065);
 
     /* --- absence is explicit, never a default ---------------------------- */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;

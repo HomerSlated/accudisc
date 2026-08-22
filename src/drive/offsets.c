@@ -16,8 +16,13 @@
  * generator emits a row for each rather than the lookup asserting the identity.
  *
  * The `sources` bitmask reports PRESENCE in each table, not corroboration by
- * independent parties — the two tables are measurably not independent. The
- * evidence is on accudisc_offset_info.sources in the public header.
+ * independent parties. The tables are not merely correlated: REDUMP's offset
+ * table IS AccurateRip's list, imported once in 2022 and frozen. The evidence
+ * is on accudisc_offset_info.sources in the public header.
+ *
+ * A value REDUMP holds that AccurateRip has since changed or removed is that
+ * one source's withdrawn draft, and the generator drops it rather than
+ * reporting a conflict — each deletion is named in offsets_db.inc.
  */
 
 #include <ctype.h>

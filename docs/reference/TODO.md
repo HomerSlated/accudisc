@@ -7,6 +7,98 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## OFFSET DICTIONARY — REDUMP is AccurateRip, frozen in 2022 (2026-08-22) — DONE
+
+**Supersedes the 2026-08-19 section below wherever the two disagree.** That
+section reasons about REDUMP and AccurateRip as two corpora that happen to
+overlap heavily. They are one corpus at two dates, and several conclusions below
+were fitted to the wrong model — the six "unresolvable" conflicts most of all.
+
+### The finding
+
+REDUMP's offset table is AccurateRip's published list, imported once and frozen.
+Established from redumper's own git history, which is a full clone in
+`private/code/redumper`:
+
+- The table has two commits ever. `15f369e` (2025-05-28) *created* `offsets.ixx`
+  by deleting `driveoffsets.txt` and an 80-line converter, `generate_offsets.cc`.
+- `driveoffsets.txt` has three commits: imported 2022, line endings normalised,
+  deleted. **It never grew a row.**
+- Its format is AccurateRip's own four columns —
+  `TEAC - DW-224E-CN\t+120\t2\t50%` — including AccurateRip's `[Purged]`
+  markers, which the converter skips.
+- **The converter reads columns 1 and 2 only.** The submission count and the
+  agreement percentage were discarded at import.
+- Set-compared, normalising the `" - "` separator and the vendor renames:
+  **4595 rows each way, zero unique to either.** The only transformation is
+  marketing vendor names rewritten to INQUIRY ones — `LG Electronics` →
+  `HL-DT-ST`, `Panasonic` → `Matshita`, `Lite-On` → `JLMS`.
+
+Corroborated externally: redump.org's own dumping guides tell dumpers to take
+the drive read offset from EAC or the AccurateRip list. There is no independent
+read-offset corpus on that side. (redump.org's *disc write* offsets are their own
+measurements; nothing here touches those.)
+
+### What it cost, and the rule that fixes it
+
+Every REDUMP-vs-AccurateRip disagreement was AccurateRip correcting itself, with
+the live counts against the 2022 ones lopsided the same way every time:
+1065/3, 652/3, 554/1, 477/7, 263/6, 198/2, 23/2, 7/2. **All six of the
+"unresolvable" conflicts listed in the 2026-08-19 section are in that list.**
+
+`tools/gen_offsets.py` now takes `--redump-provenance` (REQUIRED — optional
+would let a future run silently produce a table with the rule not applied) and
+drops REDUMP values on two arms, kept apart in the report:
+
+    RETRACTED   in the 2022 import, absent from the live list        8 rows
+    SUPERSEDED  still live, different offset now                     9 rows
+    unknown provenance — kept, listed, rule NOT applied             15 rows
+
+No agreement threshold: absence is the signal. A threshold would keep
+`Philips DVD-ROM PCDV632` (+116, one submission, 100% agreement, withdrawn).
+The 15 unknowns are the rows a whole-field vendor rewrite cannot reach, where
+AccurateRip prints the vendor run into the product (`SATA LG ELECTRONICSBD-RE B`).
+They are named on every run — a join that resolves everything by letting misses
+fall through to the safe branch is a guard measuring its own scope.
+
+The withdrawn rows are listed **in `offsets_db.inc` itself**, so the deletion is
+reviewable in `git diff` forever rather than in generator output that scrolls
+away.
+
+### Consequences already applied
+
+- **The table has no conflicting keys left.** `ERR_AMBIGUOUS` is unreachable
+  from the shipped data; the code path stays, because a corpus refresh can
+  revive it. `F_CONFLICT` and `F_ADJUDICATED` are carried by zero rows.
+- Two vendor aliases added, each measured: `JLMS` → `LITE-ON` (9/9 agree, 0
+  differ) and `CENDYNE_` → `CENDYNE` (1/1). Alias coverage moved
+  4554/33/245 → **4564/23/235**.
+- 0.12.0, and the bump is the point: 8 keys that returned an offset now return
+  `ERR_NOTFOUND`, 9 return a different offset.
+- `ATTRIBUTION.md`, the `sources` comment in the public header, and the file
+  comment in `src/drive/offsets.c` all said or implied "two collections". All
+  three corrected.
+
+### Left open
+
+- **`gen_offsets.py` keeps only the highest-submission row of an AccurateRip
+  duplicate.** For the 66 duplicate keys whose rows AGREE on the offset that
+  discards 930 submissions, 4.9% of their total — `DVD RW` ships as 298
+  measurements when 565 people measured +6. Summing is the honest aggregate when
+  the offset is identical; the differing 9 must still resolve by count.
+- **What AccurateRip keys on is unknown.** 4878 rows carry 4802 distinct
+  vendor+product names; 75 names appear more than once, and the counts are not
+  always lopsided (`DVD RW` 298|267, `SLIMTYPE DVD A DS8A4S` 136|197|12). It
+  does not normalise near-identical strings — `SIimtype` survives beside
+  `Slimtype` — so the display name is not the key. Firmware revision is the
+  obvious candidate and is **not established**.
+- The product-only keying change (2026-08-19 point 5) is still to do, and the
+  dedup and `values[]` capacity work below are its prerequisites rather than
+  standalone fixes. Note `ACCUDISC_OFFSET_MAX_VALUES` writes are bounded by the
+  compile-time macro while the ABI contract is the runtime `out->size`, so
+  growing the array without deriving capacity from `size` would overrun an old
+  caller.
+
 ## OFFSET DICTIONARY — the design Keith settled (2026-08-19)
 
 **Supersedes the 2026-08-16 section below on two points.** The `nnXnnX` question

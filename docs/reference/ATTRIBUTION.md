@@ -7,10 +7,16 @@ anything listed here must also be credited in the man page when it exists.
 ## Data
 
 - **Drive read-offset table** (`src/drive/offsets_db.inc`): user-submitted
-  factual offset measurements from two independent collections, merged by
-  `tools/gen_offsets.py`:
+  factual offset measurements, merged by `tools/gen_offsets.py`, from what we
+  once described as two independent collections and have since established is
+  **one collection at two dates**:
   - the **REDUMP Disc Preservation Project** (https://redump.org), via the
-    table shipped with redumper;
+    table shipped with redumper — which is itself the AccurateRip list below,
+    imported once in 2022 and frozen, with the marketing vendor names rewritten
+    to INQUIRY ones. Verified 2026-08-22 by set comparison against redumper's
+    git history: 4595 rows each way, none unique to either. Credit is owed for
+    the INQUIRY rewrite and for preserving rows AccurateRip has since dropped —
+    not for a second measurement of the same drives;
   - the **AccurateRip drive offset list**
     (http://www.accuraterip.com/driveoffsets.htm), which also supplies the
     per-drive submission count and agreement percentage. Fetched by
@@ -21,7 +27,8 @@ anything listed here must also be credited in the man page when it exists.
   was evaluated as a third source and **rejected**: the only surviving copy is a
   2004 archive of a page that no longer exists, and EAC itself reads offsets
   from AccurateRip — so it is an ancestor of one of the sources above rather
-  than an independent check on it.
+  than an independent check on it. The same test applied to REDUMP later gave
+  the same answer, which is why the wording above changed.
 
 ## Techniques and command knowledge
 

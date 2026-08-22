@@ -8,8 +8,36 @@
  * sources bitmask, flags. Offsets are in SAMPLES, where one sample is one
  * stereo frame of 4 bytes (588 per sector) — REDUMP's unit and AccurateRip's.
  *
- * Entries: 5888
+ * Entries: 5879
  */
+
+/* WITHDRAWN BY THE SOURCE — dropped from the table above, listed so the
+ * deletion is reviewable rather than invisible.
+ *
+ *   RETRACTED  in REDUMP's 2022 AccurateRip import, absent from the live
+ *              AccurateRip list: AccurateRip removed the entry.
+ *   SUPERSEDED still listed, different offset now: AccurateRip corrected it.
+ *
+ * The 2022 figures are the submission count and agreement percentage that
+ * REDUMP's importer discarded; recovered from redumper's git history.
+ */
+/* RETRACTED  HL-DT-ST DVDRAM_GHA2N: +667 (2022: 4 subs 75% agree) -> gone from AccurateRip */
+/* RETRACTED  Oh!Soft VirtualDVD-ROM: +667 (2022: 1 subs 100% agree) -> gone from AccurateRip */
+/* RETRACTED  PHILIPS 401248 CDRW: +739 (2022: 2 subs 50% agree) -> gone from AccurateRip */
+/* RETRACTED  PHILIPS CDRW5232P1: +732 (2022: 2 subs 50% agree) -> gone from AccurateRip */
+/* RETRACTED  PHILIPS PCRW404: -436 (2022: 4 subs 75% agree) -> gone from AccurateRip */
+/* RETRACTED  Philips DVD-ROM PCDV632: +116 (2022: 1 subs 100% agree) -> gone from AccurateRip */
+/* RETRACTED  SATA ATAPI iHAS124: +48 (2022: 2 subs 50% agree) -> gone from AccurateRip */
+/* RETRACTED  SATA ATAPI iHAS324: +6 (2022: 3 subs 66% agree) -> gone from AccurateRip */
+/* SUPERSEDED ATAPI DVD A DH16AFSH: -12 (2022: 1 subs 100% agree) -> AccurateRip now +6 / 6 subs */
+/* SUPERSEDED PIONEER BD-RW BDR-206: +0 (2022: 3 subs 100% agree) -> AccurateRip now +667 / 1065 subs */
+/* SUPERSEDED PIONEER DVD-RW DVR-221L: +667 (2022: 3 subs 66% agree) -> AccurateRip now +6 / 652 subs */
+/* SUPERSEDED PLEXTOR DVDR PX-740A: +6 (2022: 1 subs 100% agree) -> AccurateRip now +618 / 554 subs */
+/* SUPERSEDED PLEXTOR DVDR PX-750A: +0 (2022: 7 subs 100% agree) -> AccurateRip now +102 / 477 subs */
+/* SUPERSEDED PLEXTOR DVDR PX-820SA: +0 (2022: 6 subs 100% agree) -> AccurateRip now +48 / 263 subs */
+/* SUPERSEDED SONY CD-RW CRX175E: +0 (2022: 2 subs 100% agree) -> AccurateRip now +120 / 23 subs */
+/* SUPERSEDED Slimtype DVD A DS8A1H: +0 (2022: 2 subs 100% agree) -> AccurateRip now +594 / 198 subs */
+/* SUPERSEDED TEAC DW-224E-CN: +120 (2022: 2 subs 50% agree) -> AccurateRip now +102 / 7 subs */
 
     { "", "16X12 DVD DUAL", +91, 10, 100, 3, 0 },
     { "", "16X16 DVD DUAL", +91, 5, 100, 3, 0 },
@@ -444,7 +472,7 @@
     { "ATAPI", "DVD A DH16ABSH", +6, 273, 100, 3, 0 },
     { "ATAPI", "DVD A DH16ACSH", +6, 73, 100, 3, 0 },
     { "ATAPI", "DVD A DH16AESH", +6, 8, 100, 3, 0 },
-    { "ATAPI", "DVD A DH16AFSH", +6, 6, 100, 3, 4 },
+    { "ATAPI", "DVD A DH16AFSH", +6, 6, 100, 3, 0 },
     { "ATAPI", "DVD A DH16AYH", +6, 38, 100, 3, 0 },
     { "ATAPI", "DVD A DH18A1P", +6, 31, 100, 3, 0 },
     { "ATAPI", "DVD A DH18A3L", +6, 1, 100, 3, 0 },
@@ -706,9 +734,9 @@
     { "CDWRITER", "IDE4816", +12, 8, 100, 3, 0 },
     { "CDWRITER", "IDE5224", +6, 81, 100, 3, 0 },
     { "CDWRITER", "IDE5232", +6, 67, 100, 3, 0 },
-    { "CENDYNE", "481648AX", +733, 0, 0, 1, 0 },
+    { "CENDYNE", "481648AX", +733, 6, 100, 3, 0 },
     { "CENDYNE", "522452AU", +6, 3, 100, 3, 0 },
-    { "CENDYNE_", "481648AX", +733, 6, 100, 2, 0 },
+    { "CENDYNE_", "481648AX", +733, 6, 100, 3, 0 },
     { "CFYTEDW", "SDYVCL6J8T", +667, 1, 100, 2, 0 },
     { "CNTXCORP", "C-DVD-ROM", +6, 1, 100, 3, 0 },
     { "COMBI", "RW16X10-DVD", +692, 8, 100, 3, 0 },
@@ -1596,7 +1624,6 @@
     { "HL-DT-ST", "DVDRAM_GH10N", +667, 38, 100, 3, 0 },
     { "HL-DT-ST", "DVDRAM_GH15N", +667, 56, 100, 3, 0 },
     { "HL-DT-ST", "DVDRAM_GH40N", +667, 14, 100, 3, 0 },
-    { "HL-DT-ST", "DVDRAM_GHA2N", +667, 0, 0, 1, 0 },
     { "HL-DT-ST", "DVDRAM_GHC0N", +6, 1, 100, 3, 0 },
     { "HL-DT-ST", "DVDRAM_GSA-4165B", +667, 14, 100, 3, 0 },
     { "HL-DT-ST", "DVDRAM_GSA-H10A", +667, 1, 100, 3, 0 },
@@ -2136,15 +2163,15 @@
     { "IOMEGA", "ZIPCD1024INT-A", -436, 3, 100, 3, 0 },
     { "IOMEGA", "ZIPCD3840INT-A", +99, 2, 100, 3, 0 },
     { "JKRIN", "HAZO9YRCX", +103, 1, 100, 2, 0 },
-    { "JLMS", "DVD-ROM LTD-165H", +12, 0, 0, 1, 0 },
-    { "JLMS", "DVD-ROM LTD-166S", +12, 0, 0, 1, 0 },
-    { "JLMS", "DVD-ROM LTD163", +594, 0, 0, 1, 0 },
-    { "JLMS", "DVD-ROM LTD163D", +594, 0, 0, 1, 0 },
-    { "JLMS", "DVD-ROM XJ-HD166", +12, 0, 0, 1, 0 },
-    { "JLMS", "XJ-HD163", +594, 0, 0, 1, 0 },
-    { "JLMS", "XJ-HD163D", +594, 0, 0, 1, 0 },
-    { "JLMS", "XJ-HD165H", +12, 0, 0, 1, 0 },
-    { "JLMS", "XJ-HD166S", +12, 0, 0, 1, 0 },
+    { "JLMS", "DVD-ROM LTD-165H", +12, 49, 100, 3, 0 },
+    { "JLMS", "DVD-ROM LTD-166S", +12, 49, 100, 3, 0 },
+    { "JLMS", "DVD-ROM LTD163", +594, 6, 100, 3, 0 },
+    { "JLMS", "DVD-ROM LTD163D", +594, 6, 100, 3, 0 },
+    { "JLMS", "DVD-ROM XJ-HD166", +12, 151, 100, 3, 0 },
+    { "JLMS", "XJ-HD163", +594, 36, 100, 3, 0 },
+    { "JLMS", "XJ-HD163D", +594, 27, 100, 3, 0 },
+    { "JLMS", "XJ-HD165H", +12, 147, 100, 3, 0 },
+    { "JLMS", "XJ-HD166S", +12, 745, 100, 3, 0 },
     { "JUMBO", "CDRW-DVD DBW521A", +6, 1, 100, 3, 0 },
     { "JVC", "DVD CU-VD20", +30, 2, 100, 3, 0 },
     { "JVC", "DVD CU-VD3", +102, 1, 100, 3, 0 },
@@ -2926,11 +2953,11 @@
     { "LITE-ON", "DVD+RW LDW-401S", +12, 43, 100, 3, 0 },
     { "LITE-ON", "DVD+RW SOHW-802S", +12, 18, 100, 3, 0 },
     { "LITE-ON", "DVD+RW SOHW-822S", +12, 3, 66, 3, 0 },
-    { "LITE-ON", "DVD-ROM LTD-165H", +12, 49, 100, 2, 0 },
-    { "LITE-ON", "DVD-ROM LTD-166S", +12, 49, 100, 2, 0 },
-    { "LITE-ON", "DVD-ROM LTD163", +594, 6, 100, 2, 0 },
-    { "LITE-ON", "DVD-ROM LTD163D", +594, 6, 100, 2, 0 },
-    { "LITE-ON", "DVD-ROM XJ-HD166", +12, 151, 100, 2, 0 },
+    { "LITE-ON", "DVD-ROM LTD-165H", +12, 49, 100, 3, 0 },
+    { "LITE-ON", "DVD-ROM LTD-166S", +12, 49, 100, 3, 0 },
+    { "LITE-ON", "DVD-ROM LTD163", +594, 6, 100, 3, 0 },
+    { "LITE-ON", "DVD-ROM LTD163D", +594, 6, 100, 3, 0 },
+    { "LITE-ON", "DVD-ROM XJ-HD166", +12, 151, 100, 3, 0 },
     { "LITE-ON", "DVDRW DDW-813S", +12, 1, 100, 3, 0 },
     { "LITE-ON", "DVDRW LDW-400D", +120, 2, 100, 3, 0 },
     { "LITE-ON", "DVDRW LDW-411S", +12, 113, 100, 3, 0 },
@@ -2990,10 +3017,10 @@
     { "LITE-ON", "LXR-40122", +12, 12, 100, 3, 0 },
     { "LITE-ON", "LXR-40243", +6, 9, 100, 3, 0 },
     { "LITE-ON", "SOHW-1673SU", +6, 13, 100, 3, 0 },
-    { "LITE-ON", "XJ-HD163", +594, 36, 100, 2, 0 },
-    { "LITE-ON", "XJ-HD163D", +594, 27, 100, 2, 0 },
-    { "LITE-ON", "XJ-HD165H", +12, 147, 100, 2, 0 },
-    { "LITE-ON", "XJ-HD166S", +12, 745, 100, 2, 0 },
+    { "LITE-ON", "XJ-HD163", +594, 36, 100, 3, 0 },
+    { "LITE-ON", "XJ-HD163D", +594, 27, 100, 3, 0 },
+    { "LITE-ON", "XJ-HD165H", +12, 147, 100, 3, 0 },
+    { "LITE-ON", "XJ-HD166S", +12, 745, 100, 3, 0 },
     { "LITEON", "CD-ROM LTN323", -1164, 3, 100, 3, 0 },
     { "LITEON", "CD-ROM LTN403", -1164, 12, 100, 3, 0 },
     { "LITEON", "CD-ROM LTN403L", -1164, 14, 100, 3, 0 },
@@ -3593,7 +3620,6 @@
     { "OEM", "CD-ROM F563E", +12, 9, 100, 3, 0 },
     { "OEM", "CD-ROM F564E", +12, 15, 100, 3, 0 },
     { "OEM", "CD-ROM F566E", +691, 2, 100, 3, 0 },
-    { "OH!SOFT", "VIRTUALDVD-ROM", +667, 0, 0, 1, 0 },
     { "OIPD42T", "OPC-K101-ST1", +30, 1, 100, 3, 0 },
     { "OLYMPUS", "S-DVD-100", +48, 3, 100, 3, 0 },
     { "OPRIARC", "DVD RW AD-7173A", +48, 1, 100, 3, 0 },
@@ -4180,7 +4206,6 @@
     { "PBDS", "VAD6038-64930C", +6, 1, 100, 3, 0 },
     { "PC MART", "DVD ROM SA22518X", +6, 1, 100, 3, 0 },
     { "PHILIPS", "241240 CDRW", +733, 5, 100, 3, 0 },
-    { "PHILIPS", "401248 CDRW", +739, 0, 0, 1, 0 },
     { "PHILIPS", "40X PCA402CD", +686, 3, 100, 3, 0 },
     { "PHILIPS", "40X PCA403CD", +1268, 1, 100, 3, 0 },
     { "PHILIPS", "BD-RE BDD1001", +618, 13, 100, 3, 0 },
@@ -4202,7 +4227,6 @@
     { "PHILIPS", "CDRW48A", +733, 18, 100, 3, 0 },
     { "PHILIPS", "CDRW48P", +688, 5, 100, 3, 0 },
     { "PHILIPS", "CDRW5224", +6, 12, 100, 3, 0 },
-    { "PHILIPS", "CDRW5232P1", +732, 0, 0, 1, 0 },
     { "PHILIPS", "CDRWDVD2010", +708, 4, 100, 3, 0 },
     { "PHILIPS", "CDRWDVD3210", +692, 13, 100, 3, 0 },
     { "PHILIPS", "D5.2", +30, 1, 100, 2, 0 },
@@ -4224,7 +4248,6 @@
     { "PHILIPS", "DVD+RW-D28", +120, 8, 100, 3, 0 },
     { "PHILIPS", "DVD-RAM SDVD8821", +6, 85, 100, 3, 0 },
     { "PHILIPS", "DVD-ROM DROM6316", +6, 152, 100, 3, 0 },
-    { "PHILIPS", "DVD-ROM PCDV632", +116, 0, 0, 1, 0 },
     { "PHILIPS", "DVD-ROM SDR089", +6, 24, 100, 3, 0 },
     { "PHILIPS", "DVD8301", +1292, 1, 100, 3, 0 },
     { "PHILIPS", "DVD8421", +1292, 25, 100, 3, 0 },
@@ -4265,7 +4288,6 @@
     { "PHILIPS", "PCDV5016P1", +738, 15, 100, 3, 0 },
     { "PHILIPS", "PCDV6116", +691, 2, 100, 3, 0 },
     { "PHILIPS", "PCRW1208", +692, 6, 100, 3, 0 },
-    { "PHILIPS", "PCRW404", -436, 0, 0, 1, 0 },
     { "PHILIPS", "PCRW406", -436, 1, 100, 3, 0 },
     { "PHILIPS", "PCRW5232P", +738, 27, 100, 3, 0 },
     { "PHILIPS", "PCRW804", -436, 15, 100, 3, 0 },
@@ -4336,7 +4358,7 @@
     { "PIONEER", "BD-RW BDR-203", +667, 368, 100, 3, 0 },
     { "PIONEER", "BD-RW BDR-205", +667, 946, 100, 3, 0 },
     { "PIONEER", "BD-RW BDR-205PQ", +667, 1, 100, 2, 0 },
-    { "PIONEER", "BD-RW BDR-206", +667, 1065, 100, 3, 4 },
+    { "PIONEER", "BD-RW BDR-206", +667, 1065, 100, 3, 0 },
     { "PIONEER", "BD-RW BDR-206D", +667, 333, 100, 3, 0 },
     { "PIONEER", "BD-RW BDR-206M", +667, 143, 100, 3, 0 },
     { "PIONEER", "BD-RW BDR-207", +667, 131, 100, 3, 0 },
@@ -4546,7 +4568,7 @@
     { "PIONEER", "DVD-RW DVR-220L", +6, 318, 100, 3, 0 },
     { "PIONEER", "DVD-RW DVR-220RS", +6, 32, 100, 3, 0 },
     { "PIONEER", "DVD-RW DVR-221", +6, 142, 100, 3, 0 },
-    { "PIONEER", "DVD-RW DVR-221L", +6, 652, 100, 3, 4 },
+    { "PIONEER", "DVD-RW DVR-221L", +6, 652, 100, 3, 0 },
     { "PIONEER", "DVD-RW DVR-K04L", +48, 2, 100, 3, 0 },
     { "PIONEER", "DVD-RW DVR-K04RA", +48, 1, 100, 3, 0 },
     { "PIONEER", "DVD-RW DVR-K05", +48, 17, 100, 3, 0 },
@@ -4761,8 +4783,8 @@
     { "PLEXTOR", "DVDR PX-714A", +30, 5, 100, 3, 0 },
     { "PLEXTOR", "DVDR PX-716A", +30, 2781, 100, 3, 0 },
     { "PLEXTOR", "DVDR PX-716AL", +30, 233, 100, 3, 0 },
-    { "PLEXTOR", "DVDR PX-740A", +618, 554, 100, 3, 4 },
-    { "PLEXTOR", "DVDR PX-750A", +102, 477, 100, 3, 4 },
+    { "PLEXTOR", "DVDR PX-740A", +618, 554, 100, 3, 0 },
+    { "PLEXTOR", "DVDR PX-750A", +102, 477, 100, 3, 0 },
     { "PLEXTOR", "DVDR PX-751A", +102, 18, 100, 3, 0 },
     { "PLEXTOR", "DVDR PX-755A", +30, 1176, 100, 3, 0 },
     { "PLEXTOR", "DVDR PX-760A", +30, 2071, 100, 3, 0 },
@@ -4771,7 +4793,7 @@
     { "PLEXTOR", "DVDR PX-810SA", +48, 762, 100, 3, 0 },
     { "PLEXTOR", "DVDR PX-810UF", +667, 122, 100, 3, 0 },
     { "PLEXTOR", "DVDR PX-820A", +48, 89, 100, 3, 0 },
-    { "PLEXTOR", "DVDR PX-820SA", +48, 263, 100, 3, 4 },
+    { "PLEXTOR", "DVDR PX-820SA", +48, 263, 100, 3, 0 },
     { "PLEXTOR", "DVDR PX-825A", +48, 2, 100, 3, 0 },
     { "PLEXTOR", "DVDR PX-830SA", +96, 145, 100, 3, 0 },
     { "PLEXTOR", "DVDR PX-840U", +6, 2, 100, 3, 0 },
@@ -4939,9 +4961,7 @@
     { "SATA", "ATAPI DVD A D", +6, 4, 100, 3, 0 },
     { "SATA", "ATAPI DVD D D", +6, 1, 100, 3, 0 },
     { "SATA", "ATAPI IHAS120", +6, 1, 100, 3, 0 },
-    { "SATA", "ATAPI IHAS124", +48, 0, 0, 1, 0 },
     { "SATA", "ATAPI IHAS322", +6, 1, 100, 3, 0 },
-    { "SATA", "ATAPI IHAS324", +6, 0, 0, 1, 0 },
     { "SATA", "ATAPI IHAS424", +6, 1, 100, 3, 0 },
     { "SATA", "ATAPI IHBS112", +6, 1, 100, 3, 0 },
     { "SATA", "ATAPI IHDS118", +6, 1, 100, 3, 0 },
@@ -5017,7 +5037,7 @@
     { "SLIMTYPE", "DVD A DP-8A4SH", +6, 12, 100, 3, 0 },
     { "SLIMTYPE", "DVD A DS-8A5SH", +6, 18, 100, 3, 0 },
     { "SLIMTYPE", "DVD A DS-8A9SH", +6, 2, 100, 3, 0 },
-    { "SLIMTYPE", "DVD A DS8A1H", +594, 198, 100, 3, 4 },
+    { "SLIMTYPE", "DVD A DS8A1H", +594, 198, 100, 3, 0 },
     { "SLIMTYPE", "DVD A DS8A1P", +594, 289, 100, 3, 0 },
     { "SLIMTYPE", "DVD A DS8A2L", +6, 31, 100, 3, 0 },
     { "SLIMTYPE", "DVD A DS8A2L-A", +6, 29, 100, 3, 0 },
@@ -5135,7 +5155,7 @@
     { "SONY", "CD-RW CRX168B", +6, 2, 100, 3, 0 },
     { "SONY", "CD-RW CRX175A", +120, 13, 100, 3, 0 },
     { "SONY", "CD-RW CRX175A1", +12, 62, 100, 3, 0 },
-    { "SONY", "CD-RW CRX175E", +120, 23, 100, 3, 4 },
+    { "SONY", "CD-RW CRX175E", +120, 23, 100, 3, 0 },
     { "SONY", "CD-RW CRX175E2", +97, 9, 100, 3, 0 },
     { "SONY", "CD-RW CRX185E1", +12, 13, 100, 3, 0 },
     { "SONY", "CD-RW CRX185E3", +12, 12, 100, 3, 0 },
@@ -5463,8 +5483,7 @@
     { "TEAC", "DW-224E-A", +102, 96, 100, 3, 0 },
     { "TEAC", "DW-224E-B", +102, 29, 100, 3, 0 },
     { "TEAC", "DW-224E-C", +102, 137, 100, 3, 0 },
-    { "TEAC", "DW-224E-CN", +102, 7, 100, 2, 1 },
-    { "TEAC", "DW-224E-CN", +120, 0, 0, 1, 1 },
+    { "TEAC", "DW-224E-CN", +102, 7, 100, 2, 0 },
     { "TEAC", "DW-224E-R", +102, 51, 100, 3, 0 },
     { "TEAC", "DW-224E-V", +102, 180, 100, 3, 0 },
     { "TEAC", "DW-224E-VN", +102, 2, 100, 2, 0 },

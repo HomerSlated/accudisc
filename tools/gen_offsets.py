@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
-"""Compile the drive read-offset table from the two live primary sources.
+"""Compile the drive read-offset table from AccurateRip, live and as REDUMP froze it.
 
     REDUMP  private/code/redumper/offsets.ixx      read offsets, INQUIRY-keyed
+    PROV    redumper's driveoffsets.txt (2022)     the same rows, WITH counts
     AR      tools/fetch_ar_offsets.py --out ...    read offsets + confidence
+
+THESE ARE NOT TWO COLLECTIONS. Established 2026-08-22 and not to be re-derived:
+REDUMP's offset table is AccurateRip's published list, imported once in 2022 and
+frozen. Set-compared row for row — 4595 each way, ZERO rows in either that the
+other lacks — the only transformation being AccurateRip's marketing vendor names
+rewritten to INQUIRY ones (LG Electronics -> HL-DT-ST, Panasonic -> Matshita,
+Lite-On -> JLMS). redumper's own history shows it: `driveoffsets.txt` is in
+AccurateRip's four-column schema, carries AccurateRip's [Purged] markers, was
+imported in one commit and never grew a row. So where the two disagree it is one
+source disagreeing with its own earlier draft — see apply_retractions().
 
 EAC's OffsetBase was a third candidate and is DROPPED (Keith, 2026-08-15). It is
 not an independent source: the only copy of it is a 2004 Wayback snapshot of a
@@ -26,14 +37,20 @@ name for the same company. Unaliased, that splits one drive into two rows and
 makes the catalogues look far more divergent than they are. Measured here:
 
     alias OFF   shared 3501   REDUMP-only 1086   AR-only 1298
-    alias ON    shared 4554   REDUMP-only   33   AR-only  245
+    alias ON    shared 4564   REDUMP-only   23   AR-only  235
 
-(Recomputed 2026-08-16 against the shipped THREE-entry alias list. The figures
-this docstring carried until then — 4526/63/276 — were measured before FREECOM_
-was added, so they described a two-alias configuration that no longer ships; the
-FREECOM_ entry accounts for exactly the 63 -> 33 shift. A residual difference of
-two keys between that run and this one is unexplained and immaterial to every
-conclusion below, but it is not zero and is recorded rather than rounded away.)
+(Recomputed 2026-08-22 against the shipped FIVE-entry alias list. The figures
+this docstring carried until then — 4554/33/245 — were measured before JLMS and
+CENDYNE_ were added; those two account for exactly the 33 -> 23 shift, 9 rows
+and 1. The list before that read 4526/63/276, from a two-alias configuration
+that predated FREECOM_. A residual difference of two keys between the 2026-08-16
+run and this one is still unexplained and immaterial to every conclusion below,
+but it is not zero and is recorded rather than rounded away.
+
+The remaining 23 REDUMP-only keys are not drives AccurateRip lacks: they are the
+rows a whole-field rewrite cannot reach, where AccurateRip prints the vendor run
+into the product — "SATA LG ELECTRONICSBD-RE B", "PanasonicBD-CMB U". They are
+listed by name whenever the generator runs.)
 
 HL-DT-ST is Hitachi-LG; MATSHITA is Panasonic. Of 650 REDUMP HL-DT-ST rows, 649
 match an AccurateRip "LG Electronics" row and all 649 AGREE on the offset, with
@@ -94,6 +111,8 @@ VENDOR_ALIAS = {
     "HL-DT-ST": "LG ELECTRONICS",  # Hitachi-LG Data Storage; 649/650 match, 0 differ
     "MATSHITA": "PANASONIC",       # Matsushita; 375/375 match, 0 differ
     "FREECOM_": "FREECOM",         # AccurateRip trailing underscore
+    "CENDYNE_": "CENDYNE",         # AccurateRip trailing underscore; 1/1 match, 0 differ
+    "JLMS": "LITE-ON",             # Lite-On's INQUIRY string; 9/9 match, 0 differ
 }
 
 
@@ -208,6 +227,136 @@ def read_ar(path: Path) -> list[dict]:
     return list(best.values())
 
 
+def read_provenance(path: Path) -> dict[str, tuple[int, int, int]]:
+    """AccurateRip's list AS REDUMP IMPORTED IT, with the columns that import dropped.
+
+    WHY THIS FILE EXISTS. REDUMP's offset table is not a second measurement of the
+    same drives — it is AccurateRip's published list, imported once and frozen.
+    Verified by set comparison of redumper's `driveoffsets.txt` (its 2022 import,
+    deleted in redumper commit 15f369e) against the `offsets.ixx` generated from
+    it: 4595 rows each way, ZERO rows in either that are not in the other, the
+    only transformation being marketing vendor names rewritten to INQUIRY ones
+    (LG Electronics -> HL-DT-ST, Panasonic -> Matshita, Lite-On -> JLMS).
+
+    The imported file carries FOUR tab-separated columns —
+
+        TEAC - DW-224E-CN\t+120\t2\t50%
+
+    name, offset, submissions, agreement — and redumper's `generate_offsets.cc`
+    read only the first two. The submission count and the agreement percentage,
+    the two figures that say whether a row is worth anything, were discarded at
+    import. Recovering them is the whole point of this input: it is what lets a
+    REDUMP row be told apart from a REDUMP row AccurateRip has since withdrawn.
+
+    Keyed with fold(), the same key the merge uses, so the vendor aliases apply
+    on both sides — and PER VALUE within that key, not one row per key. The 2022
+    list has the same duplicate-name rows the live one does, so a {name: row}
+    dict would keep whichever the page printed last and silently mislabel the
+    other value as having no provenance. That is the same trap read_ar()
+    documents, and it was rebuilt here once before being caught.
+    """
+    prov: dict[str, dict[int, tuple[int, int]]] = {}
+    purged = 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        f = line.split("\t")
+        if len(f) < 2:
+            continue
+        if f[1] == "[Purged]":
+            # AccurateRip's own withdrawal marker. redumper's importer skipped
+            # these too, so they are already absent from the REDUMP table and
+            # are counted here only so the total reconciles.
+            purged += 1
+            continue
+        if len(f) < 4:
+            continue
+        # "VENDOR - PRODUCT", or "- PRODUCT" where the drive reports no vendor.
+        # Split on the FIRST separator only: product names contain " - " too.
+        name = f[0]
+        if name.startswith("- "):
+            vendor, product = "", name[2:]
+        elif " - " in name:
+            vendor, product = name.split(" - ", 1)
+        else:
+            vendor, product = "", name
+        off, subs, pct = int(f[1]), int(f[2]), int(f[3].rstrip("%"))
+        by_value = prov.setdefault(fold(vendor, product), {})
+        # Same name AND same offset twice: keep the larger count, matching
+        # read_ar(). Different offsets both stay — that is the point of the map.
+        if off not in by_value or subs > by_value[off][0]:
+            by_value[off] = (subs, pct)
+    if not prov:
+        sys.exit(f"no provenance rows parsed from {path}")
+    values = sum(len(v) for v in prov.values())
+    print(f"  provenance: {len(prov)} keys / {values} values from the 2022"
+          f" AccurateRip import ({purged} already [Purged] there)")
+    return prov
+
+
+def apply_retractions(redump, prov, ar, stats):
+    """Drop REDUMP values AccurateRip has since withdrawn or superseded.
+
+    REDUMP is AccurateRip's list at an earlier date (see read_provenance), so a
+    REDUMP value that disagrees with AccurateRip is not a second opinion — it is
+    the same source's earlier draft, quoted back at it. Two arms, kept apart
+    because they are withdrawn in different ways:
+
+      RETRACTED  the name was in the 2022 import and is absent from the live
+                 list. AccurateRip removed the entry.
+      SUPERSEDED the name is still live and the offset has changed. Measured on
+                 this corpus, all eight are lopsided the same way, live against
+                 2022: 1065/3, 652/3, 554/1, 477/7, 263/6, 198/2, 23/2, 7/2.
+
+    NO AGREEMENT THRESHOLD. Absence is the signal; the agreement percentage is
+    recorded for the reader and never gates, because it would keep
+    `Philips DVD-ROM PCDV632` (+116, one submission, 100% agreement, and gone)
+    whose only fault is that AccurateRip withdrew it.
+
+    A row whose name does not join the 2022 import is UNKNOWN PROVENANCE, not
+    "keep": it is kept, but counted and listed, because a join that quietly
+    resolves everything by letting misses fall through to the safe branch is a
+    guard that measures its own scope. The glued-vendor rows are the expected
+    residue — AccurateRip prints `SATA LG ELECTRONICSBD-RE B` with the vendor
+    run into the product, so no whole-field alias can reach it.
+    """
+    live = {fold(a["vendor"], a["product"]): a for a in ar}
+    kept, dropped, unjoined = [], [], []
+
+    for vendor, product, off in redump:
+        key = fold(vendor, product)
+        # The provenance must describe THIS value, not merely this drive: a key
+        # the 2022 list held twice describes each of its values separately.
+        snap = prov.get(key, {}).get(off)
+        if snap is None:
+            unjoined.append((vendor, product, off))
+            kept.append((vendor, product, off))
+            continue
+        snap_subs, snap_pct = snap
+        a = live.get(key)
+        if a is None:
+            dropped.append(("RETRACTED", vendor, product, off, snap_subs, snap_pct, None))
+        elif a["offset"] != off:
+            dropped.append(("SUPERSEDED", vendor, product, off, snap_subs, snap_pct, a))
+        else:
+            kept.append((vendor, product, off))
+
+    stats["redump_retracted"] = sum(1 for d in dropped if d[0] == "RETRACTED")
+    stats["redump_superseded"] = sum(1 for d in dropped if d[0] == "SUPERSEDED")
+    stats["redump_unknown_provenance"] = len(unjoined)
+
+    for reason, vendor, product, off, subs, pct, a in sorted(dropped, key=lambda d: (d[0], d[1], d[2])):
+        detail = (f"AccurateRip now holds {a['offset']:+d} on {a['submissions']} subs"
+                  if a else "absent from the live AccurateRip list")
+        print(f"  {reason} {vendor!r} {product!r}: {off:+d} "
+              f"(2022: {subs} subs {pct}% agree) — {detail}")
+    if unjoined:
+        print(f"  {len(unjoined)} REDUMP row(s) of UNKNOWN PROVENANCE — kept, rule not applied:")
+        for vendor, product, off in sorted(unjoined):
+            print(f"    ? {vendor!r} {product!r} {off:+d}")
+    return kept, dropped
+
+
 # --------------------------------------------------------------------------
 # Merge
 # --------------------------------------------------------------------------
@@ -320,7 +469,7 @@ def merge(redump, ar) -> tuple[list[Row], dict]:
     return rows, stats
 
 
-def emit(rows: list[Row], out: Path, stats: dict) -> None:
+def emit(rows: list[Row], out: Path, stats: dict, dropped: list) -> None:
     def c_str(s: str) -> str:
         return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -339,6 +488,36 @@ def emit(rows: list[Row], out: Path, stats: dict) -> None:
         " */",
         "",
     ]
+
+    # THE WITHDRAWN ROWS, NAMED. They are absent from the table below, and this
+    # is the only place that says so — generator output scrolls away, this file
+    # is committed and shows up in every diff. REDUMP is AccurateRip's list at an
+    # earlier date, so a REDUMP value AccurateRip has since changed or removed is
+    # that source's own withdrawn draft, not a second opinion to report as a
+    # conflict. See apply_retractions() in tools/gen_offsets.py.
+    if dropped:
+        block = [
+            "/* WITHDRAWN BY THE SOURCE — dropped from the table above, listed so the",
+            " * deletion is reviewable rather than invisible.",
+            " *",
+            " *   RETRACTED  in REDUMP's 2022 AccurateRip import, absent from the live",
+            " *              AccurateRip list: AccurateRip removed the entry.",
+            " *   SUPERSEDED still listed, different offset now: AccurateRip corrected it.",
+            " *",
+            " * The 2022 figures are the submission count and agreement percentage that",
+            " * REDUMP's importer discarded; recovered from redumper's git history.",
+            " */",
+        ]
+        for reason, vendor, product, off, subs, pct, a in sorted(
+            dropped, key=lambda d: (d[0], d[1], d[2])
+        ):
+            now = (f"AccurateRip now {a['offset']:+d} / {a['submissions']} subs"
+                   if a else "gone from AccurateRip")
+            block.append(
+                f"/* {reason:10s} {vendor} {product}: {off:+d} "
+                f"(2022: {subs} subs {pct}% agree) -> {now} */"
+            )
+        lines.extend(block + [""])
     for r in rows:
         lines.append(
             f"    {{ {c_str(r.vendor)}, {c_str(r.product)}, {r.read:+d}, "
@@ -359,12 +538,31 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--redump", type=Path, required=True)
     ap.add_argument("--ar", type=Path, required=True)
+    ap.add_argument(
+        "--redump-provenance",
+        type=Path,
+        required=True,
+        help="redumper's driveoffsets.txt, its 2022 AccurateRip import, with the "
+             "submission and agreement columns its own importer discarded. "
+             "Recover it with: git -C <redumper> show 15f369e^:driveoffsets.txt. "
+             "REQUIRED, not optional: without it the retraction rule would not "
+             "run and the table would look identical, which is the silent kind "
+             "of wrong this generator exists to avoid.",
+    )
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
 
     print("merging:")
-    rows, stats = merge(read_redump(args.redump), read_ar(args.ar))
-    emit(rows, args.out, stats)
+    redump = read_redump(args.redump)
+    prov = read_provenance(args.redump_provenance)
+    ar = read_ar(args.ar)
+
+    retractions: dict = {}
+    kept, dropped = apply_retractions(redump, prov, ar, retractions)
+
+    rows, stats = merge(kept, ar)
+    stats.update(retractions)
+    emit(rows, args.out, stats, dropped)
     return 0
 
 

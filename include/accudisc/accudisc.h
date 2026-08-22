@@ -27,7 +27,23 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 11 /* 0.11.0: offset matching became
+#define ACCUDISC_VERSION_MINOR 12 /* 0.12.0: SUBTRACTIVE, in the data. No
+                                  * struct moved and no error code changed. The
+                                  * table now drops REDUMP values AccurateRip
+                                  * has withdrawn — REDUMP's table being
+                                  * AccurateRip's own list frozen in 2022, not a
+                                  * second source. 8 keys that returned an
+                                  * offset now return ERR_NOTFOUND, and 9 return
+                                  * a DIFFERENT offset than they did in 0.11.0;
+                                  * every one is named in offsets_db.inc. A
+                                  * caller that cached a per-drive offset must
+                                  * re-query, which is what the bump is for. The
+                                  * table also has NO conflicting keys left, so
+                                  * ERR_AMBIGUOUS is currently unreachable from
+                                  * the shipped data — the code path stays,
+                                  * because the next corpus refresh can revive
+                                  * it.
+                                  * 0.11.0: offset matching became
                                   * case-INSENSITIVE. No struct moved and no
                                   * error code changed — what changed is which
                                   * drives MATCH. A firmware reporting "AOpen"
@@ -309,18 +325,21 @@ typedef struct accudisc_offset_info {
                               * see `sources` below */
     uint8_t  sources;        /* ACCUDISC_OFFSET_SRC_* bitmask.
                               *
-                              * PRESENCE, NOT CORROBORATION. Both bits set means
-                              * both tables carry this value — it does NOT mean
-                              * two independent parties measured it. Measured
-                              * 2026-08-16: 99.3% of REDUMP's keys are also in
-                              * AccurateRip, they differ on exactly ONE of 4554
-                              * shared keys, and of 617 AccurateRip rows resting
-                              * on a SINGLE submission, 494 of the 496 whose key
-                              * REDUMP also holds carry REDUMP's identical
-                              * offset. One person's one measurement reproduced
-                              * exactly in a separate table, 494 times, is not
-                              * what independent observation looks like. Weight
-                              * this flag as "two tables", never "two witnesses" */
+                              * PRESENCE, NOT CORROBORATION, and weaker than it
+                              * looks. Both bits set does NOT mean two parties
+                              * measured this drive: REDUMP's offset table is
+                              * AccurateRip's published list, imported once in
+                              * 2022 and frozen. Established 2026-08-22 by set
+                              * comparison against redumper's own git history —
+                              * 4595 rows each way, ZERO in either that the
+                              * other lacks, the only change being marketing
+                              * vendor names rewritten to INQUIRY ones. Both
+                              * bits therefore mean ONE source agreeing with its
+                              * own past, which is worth something (the value
+                              * has not been revised) and is not a second
+                              * witness. Weight it as "unrevised since 2022",
+                              * never as corroboration. ar_submissions is the
+                              * only count of actual measurements here */
     uint8_t  flags;          /* ACCUDISC_OFFSET_F_* bitmask */
     uint8_t  n_values;       /* values[] filled; 1 unless ERR_AMBIGUOUS */
     int32_t  values[ACCUDISC_OFFSET_MAX_VALUES];       /* every value found */
