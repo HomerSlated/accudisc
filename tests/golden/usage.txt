@@ -3,7 +3,7 @@ usage: accudisc [--device DEV] <command> [options]
 commands:
   info           identify the drive (INQUIRY)
   offset         drive read offset from the compiled table
-                 [--vendor V --product P] answers WITHOUT a drive.
+                 [--vendor V] --product P answers WITHOUT a drive.
                  Reports; never applies. Exit 3 if the sources
                  disagree (every value printed) or none holds it
   disc           pre-flight guard: is the loaded disc rippable audio,

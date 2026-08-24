@@ -246,6 +246,50 @@ int main(void)
     assert(accudisc_offset_for_inquiry("PHILIPS", "PCRW404", &info)
            == ACCUDISC_ERR_NOTFOUND);
 
+    /* --- the key is the PRODUCT, against the SHIPPED table -----------------
+     * A drive whose vendor string is not the one a submitter sent still
+     * resolves. This is the whole point of product-only keying: firmware
+     * reports that field inconsistently, and "PLEXTOR" is simply the spelling
+     * that reached AccurateRip. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("SATA", "DVDR PX-716A", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 30);
+
+    /* CD-ROM is the worked example: FIVE rows, FOUR offsets, and it is the
+     * corpus's worst case — exactly ACCUDISC_OFFSET_MAX_VALUES, so values[]
+     * fills completely and F_TRUNCATED must NOT be set. A vendor nobody
+     * submitted narrows nothing and the caller is handed all four. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("NOSUCHVENDOR", "CD-ROM", &info)
+           == ACCUDISC_ERR_AMBIGUOUS);
+    assert(info.read_offset == ACCUDISC_OFFSET_NONE);
+    assert(info.n_values == 4);
+    assert(!(info.flags & ACCUDISC_OFFSET_F_TRUNCATED));
+
+    /* ...and the vendor resolves it, which is true of all 13 ambiguous
+     * products in the shipped table. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("ATAPI", "CD-ROM", &info) == ACCUDISC_OK);
+    assert(info.read_offset == 680);
+
+    /* Several rows agreeing is NOT ambiguity. This drive has three spellings in
+     * the table — two vendors, two product spellings — and one offset. Counting
+     * matching ROWS rather than distinct offsets would report ERR_AMBIGUOUS
+     * here, and for 1229 other products. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("", "DVDRAM GHA2N", &info) == ACCUDISC_OK);
+    assert(info.read_offset == 667);
+    assert(info.n_values == 1);
+    assert(info.ar_submissions == 71);
+
+    /* The one answer in the whole table that 0.15.0 changed. An empty product
+     * identifies nothing; keyed on the product alone this row would have
+     * answered +564 for every drive that reports no product string. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("DVDROM", "", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+
     /* --- absence is explicit, never a default ---------------------------- */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
     assert(accudisc_offset_for_inquiry("NOSUCHVENDOR", "NOSUCH 9000", &info)

@@ -328,12 +328,78 @@ away.
   in 0.10.0 (`24ac59e`, verified across every commit that touched the header), so
   no conforming caller has a smaller `values[]`. It fires at the moment the
   capacity note below stops being latent, which a comment cannot do.
-- The product-only keying change (2026-08-19 point 5) is still to do, and the
-  dedup and `values[]` capacity work below are its prerequisites rather than
-  standalone fixes. Note `ACCUDISC_OFFSET_MAX_VALUES` writes are bounded by the
-  compile-time macro while the ABI contract is the runtime `out->size`, so
-  growing the array without deriving capacity from `size` would overrun an old
-  caller.
+- **PRODUCT-ONLY KEYING (2026-08-19 point 5) — DONE 2026-08-24 (0.15.0).**
+  The lookup keys on the product identifier and the vendor only narrows; a
+  vendor matching no row no longer rejects.
+
+        product match -> candidates
+        -> some candidate's vendor matches?  narrow to those
+        -> otherwise                          keep them all
+        -> one DISTINCT offset: OK  |  more: ERR_AMBIGUOUS with values[]
+
+  Measured on the shipped table before writing it, and the second line is the
+  one a rewrite gets wrong:
+
+        distinct products                            4562
+        products with >1 DISTINCT offset               13   (vendor resolves ALL 13)
+        products matched by >1 ROW                   1242
+           ... whose rows AGREE on the offset        1229
+        worst product ('CD-ROM')                        4 offsets = MAX_VALUES
+
+  **Count DISTINCT OFFSETS, not matching rows.** The table deliberately carries
+  a row per spelling, so multi-row matches are the normal case; counting rows
+  would report `ERR_AMBIGUOUS` for 1229 products whose offset is not in doubt.
+
+  **Exactly ONE answer changes across all 5882 keys already in the table**:
+  `DVDROM` with an EMPTY product, now `ERR_NOTFOUND`. An empty product is not a
+  weak identifier but the absence of one, and keyed on the product alone it
+  would have answered +564 for every drive reporting no product string. Zero
+  AccurateRip figures changed. Everything else the change buys is on queries
+  whose vendor string is NOT what a submitter sent — which is the point.
+
+  **What it costs, named rather than filtered.** A generic product now answers
+  for any vendor. Most self-identify by colliding (`CD-ROM` holds four offsets
+  and comes back ambiguous), but seven do not: the empty product (refused),
+  and `DVD` +48, `COMBO` +6, `DVDRW` +6, `DVD+RW` +1292, `OPTICAL DRIVE` +6,
+  `CD-ROM DRIVE` +12 — one row each, so they answer confidently for a drive
+  nobody measured. **A generic-name blocklist is a judgement nobody has made**;
+  Keith's note that "generic product strings self-identify by colliding, so they
+  may need no filter at all" holds for all but these six. Left for him.
+
+  Consequences carried through: `ACCUDISC_OFFSET_F_TRUNCATED` (0x02) says
+  `values[]` could not hold every distinct offset — unreachable today, since the
+  worst product holds exactly `MAX_VALUES`; `accudisc offset --product P` alone
+  is now a complete CLI query (`--vendor` alone stays a usage error); the Python
+  binding gained `DriveOffset.truncated`; the generator emits an `AMBIGUOUS ON
+  THE PRODUCT ALONE` block naming all 13; the usage golden was regenerated after
+  reading its one-line diff.
+
+  The AccurateRip figures on an OK answer come from the SINGLE best-evidenced
+  contributing row, as a pair. 232 products have several rows backing one offset
+  with different counts (`""` at 3 submissions beside `"SHARK"` at 1); summing
+  would multiply the spelling variants of a single entry, which the generator
+  gives identical figures, and taking whichever row the scan reached first is
+  arbitrary.
+
+- **`ACCUDISC_OFFSET_MAX_VALUES` IS FROZEN BY THE ABI — and the note this
+  replaces was wrong about the remedy.** It said to derive the `values[]` write
+  bound from `out->size` before growing the macro. That is not enough:
+  `value_sources[]` FOLLOWS `values[]`, so growing the array MOVES it. Measured:
+  at 4, `sizeof` is 36 with `value_sources` at offset 32; at 8, `sizeof` is 56
+  with it at 48. An old caller's struct is therefore not a PREFIX of the new one
+  and `size` cannot describe it — the caller would read its `value_sources` from
+  bytes the library used for `values`. Bounding a write does not fix a field
+  that has moved. Reporting more values needs a field APPENDED after
+  `value_sources[]` (which `size` does handle) or a new call.
+  `tests/test_offsets_ambiguous.c` carries the tripwire.
+
+- Not touched, and pre-existing rather than introduced here: the SCALAR fields
+  of `accudisc_offset_info` are written without consulting `out->size`, so a
+  caller passing a size smaller than the struct would have `read_offset`,
+  `n_values` and the rest written past its buffer. The ABI check accepts any
+  `0 < size <= sizeof`. Unreachable today for the same reason as above — one
+  layout has ever shipped — and orthogonal to the keying change, so it was left
+  alone rather than folded in. `values[]`/`value_sources[]` ARE now guarded.
 
 ## OFFSET DICTIONARY — the design Keith settled (2026-08-19)
 

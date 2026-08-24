@@ -859,6 +859,37 @@ def emit(rows: list[Row], out: Path, stats: dict, dropped: list,
             )
         lines.extend(block + [""])
 
+    # AMBIGUOUS UNDER THE SHIPPED LOOKUP, NAMED. Since 0.15.0 the runtime keys
+    # on the PRODUCT and lets the vendor narrow, so ambiguity is a property of a
+    # product rather than of a (vendor, product) row — and nothing in the row
+    # format can express it. Listed here because it is the one place a reader can
+    # see which products come back ERR_AMBIGUOUS without running the lookup.
+    #
+    # A product listed here is NOT a defect. Every one of these is resolved by a
+    # vendor the table already holds; what the block records is which products
+    # cannot answer on their own.
+    prod: dict[str, dict[int, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for r in rows:
+        prod[r.product][r.read].add(r.vendor)
+    contested = {p: v for p, v in prod.items() if len(v) > 1}
+    if contested:
+        block = [
+            "/* AMBIGUOUS ON THE PRODUCT ALONE — these return ERR_AMBIGUOUS to a",
+            " * caller whose INQUIRY vendor matches none of the rows below. The",
+            " * vendor resolves every one of them; the list is here so that which",
+            " * products cannot stand alone is reviewable in a diff.",
+            " */",
+        ]
+        for prod_name in sorted(contested):
+            for off in sorted(contested[prod_name]):
+                vendors = ", ".join(
+                    repr(v) if v else "(no vendor)"
+                    for v in sorted(contested[prod_name][off])
+                )
+                block.append(f"/* AMBIGUOUS  {prod_name}: {off:+d} <- {vendors} */")
+        lines.extend(block + [""])
+        stats["products_ambiguous"] = len(contested)
+
     for r in rows:
         lines.append(
             f"    {{ {c_str(r.vendor)}, {c_str(r.product)}, {r.read:+d}, "
@@ -872,12 +903,13 @@ def emit(rows: list[Row], out: Path, stats: dict, dropped: list,
     # invite about conflicts once the retraction rule has removed them all.
     for k in ("conflicting_keys", "adjudicated", "unresolved_conflicts",
               "redump_retracted", "redump_superseded",
-              "redump_unknown_provenance", "redump_rescued_rebadge"):
+              "redump_unknown_provenance", "redump_rescued_rebadge",
+              "products_ambiguous"):
         print(f"  {k:26s} {stats.get(k, 0)}")
     for k in sorted(set(stats) - {"conflicting_keys", "adjudicated",
                                   "unresolved_conflicts", "redump_retracted",
                                   "redump_superseded", "redump_unknown_provenance",
-                                  "redump_rescued_rebadge"}):
+                                  "redump_rescued_rebadge", "products_ambiguous"}):
         print(f"  {k:26s} {stats[k]}")
     for label, mask in (("REDUMP", SRC_REDUMP), ("AccurateRip", SRC_AR)):
         print(f"  rows held by {label:12s} {sum(1 for r in rows if r.sources & mask)}")

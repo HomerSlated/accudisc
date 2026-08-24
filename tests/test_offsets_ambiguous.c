@@ -118,7 +118,82 @@ int main(void)
      * restatement of the rows above. A caller must be able to tell "four values,
      * that is all there was" from "four values and something was discarded". */
     assert(info.sources == 3);
-    assert(info.flags == ACCUDISC_OFFSET_F_ADJUDICATED);
+
+    /* And the caller is TOLD the list is short. n_values alone reads as "four,
+     * and that was all"; F_TRUNCATED is the difference between that and "four
+     * of the five we found". */
+    assert(info.flags
+           == (ACCUDISC_OFFSET_F_ADJUDICATED | ACCUDISC_OFFSET_F_TRUNCATED));
+    assert(info.flags & ACCUDISC_OFFSET_F_TRUNCATED);
+
+    /* --- the key is the PRODUCT; the vendor only narrows -------------------
+     * Three rows, three vendor spellings, one offset. Under row-counting this
+     * is "ambiguous, 3 values"; it is one value held three ways, and the
+     * distinction is the whole of the product-only change. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("ZETA", "TWIN", &info) == ACCUDISC_OK);
+    assert(info.read_offset == 70);
+    assert(info.n_values == 1);
+    assert(info.values[0] == 70);
+    /* ZETA is in no row: the vendor narrows nothing, so all three contribute.
+     * value_sources[0] is the OR across them, not the first row's. */
+    assert(info.value_sources[0] == 3);
+    assert(info.sources == 3);
+    /* The best-evidenced row's figures, travelling as a PAIR. 3 would be the
+     * first row scanned and 1 the last; 9/90 can only come from choosing the
+     * row with the most submissions, and 9/100 could only come from crossing
+     * one row's count with another's percentage. */
+    assert(info.ar_submissions == 9);
+    assert(info.ar_agree_pct == 90);
+
+    /* Name a vendor that IS in the set and the answer narrows to that row
+     * alone — different figures from the query above, on the same offset. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("ALPHA", "TWIN", &info) == ACCUDISC_OK);
+    assert(info.read_offset == 70);
+    assert(info.ar_submissions == 3);
+    assert(info.value_sources[0] == 1);
+
+    /* --- the vendor decides, or admits it cannot --------------------------- */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("GAMMA", "SPLIT", &info) == ACCUDISC_OK);
+    assert(info.read_offset == 80);
+    assert(info.ar_submissions == 5);
+
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("DELTA", "SPLIT", &info) == ACCUDISC_OK);
+    assert(info.read_offset == 90);
+
+    /* A vendor in no row narrows nothing, and the caller gets both values
+     * rather than whichever row came first — the failure mode this replaces. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("OMEGA", "SPLIT", &info)
+           == ACCUDISC_ERR_AMBIGUOUS);
+    assert(info.read_offset == ACCUDISC_OFFSET_NONE);
+    assert(info.n_values == 2);
+    assert(info.values[0] == 80 && info.values[1] == 90);
+    assert(info.value_sources[0] == 1 && info.value_sources[1] == 2);
+    assert(info.sources == 3);
+
+    /* A vendor nobody reports still finds the drive. THIS IS THE POINT of the
+     * change: firmware reports the vendor field inconsistently, and requiring it
+     * to match answers only for the spelling one submitter happened to send. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("NO SUCH VENDOR", "SOLO", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 100);
+
+    /* --- an empty product identifies nothing ------------------------------
+     * Refused even for the exact vendor that submitted it. Keyed on the product
+     * alone this row would otherwise answer for every drive reporting no
+     * product string, with the confidence of an exact match. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("EMPTYP", "", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+    assert(info.read_offset == ACCUDISC_OFFSET_NONE);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("ANYONE", "   ", &info)
+           == ACCUDISC_ERR_NOTFOUND);
 
     /* --- the device-keyed entry points report it too ----------------------- */
     memset(&dev, 0, sizeof(dev));
@@ -140,16 +215,23 @@ int main(void)
      * was introduced whole in 0.10.0, so no conforming caller has a smaller
      * values[] and none can be overrun today.
      *
-     * It is a trap set for the next person. values[] and value_sources[] are the
-     * LAST fields of accudisc_offset_info, and the write bound above is the
-     * COMPILE-TIME macro while the ABI contract is the RUNTIME out->size.
-     * Growing this macro would therefore write past the end of a caller
-     * compiled against the old header — silently, since the memset that
-     * precedes it is correctly bounded by size and would leave the struct
-     * looking well-formed.
+     * It is a trap set for the next person, and the trap is WORSE than the note
+     * this replaces claimed. That note said to derive the values[] write bound
+     * from out->size before growing the macro. THAT WOULD NOT BE ENOUGH:
+     * value_sources[] follows values[], so growing the array MOVES it. Measured
+     * on this platform — at 4, sizeof is 36 with value_sources at offset 32; at
+     * 8, sizeof is 56 with value_sources at 48. An old caller's struct is
+     * therefore NOT a prefix of the new one, and `size` cannot describe it: the
+     * caller would read its value_sources from bytes the library used for
+     * values. Bounding the write does not fix a field that has moved.
      *
-     * A comment cannot fail. This can, at exactly the moment it matters:
-     * derive the values[] write bound from out->size before changing this. */
+     * So ACCUDISC_OFFSET_MAX_VALUES is frozen by the ABI. Reporting more values
+     * needs a field APPENDED after value_sources[] (which `size` does handle),
+     * or a new call — not a bigger array. ACCUDISC_OFFSET_F_TRUNCATED exists so
+     * that until someone does one of those, a caller is at least TOLD the list
+     * was short rather than silently handed a prefix.
+     *
+     * A comment cannot fail. This can, at exactly the moment it matters. */
     assert(ACCUDISC_OFFSET_MAX_VALUES == 4);
 
     printf("test_offsets_ambiguous: ok\n");

@@ -104,17 +104,66 @@ void adsc_inquiry_normalize(const char *src, char *dst, size_t cap)
     dst[o] = '\0';
 }
 
+/* THE KEY IS THE PRODUCT IDENTIFIER; THE VENDOR ONLY NARROWS.
+ *
+ * Keith's rule: "For actual drive detection, we will use only the unique
+ * product identifier, and only verify the vendor if present and not
+ * conflicting." A vendor MISMATCH is therefore not a rejection — that is the
+ * entire point. Firmware reports the vendor field inconsistently (empty, the
+ * host adapter's "SATA", the OEM rather than the badge, run into the product),
+ * so requiring it to match answers only for the spelling one submitter happened
+ * to send. The product identifier is the part that identifies the drive.
+ *
+ *     product match -> candidate set
+ *     -> some candidate's vendor matches?  narrow to those
+ *     -> otherwise                          keep them all
+ *     -> one DISTINCT offset: OK  |  more: ERR_AMBIGUOUS with values[]
+ *
+ * COUNT DISTINCT OFFSETS, NOT MATCHING ROWS, and this is the part a rewrite
+ * gets wrong. The table deliberately carries a row per SPELLING — "HL-DT-ST"
+ * and "LG ELECTRONICS", "DVDRAM GHA2N" and "DVDRAM_GHA2N", the same drive with
+ * and without a vendor — so a product-keyed scan matches several rows as a
+ * matter of course. Measured on the shipped table: 1242 products are matched by
+ * more than one row and 1229 of those rows AGREE. Counting rows would report
+ * ERR_AMBIGUOUS for a quarter of the corpus, every one of them a drive whose
+ * offset is not in doubt.
+ *
+ * Measured before adopting it, on this table: 4562 distinct products, 13 with
+ * more than one offset, and the vendor narrows ALL 13 to one. Every
+ * (vendor, product) pair already in the table returns exactly what it returned
+ * under vendor+product keying — verified across all 5882 — so the change is
+ * purely additive: what it buys is the drive whose vendor string is not the one
+ * a submitter sent.
+ *
+ * WHAT IT COSTS is that a generic product string now answers for any vendor.
+ * Mostly they self-identify by colliding ("CD-ROM" holds four offsets and comes
+ * back ambiguous), but seven do not — "DVD", "COMBO", "DVDRW", "DVD+RW",
+ * "OPTICAL DRIVE", "CD-ROM DRIVE" and the EMPTY product. The empty one is
+ * refused below because it is not a weak identifier but the absence of one; the
+ * other six are named in docs/reference/TODO.md rather than filtered, since a
+ * generic-name blocklist is a judgement nobody has made yet.
+ */
 int accudisc_offset_for_inquiry(const char *vendor, const char *product,
                                 accudisc_offset_info *out)
 {
     char want_v[32], want_p[32], have_v[32], have_p[32];
-    const struct offset_entry *first = NULL;
-    unsigned n = 0;
+    const struct offset_entry *best = NULL;
+    int32_t vals[ACCUDISC_OFFSET_MAX_VALUES];
+    uint8_t vsrc[ACCUDISC_OFFSET_MAX_VALUES];
+    unsigned nvals = 0;
+    int matched = 0, vendor_hit = 0, overflow = 0, caller_has_values;
+    size_t i, k;
 
     if (!vendor || !product || !out)
         return ACCUDISC_ERR_INVAL;
     if (out->size == 0 || out->size > sizeof(*out))
         return ACCUDISC_ERR_ABI;
+
+    /* values[] and value_sources[] are the LAST fields, so a caller whose
+     * struct does not reach them must not have them written. Today only one
+     * layout has ever shipped and this is always true; it is here so that the
+     * scan below cannot become the thing that overruns a short struct. */
+    caller_has_values = (out->size >= sizeof(*out));
 
     /* Zero everything the caller's struct covers, then set the sentinels. A
      * caller that ignores the return code must not find a usable-looking number
@@ -126,45 +175,99 @@ int accudisc_offset_for_inquiry(const char *vendor, const char *product,
     adsc_inquiry_normalize(vendor, want_v, sizeof(want_v));
     adsc_inquiry_normalize(product, want_p, sizeof(want_p));
 
-    for (size_t i = 0; i < OFFSETS_N; i++) {
-        adsc_inquiry_normalize(offsets[i].vendor, have_v, sizeof(have_v));
-        adsc_inquiry_normalize(offsets[i].product, have_p, sizeof(have_p));
-        if (strcmp(want_v, have_v) != 0 || strcmp(want_p, have_p) != 0)
-            continue;
+    /* An empty product identifies nothing. Under vendor+product keying it was
+     * harmless — it matched one row and only when the vendor matched too. Keyed
+     * on the product alone it would match EVERY query that reports no product,
+     * whatever drive sent it, and hand back one submitter's offset with the
+     * confidence of an exact match. */
+    if (want_p[0] == '\0')
+        return ACCUDISC_ERR_NOTFOUND;
 
-        if (!first)
-            first = &offsets[i];
-        if (n < ACCUDISC_OFFSET_MAX_VALUES) {
-            out->values[n] = offsets[i].read_offset;
-            out->value_sources[n] = offsets[i].sources;
+    /* Pass 1: does the vendor narrow anything? Asked separately because the
+     * answer decides which rows pass 2 is allowed to look at, and a single pass
+     * would have to commit before knowing. */
+    for (i = 0; i < OFFSETS_N && !vendor_hit; i++) {
+        adsc_inquiry_normalize(offsets[i].product, have_p, sizeof(have_p));
+        if (strcmp(want_p, have_p) != 0)
+            continue;
+        adsc_inquiry_normalize(offsets[i].vendor, have_v, sizeof(have_v));
+        if (strcmp(want_v, have_v) == 0)
+            vendor_hit = 1;
+    }
+
+    for (i = 0; i < OFFSETS_N; i++) {
+        adsc_inquiry_normalize(offsets[i].product, have_p, sizeof(have_p));
+        if (strcmp(want_p, have_p) != 0)
+            continue;
+        if (vendor_hit) {
+            adsc_inquiry_normalize(offsets[i].vendor, have_v, sizeof(have_v));
+            if (strcmp(want_v, have_v) != 0)
+                continue;
         }
-        n++;
+
+        matched = 1;
         out->sources |= offsets[i].sources;
         out->flags |= offsets[i].flags;
-        /* AccurateRip's confidence figures describe the value AR itself holds.
-         * On a conflicting key they are cleared below rather than taken from
-         * whichever row the scan happened to reach first. */
-        if (n == 1) {
-            out->ar_submissions = offsets[i].ar_submissions;
-            out->ar_agree_pct = offsets[i].ar_agree_pct;
+
+        /* AccurateRip's figures describe ONE of its entries, and several may
+         * back the same offset under different vendor spellings ("" with 3
+         * submissions beside "SHARK" with 1 — 232 products look like this).
+         * Summing would triple-count the spelling variants of a single entry,
+         * which the generator gives identical figures; taking whichever row the
+         * scan reached first is arbitrary. The best-evidenced row is a real
+         * measurement that never overstates, and its percentage travels with
+         * its own count rather than being crossed with another row's. */
+        if (!best || offsets[i].ar_submissions > best->ar_submissions)
+            best = &offsets[i];
+
+        for (k = 0; k < nvals; k++)
+            if (vals[k] == offsets[i].read_offset)
+                break;
+        if (k < nvals)
+            vsrc[k] |= offsets[i].sources;
+        else if (nvals < ACCUDISC_OFFSET_MAX_VALUES) {
+            vals[nvals] = offsets[i].read_offset;
+            vsrc[nvals] = offsets[i].sources;
+            nvals++;
+        } else {
+            /* More distinct offsets than values[] can carry. n_values alone
+             * cannot say so — it would read as "four, and that was all" — and
+             * silently narrowing what we report is the one thing this codebase
+             * refuses to do. The shipped table's worst product holds exactly
+             * four, so this is unreachable today and is here for the corpus
+             * refresh that makes it five. */
+            overflow = 1;
         }
     }
 
-    if (!first)
+    if (!matched)
         return ACCUDISC_ERR_NOTFOUND;
 
-    out->n_values = (uint8_t)(n > ACCUDISC_OFFSET_MAX_VALUES
-                                  ? ACCUDISC_OFFSET_MAX_VALUES : n);
-    if (n > 1) {
-        /* Conflicting sources. read_offset stays ACCUDISC_OFFSET_NONE; the
+    if (caller_has_values)
+        for (k = 0; k < nvals; k++) {
+            out->values[k] = vals[k];
+            out->value_sources[k] = vsrc[k];
+        }
+    out->n_values = (uint8_t)nvals;
+    if (overflow)
+        out->flags |= ACCUDISC_OFFSET_F_TRUNCATED;
+
+    if (nvals > 1) {
+        /* The candidates disagree. read_offset stays ACCUDISC_OFFSET_NONE; the
          * caller prints values[], picks one, and passes it back through its own
-         * configuration. AccuDisc does not pick, and never applies. */
+         * configuration. AccuDisc does not pick, and never applies.
+         *
+         * The AccurateRip figures are CLEARED rather than taken from the
+         * best-evidenced row: they describe the value AccurateRip holds, and on
+         * a contested key there is no single such value for them to describe. */
         out->ar_submissions = 0;
         out->ar_agree_pct = 0;
         return ACCUDISC_ERR_AMBIGUOUS;
     }
 
-    out->read_offset = first->read_offset;
+    out->ar_submissions = best->ar_submissions;
+    out->ar_agree_pct = best->ar_agree_pct;
+    out->read_offset = vals[0];
     return ACCUDISC_OK;
 }
 

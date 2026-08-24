@@ -54,6 +54,41 @@
  */
 /* RESCUED    Philips DVD-ROM PCDV632: +116 (2022: 1 subs 100% agree) -> rebadge of TOSHIBA DVD-ROM SD-M1212, +116 on 38 subs */
 
+/* AMBIGUOUS ON THE PRODUCT ALONE — these return ERR_AMBIGUOUS to a
+ * caller whose INQUIRY vendor matches none of the rows below. The
+ * vendor resolves every one of them; the list is here so that which
+ * products cannot stand alone is reviewable in a diff.
+ */
+/* AMBIGUOUS  16X: +6 <- 'DVD' */
+/* AMBIGUOUS  16X: +691 <- 'DVD-ROM' */
+/* AMBIGUOUS  CD-ROM: -1164 <- 'BCD24XHM' */
+/* AMBIGUOUS  CD-ROM: +12 <- 'BCD 32XH', 'BCD 44XH' */
+/* AMBIGUOUS  CD-ROM: +108 <- '52XATAPI' */
+/* AMBIGUOUS  CD-ROM: +680 <- 'ATAPI' */
+/* AMBIGUOUS  CD-ROM 50X: +106 <- 'ATAPI' */
+/* AMBIGUOUS  CD-ROM 50X: +682 <- 'E-IDE' */
+/* AMBIGUOUS  CD-ROM CR-589: +102 <- 'COMPAQ' */
+/* AMBIGUOUS  CD-ROM CR-589: +103 <- 'MATSHITA', 'PANASONIC' */
+/* AMBIGUOUS  CRW-5232AS: -582 <- (no vendor) */
+/* AMBIGUOUS  CRW-5232AS: +6 <- 'ASUS' */
+/* AMBIGUOUS  CW089D CD-R-RW: +6 <- 'CYBERDRV' */
+/* AMBIGUOUS  CW089D CD-R-RW: +12 <- 'CD-R-RW' */
+/* AMBIGUOUS  DVD RW: +6 <- (no vendor), 'FREECOM', 'VERBATIM' */
+/* AMBIGUOUS  DVD RW: +618 <- 'ATAPI' */
+/* AMBIGUOUS  DVD-ROM: +0 <- 'GENERIC', 'GENERIC_' */
+/* AMBIGUOUS  DVD-ROM: +6 <- 'USB 2.0' */
+/* AMBIGUOUS  DVD-ROM: +564 <- 'DM166D' */
+/* AMBIGUOUS  DVDROM DH60N: +6 <- 'ASUS' */
+/* AMBIGUOUS  DVDROM DH60N: +12 <- 'HL-DT-ST', 'LG ELECTRONICS' */
+/* AMBIGUOUS  DVDROM DT30N: +102 <- 'HL-DT-ST', 'LG ELECTRONICS' */
+/* AMBIGUOUS  DVDROM DT30N: +103 <- 'HP' */
+/* AMBIGUOUS  GCE-8483B: +0 <- 'HL-DT-ST', 'LG ELECTRONICS' */
+/* AMBIGUOUS  GCE-8483B: +6 <- 'LG' */
+/* AMBIGUOUS  LG ELECTRONICS BD-RE: +6 <- 'ATA' */
+/* AMBIGUOUS  LG ELECTRONICS BD-RE: +667 <- (no vendor) */
+/* AMBIGUOUS  ROM: +12 <- 'ATAPI CD' */
+/* AMBIGUOUS  ROM: +738 <- '16X DVD-' */
+
     { "", "16X12 DVD DUAL", +91, 10, 100, 3, 0 },
     { "", "16X16 DVD DUAL", +91, 5, 100, 3, 0 },
     { "", "16X52X32X52COMBO", +738, 8, 100, 3, 0 },

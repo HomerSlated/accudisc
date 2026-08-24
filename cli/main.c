@@ -18,7 +18,7 @@ static void usage(FILE *to)
         "commands:\n"
         "  info           identify the drive (INQUIRY)\n"
         "  offset         drive read offset from the compiled table\n"
-        "                 [--vendor V --product P] answers WITHOUT a drive.\n"
+        "                 [--vendor V] --product P answers WITHOUT a drive.\n"
         "                 Reports; never applies. Exit 3 if the sources\n"
         "                 disagree (every value printed) or none holds it\n"
         "  disc           pre-flight guard: is the loaded disc rippable audio,\n"
@@ -216,6 +216,12 @@ static int report_offset(int rc, const accudisc_offset_info *info_in)
     }
     if (rc == ACCUDISC_ERR_AMBIGUOUS) {
         printf("read_offset unknown\nconflict %u\n", info.n_values);
+        /* Printed ONLY when set, so today's output is byte-identical: the
+         * shipped table's worst product holds exactly as many offsets as
+         * values[] can carry. When it does appear it says `conflict N` is a cap
+         * rather than a count, which N alone cannot distinguish. */
+        if (info.flags & ACCUDISC_OFFSET_F_TRUNCATED)
+            printf("truncated 1\n");
         for (unsigned i = 0; i < info.n_values; i++) {
             printf("value %+d ", info.values[i]);
             print_sources(info.value_sources[i]);
@@ -250,8 +256,14 @@ static int report_offset(int rc, const accudisc_offset_info *info_in)
     return 0;
 }
 
-/* Parse the shared flags. Returns 1 when both strings were given (a device-free
- * query), 0 when neither was (ask the drive), -1 on a usage error. */
+/* Parse the shared flags. Returns 1 when a device-free query was given, 0 when
+ * nothing was (ask the drive), -1 on a usage error.
+ *
+ * --product ALONE is a complete query since 0.15.0: the library keys on the
+ * product and the vendor only narrows, so demanding a vendor here would ask the
+ * caller for the one field firmware is least consistent about. --vendor alone is
+ * still a usage error — it cannot identify a drive, and an empty product is
+ * refused by the library anyway. */
 static int offset_args(int argc, char **argv, const char **vendor,
                        const char **product)
 {
@@ -264,10 +276,14 @@ static int offset_args(int argc, char **argv, const char **vendor,
         else
             return -1;
     }
-    if (*vendor && *product)
+    if (*product) {
+        if (!*vendor)
+            *vendor = "";
         return 1;
-    if (*vendor || *product) {
-        fprintf(stderr, "accudisc: --vendor and --product go together\n");
+    }
+    if (*vendor) {
+        fprintf(stderr, "accudisc: --vendor needs --product; a vendor alone "
+                        "cannot identify a drive\n");
         return -1;
     }
     return 0;

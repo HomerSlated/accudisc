@@ -673,6 +673,11 @@ class DriveOffset:
     ar_agree_pct: int
     adjudicated: bool
     values: tuple[tuple[int, frozenset[str]], ...] = ()
+    #: ``values`` is a PREFIX, not the whole set — the library found more
+    #: distinct offsets than its fixed array can carry. Reporting the prefix
+    #: without saying so would be a silent narrowing, which is why this is a
+    #: field and not something the caller is left to infer from ``len(values)``.
+    truncated: bool = False
 
     @property
     def conflicting(self) -> bool:
@@ -685,6 +690,8 @@ class DriveOffset:
             cands = ", ".join(
                 f"{v:+d} ({'+'.join(sorted(s))})" for v, s in self.values
             )
+            if self.truncated:
+                cands += ", and more than these"
             return f"{self.vendor} {self.product}: UNVERIFIED — {cands}"
         return f"{self.vendor} {self.product}: {self.read_offset:+d} samples"
 
@@ -692,10 +699,16 @@ class DriveOffset:
 def offset_for(vendor: str, product: str) -> DriveOffset | None:
     """Look a drive up by INQUIRY strings, WITHOUT opening a device.
 
-    Returns ``None`` when no source holds the drive. A drive whose sources
+    Returns ``None`` when no source holds the drive. A drive whose candidates
     disagree comes back as a :class:`DriveOffset` with ``read_offset is None``
     and every candidate in ``values`` — not as an exception, because
     disagreement is data the caller has to act on rather than a failure.
+
+    Since libaccudisc 0.15.0 the KEY IS ``product``; ``vendor`` only narrows,
+    and one that matches no row is not a rejection. Pass whatever the drive
+    reported, ``""`` included. An empty ``product`` returns ``None``: it
+    identifies nothing, and keyed on the product alone it would answer for every
+    drive that reports no product string.
     """
     info = ffi.new("accudisc_offset_info*")
     info.size = ffi.sizeof("accudisc_offset_info")
@@ -716,14 +729,15 @@ def offset_for(vendor: str, product: str) -> DriveOffset | None:
     values = tuple(
         (info.values[i], names(info.value_sources[i])) for i in range(info.n_values)
     )
+    truncated = bool(info.flags & lib.ACCUDISC_OFFSET_F_TRUNCATED)
     if rc == lib.ACCUDISC_ERR_AMBIGUOUS:
         return DriveOffset(vendor, product, None, names(info.sources),
-                           0, 0, False, values)
+                           0, 0, False, values, truncated)
     _check(rc, None)
     return DriveOffset(
         vendor, product, info.read_offset, names(info.sources),
         info.ar_submissions, info.ar_agree_pct,
-        bool(info.flags & lib.ACCUDISC_OFFSET_F_ADJUDICATED), values,
+        bool(info.flags & lib.ACCUDISC_OFFSET_F_ADJUDICATED), values, truncated,
     )
 
 

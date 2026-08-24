@@ -26,13 +26,23 @@ Exit 3 per subcommand:
   (CHECK CONDITION) is exit 2 — deliberately not conflated with absence.
 - `scan`: neither an MCN nor any ISRC was found.
 - `offset`: no source holds this drive (`read_offset unknown`, nothing else), or
-  the sources disagree (`read_offset unknown`, then `conflict N` and one
+  the candidates disagree (`read_offset unknown`, then `conflict N` and one
   `value <signed> <sources>` line per candidate). Both are *absence of a usable
   answer* rather than failure, and both are deliberately distinguished from
   exit 0 with a number: an offset applied wrongly is silent, so the caller must
   choose explicitly and pass its choice through its own configuration.
   `read_offset` is one **signed** integer — there is no separate sign field,
   because two representations of one fact can disagree.
+
+  **Since 0.15.0 `--product` alone is a complete query** — the library keys on
+  the product identifier and the vendor only narrows, so requiring `--vendor`
+  would demand the one INQUIRY field firmware is least consistent about.
+  `--vendor` without `--product` stays a usage error: a vendor cannot identify a
+  drive. A `truncated 1` line MAY follow `conflict N`, and when it does, N is a
+  cap rather than a count — more candidates were found than the library's fixed
+  array can carry. It is absent otherwise, so a consumer that does not know the
+  key sees the output it always saw; the shipped table cannot currently produce
+  it.
 - `pregaps`: at least one track boundary decoded as `UNKNOWN` — the approach to
   it was too damaged to place INDEX 00, so the pregap is undetermined rather
   than absent. Every other boundary in the listing is still valid.

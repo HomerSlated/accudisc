@@ -38,3 +38,27 @@
     { "FIXTURE", "FIVE", +3, 13, 100, 1, 0 },
     { "FIXTURE", "FIVE", +4, 14, 100, 1, 0 },
     { "FIXTURE", "FIVE", +5, 15, 100, 2, 4 },
+
+    /* --- product-only keying -------------------------------------------
+     * ONE PRODUCT, ONE OFFSET, THREE VENDOR SPELLINGS. This is the shape the
+     * real table is full of — 1242 products match more than one row and 1229 of
+     * those rows agree — so counting ROWS instead of DISTINCT OFFSETS would
+     * report ambiguity for a quarter of the corpus. The AccurateRip counts
+     * differ deliberately (3, 9, 1) so that "which row's figures?" has an
+     * observable answer, and the sources bits differ so the per-value OR is
+     * distinguishable from taking one row's. */
+    { "ALPHA", "TWIN", +70, 3, 100, 1, 0 },
+    { "",      "TWIN", +70, 9,  90, 2, 0 },
+    { "BETA",  "TWIN", +70, 1, 100, 1, 0 },
+
+    /* ONE PRODUCT, TWO OFFSETS, AND THE VENDOR DECIDES. Keith's rule in both
+     * directions: a vendor that matches narrows to one answer, a vendor that
+     * matches nothing narrows nothing and the caller is told there are two. */
+    { "GAMMA", "SPLIT", +80, 5, 100, 1, 0 },
+    { "DELTA", "SPLIT", +90, 6, 100, 2, 0 },
+
+    /* AN EMPTY PRODUCT is not a weak identifier, it is the absence of one.
+     * Keyed on the product alone this row would answer for every drive that
+     * reports no product string at all, so the lookup refuses it — including
+     * for the exact vendor that submitted it. */
+    { "EMPTYP", "", +123, 2, 100, 1, 0 },

@@ -27,7 +27,32 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 14 /* 0.14.0: ADDITIVE, in the data. No struct
+#define ACCUDISC_VERSION_MINOR 15 /* 0.15.0: THE MATCHING RULE CHANGED. No
+                                  * struct moved, no error code changed, no
+                                  * function signature moved — what changed is
+                                  * WHICH DRIVES MATCH. The lookup keys on the
+                                  * PRODUCT identifier and lets the vendor
+                                  * narrow: a vendor matching no row no longer
+                                  * rejects, because firmware reports that field
+                                  * inconsistently and requiring it to match
+                                  * answers only for the spelling one submitter
+                                  * sent. A caller that cached "this drive is
+                                  * unknown" is holding a stale answer.
+                                  * Ambiguity is counted in DISTINCT OFFSETS,
+                                  * not matching rows — the table carries a row
+                                  * per spelling, so several rows matching is
+                                  * normal and means nothing.
+                                  * Verified across all 5882 keys in the table
+                                  * that exactly ONE answer changes: 'DVDROM'
+                                  * with an EMPTY product, which now returns
+                                  * ERR_NOTFOUND. An empty product identifies
+                                  * nothing, and keyed on the product alone it
+                                  * would have answered for every drive
+                                  * reporting no product string.
+                                  * New ACCUDISC_OFFSET_F_TRUNCATED says
+                                  * values[] could not carry every distinct
+                                  * offset found; n_values alone cannot.
+                                  * 0.14.0: ADDITIVE, in the data. No struct
                                   * moved and no error code changed. A REVIEWED
                                   * REBADGE TABLE now keeps a retracted row
                                   * where a cited, exact mapping says it is a
@@ -344,6 +369,19 @@ ACCUDISC_API int accudisc_drive_identify(accudisc_device *dev,
 #define ACCUDISC_OFFSET_SRC_AR     0x02u
 
 #define ACCUDISC_OFFSET_F_CONFLICT    0x01u /* sources disagree; see values[] */
+#define ACCUDISC_OFFSET_F_TRUNCATED   0x02u /* MORE distinct offsets exist than
+                                             * values[] can carry, so n_values
+                                             * is a cap and not a count. Without
+                                             * this a caller reads "4 values"
+                                             * and cannot tell it from "4 of the
+                                             * 6 we found" — a silent narrowing
+                                             * of exactly the kind the sentinel
+                                             * read_offset exists to prevent.
+                                             * Unreachable from the shipped
+                                             * table, whose worst product holds
+                                             * exactly ACCUDISC_OFFSET_MAX_VALUES
+                                             * offsets; set the moment a corpus
+                                             * refresh exceeds it */
 #define ACCUDISC_OFFSET_F_ADJUDICATED 0x04u /* sources disagreed and two or more
                                              * agreed on this value; the losing
                                              * value(s) were dropped at build
@@ -405,10 +443,33 @@ typedef struct accudisc_offset_info {
  * strings, and the table carries a row for each rather than the lookup
  * asserting the identity.
  *
+ * SINCE 0.15.0 THE KEY IS THE PRODUCT; THE VENDOR ONLY NARROWS. A vendor that
+ * matches no row is not a rejection — firmware reports that field
+ * inconsistently (empty, the host adapter's "SATA", the OEM rather than the
+ * badge, run into the product), so requiring it to match answers only for the
+ * spelling one submitter happened to send. Pass whatever the drive reported,
+ * including an empty vendor: if some row with this product carries that vendor
+ * the answer narrows to those rows, and otherwise every row with this product
+ * is considered. AN EMPTY PRODUCT is refused outright — it identifies nothing,
+ * and keyed on the product alone it would answer for every drive that reports
+ * no product string.
+ *
+ * Ambiguity is therefore counted in DISTINCT OFFSETS, not matching rows. The
+ * table deliberately carries a row per spelling, so several rows matching is
+ * the normal case and says nothing about disagreement.
+ *
  * Returns ACCUDISC_OK (one value, in read_offset), ACCUDISC_ERR_AMBIGUOUS (the
- * sources disagree: n_values/values/value_sources are filled, read_offset stays
- * ACCUDISC_OFFSET_NONE, and the caller must choose and pass its choice through
- * its own configuration), or ACCUDISC_ERR_NOTFOUND (no source holds it). */
+ * candidates disagree: n_values/values/value_sources are filled, read_offset
+ * stays ACCUDISC_OFFSET_NONE, and the caller must choose and pass its choice
+ * through its own configuration — check ACCUDISC_OFFSET_F_TRUNCATED, which says
+ * values[] could not carry them all), or ACCUDISC_ERR_NOTFOUND (no row holds
+ * this product, or the product was empty).
+ *
+ * ar_submissions/ar_agree_pct on an ACCUDISC_OK answer describe the SINGLE
+ * best-evidenced row backing that offset, as a pair. Several AccurateRip
+ * entries can back one offset under different vendor spellings; their counts
+ * are not summed, because the table gives every spelling of one entry the same
+ * pooled figure and adding them would multiply it. */
 ACCUDISC_API int accudisc_offset_for_inquiry(const char *vendor,
                                              const char *product,
                                              accudisc_offset_info *out);
