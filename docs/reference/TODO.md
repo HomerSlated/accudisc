@@ -131,7 +131,46 @@ away.
   does not normalise near-identical strings — `SIimtype` survives beside
   `Slimtype` — so the display name is not the key. Firmware revision is the
   obvious candidate and is **not established**.
-- **A. UNDERSCORE-INSENSITIVE KEYING in `fold()` — Keith said do it, 2026-08-22.**
+- **A. UNDERSCORE-INSENSITIVE KEYING in `fold()` — DONE 2026-08-24 (0.13.0).**
+  Landed as specified: `fold()` folds underscore to space AFTER the alias
+  lookup, every spelling is still emitted, `redump_retracted` fell 8 -> 7 and
+  `redump_unknown_provenance` 15 -> 14. Table 5879 -> **5881 rows**, a number
+  PREDICTED before regenerating and decomposed: +1 `HL-DT-ST DVDRAM_GHA2N`
+  rejoining, +1 `TSSTCORP CDDVDW` (below). Zero rows removed, **zero offsets
+  changed on any name that already resolved**, 96 rows carry a higher
+  `ar_submissions` because the two spellings pool their evidence, and every
+  merged group's spellings now agree on every field. `conflicting_keys` stayed
+  0, which IS the "26 agree, 0 disagree" prediction checked at generator level.
+
+  Two things the brief did not anticipate:
+
+  1. **The fold exposed a pre-existing defect it did not create.** `read_ar()`
+     returns ONE pooled row per key, so every other spelling of that key died
+     between the pool and the table. That already cost `("TSSTCORP", "CDDVDW")`
+     — a drive answering `ERR_NOTFOUND` while its identical measurement shipped
+     under `("", "TSSTCORP CDDVDW")`. Underscore folding would have widened the
+     loss to 25 names, so the carry-through fix is part of this change:
+     `read_ar()` now hands `merge()` every spelling that fed the key, across all
+     of its offsets rather than the winning one, since a spelling is a NAME a
+     drive reports and not evidence for a value. The three keys that look like
+     they survived this before (`DVDROM GO-D1600B`, `TSSTCORP BDDVDW`/`CDDVDW`)
+     survived only because REDUMP happened to carry the other spelling. Luck.
+
+  2. **The guard for it was VACUOUS on its first version, and was measured to
+     be.** `assert_every_name_survives()` originally built its requirement from
+     `read_ar()`'s own output. Sabotaging the spelling carry-through shrank the
+     requirement and the table together, so it PASSED on a table missing 25
+     names. It now re-reads the AR JSON itself; sabotaged at two independent
+     points it exits 1 and names all 25. **A guard whose reference is derived
+     from the thing it guards cannot distinguish the failure it exists to
+     catch** — and the row count matching its prediction would have read as
+     corroboration. Scope is `kept` (post-retraction) plus raw AR: widening it
+     to the raw REDUMP table would fire on the 16 rows the retraction rule is
+     meant to remove, and a guard that cries wolf gets weakened.
+
+  Original brief, kept for the measurements:
+
+- **A (as specified). UNDERSCORE-INSENSITIVE KEYING in `fold()` — Keith said do it, 2026-08-22.**
   `HL-DT-ST DVDRAM_GHA2N` (+667) was dropped as RETRACTED while
   `LG Electronics DVDRAM GHA2N` (+667, 71 subs) is live: the same drive, an
   underscore against a space, so the provenance join missed it. Measured before
@@ -147,6 +186,14 @@ away.
   `BD-RE_BT20N`). **Every distinct spelling must still be EMITTED**, exactly as
   with case: the fold pools evidence and joins provenance, it never collapses
   what a drive can report. Expect `redump_retracted` to fall 8 -> 7.
+
+  Measured again on landing, and the variant matters: underscore -> SPACE merges
+  26 groups / 52 keys; underscore DELETED merges only 2. Substitution is the
+  rule that matches how the source spells these names. The fold also subsumes
+  the trailing-underscore vendors `VENDOR_ALIAS` was naming one at a time — the
+  2022 import's `Generic_ - DVD-ROM` joins with no alias line, which is what
+  moved `redump_unknown_provenance` 15 -> 14. `FREECOM_`/`CENDYNE_` are left in
+  the alias table: now redundant, but removing them widens the diff for nothing.
 
 - **B. A REVIEWED REBADGE TABLE — Keith said build it WITH the rescue-only
   guard, 2026-08-22.** Rebadged drives report the REBADGE string over INQUIRY,

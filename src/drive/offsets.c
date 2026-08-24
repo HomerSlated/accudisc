@@ -62,6 +62,15 @@ static const struct offset_entry offsets[] = {
  * Verified lossless before the change: of 5888 table rows, ZERO pairs differ
  * only by case, so folding collides nothing that was previously distinct.
  *
+ * UNDERSCORES ARE NOT FOLDED HERE, and that is a decision rather than an
+ * omission. The GENERATOR folds underscore to space when it builds its join key,
+ * so "DVDRAM_GHA2N" and "DVDRAM GHA2N" pool their submissions into one drive's
+ * evidence — but it then emits BOTH spellings as their own rows, and this
+ * lookup matches each literally. The asymmetry is the same one that governs
+ * VENDOR_ALIAS: a build-time key may assert that two strings name one drive; a
+ * runtime lookup may only answer for the string the firmware actually reported.
+ * Folding here as well would answer for spellings no source ever recorded.
+ *
  * ASCII-only by intent. INQUIRY fields are single-byte and this must not depend
  * on locale — toupper() with a negative char is undefined, hence the cast. */
 void adsc_inquiry_normalize(const char *src, char *dst, size_t cap)

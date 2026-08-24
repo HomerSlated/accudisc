@@ -130,7 +130,7 @@ int main(void)
     assert(info.ar_submissions == 1065);
 
     /* --- AccurateRip duplicates that AGREE are pooled, not selected -------
-     * AccurateRip lists 4878 rows under 4799 keys; 69 of the duplicated keys
+     * AccurateRip lists 4878 rows under 4775 keys; 91 of the duplicated keys
      * carry the SAME offset in every row. Keeping only the largest discards
      * real measurements — "DVD RW" is listed at 298 and 267, both +6, and used
      * to ship as 298 when 565 people had measured it. */
@@ -154,6 +154,60 @@ int main(void)
            == ACCUDISC_OK);
     assert(info.ar_submissions == 197);
     assert(info.ar_agree_pct == 99);
+
+    /* --- a separator is a spelling, not a different drive -----------------
+     * AccurateRip writes one drive both ways. HL-DT-ST DVDRAM_GHA2N was in
+     * REDUMP's 2022 import and is absent from the live list under THAT spelling,
+     * so the retraction rule dropped it — while LG's DVDRAM GHA2N, the same
+     * drive with a space, was live on 71 submissions the whole time. Folding
+     * underscore to space in the build-time key joins them: measured over the
+     * union corpus, it merges 26 groups of keys, all 26 agreeing on the offset
+     * and none disagreeing.
+     *
+     * THE FOLD IS BUILD-TIME ONLY. adsc_inquiry_normalize folds case and
+     * whitespace, never underscores, so each spelling has to be its own row or
+     * the drive reporting it gets ERR_NOTFOUND. These three assertions are that
+     * claim: same drive, same answer, three strings. There is deliberately no
+     * "LG ELECTRONICS DVDRAM_GHA2N" — no source ever reported that spelling, and
+     * the generator emits what was seen rather than every combination it could
+     * construct. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("HL-DT-ST", "DVDRAM_GHA2N", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 667);
+    assert(info.ar_submissions == 71);
+    assert(info.sources
+           == (ACCUDISC_OFFSET_SRC_REDUMP | ACCUDISC_OFFSET_SRC_AR));
+
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("HL-DT-ST", "DVDRAM GHA2N", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 667);
+    assert(info.ar_submissions == 71);
+
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("LG Electronics", "DVDRAM GHA2N", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 667);
+    assert(info.ar_submissions == 71);
+
+    /* Pooling used to return ONE row per key and drop the other spellings with
+     * it. That was not a consequence of the underscore fold — it cost
+     * TSSTcorp/CDDVDW before the fold was ever proposed, and that drive answered
+     * ERR_NOTFOUND while the identical measurement shipped under the vendorless
+     * spelling. The generator now asserts, against a fresh read of its input,
+     * that every name it was given reaches a row. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("TSSTcorp", "CDDVDW", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 6);
+    assert(info.ar_submissions == 43);
+
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("", "TSSTCORP CDDVDW", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 6);
+    assert(info.ar_submissions == 43);
 
     /* --- absence is explicit, never a default ---------------------------- */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;

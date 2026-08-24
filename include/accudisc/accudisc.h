@@ -27,7 +27,26 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 12 /* 0.12.0: SUBTRACTIVE, in the data. No
+#define ACCUDISC_VERSION_MINOR 13 /* 0.13.0: ADDITIVE, in the data. No struct
+                                  * moved and no error code changed. The
+                                  * build-time key now folds UNDERSCORE to
+                                  * SPACE, because AccurateRip spells one drive
+                                  * both ways — "DVDRAM_GHA2N" beside
+                                  * "DVDRAM GHA2N" — and a separator is a
+                                  * spelling of a name, not a different drive.
+                                  * Two names that returned ERR_NOTFOUND now
+                                  * return an offset (HL-DT-ST DVDRAM_GHA2N
+                                  * +667, TSSTcorp CDDVDW +6), 96 rows carry a
+                                  * higher ar_submissions because the spellings
+                                  * pool their evidence, and NO offset changed
+                                  * on any name that already resolved.
+                                  * THE RUNTIME STILL DOES NOT FOLD
+                                  * UNDERSCORES: every spelling is emitted as
+                                  * its own row and matched literally, which
+                                  * the generator now asserts against a fresh
+                                  * read of its own input rather than claiming
+                                  * in a comment.
+                                  * 0.12.0: SUBTRACTIVE, in the data. No
                                   * struct moved and no error code changed. The
                                   * table now drops REDUMP values AccurateRip
                                   * has withdrawn — REDUMP's table being
@@ -126,7 +145,7 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 1 /* 0.12.1: ar_submissions got more accurate,
+#define ACCUDISC_VERSION_PATCH 0 /* 0.12.1: ar_submissions got more accurate,
                                   * not different in meaning. AccurateRip lists
                                   * some drives twice; where the duplicate rows
                                   * AGREE on the offset their counts are now

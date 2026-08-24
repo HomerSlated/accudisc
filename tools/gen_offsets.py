@@ -137,22 +137,42 @@ def norm(s: str) -> str:
 
 
 def fold(vendor: str, product: str) -> str:
-    """The build-time join key: aliased, case-folded, whitespace-collapsed.
+    """The build-time join key: aliased, case- and underscore-folded, collapsed.
 
     Case folding matches the runtime, which folds too (adsc_inquiry_normalize
     in src/drive/offsets.c) — vendors are not consistent about capitalisation
     and "AOpen"/"AOPEN" are one company. Measured before adopting it: of 5888
     emitted rows, ZERO pairs differed only by case, so folding collides nothing.
 
+    UNDERSCORE FOLDING is the same kind of claim as case, not the same kind as
+    aliasing. AccurateRip spells one drive both ways — `DVDRAM_GHA2N` beside
+    `DVDRAM GHA2N`, `BD-RE_BT20N` beside `BD-RE BT20N` — and a separator is a
+    spelling of a string, not a different drive. Measured over the union corpus
+    before adopting it: of 4822 distinct keys, folding underscore to space merges
+    26 groups / 52 keys, ALL 26 agreeing on the offset and ZERO disagreeing.
+    Deleting the underscore instead merges only 2 groups, so substitution is the
+    rule that matches how the source actually spells these names.
+
+    It runs AFTER the alias lookup, which is what the measurement above assumed,
+    and it subsumes the trailing-underscore vendors VENDOR_ALIAS had to name one
+    at a time: `Generic_` joins its provenance row without an alias line, and
+    FREECOM_/CENDYNE_ are now covered twice over.
+
     ALIASING is the part that stays build-time-only, and the distinction is not
-    cosmetic. Case is a spelling of one string; an alias asserts that two
-    DIFFERENT strings name one company, which is a human judgement (see
+    cosmetic. Case and separators are spellings of one string; an alias asserts
+    that two DIFFERENT strings name one company, which is a human judgement (see
     VENDOR_ALIAS). The runtime must never make it, so this tool emits every
     aliased spelling it saw as its own row and the lookup matches literally.
+
+    THE RUNTIME DOES NOT FOLD UNDERSCORES — adsc_inquiry_normalize touches case
+    and whitespace only, so `DVDRAM_GHA2N` matches a literal `DVDRAM_GHA2N` row
+    and nothing else. Every spelling this key pools MUST therefore still be
+    emitted; merge() asserts exactly that before the table is written.
     """
     v = norm(vendor).upper()
     v = VENDOR_ALIAS.get(v, v)
-    return f"{v} {norm(product).upper()}".strip()
+    key = f"{v} {norm(product).upper()}".strip()
+    return " ".join(key.replace("_", " ").split())
 
 
 # --------------------------------------------------------------------------
@@ -228,8 +248,21 @@ def read_ar(path: Path) -> list[dict]:
     # rather than 933, a number that is arithmetically correct and describes a
     # behaviour nothing ever had.
     pools: dict[str, dict[int, list]] = defaultdict(dict)
+
+    # EVERY spelling that fed this key, across ALL of its offsets, carried
+    # forward for merge() to emit. Pooling returns ONE row per key, so without
+    # this the other spellings vanish between here and the table — and the
+    # runtime matches literally, so a vanished spelling is a drive that gets
+    # ERR_NOTFOUND. Not hypothetical: before the underscore fold existed this
+    # already cost ("TSSTCORP", "CDDVDW"), which pooled into ("", "TSSTCORP
+    # CDDVDW") and was absent from the shipped table. Collected over all offsets
+    # rather than the winning one because a spelling is a name a drive reports,
+    # not evidence for a value — it is emitted at whichever offset the key wins.
+    forms: dict[str, set[tuple[str, str]]] = defaultdict(set)
+
     for r in rows:
         key = fold(r["vendor"], r["product"])
+        forms[key].add((norm(r["vendor"]).upper(), norm(r["product"]).upper()))
         pool = pools[key].get(r["offset"])
         if pool is None:
             pools[key][r["offset"]] = [r["submissions"],
@@ -259,6 +292,7 @@ def read_ar(path: Path) -> list[dict]:
             recovered += winner[0] - winner[3]
         row["submissions"] = winner[0]
         row["agree_pct"] = winner[1]
+        row["spellings"] = forms[key]
         pooled_rows.append(row)
 
         if losers:
@@ -490,7 +524,9 @@ def merge(redump, ar) -> tuple[list[Row], dict]:
     for a in ar:
         key = fold(a["vendor"], a["product"])
         claims[key][a["offset"]] |= SRC_AR
-        spellings[key].add((norm(a["vendor"]).upper(), norm(a["product"]).upper()))
+        # read_ar() returns one pooled row per key; a["spellings"] is every
+        # spelling that fed it, which is more than the surviving row's own.
+        spellings[key] |= a["spellings"]
         ar_meta[key] = a
 
     rows: list[Row] = []
@@ -545,6 +581,45 @@ def merge(redump, ar) -> tuple[list[Row], dict]:
 
     rows.sort(key=Row.sort_key)
     return rows, stats
+
+
+def assert_every_name_survives(rows: list[Row], kept: list, ar_path: Path) -> None:
+    """No fold may collapse a NAME. Checked against a fresh read of the input.
+
+    The runtime matches a literal string — adsc_inquiry_normalize folds case and
+    whitespace and nothing else — so an input spelling this table does not carry
+    is a drive we answer ERR_NOTFOUND for. Case, alias and underscore folding all
+    pool EVIDENCE under one key; every spelling that fed that key still has to be
+    emitted. This is the only place that claim is checked rather than asserted in
+    a docstring, and it is not decorative: pooling silently cost
+    ("TSSTCORP", "CDDVDW") before the underscore fold was ever proposed.
+
+    IT RE-READS THE AR FILE ON PURPOSE. An earlier version of this check built
+    its requirement from read_ar()'s own output, and was measured to be VACUOUS:
+    breaking the spelling carry-through shrank the requirement and the table
+    together, so the check passed on a table missing 25 names. A guard whose
+    reference is derived from the thing it guards cannot distinguish the failure
+    it exists to catch. The reference has to come from outside the pipeline.
+
+    SCOPE is `kept` — the POST-retraction REDUMP list — plus every raw
+    AccurateRip spelling. Using the raw REDUMP table instead would fire on the 16
+    rows the retraction rule is meant to remove, and the natural response to a
+    guard that cries wolf is to weaken it.
+    """
+    required = {(norm(v).upper(), norm(p).upper()) for v, p, _ in kept}
+    for r in json.loads(ar_path.read_text(encoding="utf-8"))["rows"]:
+        required.add((norm(r["vendor"]).upper(), norm(r["product"]).upper()))
+
+    emitted = {(r.vendor, r.product) for r in rows}
+    missing = sorted(required - emitted)
+    if not missing:
+        print(f"  name coverage: {len(required)} input spelling(s), all emitted")
+    else:
+        sys.exit(
+            f"{len(missing)} input spelling(s) reached no row in the table — a "
+            "fold collapsed a NAME instead of pooling evidence:\n"
+            + "\n".join(f"    {v!r} {p!r}" for v, p in missing)
+        )
 
 
 def emit(rows: list[Row], out: Path, stats: dict, dropped: list) -> None:
@@ -648,6 +723,7 @@ def main() -> int:
     kept, dropped = apply_retractions(redump, prov, ar, retractions)
 
     rows, stats = merge(kept, ar)
+    assert_every_name_survives(rows, kept, args.ar)
     stats.update(retractions)
     emit(rows, args.out, stats, dropped)
     return 0
