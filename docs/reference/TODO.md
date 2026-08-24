@@ -295,13 +295,39 @@ away.
   useless: +116 has 43 live rows, +6 has 1888 rows across 206302 submissions.
   The link is the rebadge, which is human knowledge and not in the numbers.
 
-- **`ERR_AMBIGUOUS` now has no test exercising it.** The TEAC case was the only
-  one, and it has been replaced by an assertion that the path is NOT taken. The
-  multi-value branch of `accudisc_offset_for_inquiry` — `n > 1`, `values[]`,
-  `value_sources[]`, the `ar_submissions` clearing — is live code with no
-  regression guard behind it, and the product-only key change is what will make
-  it load-bearing again. Wants a synthetic fixture (a small table the test
-  compiles against) BEFORE that change, not after.
+- ~~**`ERR_AMBIGUOUS` has no test exercising it.**~~ **DONE 2026-08-24.**
+  `tests/test_offsets_ambiguous.c` + `tests/offsets_ambiguous_db.inc`.
+  `src/drive/offsets.c` now takes its table through `ADSC_OFFSETS_DB` (defaulting
+  to `offsets_db.inc`, so the library is unchanged) and the test COMPILES THAT
+  FILE against a 10-row fixture — a second copy of the matcher would only assert
+  that the copy works. No version bump: nothing observable changed.
+
+  **Every row of the fixture is built to discriminate**, because most of the
+  obvious assertions here are vacuous otherwise. `ar_submissions == 0` proves
+  nothing unless the first matching row carries a NONZERO count (it carries
+  1234/99); `sources == 3` is indistinguishable from "took the first" unless the
+  rows carry DIFFERENT bits (1 and 2). Covered: the sentinel `read_offset`
+  surviving, `values[]`/`value_sources[]` in table order, the AccurateRip figures
+  being cleared rather than inherited, normalisation being what MAKES a key
+  ambiguous (`"fixture"/"SPACED  KEY"` vs `"FIXTURE"/"SPACED KEY"`), `n_values`
+  clamping at 5 rows against `MAX_VALUES` 4 with the dropped value appearing
+  nowhere, the fifth row's sources/flags STILL reaching the caller, and the
+  `accudisc_offset_for_device` / `accudisc_read_offset` arms.
+
+  Seven falsifications, each aborting on the RIGHT assertion: not clearing the
+  AR figures, taking the first `sources` instead of OR-ing, reporting `n_values`
+  unclamped, filling `read_offset` on a contested key, breaking the scan once
+  `values[]` fills — plus two WIRING failures, omitting the `-D` and naming the
+  fixture `offsets_db.inc`. **The second of those is not hypothetical**: the
+  quoted `#include` form searches `src/drive/` first, so a fixture wearing the
+  real name IS silently shadowed by the real table. Both wiring failures are
+  caught by the test's first assertion, which exists for exactly that reason.
+
+  It also carries an **ABI TRIPWIRE**: `assert(ACCUDISC_OFFSET_MAX_VALUES == 4)`.
+  Not a live defect — the macro has been 4 since the struct was introduced whole
+  in 0.10.0 (`24ac59e`, verified across every commit that touched the header), so
+  no conforming caller has a smaller `values[]`. It fires at the moment the
+  capacity note below stops being latent, which a comment cannot do.
 - The product-only keying change (2026-08-19 point 5) is still to do, and the
   dedup and `values[]` capacity work below are its prerequisites rather than
   standalone fixes. Note `ACCUDISC_OFFSET_MAX_VALUES` writes are bounded by the

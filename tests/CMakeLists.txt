@@ -52,6 +52,33 @@ add_test(NAME test_assert COMMAND test_assert)
 target_compile_definitions(test_version PRIVATE
                            ADSC_BUILD_VERSION="${PROJECT_VERSION}")
 
+# The ERR_AMBIGUOUS branch, against a SYNTHETIC table.
+#
+# Deliberately outside the foreach loop above and NOT linked against
+# accudisc_static: it compiles src/drive/offsets.c itself, with ADSC_OFFSETS_DB
+# pointed at a fixture, so it exercises the shipped matcher rather than a copy
+# of it. Linking the library as well would put a second definition of
+# accudisc_offset_for_inquiry in the link, which is why the test stubs
+# adsc_dev_identify instead — the one symbol offsets.c needs from elsewhere.
+#
+# The shipped table has zero conflicting keys, so this branch is unreachable
+# from real data and cannot be tested any other way. add_compile_options
+# (-UNDEBUG) above is DIRECTORY scope and reaches this target too, which is
+# exactly the property that comment promises for add_executable calls written
+# outside the loop.
+add_executable(test_offsets_ambiguous test_offsets_ambiguous.c
+               ${PROJECT_SOURCE_DIR}/src/drive/offsets.c)
+target_include_directories(test_offsets_ambiguous PRIVATE
+                           ${PROJECT_SOURCE_DIR}/include
+                           ${PROJECT_SOURCE_DIR}/src
+                           ${CMAKE_CURRENT_SOURCE_DIR})
+# The fixture is named offsets_ambiguous_db.inc, not offsets_db.inc: the quoted
+# #include form searches src/drive/ first, so a fixture wearing the real name
+# would be silently shadowed by the real table.
+target_compile_definitions(test_offsets_ambiguous PRIVATE
+                           ADSC_OFFSETS_DB="offsets_ambiguous_db.inc")
+add_test(NAME test_offsets_ambiguous COMMAND test_offsets_ambiguous)
+
 # Golden test for the CLI machine interface. Compiles cli/format.c directly:
 # it asserts the bytes the *binary* emits, so it must exercise the binary's own
 # formatter, not a copy. Run the executable with --dump to regenerate a golden

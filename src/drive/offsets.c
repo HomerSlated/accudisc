@@ -42,8 +42,21 @@ struct offset_entry {
     uint8_t  flags;          /* ACCUDISC_OFFSET_F_* */
 };
 
+/* The table is a parameter so a test can substitute a small one. The generated
+ * corpus currently has ZERO conflicting keys, which makes the n > 1 branch of
+ * accudisc_offset_for_inquiry unreachable from shipped data and therefore
+ * impossible to exercise against the real table — live code with no guard.
+ * tests/test_offsets_ambiguous.c compiles THIS FILE against a fixture instead
+ * of a copy of it, so what it asserts is the shipped implementation.
+ *
+ * Default only. Nothing but that test ever defines it, and the library builds
+ * exactly as before. */
+#ifndef ADSC_OFFSETS_DB
+#  define ADSC_OFFSETS_DB "offsets_db.inc"
+#endif
+
 static const struct offset_entry offsets[] = {
-#include "offsets_db.inc"
+#include ADSC_OFFSETS_DB
 };
 
 #define OFFSETS_N (sizeof(offsets) / sizeof(offsets[0]))
