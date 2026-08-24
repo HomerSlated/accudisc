@@ -369,10 +369,28 @@ def read_provenance(path: Path) -> dict[str, dict[int, tuple[int, int]]]:
             vendor, product = "", name
         off, subs, pct = int(f[1]), int(f[2]), int(f[3].rstrip("%"))
         by_value = prov.setdefault(fold(vendor, product), {})
-        # Same name AND same offset twice: keep the larger count, matching
-        # read_ar(). Different offsets both stay — that is the point of the map.
-        if off not in by_value or subs > by_value[off][0]:
+        # Same name AND same offset twice: POOL them, matching read_ar(). This
+        # used to keep the larger count, which matched read_ar() as it was
+        # BEFORE 0.12.1 pooled instead — the two arms had quietly diverged, and
+        # a provenance figure printed beside a withdrawn row is a claim about
+        # how much evidence the 2022 list held, so understating it misleads
+        # exactly the reader the note is written for.
+        #
+        # 53 (key, offset) pairs collide here. Only 24 come from the underscore
+        # fold; the other 29 are names the 2022 file simply lists twice
+        # ("ASUS - DRW-24B1ST" at +6 on 2 submissions AND on 686), so this is
+        # not a hazard the fold introduced. No CURRENTLY withdrawn row is among
+        # the 53, which is luck rather than design and is the reason to fix it
+        # now rather than when a future corpus makes one of them wrong.
+        prev = by_value.get(off)
+        if prev is None:
             by_value[off] = (subs, pct)
+        else:
+            total = prev[0] + subs
+            by_value[off] = (
+                total,
+                round((prev[0] * prev[1] + subs * pct) / total) if total else pct,
+            )
     if not prov:
         sys.exit(f"no provenance rows parsed from {path}")
     values = sum(len(v) for v in prov.values())
@@ -427,6 +445,19 @@ def apply_retractions(redump, prov, ar, stats):
             dropped.append(("SUPERSEDED", vendor, product, off, snap_subs, snap_pct, a))
         else:
             kept.append((vendor, product, off))
+
+    # CONSERVATION. Every input row leaves here exactly once, kept or dropped.
+    # This is not belt-and-braces: assert_every_name_survives() re-reads the AR
+    # file for its reference but takes the REDUMP half from `kept`, which is THIS
+    # function's own output — so a row lost here would shrink the requirement and
+    # the table together and the coverage guard would stay silent. That is the
+    # same shape as the vacuous first version of that guard, one function
+    # upstream, and this closes it.
+    if len(kept) + len(dropped) != len(redump):
+        sys.exit(
+            f"apply_retractions lost rows: {len(redump)} in, "
+            f"{len(kept)} kept + {len(dropped)} dropped = {len(kept) + len(dropped)}"
+        )
 
     stats["redump_retracted"] = sum(1 for d in dropped if d[0] == "RETRACTED")
     stats["redump_superseded"] = sum(1 for d in dropped if d[0] == "SUPERSEDED")
@@ -605,15 +636,37 @@ def assert_every_name_survives(rows: list[Row], kept: list, ar_path: Path) -> No
     AccurateRip spelling. Using the raw REDUMP table instead would fire on the 16
     rows the retraction rule is meant to remove, and the natural response to a
     guard that cries wolf is to weaken it.
+
+    IT CHECKS BOTH DIRECTIONS. Names may not be lost, and names may not be
+    INVENTED — see the second block below for why the latter is load-bearing
+    rather than tidy.
     """
     required = {(norm(v).upper(), norm(p).upper()) for v, p, _ in kept}
     for r in json.loads(ar_path.read_text(encoding="utf-8"))["rows"]:
         required.add((norm(r["vendor"]).upper(), norm(r["product"]).upper()))
 
     emitted = {(r.vendor, r.product) for r in rows}
+
+    # THE OTHER DIRECTION, and it is not symmetry for its own sake. A table may
+    # not carry a name no source reported: that would publish an offset nobody
+    # measured under a name nobody submitted, which is the "researched data must
+    # not share a field with reported data" rule. Today it holds because nothing
+    # invents rows — but the reviewed REBADGE TABLE still to be built is exactly
+    # a mechanism that COULD, and its stated condition is rescue-only. Asserting
+    # it here makes that condition structural, so reviewing a rebadge line is
+    # "is this mapping true?" and never "did this mapping synthesise anything?".
+    extra = sorted(emitted - required)
+    if extra:
+        sys.exit(
+            f"{len(extra)} row(s) in the table correspond to NO input spelling — "
+            "something synthesised a name instead of rescuing one:\n"
+            + "\n".join(f"    {v!r} {p!r}" for v, p in extra)
+        )
+
     missing = sorted(required - emitted)
     if not missing:
-        print(f"  name coverage: {len(required)} input spelling(s), all emitted")
+        print(f"  name coverage: {len(required)} input spelling(s), "
+              "all emitted, none invented")
     else:
         sys.exit(
             f"{len(missing)} input spelling(s) reached no row in the table — a "

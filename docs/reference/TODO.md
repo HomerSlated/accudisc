@@ -168,6 +168,28 @@ away.
      to the raw REDUMP table would fire on the 16 rows the retraction rule is
      meant to remove, and a guard that cries wolf gets weakened.
 
+  Three follow-ups landed on top of it, each falsified before being trusted:
+
+  - **The guard checks BOTH directions now.** `emitted - required` must also be
+    empty: a table may not carry a name no source reported. That is precisely
+    B's stated condition, so **B's rescue-only rule is now structural** — a
+    rebadge line that synthesised `MEMOREX MD6032` aborts the run and names it
+    (verified by doing exactly that). Reviewing a rebadge line is therefore "is
+    this mapping true?", never "did this mapping invent anything?".
+  - **`apply_retractions()` asserts conservation** — every input row leaves
+    kept or dropped, exactly once. The coverage guard re-reads the AR file but
+    takes its REDUMP half from `kept`, this function's own output, so a row lost
+    here would shrink the requirement and the table together and the guard would
+    stay silent: the vacuous-guard shape again, one function upstream.
+  - **`read_provenance()` pools duplicates instead of keeping the larger**,
+    matching `read_ar()`. The two arms had diverged silently at 0.12.1. 53
+    (key, offset) pairs collide — only 24 from the fold, the other **29 are
+    names the 2022 file simply lists twice** (`ASUS - DRW-24B1ST` at +6 on 2
+    submissions and on 686), so this predates the fold. No currently withdrawn
+    row is among the 53, so the table is byte-identical: the fix is correct and
+    inert today, which is the moment to make it rather than when a future corpus
+    makes one of the printed "2022: N subs" figures wrong.
+
   Original brief, kept for the measurements:
 
 - **A (as specified). UNDERSCORE-INSENSITIVE KEYING in `fold()` — Keith said do it, 2026-08-22.**
