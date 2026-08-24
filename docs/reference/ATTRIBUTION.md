@@ -23,6 +23,20 @@ anything listed here must also be credited in the man page when it exists.
     `tools/fetch_ar_offsets.py` on the development cycle — a developer tool,
     excluded from the distribution; the library itself never uses a network.
 
+  A third KIND of input, though not a third measurement: **rebadge
+  identifications**. A rebadged drive reports the badge over INQUIRY, so a row
+  withdrawn under that name strands its owner while the identical measurement
+  ships under the OEM name. `REBADGE` in `tools/gen_offsets.py` keeps such a row
+  where a cited mapping identifies the OEM drive AND the two agree on the offset.
+  These are human judgements read off published hardware documentation, not
+  measurements, and each is credited at its entry. The one in the table today
+  comes from **rpc1.org's DVD firmware list**
+  (archive.rpc1.org/farzeno/club-internet/dvd/dvdfi.htm), which identifies the
+  Philips PCDV632 as a Toshiba SD-M1212 OEM drive. Every rescued row is named in
+  a `RESCUED BY REBADGE` block in `offsets_db.inc`, with the trade stated: it
+  republishes a row AccurateRip withdrew, and AccurateRip's reason for the
+  withdrawal is not known to us.
+
   Offsets are facts about hardware, not creative expression. EAC's OffsetBase
   was evaluated as a third source and **rejected**: the only surviving copy is a
   2004 archive of a page that no longer exists, and EAC itself reads offsets
