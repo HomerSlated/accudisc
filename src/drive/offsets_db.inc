@@ -8,7 +8,7 @@
  * sources bitmask, flags. Offsets are in SAMPLES, where one sample is one
  * stereo frame of 4 bytes (588 per sector) — REDUMP's unit and AccurateRip's.
  *
- * Entries: 5881
+ * Entries: 5882
  */
 
 /* WITHDRAWN BY THE SOURCE — dropped from the table above, listed so the
@@ -25,7 +25,6 @@
 /* RETRACTED  PHILIPS 401248 CDRW: +739 (2022: 2 subs 50% agree) -> gone from AccurateRip */
 /* RETRACTED  PHILIPS CDRW5232P1: +732 (2022: 2 subs 50% agree) -> gone from AccurateRip */
 /* RETRACTED  PHILIPS PCRW404: -436 (2022: 4 subs 75% agree) -> gone from AccurateRip */
-/* RETRACTED  Philips DVD-ROM PCDV632: +116 (2022: 1 subs 100% agree) -> gone from AccurateRip */
 /* RETRACTED  SATA ATAPI iHAS124: +48 (2022: 2 subs 50% agree) -> gone from AccurateRip */
 /* RETRACTED  SATA ATAPI iHAS324: +6 (2022: 3 subs 66% agree) -> gone from AccurateRip */
 /* SUPERSEDED ATAPI DVD A DH16AFSH: -12 (2022: 1 subs 100% agree) -> AccurateRip now +6 / 9 subs */
@@ -37,6 +36,23 @@
 /* SUPERSEDED SONY CD-RW CRX175E: +0 (2022: 2 subs 100% agree) -> AccurateRip now +120 / 23 subs */
 /* SUPERSEDED Slimtype DVD A DS8A1H: +0 (2022: 2 subs 100% agree) -> AccurateRip now +594 / 198 subs */
 /* SUPERSEDED TEAC DW-224E-CN: +120 (2022: 2 subs 50% agree) -> AccurateRip now +102 / 7 subs */
+
+/* RESCUED BY REBADGE — present in the table above, though the source
+ * withdrew the name. A rebadged drive reports the REBADGE string over
+ * INQUIRY, so dropping its row strands its owner while we hold the same
+ * measurement under the OEM name.
+ *
+ * Kept on a REVIEWED, CITED, EXACT mapping (REBADGE in
+ * tools/gen_offsets.py) and only where the two rows AGREE on the offset.
+ * The row itself ships as REDUMP-only with no AccurateRip figures — the
+ * submissions below were made against the OEM name, not this one.
+ *
+ * STATE THE TRADE: this republishes a row AccurateRip took down, on a
+ * human judgement. What it buys is a plausible offset for a rare drive,
+ * corroborated by its OEM twin; what it costs is that the publisher's
+ * withdrawal is overridden here. That is why each one is named.
+ */
+/* RESCUED    Philips DVD-ROM PCDV632: +116 (2022: 1 subs 100% agree) -> rebadge of TOSHIBA DVD-ROM SD-M1212, +116 on 38 subs */
 
     { "", "16X12 DVD DUAL", +91, 10, 100, 3, 0 },
     { "", "16X16 DVD DUAL", +91, 5, 100, 3, 0 },
@@ -4248,6 +4264,7 @@
     { "PHILIPS", "DVD+RW-D28", +120, 8, 100, 3, 0 },
     { "PHILIPS", "DVD-RAM SDVD8821", +6, 85, 100, 3, 0 },
     { "PHILIPS", "DVD-ROM DROM6316", +6, 152, 100, 3, 0 },
+    { "PHILIPS", "DVD-ROM PCDV632", +116, 0, 0, 1, 0 },
     { "PHILIPS", "DVD-ROM SDR089", +6, 24, 100, 3, 0 },
     { "PHILIPS", "DVD8301", +1292, 1, 100, 3, 0 },
     { "PHILIPS", "DVD8421", +1292, 25, 100, 3, 0 },

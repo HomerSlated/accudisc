@@ -119,6 +119,45 @@ VENDOR_ALIAS = {
     "JLMS": "LITE-ON",             # Lite-On's INQUIRY string; 9/9 match, 0 differ
 }
 
+# EXACT whole-key REBADGE mappings: a rebadged drive to the OEM drive it IS.
+# Both sides in fold() form — aliased, upper-cased, whitespace- and
+# underscore-collapsed. One line per HUMAN decision, with the source that
+# justifies it, and never a similarity match: "these two strings look alike" is
+# not evidence, and name-shape reasoning has already been wrong three times on
+# this very corpus (see docs/reference/TODO.md).
+#
+# WHAT IT IS FOR. A rebadged drive reports the REBADGE string over INQUIRY, so a
+# row dropped under that string strands its owner even when we hold the right
+# offset under the OEM name. This table is consulted ONLY where a row is about to
+# be dropped as RETRACTED, and only to KEEP it.
+#
+# THE GUARD, and it is the whole of the rule: RESCUE ONLY, NEVER SYNTHESISE. An
+# entry may keep a row that EXISTS in the corpus. It may never bring a row into
+# being for a rebadge nobody submitted — the same source names `Memorex MD6032`
+# and `DVD-632` as SD-M1212 rebadges and neither is in either corpus, so emitting
+# them would publish an offset nobody measured under a name nobody reported. That
+# is not left to the reviewer to remember: assert_every_name_survives() refuses
+# any row that corresponds to no input spelling, so a synthesising entry aborts
+# the run.
+#
+# It is also applied ONLY WHEN THE TWO ROWS AGREE on the offset. A disagreement
+# means the mapping or the data is wrong; it is reported and NOT applied.
+# SUPERSEDED rows are never rescued — there AccurateRip corrected the value
+# rather than removing the name, and republishing it would restore a number the
+# publisher has replaced.
+#
+# NOT a rescue by "some live row shares this offset" — measured and useless:
+# +116 has 43 live rows, +6 has 1888 rows across 206302 submissions. The link is
+# the rebadge, which is human knowledge and is not in the numbers.
+REBADGE = {
+    # "Philips PCDV632 (6X/32X) (Known firmware : 1P16) Toshiba SD-M1212 OEM
+    # drive RPC-1" — archive.rpc1.org/farzeno/club-internet/dvd/dvdfi.htm.
+    # Corroborated by the sibling the relation predicts and that needs no rescue:
+    # PHILIPS PCA532 (+116, 1 sub) is a Toshiba SD-M1202 rebadge, SD-M1202 is
+    # +116 on 19 subs, and both are live and already ship.
+    "PHILIPS DVD-ROM PCDV632": "TOSHIBA DVD-ROM SD-M1212",
+}
+
 
 def src_names(mask: int) -> str:
     return "+".join(
@@ -426,7 +465,8 @@ def apply_retractions(redump, prov, ar, stats):
     run into the product, so no whole-field alias can reach it.
     """
     live = {fold(a["vendor"], a["product"]): a for a in ar}
-    kept, dropped, unjoined = [], [], []
+    kept, dropped, unjoined, rescued = [], [], [], []
+    rebadge_used: set[str] = set()
 
     for vendor, product, off in redump:
         key = fold(vendor, product)
@@ -440,7 +480,33 @@ def apply_retractions(redump, prov, ar, stats):
         snap_subs, snap_pct = snap
         a = live.get(key)
         if a is None:
-            dropped.append(("RETRACTED", vendor, product, off, snap_subs, snap_pct, None))
+            # THE REBADGE ARM. A retracted name that a reviewed entry says is a
+            # rebadge of a live OEM drive is kept IF the two agree on the offset.
+            # Every other outcome drops the row and says why, because an entry
+            # that silently does nothing is an entry nobody has tested.
+            oem_key = REBADGE.get(key)
+            oem = live.get(oem_key) if oem_key else None
+            if oem_key is not None:
+                rebadge_used.add(key)
+            if oem_key is None:
+                dropped.append(("RETRACTED", vendor, product, off, snap_subs, snap_pct, None))
+            elif oem is None:
+                print(f"  REBADGE TARGET NOT LIVE {vendor!r} {product!r} -> "
+                      f"{oem_key!r}: no such row in AccurateRip, mapping is stale "
+                      "— NOT applied, row stays dropped")
+                dropped.append(("RETRACTED", vendor, product, off, snap_subs, snap_pct, None))
+            elif oem["offset"] != off:
+                print(f"  REBADGE DISAGREES {vendor!r} {product!r}: {off:+d} against "
+                      f"{oem_key!r} at {oem['offset']:+d} / {oem['submissions']} subs "
+                      "— the mapping or the data is wrong, NOT applied, row stays dropped")
+                dropped.append(("RETRACTED", vendor, product, off, snap_subs, snap_pct, None))
+            else:
+                kept.append((vendor, product, off))
+                rescued.append((vendor, product, off, snap_subs, snap_pct, oem_key, oem))
+                print(f"  RESCUED {vendor!r} {product!r}: {off:+d} — retracted by "
+                      f"AccurateRip, kept because {oem_key!r} is the OEM drive it "
+                      f"rebadges and carries {oem['offset']:+d} on "
+                      f"{oem['submissions']} submissions")
         elif a["offset"] != off:
             dropped.append(("SUPERSEDED", vendor, product, off, snap_subs, snap_pct, a))
         else:
@@ -458,6 +524,14 @@ def apply_retractions(redump, prov, ar, stats):
             f"apply_retractions lost rows: {len(redump)} in, "
             f"{len(kept)} kept + {len(dropped)} dropped = {len(kept) + len(dropped)}"
         )
+
+    # An entry that never fired is an entry nobody has tested. Reported rather
+    # than fatal: AccurateRip reinstating a row would legitimately make one inert.
+    for k in REBADGE:
+        if k not in rebadge_used:
+            print(f"  REBADGE ENTRY UNUSED {k!r} -> {REBADGE[k]!r}: nothing was "
+                  "dropped under that name, so this line changed nothing")
+    stats["redump_rescued_rebadge"] = len(rescued)
 
     stats["redump_retracted"] = sum(1 for d in dropped if d[0] == "RETRACTED")
     stats["redump_superseded"] = sum(1 for d in dropped if d[0] == "SUPERSEDED")
@@ -497,7 +571,7 @@ def apply_retractions(redump, prov, ar, stats):
         print(f"  {len(unjoined)} REDUMP row(s) of UNKNOWN PROVENANCE — kept, rule not applied:")
         for vendor, product, off in sorted(unjoined):
             print(f"    ? {vendor!r} {product!r} {off:+d}")
-    return kept, dropped
+    return kept, dropped, rescued
 
 
 # --------------------------------------------------------------------------
@@ -675,7 +749,35 @@ def assert_every_name_survives(rows: list[Row], kept: list, ar_path: Path) -> No
         )
 
 
-def emit(rows: list[Row], out: Path, stats: dict, dropped: list) -> None:
+def assert_rescues_are_corroborated(rows: list[Row], rescued: list) -> None:
+    """A rescued row's OEM twin must be IN THIS TABLE, not merely live upstream.
+
+    apply_retractions() checks the OEM row against AccurateRip's pooled map,
+    which is the right test for whether the two AGREE. It is not the right test
+    for the claim the shipped file then makes, which is that this offset is
+    corroborated by a row of THIS table. Those come apart the moment anything
+    downstream drops the OEM side — and the rescued row would survive as an
+    orphan pointing at a corroboration that is no longer there, with nothing
+    saying so.
+    """
+    by_key: dict[str, set[int]] = defaultdict(set)
+    for r in rows:
+        by_key[fold(r.vendor, r.product)].add(r.read)
+
+    for vendor, product, off, _subs, _pct, oem_key, _oem in rescued:
+        if off not in by_key.get(oem_key, set()):
+            sys.exit(
+                f"rescued {vendor!r} {product!r} at {off:+d} cites {oem_key!r} as "
+                "its corroboration, but no row of the generated table carries that "
+                f"name at that offset (table has {sorted(by_key.get(oem_key, set()))})"
+            )
+    if rescued:
+        print(f"  rescue corroboration: {len(rescued)} rescued row(s), each "
+              "matched by its OEM twin IN the generated table")
+
+
+def emit(rows: list[Row], out: Path, stats: dict, dropped: list,
+         rescued: list) -> None:
     def c_str(s: str) -> str:
         return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
@@ -724,6 +826,39 @@ def emit(rows: list[Row], out: Path, stats: dict, dropped: list) -> None:
                 f"(2022: {subs} subs {pct}% agree) -> {now} */"
             )
         lines.extend(block + [""])
+
+    # THE RESCUED ROWS, NAMED — and for a stronger reason than the withdrawn
+    # ones. A rescued row emits as REDUMP-only with zero AccurateRip figures,
+    # because attaching the OEM's submission count to it would claim that many
+    # people measured a drive under a name AccurateRip does not list. So in the
+    # table itself it is indistinguishable from any ordinary uncorroborated
+    # REDUMP row, and the evidence it actually rests on lives ONLY here.
+    if rescued:
+        block = [
+            "/* RESCUED BY REBADGE — present in the table above, though the source",
+            " * withdrew the name. A rebadged drive reports the REBADGE string over",
+            " * INQUIRY, so dropping its row strands its owner while we hold the same",
+            " * measurement under the OEM name.",
+            " *",
+            " * Kept on a REVIEWED, CITED, EXACT mapping (REBADGE in",
+            " * tools/gen_offsets.py) and only where the two rows AGREE on the offset.",
+            " * The row itself ships as REDUMP-only with no AccurateRip figures — the",
+            " * submissions below were made against the OEM name, not this one.",
+            " *",
+            " * STATE THE TRADE: this republishes a row AccurateRip took down, on a",
+            " * human judgement. What it buys is a plausible offset for a rare drive,",
+            " * corroborated by its OEM twin; what it costs is that the publisher's",
+            " * withdrawal is overridden here. That is why each one is named.",
+            " */",
+        ]
+        for vendor, product, off, subs, pct, oem_key, oem in sorted(rescued):
+            block.append(
+                f"/* RESCUED    {vendor} {product}: {off:+d} "
+                f"(2022: {subs} subs {pct}% agree) -> rebadge of {oem_key}, "
+                f"{oem['offset']:+d} on {oem['submissions']} subs */"
+            )
+        lines.extend(block + [""])
+
     for r in rows:
         lines.append(
             f"    {{ {c_str(r.vendor)}, {c_str(r.product)}, {r.read:+d}, "
@@ -737,11 +872,12 @@ def emit(rows: list[Row], out: Path, stats: dict, dropped: list) -> None:
     # invite about conflicts once the retraction rule has removed them all.
     for k in ("conflicting_keys", "adjudicated", "unresolved_conflicts",
               "redump_retracted", "redump_superseded",
-              "redump_unknown_provenance"):
+              "redump_unknown_provenance", "redump_rescued_rebadge"):
         print(f"  {k:26s} {stats.get(k, 0)}")
     for k in sorted(set(stats) - {"conflicting_keys", "adjudicated",
                                   "unresolved_conflicts", "redump_retracted",
-                                  "redump_superseded", "redump_unknown_provenance"}):
+                                  "redump_superseded", "redump_unknown_provenance",
+                                  "redump_rescued_rebadge"}):
         print(f"  {k:26s} {stats[k]}")
     for label, mask in (("REDUMP", SRC_REDUMP), ("AccurateRip", SRC_AR)):
         print(f"  rows held by {label:12s} {sum(1 for r in rows if r.sources & mask)}")
@@ -773,12 +909,13 @@ def main() -> int:
     ar = read_ar(args.ar)
 
     retractions: dict = {}
-    kept, dropped = apply_retractions(redump, prov, ar, retractions)
+    kept, dropped, rescued = apply_retractions(redump, prov, ar, retractions)
 
     rows, stats = merge(kept, ar)
     assert_every_name_survives(rows, kept, args.ar)
+    assert_rescues_are_corroborated(rows, rescued)
     stats.update(retractions)
-    emit(rows, args.out, stats, dropped)
+    emit(rows, args.out, stats, dropped, rescued)
     return 0
 
 

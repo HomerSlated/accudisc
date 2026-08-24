@@ -217,7 +217,54 @@ away.
   moved `redump_unknown_provenance` 15 -> 14. `FREECOM_`/`CENDYNE_` are left in
   the alias table: now redundant, but removing them widens the diff for nothing.
 
-- **B. A REVIEWED REBADGE TABLE — Keith said build it WITH the rescue-only
+- **B. A REVIEWED REBADGE TABLE — DONE 2026-08-24 (0.14.0).** `REBADGE` in
+  `tools/gen_offsets.py`: exact whole-key mappings in `fold()` form, one line per
+  cited human decision, consulted ONLY where a row is about to be dropped as
+  RETRACTED and only ever to KEEP it. One entry so far —
+  `PHILIPS DVD-ROM PCDV632` -> `TOSHIBA DVD-ROM SD-M1212`. Table 5881 -> **5882**
+  (predicted first), `redump_retracted` 7 -> 6, zero rows removed, zero offsets
+  changed, zero names invented.
+
+  **It ships as REDUMP-only with zero AccurateRip figures**, and refusing to
+  attach SD-M1212's 38 submissions is the honest half of the design: nobody
+  measured a drive under the Philips name. But that makes the shipped row
+  indistinguishable from any uncorroborated REDUMP row, so the evidence lives in
+  a `RESCUED BY REBADGE` block in `offsets_db.inc` — parallel to the WITHDRAWN
+  block, naming both sides and both counts, and **stating the trade rather than
+  only the case for it**: this republishes a row the publisher took down, on a
+  human judgement.
+
+  Five guards, each MADE TO FAIL before being trusted:
+
+  | branch | behaviour | proven by |
+  |---|---|---|
+  | rows AGREE | rescue, and say so | the shipped run |
+  | rows DISAGREE | report, do NOT apply | retarget to SD-M1222 (-472) |
+  | target NOT LIVE | report stale mapping, do NOT apply | retarget to SD-M9999 |
+  | entry fires on NOTHING | report the untested line | rename the key |
+  | rescue cites a twin absent from THE TABLE | **exit 1** | move SD-M1212 to +999 |
+
+  Two things worth keeping:
+
+  - **`assert_rescues_are_corroborated()` exists because "live upstream" and "in
+    this table" are different claims.** `apply_retractions()` checks the OEM row
+    against AccurateRip's pooled map, which is the right test for agreement and
+    the WRONG one for what the shipped comment then asserts. They come apart the
+    moment anything downstream drops the OEM side, leaving a rescued orphan.
+  - **A GUARD CAN BE SHADOWED BY AN EARLIER GUARD.** The first attempt to falsify
+    the corroboration check DELETED the OEM row — which trips the coverage guard
+    first, so the run failed for the wrong reason and proved nothing about the
+    check under test. Changing the offset instead (name still emitted, coverage
+    still green) is what actually exercised it. **A sabotage that trips two
+    guards proves only the first.**
+
+  The rescue is RETRACTED-only: a SUPERSEDED row is one where AccurateRip
+  corrected the value rather than removing the name, and republishing it would
+  restore a number the publisher has replaced.
+
+  Original brief:
+
+- **B (as specified). A REVIEWED REBADGE TABLE — Keith said build it WITH the rescue-only
   guard, 2026-08-22.** Rebadged drives report the REBADGE string over INQUIRY,
   so dropping a rebadge row strands its owner even when we hold the right offset
   under the OEM name. The worked case:

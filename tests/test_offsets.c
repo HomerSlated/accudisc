@@ -209,6 +209,43 @@ int main(void)
     assert(info.read_offset == 6);
     assert(info.ar_submissions == 43);
 
+    /* --- a rebadge is rescued, and rescued is not corroborated -------------
+     * A rebadged drive reports the REBADGE string over INQUIRY, so dropping its
+     * row strands its owner while the same measurement ships under the OEM name.
+     * Philips DVD-ROM PCDV632 is a Toshiba SD-M1212 OEM drive (rpc1.org), the
+     * two agree at +116, and the generator keeps the Philips row on that
+     * REVIEWED mapping alone — never on "some live row shares this offset",
+     * which is worthless here: +116 has 43 live rows.
+     *
+     * IT SHIPS AS REDUMP-ONLY WITH NO AR FIGURES, and that is the honest part.
+     * Attaching SD-M1212's 38 submissions would claim 38 people measured a drive
+     * under a name AccurateRip does not list. The corroboration is real but it
+     * is about the OEM twin, so it lives in the RESCUED comment block of
+     * offsets_db.inc rather than in this row's numbers. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("Philips", "DVD-ROM PCDV632", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 116);
+    assert(info.sources == ACCUDISC_OFFSET_SRC_REDUMP);
+    assert(info.ar_submissions == 0);
+
+    /* The twin it rests on, and the agreement that licensed the rescue. If this
+     * ever moves, the generator refuses to emit rather than leaving the rescued
+     * row citing a corroboration that is no longer there. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("TOSHIBA", "DVD-ROM SD-M1212", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 116);
+    assert(info.ar_submissions == 38);
+
+    /* Rescue is RETRACTED-only and one line per human decision, so the other
+     * withdrawn rows stay withdrawn: no mapping was written for CDRW5232P1, and
+     * a SUPERSEDED row would never be eligible anyway — there AccurateRip
+     * corrected the value rather than removing the name. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("PHILIPS", "PCRW404", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+
     /* --- absence is explicit, never a default ---------------------------- */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
     assert(accudisc_offset_for_inquiry("NOSUCHVENDOR", "NOSUCH 9000", &info)

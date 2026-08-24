@@ -27,7 +27,26 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 13 /* 0.13.0: ADDITIVE, in the data. No struct
+#define ACCUDISC_VERSION_MINOR 14 /* 0.14.0: ADDITIVE, in the data. No struct
+                                  * moved and no error code changed. A REVIEWED
+                                  * REBADGE TABLE now keeps a retracted row
+                                  * where a cited, exact mapping says it is a
+                                  * rebadge of a live OEM drive AND the two
+                                  * agree on the offset. One row so far:
+                                  * Philips DVD-ROM PCDV632 +116, a Toshiba
+                                  * SD-M1212 rebadge carrying +116 on 38
+                                  * submissions, so that name returns an offset
+                                  * instead of ERR_NOTFOUND.
+                                  * IT SHIPS AS REDUMP-ONLY WITH ZERO AR
+                                  * FIGURES: the submissions were made against
+                                  * the OEM name, and claiming them for this one
+                                  * would be a measurement nobody took. The
+                                  * corroboration is named in offsets_db.inc.
+                                  * The table is RESCUE-ONLY — it may keep a row
+                                  * that exists and may never synthesise one,
+                                  * which the generator asserts rather than
+                                  * trusting a reviewer to remember.
+                                  * 0.13.0: ADDITIVE, in the data. No struct
                                   * moved and no error code changed. The
                                   * build-time key now folds UNDERSCORE to
                                   * SPACE, because AccurateRip spells one drive
