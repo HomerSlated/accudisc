@@ -357,14 +357,41 @@ away.
   AccurateRip figures changed. Everything else the change buys is on queries
   whose vendor string is NOT what a submitter sent — which is the point.
 
-  **What it costs, named rather than filtered.** A generic product now answers
-  for any vendor. Most self-identify by colliding (`CD-ROM` holds four offsets
-  and comes back ambiguous), but seven do not: the empty product (refused),
-  and `DVD` +48, `COMBO` +6, `DVDRW` +6, `DVD+RW` +1292, `OPTICAL DRIVE` +6,
-  `CD-ROM DRIVE` +12 — one row each, so they answer confidently for a drive
-  nobody measured. **A generic-name blocklist is a judgement nobody has made**;
-  Keith's note that "generic product strings self-identify by colliding, so they
-  may need no filter at all" holds for all but these six. Left for him.
+  **What it cost — CLOSED 2026-08-24 (0.16.0), Keith called it.** A generic
+  product answered for any vendor. Most self-identify by colliding (`CD-ROM`
+  holds four offsets and comes back ambiguous), but seven did not: the empty
+  product (refused categorically in 0.15.0), and `DVD` +48 FUJITSU, `COMBO` +6
+  E-ELEI, `DVDRW` +6 DEXPRESO, `DVD+RW` +1292 ATAPI, `OPTICAL DRIVE` +6 BUFFALO,
+  `CD-ROM DRIVE` +12 900 40X — one row each, nothing to collide with.
+
+  `GENERIC_PRODUCTS` in `tools/gen_offsets.py`, alongside `VENDOR_ALIAS` and
+  `REBADGE`: exact whole-field, one line per human decision, **never a pattern**
+  — a regex over product names is the `nnXnnX` rule that was measured
+  overzealous, because some drives really are called `16XDVD-ROM-AMH`. The
+  generator marks matching rows `ACCUDISC_OFFSET_F_GENERIC` (0x08) and reports
+  any entry that fires on nothing. Exactly six rows changed, flags 0 -> 8;
+  nothing else moved.
+
+  **THE BLOCK IS ON THE PRODUCT-ONLY PATH, NOT THE ROW**, and that is the whole
+  design. `BUFFALO OPTICAL DRIVE` rests on **85 submissions** — dropping it would
+  throw away a real measurement to fix a matching rule, the opposite of Keith's
+  "genuinely useful, not ignore data without good justification". So the row
+  ships and still answers for its own vendor; what it may no longer do is answer
+  for a vendor it has never been seen with. Two rules of deliberately different
+  strength: an EMPTY product can never answer, a GENERIC one answers when the
+  vendor narrows.
+
+  **NOT extended to the generic names that COLLIDE.** `CD-ROM` is at least as
+  generic and stays reachable: it refuses to pick rather than picking wrongly,
+  which is a different and safer failure, so blocking it would remove
+  information without removing a hazard. A stated choice, not an oversight.
+
+  Falsified in four directions, each caught in BOTH tables: the block absent
+  (0.15.0 behaviour); **the block TOO STRONG** — the row unreachable even for its
+  own vendor, which is how the 85 submissions would have been lost silently; the
+  generator never setting the flag; and an entry that fires on nothing. Carried
+  through to `DriveOffset.generic_product` and a CLI `generic_product 1` line
+  printed only when set, so an ordinary drive's output is byte-identical.
 
   Consequences carried through: `ACCUDISC_OFFSET_F_TRUNCATED` (0x02) says
   `values[]` could not hold every distinct offset — unreachable today, since the

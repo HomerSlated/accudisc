@@ -135,13 +135,22 @@ void adsc_inquiry_normalize(const char *src, char *dst, size_t cap)
  * purely additive: what it buys is the drive whose vendor string is not the one
  * a submitter sent.
  *
- * WHAT IT COSTS is that a generic product string now answers for any vendor.
- * Mostly they self-identify by colliding ("CD-ROM" holds four offsets and comes
- * back ambiguous), but seven do not — "DVD", "COMBO", "DVDRW", "DVD+RW",
- * "OPTICAL DRIVE", "CD-ROM DRIVE" and the EMPTY product. The empty one is
- * refused below because it is not a weak identifier but the absence of one; the
- * other six are named in docs/reference/TODO.md rather than filtered, since a
- * generic-name blocklist is a judgement nobody has made yet.
+ * WHAT IT WOULD COST, and what is done about it. A product string naming a
+ * CATEGORY rather than a model would answer for any vendor. Mostly such strings
+ * protect themselves by colliding — "CD-ROM" is held at four offsets and comes
+ * back ambiguous, which is a refusal to guess rather than a wrong guess — but a
+ * generic name only one submitter ever sent has nothing to collide with. Two
+ * rules, deliberately different in strength:
+ *
+ *   EMPTY product     never answers. It is not a weak identifier but the
+ *                     absence of one, so no vendor can rescue it.
+ *   GENERIC product   answers only when the VENDOR narrows to it. Six of them,
+ *                     reviewed by hand (GENERIC_PRODUCTS in gen_offsets.py) and
+ *                     marked ACCUDISC_OFFSET_F_GENERIC by the generator.
+ *
+ * The generic rule blocks the product-only PATH, not the row, because the rows
+ * are real measurements — "BUFFALO OPTICAL DRIVE" carries 85 submissions — and
+ * dropping them to fix a matching rule would be ignoring data to fix code.
  */
 int accudisc_offset_for_inquiry(const char *vendor, const char *product,
                                 accudisc_offset_info *out)
@@ -203,6 +212,15 @@ int accudisc_offset_for_inquiry(const char *vendor, const char *product,
             adsc_inquiry_normalize(offsets[i].vendor, have_v, sizeof(have_v));
             if (strcmp(want_v, have_v) != 0)
                 continue;
+        } else if (offsets[i].flags & ACCUDISC_OFFSET_F_GENERIC) {
+            /* A product naming a CATEGORY cannot answer on its own. Reached
+             * only here — where the vendor narrowed nothing — so the row still
+             * answers for the vendor it was submitted under, which is the
+             * difference between declining to guess and discarding a
+             * measurement: BUFFALO's "OPTICAL DRIVE" rests on 85 submissions.
+             * See GENERIC_PRODUCTS in tools/gen_offsets.py for the six, and why
+             * the generic names that COLLIDE are deliberately not among them. */
+            continue;
         }
 
         matched = 1;

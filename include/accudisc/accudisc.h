@@ -27,7 +27,29 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 15 /* 0.15.0: THE MATCHING RULE CHANGED. No
+#define ACCUDISC_VERSION_MINOR 16 /* 0.16.0: SUBTRACTIVE, and the other half of
+                                  * 0.15.0. Six product strings that name a
+                                  * CATEGORY rather than a model — DVD, DVDRW,
+                                  * DVD+RW, COMBO, OPTICAL DRIVE, CD-ROM DRIVE —
+                                  * no longer answer a product-only query. Each
+                                  * was submitted by exactly one drive, so
+                                  * nothing collided with it and 0.15.0 handed
+                                  * that one drive's offset to any caller
+                                  * reporting the same category word.
+                                  * THE ROWS STILL SHIP and still answer for the
+                                  * vendor that submitted them: "BUFFALO
+                                  * OPTICAL DRIVE" rests on 85 submissions, and
+                                  * dropping it would ignore data to fix a
+                                  * matching rule. New
+                                  * ACCUDISC_OFFSET_F_GENERIC marks such a row
+                                  * and is reported when the vendor narrowed to
+                                  * it, so a caller knows the vendor earned the
+                                  * answer.
+                                  * NOT extended to generic names that COLLIDE
+                                  * ("CD-ROM", four offsets): those already
+                                  * refuse to pick, which is a safer failure
+                                  * than a confident wrong number.
+                                  * 0.15.0: THE MATCHING RULE CHANGED. No
                                   * struct moved, no error code changed, no
                                   * function signature moved — what changed is
                                   * WHICH DRIVES MATCH. The lookup keys on the
@@ -382,6 +404,21 @@ ACCUDISC_API int accudisc_drive_identify(accudisc_device *dev,
                                              * exactly ACCUDISC_OFFSET_MAX_VALUES
                                              * offsets; set the moment a corpus
                                              * refresh exceeds it */
+#define ACCUDISC_OFFSET_F_GENERIC     0x08u /* this row's PRODUCT string names a
+                                             * category rather than a model
+                                             * ("DVD", "OPTICAL DRIVE"), so it
+                                             * cannot identify a drive on its
+                                             * own. Such a row is reachable ONLY
+                                             * when the caller's vendor narrows
+                                             * to it; a product-only query does
+                                             * not see it. Set here when it did
+                                             * narrow, so a caller knows the
+                                             * vendor is what earned the answer
+                                             * and the product alone would not
+                                             * have. Reviewed by hand, one entry
+                                             * per decision — see
+                                             * GENERIC_PRODUCTS in
+                                             * tools/gen_offsets.py */
 #define ACCUDISC_OFFSET_F_ADJUDICATED 0x04u /* sources disagreed and two or more
                                              * agreed on this value; the losing
                                              * value(s) were dropped at build

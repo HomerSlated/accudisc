@@ -62,3 +62,9 @@
      * reports no product string at all, so the lookup refuses it — including
      * for the exact vendor that submitted it. */
     { "EMPTYP", "", +123, 2, 100, 1, 0 },
+
+    /* A GENERIC PRODUCT — flags carry ACCUDISC_OFFSET_F_GENERIC (8). Weaker
+     * than the empty-product rule on purpose: this row is a real measurement and
+     * still answers for the vendor it was submitted under. What it may not do is
+     * answer for a vendor it has never been seen with. */
+    { "KAPPA", "GENERICPROD", +55, 4, 100, 1, 8 },

@@ -678,6 +678,10 @@ class DriveOffset:
     #: without saying so would be a silent narrowing, which is why this is a
     #: field and not something the caller is left to infer from ``len(values)``.
     truncated: bool = False
+    #: The product string names a CATEGORY rather than a model ("DVD",
+    #: "OPTICAL DRIVE"), so it cannot identify a drive on its own — the VENDOR
+    #: is what earned this answer, and a query without it returns ``None``.
+    generic_product: bool = False
 
     @property
     def conflicting(self) -> bool:
@@ -709,6 +713,12 @@ def offset_for(vendor: str, product: str) -> DriveOffset | None:
     reported, ``""`` included. An empty ``product`` returns ``None``: it
     identifies nothing, and keyed on the product alone it would answer for every
     drive that reports no product string.
+
+    Since 0.16.0 a handful of product strings naming a CATEGORY rather than a
+    model — "DVD", "COMBO", "DVDRW", "DVD+RW", "OPTICAL DRIVE", "CD-ROM DRIVE" —
+    answer ONLY when ``vendor`` narrows to them, and set
+    :attr:`DriveOffset.generic_product` when it does. They are real measurements
+    kept for the vendor that submitted them, not data thrown away.
     """
     info = ffi.new("accudisc_offset_info*")
     info.size = ffi.sizeof("accudisc_offset_info")
@@ -730,14 +740,16 @@ def offset_for(vendor: str, product: str) -> DriveOffset | None:
         (info.values[i], names(info.value_sources[i])) for i in range(info.n_values)
     )
     truncated = bool(info.flags & lib.ACCUDISC_OFFSET_F_TRUNCATED)
+    generic = bool(info.flags & lib.ACCUDISC_OFFSET_F_GENERIC)
     if rc == lib.ACCUDISC_ERR_AMBIGUOUS:
         return DriveOffset(vendor, product, None, names(info.sources),
-                           0, 0, False, values, truncated)
+                           0, 0, False, values, truncated, generic)
     _check(rc, None)
     return DriveOffset(
         vendor, product, info.read_offset, names(info.sources),
         info.ar_submissions, info.ar_agree_pct,
         bool(info.flags & lib.ACCUDISC_OFFSET_F_ADJUDICATED), values, truncated,
+        generic,
     )
 
 

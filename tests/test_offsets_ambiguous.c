@@ -195,6 +195,30 @@ int main(void)
     assert(accudisc_offset_for_inquiry("ANYONE", "   ", &info)
            == ACCUDISC_ERR_NOTFOUND);
 
+    /* --- a generic product answers only when the vendor narrows -----------
+     * The weaker of the two rules, and the difference matters: an empty product
+     * can never answer, while this row is a real measurement that still answers
+     * for the vendor that submitted it. Blocking the ROW would discard data to
+     * fix a matching rule. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("KAPPA", "GENERICPROD", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 55);
+    assert(info.ar_submissions == 4);
+    /* Reported, so the caller knows the VENDOR earned this answer and the
+     * product alone would not have. */
+    assert(info.flags & ACCUDISC_OFFSET_F_GENERIC);
+
+    /* Any other vendor, and the product cannot speak for itself. NOT ambiguous
+     * — there is nothing to choose between — and not a plausible number. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("LAMBDA", "GENERICPROD", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+    assert(info.read_offset == ACCUDISC_OFFSET_NONE);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("", "GENERICPROD", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+
     /* --- the device-keyed entry points report it too ----------------------- */
     memset(&dev, 0, sizeof(dev));
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;

@@ -248,7 +248,19 @@ static int report_offset(int rc, const accudisc_offset_info *info_in)
            info.ar_submissions, info.ar_agree_pct);
     printf("adjudicated %d\n",
            (info.flags & ACCUDISC_OFFSET_F_ADJUDICATED) ? 1 : 0);
+    /* Printed only when set, so an OK answer for an ordinary drive is
+     * byte-identical to what it always was. When it appears it says the VENDOR
+     * earned this answer: the same query without it returns nothing. */
+    if (info.flags & ACCUDISC_OFFSET_F_GENERIC)
+        printf("generic_product 1\n");
 
+    if (info.flags & ACCUDISC_OFFSET_F_GENERIC)
+        fprintf(stderr,
+                "accudisc: this product string names a category rather than a "
+                "model, so the answer rests on\n"
+                "          the vendor matching too. A drive reporting the same "
+                "product under any other\n"
+                "          vendor is not this drive.\n");
     if (info.flags & ACCUDISC_OFFSET_F_ADJUDICATED)
         fprintf(stderr,
                 "accudisc: sources disagreed for this drive; this value is the "

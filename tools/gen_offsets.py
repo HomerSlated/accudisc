@@ -102,6 +102,7 @@ from pathlib import Path
 # agrees with the header, so a drift here fails the suite rather than the field.
 SRC_REDUMP, SRC_AR = 1, 2
 F_CONFLICT, F_ADJUDICATED = 1, 4
+F_GENERIC = 8
 
 # Fraction of REDUMP rows allowed to miss the provenance join before the run is
 # refused. See apply_retractions() for why a ceiling exists at all.
@@ -157,6 +158,50 @@ REBADGE = {
     # +116 on 19 subs, and both are live and already ship.
     "PHILIPS DVD-ROM PCDV632": "TOSHIBA DVD-ROM SD-M1212",
 }
+
+# PRODUCT STRINGS TOO GENERIC TO IDENTIFY A DRIVE ON THEIR OWN.
+#
+# Since 0.15.0 the lookup keys on the product and the vendor only narrows, which
+# is what lets a drive whose vendor string nobody submitted still be found. The
+# cost is that a product string naming a CATEGORY rather than a model answers for
+# any vendor at all. Most such strings protect themselves by colliding — "CD-ROM"
+# is held at four different offsets and comes back ERR_AMBIGUOUS — but a generic
+# name that only ONE submitter ever sent has nothing to collide with, and hands
+# back that one drive's offset with the confidence of an exact match.
+#
+# These six are the whole of that set in the current corpus, found by matching
+# bare category words against the emitted product column; every one is a single
+# row, and no other bare-generic name is present:
+#
+#     DVD            +48    FUJITSU     COMBO          +6     E-ELEI
+#     DVDRW          +6     DEXPRESO    DVD+RW         +1292  ATAPI
+#     OPTICAL DRIVE  +6     BUFFALO     CD-ROM DRIVE   +12    900 40X
+#
+# THE BLOCK IS ON THE PRODUCT-ONLY PATH, NOT ON THE ROW, and the distinction is
+# the whole design. `BUFFALO OPTICAL DRIVE` rests on 85 submissions — dropping it
+# would throw away a real measurement to fix a matching rule, which is the
+# opposite of "the tool should be genuinely useful, not ignore data without good
+# justification". So the row ships, and answers whenever the caller's vendor
+# narrows to it; what it may no longer do is answer for a vendor it has never
+# been seen with.
+#
+# NOT extended to the generic names that DO collide. Those already refuse to pick
+# — ERR_AMBIGUOUS with every candidate listed — and that is a different and
+# safer failure than a confident wrong number, so blocking them would remove
+# information without removing a hazard. A stated choice, not an oversight.
+#
+# EXACT whole-field, upper-cased, whitespace-collapsed, one line per human
+# decision — the same contract as VENDOR_ALIAS and REBADGE. Never a pattern: a
+# regex over product names is exactly the "nnXnnX rule" that was measured
+# overzealous, because some drives really are called `16XDVD-ROM-AMH`.
+GENERIC_PRODUCTS = frozenset({
+    "DVD",
+    "DVDRW",
+    "DVD+RW",
+    "COMBO",
+    "OPTICAL DRIVE",
+    "CD-ROM DRIVE",
+})
 
 
 def src_names(mask: int) -> str:
@@ -607,6 +652,7 @@ def merge(redump, ar) -> tuple[list[Row], dict]:
 
     claims: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
     ar_meta: dict[str, dict] = {}
+    generic_hit: set[str] = set()
 
     # EVERY distinct spelling of a key is kept, not just the first seen. Case is
     # NOT a distinction here — both this key and the runtime fold it — but the
@@ -646,6 +692,9 @@ def merge(redump, ar) -> tuple[list[Row], dict]:
                 r = Row(form_vendor, form_product, off)
                 r.sources = mask
                 r.flags = flags
+                if form_product in GENERIC_PRODUCTS:
+                    r.flags |= F_GENERIC
+                    generic_hit.add(form_product)
                 # AR's figures describe the value AR actually holds, nothing else.
                 if meta is not None and mask & SRC_AR:
                     r.subs = min(meta["submissions"], 0xFFFF)
@@ -683,6 +732,16 @@ def merge(redump, ar) -> tuple[list[Row], dict]:
                 f"  UNRESOLVED {vendor!r} {product!r}: "
                 + ", ".join(f"{o:+d} ({src_names(m)})" for o, m in sorted(values.items()))
             )
+
+    # An entry matching no row is an entry nobody has tested — and worse here
+    # than in REBADGE, because this list exists to REMOVE reach: a name that has
+    # left the corpus makes the list look like it is doing more than it is.
+    # Reported rather than fatal, since a corpus refresh may legitimately drop
+    # one of these drives.
+    for g in sorted(GENERIC_PRODUCTS - generic_hit):
+        print(f"  GENERIC ENTRY UNUSED {g!r}: no row carries that product, so "
+              "this line changed nothing")
+    stats["products_generic"] = len(generic_hit)
 
     rows.sort(key=Row.sort_key)
     return rows, stats
@@ -904,12 +963,13 @@ def emit(rows: list[Row], out: Path, stats: dict, dropped: list,
     for k in ("conflicting_keys", "adjudicated", "unresolved_conflicts",
               "redump_retracted", "redump_superseded",
               "redump_unknown_provenance", "redump_rescued_rebadge",
-              "products_ambiguous"):
+              "products_ambiguous", "products_generic"):
         print(f"  {k:26s} {stats.get(k, 0)}")
     for k in sorted(set(stats) - {"conflicting_keys", "adjudicated",
                                   "unresolved_conflicts", "redump_retracted",
                                   "redump_superseded", "redump_unknown_provenance",
-                                  "redump_rescued_rebadge", "products_ambiguous"}):
+                                  "redump_rescued_rebadge", "products_ambiguous",
+                                  "products_generic"}):
         print(f"  {k:26s} {stats[k]}")
     for label, mask in (("REDUMP", SRC_REDUMP), ("AccurateRip", SRC_AR)):
         print(f"  rows held by {label:12s} {sum(1 for r in rows if r.sources & mask)}")

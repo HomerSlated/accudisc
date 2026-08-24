@@ -43,6 +43,13 @@ Exit 3 per subcommand:
   array can carry. It is absent otherwise, so a consumer that does not know the
   key sees the output it always saw; the shipped table cannot currently produce
   it.
+
+  **Since 0.16.0 a `generic_product 1` line MAY follow `adjudicated`** on an
+  exit-0 answer, and likewise only when set. It says the product string names a
+  category rather than a model (`DVD`, `OPTICAL DRIVE`), so the VENDOR is what
+  earned the answer — the same query without it exits 3 with `read_offset
+  unknown`. Six products behave this way; they are real measurements kept for
+  the vendor that submitted them, not data withheld.
 - `pregaps`: at least one track boundary decoded as `UNKNOWN` — the approach to
   it was too damaged to place INDEX 00, so the pregap is undetermined rather
   than absent. Every other boundary in the listing is still valid.

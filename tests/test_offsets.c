@@ -290,6 +290,38 @@ int main(void)
     assert(accudisc_offset_for_inquiry("DVDROM", "", &info)
            == ACCUDISC_ERR_NOTFOUND);
 
+    /* --- the six generic product names, against the SHIPPED table ---------
+     * "OPTICAL DRIVE" names a category, not a model. It rests on 85 real
+     * submissions under BUFFALO and still answers for BUFFALO — the block is on
+     * the product-only PATH, not the row, because dropping the row would throw
+     * away a measurement to fix a matching rule. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("BUFFALO", "OPTICAL DRIVE", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 6);
+    assert(info.ar_submissions == 85);
+    assert(info.flags & ACCUDISC_OFFSET_F_GENERIC);
+
+    /* Any other drive reporting the same category string gets nothing, where
+     * 0.15.0 handed it BUFFALO's +6 with the confidence of an exact match. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("SONY", "OPTICAL DRIVE", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("", "DVD+RW", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("ATAPI", "DVD+RW", &info) == ACCUDISC_OK);
+    assert(info.read_offset == 1292);
+
+    /* NOT extended to the generic names that COLLIDE. "CD-ROM" is at least as
+     * generic, and is deliberately still reachable: it refuses to pick rather
+     * than picking wrongly, which is a different and safer failure. Blocking it
+     * would remove information without removing a hazard. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("NOSUCHVENDOR2", "CD-ROM", &info)
+           == ACCUDISC_ERR_AMBIGUOUS);
+
     /* --- absence is explicit, never a default ---------------------------- */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
     assert(accudisc_offset_for_inquiry("NOSUCHVENDOR", "NOSUCH 9000", &info)
