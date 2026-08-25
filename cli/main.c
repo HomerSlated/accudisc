@@ -256,11 +256,14 @@ static int report_offset(int rc, const accudisc_offset_info *info_in)
 
     if (info.flags & ACCUDISC_OFFSET_F_GENERIC)
         fprintf(stderr,
-                "accudisc: this product string names a category rather than a "
-                "model, so the answer rests on\n"
-                "          the vendor matching too. A drive reporting the same "
-                "product under any other\n"
-                "          vendor is not this drive.\n");
+                "accudisc: this product string does not identify a model on "
+                "its own — it names a\n"
+                "          category, or is a fragment left where a long name "
+                "overflowed the eight-byte\n"
+                "          INQUIRY vendor field. The answer rests on the vendor "
+                "matching too: a drive\n"
+                "          reporting the same product under any other vendor is "
+                "not this drive.\n");
     if (info.flags & ACCUDISC_OFFSET_F_ADJUDICATED)
         fprintf(stderr,
                 "accudisc: sources disagreed for this drive; this value is the "

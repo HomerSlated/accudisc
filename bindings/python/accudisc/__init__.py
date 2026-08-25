@@ -678,9 +678,11 @@ class DriveOffset:
     #: without saying so would be a silent narrowing, which is why this is a
     #: field and not something the caller is left to infer from ``len(values)``.
     truncated: bool = False
-    #: The product string names a CATEGORY rather than a model ("DVD",
-    #: "OPTICAL DRIVE"), so it cannot identify a drive on its own — the VENDOR
-    #: is what earned this answer, and a query without it returns ``None``.
+    #: The product string does not identify a model on its own, so the VENDOR
+    #: is what earned this answer and a query without it returns ``None``. Two
+    #: causes: it names a CATEGORY ("DVD", "OPTICAL DRIVE"), or it is a FRAGMENT
+    #: left where a longer name overflowed the eight-byte INQUIRY vendor field
+    #: ("DVDROM 8X" is cut into "DVDROM 8" + "X").
     generic_product: bool = False
 
     @property
@@ -714,11 +716,14 @@ def offset_for(vendor: str, product: str) -> DriveOffset | None:
     identifies nothing, and keyed on the product alone it would answer for every
     drive that reports no product string.
 
-    Since 0.16.0 a handful of product strings naming a CATEGORY rather than a
-    model — "DVD", "COMBO", "DVDRW", "DVD+RW", "OPTICAL DRIVE", "CD-ROM DRIVE" —
-    answer ONLY when ``vendor`` narrows to them, and set
+    Since 0.16.0 a handful of product strings that cannot identify a drive on
+    their own answer ONLY when ``vendor`` narrows to them, and set
     :attr:`DriveOffset.generic_product` when it does. They are real measurements
-    kept for the vendor that submitted them, not data thrown away.
+    kept for the vendor that submitted them, not data thrown away. Six name a
+    CATEGORY — "DVD", "COMBO", "DVDRW", "DVD+RW", "OPTICAL DRIVE",
+    "CD-ROM DRIVE". Two more, since 0.17.0, are FRAGMENTS: "X" and "0X", left
+    where "DVDROM 8X" and "DVDROM 10X" overflowed the eight-byte INQUIRY vendor
+    field and continued into the product one.
     """
     info = ffi.new("accudisc_offset_info*")
     info.size = ffi.sizeof("accudisc_offset_info")

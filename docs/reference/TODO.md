@@ -438,7 +438,8 @@ away.
   forces `ERR_AMBIGUOUS` where it cannot. What was wrong was the generated
   commentary calling a fragment a product; the block header now says so.
 
-  **What DID answer wrongly: `X` and `0X`.** A one-character product returned
+  **What DID answer wrongly: `X` and `0X`** — the two judged indefensible, not
+  the only fragments reachable. A one-character product returned
   +564 for any vendor at all — the `GENERIC_PRODUCTS` hazard from a second cause,
   so it gets the same remedy. Both are unbranded drives whose entire reported
   identity is a category plus a speed, so there is no model to recover by
@@ -446,6 +447,15 @@ away.
   rows hold it, `HITACHI DVD-ROM GD-2500` on 48 submissions, `SAMSUNG CD-ROM
   SN-124` on 48), and the string still answers when the caller supplies the whole
   of it. `GENERIC_PRODUCTS` is therefore no longer only category words.
+
+  **NOT extended to every fragment, and the boundary is stated rather than
+  implied.** Five others still answer for any vendor — `-ROM` +12, `-952E-AKV`
+  and `-956E-AKV` +691, `-ROM JOYBEE610` +691, `ROM DRIVE 50MAX` +12 — because
+  each is DISTINCTIVE enough that nothing but the drive it was cut from will
+  report it, so answering on the product alone answers for the right drive. The
+  test is "could another drive plausibly report this string?", not "is this a
+  fragment?": being a fragment is a fact about the firmware, not by itself a
+  hazard. Pinned in `tests/test_offsets.c` beside the `CD-ROM` collide choice.
 
   **A RETRACTED ROW THAT ESCAPED, found while checking the family.**
   `("DVDROM", "")` at +564 was in AccurateRip's 2022 list and absent from the

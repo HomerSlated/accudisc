@@ -205,6 +205,25 @@ REBADGE = {
 # narrows to it; what it may no longer do is answer for a vendor it has never
 # been seen with.
 #
+# NOT EXTENDED TO EVERY FRAGMENT EITHER, and this is the harder of the two
+# boundaries. Five more products are spill fragments that answer for any vendor:
+#
+#     -ROM             +12    "ATAPI CD" + "-ROM"            = ATAPI CD-ROM
+#     -952E-AKV        +691   "E-IDE CD" + "-952E-AKV"       = E-IDE CD-952E-AKV
+#     -956E-AKV        +691   "E-IDE CD" + "-956E-AKV"       = E-IDE CD-956E-AKV
+#     -ROM JOYBEE610   +691   "BENQ DVD" + "-ROM JOYBEE610"  = BENQ DVD-ROM JOYBEE610
+#     ROM DRIVE 50MAX  +12    "ATAPI CD" + "ROM DRIVE 50MAX" = ATAPI CDROM DRIVE 50MAX
+#
+# They stay reachable because each is still DISTINCTIVE: `-952E-AKV` carries a
+# model number, and nothing but the drive it was cut from is going to report it,
+# so answering on the product alone is answering for the right drive. `X` and
+# `0X` are the opposite — one and two characters, matching by accident is the
+# expected case, not the unlikely one. The line is drawn at "could another drive
+# plausibly report this string?", not at "is this a fragment?", because being a
+# fragment is a fact about the firmware and not by itself a hazard. A stated
+# choice, not an oversight; if a real drive is ever found reporting one of the
+# five, it moves.
+#
 # NOT extended to the generic names that DO collide. Those already refuse to pick
 # — ERR_AMBIGUOUS with every candidate listed — and that is a different and
 # safer failure than a confident wrong number, so blocking them would remove

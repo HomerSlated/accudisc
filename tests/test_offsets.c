@@ -354,6 +354,20 @@ int main(void)
     assert(info.read_offset == 564);
     assert(info.ar_submissions == 8);
 
+    /* NOT extended to every fragment either. "-952E-AKV" is just as much a
+     * spill ("E-IDE CD" + "-952E-AKV" = E-IDE CD-952E-AKV) and stays reachable
+     * on the product alone, because it is DISTINCTIVE: nothing but the drive it
+     * was cut from will report a model number like that, so answering for any
+     * vendor answers for the right drive. "X" is the opposite. The line is
+     * "could another drive plausibly report this string?", not "is this a
+     * fragment?" — a stated choice, pinned here so it cannot drift into an
+     * oversight. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("ARBITRARY", "-952E-AKV", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 691);
+    assert(!(info.flags & ACCUDISC_OFFSET_F_GENERIC));
+
     /* NOT extended to the generic names that COLLIDE. "CD-ROM" is at least as
      * generic, and is deliberately still reachable: it refuses to pick rather
      * than picking wrongly, which is a different and safer failure. Blocking it
