@@ -252,6 +252,67 @@ def src_names(mask: int) -> str:
     ) or "none"
 
 
+# ONE DRIVE, SEVERAL NAMES THE FOLD CANNOT REACH.
+#
+# VENDOR_ALIAS rewrites a whole vendor field; the underscore fold reaches a
+# punctuation difference. Neither reaches a drive sold under different BADGES
+# with the product spelled differently under each — Lenovo's Ultraslim DVD is
+# listed by AccurateRip four ways:
+#
+#     Lenovo   - Ultraslim DVD        +6   44 subs
+#     lenovo   - UltraslimDVD         +6   21 subs
+#     think    - plusUltraslimDVD     +6   20 subs   (ThinkPlus, Lenovo's brand)
+#     ThinkPad - Ultraslim DVD        +6  339 subs   (pooled from 2 + 337)
+#
+# Four keys, one drive, 424 submissions between them — and a caller querying the
+# second was told 21. The offset is not in doubt here, so what the alias buys is
+# an honest confidence figure; where a family DISAGREES it buys more than that,
+# because read_ar()'s rival-offset resolution then lets the better-evidenced
+# value win instead of a one-submission row answering on its own authority.
+#
+# EXACT WHOLE-KEY, POST-FOLD, one line per human decision — the same contract as
+# VENDOR_ALIAS, REBADGE and GENERIC_PRODUCTS, and for the same reason. A rule
+# was measured and REJECTED: squashing spacing and punctuation collapses 146
+# groups in this corpus, of which 132 agree on the offset and 14 DO NOT. Some of
+# the 14 are two genuinely different drives ("MAD DOG 56X CDROM" +691 beside a
+# bare "56X CD-ROM" +12), so a sweep would assert identities the data refuses.
+# Each entry here is a claim that two strings name ONE drive, and has to be
+# defended as one.
+#
+# The keys are fold() OUTPUT — upper-cased, whitespace-collapsed, vendor-aliased,
+# underscores already spaces. The value is the canonical key, chosen as the
+# best-evidenced spelling so the merge reads naturally; it is a join key only and
+# never reaches the table, which still emits EVERY spelling as its own row.
+KEY_ALIAS = {
+    "LENOVO ULTRASLIM DVD":   "THINKPAD ULTRASLIM DVD",
+    "LENOVO ULTRASLIMDVD":    "THINKPAD ULTRASLIM DVD",
+    "THINK PLUSULTRASLIMDVD": "THINKPAD ULTRASLIM DVD",
+}
+
+
+def repair_ar_trailing_separator(rows: list[dict]) -> int:
+    """"LG Electronics -" is a VENDOR with an empty product, not a product.
+
+    AccurateRip publishes such rows — that one is on the live page, confirmed
+    2026-08-25. fetch_ar_offsets.py now splits them correctly, but the split is
+    baked into ar_offsets.json AT FETCH TIME, so the fixed parser changes nothing
+    until someone re-fetches over the network. This repairs what is on disk.
+
+    NOT the two-parsers trap documented in read_provenance(). That trap is two
+    implementations of one rule drifting apart; this is ONE rule, called from
+    both places that need it — read_ar(), and assert_every_name_survives(), whose
+    reference must describe the same input read_ar() consumed or it would report
+    the repair as a lost name and an invented one. Self-limiting: after a
+    re-fetch nothing matches and the reported count goes to zero.
+    """
+    repaired = 0
+    for r in rows:
+        if not r["vendor"] and r["product"].endswith(" -"):
+            r["vendor"], r["product"] = r["product"][:-2].strip(), ""
+            repaired += 1
+    return repaired
+
+
 def norm(s: str) -> str:
     """Collapse whitespace runs and trim — the INQUIRY rule, minus case folding.
 
@@ -298,7 +359,11 @@ def fold(vendor: str, product: str) -> str:
     v = norm(vendor).upper()
     v = VENDOR_ALIAS.get(v, v)
     key = f"{v} {norm(product).upper()}".strip()
-    return " ".join(key.replace("_", " ").split())
+    key = " ".join(key.replace("_", " ").split())
+    # LAST, so an alias is written in the form every other key already has —
+    # upper-cased, collapsed, vendor-aliased, underscores folded. Writing one in
+    # raw INQUIRY form would simply never match, and silently.
+    return KEY_ALIAS.get(key, key)
 
 
 # --------------------------------------------------------------------------
@@ -364,6 +429,19 @@ def read_ar(path: Path) -> list[dict]:
     it is not something a drive reports in the two fields we can match on.
     """
     rows = json.loads(path.read_text(encoding="utf-8"))["rows"]
+
+    repaired = repair_ar_trailing_separator(rows)
+    if repaired:
+        print(f"  AR trailing-separator repaired in {repaired} row(s) — the "
+              "json predates the fetcher fix; a re-fetch makes this 0")
+    stranded = sorted(f"{r['vendor']!r} {r['product']!r}"
+                      for r in rows if r["product"].endswith(" -"))
+    if stranded:
+        sys.exit(
+            f"{path}: {len(stranded)} row(s) still carry a trailing separator "
+            f"in the product — {stranded[:5]}. A vendor with no product is not "
+            "a product whose name ends in a hyphen."
+        )
 
     # key -> offset -> [submissions, submissions*pct, first row seen, largest row]
     #
@@ -849,7 +927,15 @@ def assert_every_name_survives(rows: list[Row], kept: list, ar_path: Path) -> No
     rather than tidy.
     """
     required = {(norm(v).upper(), norm(p).upper()) for v, p, _ in kept}
-    for r in json.loads(ar_path.read_text(encoding="utf-8"))["rows"]:
+    ar_rows = json.loads(ar_path.read_text(encoding="utf-8"))["rows"]
+    # The SAME repair read_ar() applied, from the same function. The reference
+    # has to describe the input the pipeline consumed: a row this tool corrects
+    # before reading is not a spelling the table owes an answer for, and leaving
+    # it here would report the correction as BOTH a lost name and an invented
+    # one. What the guard is testing is spelling carry-through through POOLING,
+    # which this does not touch; the repair has its own fatal guard in read_ar().
+    repair_ar_trailing_separator(ar_rows)
+    for r in ar_rows:
         required.add((norm(r["vendor"]).upper(), norm(r["product"]).upper()))
 
     emitted = {(r.vendor, r.product) for r in rows}

@@ -485,18 +485,76 @@ away.
   retraction and says so; the guard's discriminating test is `EMPTYP` in
   `tests/test_offsets_ambiguous.c`, against a fixture that really holds one.
 
-- **OPEN, found 2026-08-25 and NOT fixed — the same parse bug on the
-  AccurateRip side.** `split_drive_name()` in `tools/fetch_ar_offsets.py` has the
-  identical trailing-separator flaw, and unlike the provenance one it has a LIVE
-  victim: AccurateRip's list holds `LG Electronics -`, which parses to
-  `("", "LG Electronics -")` and ships as
-  `{ "", "LG ELECTRONICS -", +103, 1, 100, 2, 0 }` — a phantom product no drive
-  reports, reachable by anyone who queries that string. Correctly split it would
-  be `("LG Electronics", "")`, fold to the `HL-DT-ST` key via `VENDOR_ALIAS`, and
-  become an unreachable empty-product row. NOT done here because the split is
-  baked into the committed `ar_offsets.json`: fixing the fetcher changes nothing
-  until a network re-fetch, and compensating in `read_ar()` instead would change
-  a row's identity — a decision, not a typo. One row, low harm, wants Keith.
+- **CLOSED 2026-08-25 (0.18.0) — the same parse bug on the AccurateRip side,
+  and Keith confirmed the row live on the website.** `LG Electronics -` really is
+  published: a vendor with an EMPTY product. `split_drive_name()` required
+  whitespace on BOTH sides of the separator, so it parsed as the PRODUCT
+  `LG ELECTRONICS -` and shipped as `{ "", "LG ELECTRONICS -", +103, 1, 100, 2,
+  0 }` — a phantom string no drive reports, answering +103 to anyone who sent it.
+  Now `{ "LG ELECTRONICS", "", +103, ... }`, unreachable, which is what a
+  measurement with no product identifier deserves.
+
+  Fixed in TWO places for one reason: the fetcher owns the parse, but the split
+  is baked into the committed `ar_offsets.json` AT FETCH TIME, so the fixed
+  parser changes nothing until a network re-fetch. `repair_ar_trailing_separator()`
+  repairs what is on disk and reports a count that goes to **zero** after a
+  re-fetch — the signal that it can be deleted. It is ONE function called from
+  both `read_ar()` and `assert_every_name_survives()`, not two implementations:
+  the guard's reference must describe the input the pipeline consumed, or it
+  reports the correction as BOTH a lost name and an invented one.
+
+  **It restores a discriminating test.** `("LG ELECTRONICS", "")` is now the
+  shipped table's only empty-product row, so `test_offsets.c` can assert the
+  empty-product guard against a row that actually exists — replacing the
+  `("DVDROM", "")` pin that 0.17.0 had to downgrade to "cannot tell the guard
+  firing from the key being absent".
+
+- **KEY_ALIAS — one drive, several names the fold cannot reach. NEW 2026-08-25
+  (0.18.0), Keith supplied the case.** AccurateRip lists Lenovo's Ultraslim DVD
+  four ways:
+
+  | key | offset | subs |
+  |---|---|---|
+  | `LENOVO ULTRASLIM DVD` | +6 | 44 |
+  | `LENOVO ULTRASLIMDVD` | +6 | 21 |
+  | `THINK PLUSULTRASLIMDVD` | +6 | 20 |
+  | `THINKPAD ULTRASLIM DVD` | +6 | 339 |
+
+  Two badges, the ThinkPlus brand, and a spelling missing its space. `think` +
+  `plusUltraslimDVD` is the eight-byte field again. All agree on +6, so the
+  offset was never in doubt — what was wrong is that a caller querying the second
+  was told the evidence was **21 submissions when 424 stand behind the drive**.
+  All four now report 424, and **every spelling is still emitted as its own row**:
+  the alias pools at build time and never lets the runtime answer for a name no
+  source sent. Same asymmetry the underscore fold obeys.
+
+  **The mechanism is worth more than this case.** Where a family DISAGREES,
+  merging lets `read_ar()`'s existing rival-offset resolution pick the
+  better-evidenced value, so a one-submission row stops answering on its own
+  authority. Measured hazard, live before any fix: `--product 'DVD-RAM GH24NS95'`
+  returns **+667 on 1 submission** while `DVDRAM GH24NS95` returns **+6 on
+  1315** — one hyphen apart, same vendor, same model. They do not collide, so
+  nothing comes back ambiguous; the drive is simply handed 661 samples of
+  misalignment, exit 0.
+
+  **A RULE WAS MEASURED AND REJECTED.** Squashing spacing and punctuation
+  collapses 146 groups in this corpus: **132 agree on the offset, 14 do not**,
+  and some of the 14 are two genuinely different drives (`MAD DOG 56X CDROM`
+  +691 beside a bare `56X CD-ROM` +12). A sweep would assert identities the data
+  refuses — the `nnXnnX` lesson again. `KEY_ALIAS` is therefore exact whole-key,
+  post-fold, one line per human decision, the same contract as `VENDOR_ALIAS`,
+  `REBADGE` and `GENERIC_PRODUCTS`.
+
+  Applied LAST in `fold()`, so an alias is written in the form every other key
+  already has; written in raw INQUIRY form it would never match, and silently.
+  Predicted before regenerating, exact: entries **5881 unchanged**, AR keys
+  4775 -> 4772, rows held by REDUMP 5647 -> 5649, BOTH 5633 -> 5635, pooling
+  recovery 1580 -> 1665 (= 424 - 339). Falsified both ways: the repair neutered
+  (the `stranded` guard fires FIRST, naming the row) and one `KEY_ALIAS` line
+  removed (`test_offsets.c:331` fires, the pooled-count assertion).
+
+  **The other 13 disagreeing families are NOT done** and want individual review —
+  each is a claim that two strings name one drive.
 
 - **`ACCUDISC_OFFSET_MAX_VALUES` IS FROZEN BY THE ABI — and the note this
   replaces was wrong about the remedy.** It said to derive the `values[]` write

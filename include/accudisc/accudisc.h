@@ -27,7 +27,42 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 17 /* 0.17.0: SUBTRACTIVE. One row RETRACTED and
+#define ACCUDISC_VERSION_MINOR 18 /* 0.18.0: ONE DRIVE, SEVERAL NAMES — and a
+                                  * phantom product removed.
+                                  * New KEY_ALIAS in tools/gen_offsets.py pools
+                                  * the evidence of a drive AccurateRip lists
+                                  * under several names that no existing fold
+                                  * reaches. Lenovo's Ultraslim DVD is listed
+                                  * four ways — two badges, the ThinkPlus brand,
+                                  * and a spelling missing its space — all at
+                                  * +6, 424 submissions between them. A caller
+                                  * querying the second was told 21. All four
+                                  * spellings now report 424, and EVERY spelling
+                                  * is still emitted as its own row: the alias
+                                  * pools at build time and never lets the
+                                  * runtime answer for a name no source sent.
+                                  * EXACT WHOLE-KEY, one line per human
+                                  * decision. A rule was measured and REJECTED:
+                                  * squashing spacing and punctuation collapses
+                                  * 146 groups, of which 132 agree on the offset
+                                  * and 14 DO NOT, some being two genuinely
+                                  * different drives.
+                                  * ALSO: AccurateRip publishes "LG Electronics
+                                  * -", a vendor with an EMPTY product. The
+                                  * separator rule needed whitespace on BOTH
+                                  * sides, so it parsed as the PRODUCT "LG
+                                  * ELECTRONICS -" and shipped as a phantom
+                                  * string no drive reports, answering +103 to
+                                  * anyone who sent it. Now split correctly, it
+                                  * is an empty-product row and unreachable —
+                                  * which is what a measurement with no product
+                                  * identifier deserves. Fixed in the fetcher
+                                  * AND repaired on read, because the split is
+                                  * baked into the committed json at fetch time.
+                                  * Table stays 5881 rows: one changes identity,
+                                  * four change their submission count.
+                                  *
+                                  * 0.17.0: SUBTRACTIVE. One row RETRACTED and
                                   * two products blocked from answering alone,
                                   * all three from ONE cause: the INQUIRY vendor
                                   * field is EIGHT BYTES, and a drive whose name

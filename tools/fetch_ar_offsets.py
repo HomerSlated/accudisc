@@ -74,6 +74,22 @@ def split_drive_name(raw: str) -> tuple[str, str] | None:
         vendor = " ".join(m.group(1).split())
         model = " ".join(m.group(2).split())
         return (vendor, model) if model else None
+    m = re.match(r"^(.*?)\s+-$", s)
+    if m:
+        # TRAILING SEPARATOR: a vendor with an EMPTY product. AccurateRip really
+        # does publish these — "LG Electronics -" is on the live page, confirmed
+        # 2026-08-25. The rule above needs whitespace on BOTH sides, so without
+        # this arm the name falls through to the no-separator branch and becomes
+        # the PRODUCT "LG Electronics -": a phantom string no drive reports,
+        # keyed against nothing REDUMP holds.
+        #
+        # Returning an empty model is correct here and is why this arm exists
+        # rather than reusing the one above, whose `if model else None` would
+        # discard the row: the drive DID report a vendor, and the offset was
+        # measured. What it did not report is a product, which the lookup
+        # refuses to answer on — a row that cannot be reached is still better
+        # than a row that answers to the wrong name.
+        return (" ".join(m.group(1).split()), "")
     # No separator at all: treat the whole string as a model, vendor unknown.
     model = " ".join(s.split())
     return ("", model) if model else None

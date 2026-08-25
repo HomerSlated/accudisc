@@ -296,12 +296,51 @@ int main(void)
      * So this call can no longer distinguish the empty-product guard FIRING from
      * the key simply being absent — two causes, one return code. It is kept as a
      * regression pin on the retraction (a corpus refresh that resurrects the row
-     * must not resurrect the answer), NOT as a test of the guard. The guard is
-     * tested where it can fail: tests/test_offsets_ambiguous.c asserts EMPTYP
-     * against a fixture that really does hold an empty-product row. */
+     * must not resurrect the answer), NOT as a test of the guard. */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
     assert(accudisc_offset_for_inquiry("DVDROM", "", &info)
            == ACCUDISC_ERR_NOTFOUND);
+
+    /* THIS one does test the guard against the shipped table, because the row
+     * exists. AccurateRip publishes "LG Electronics -" — a vendor with an EMPTY
+     * product — and until 0.18.0 the fetcher's separator rule needed whitespace
+     * on both sides, so it became the PRODUCT "LG ELECTRONICS -": a phantom
+     * string no drive reports, answering +103 to anyone who sent it. Split
+     * correctly it is a real measurement for a drive that reported no product,
+     * which is exactly what the empty-product rule refuses to answer on. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("LG ELECTRONICS", "", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("", "LG ELECTRONICS -", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+
+    /* --- KEY_ALIAS: four names, one drive, one pool of evidence -------------
+     * Lenovo's Ultraslim DVD is listed by AccurateRip under four keys — two
+     * badges (Lenovo, ThinkPad), the ThinkPlus brand, and a spelling with the
+     * space missing. All agree on +6, so the offset was never in doubt; what was
+     * wrong is that a caller querying "lenovo"/"UltraslimDVD" was told the
+     * evidence was 21 submissions when 424 stand behind the drive.
+     *
+     * EVERY SPELLING IS STILL EMITTED AS ITS OWN ROW — the alias pools evidence
+     * at build time, it does not let the runtime answer for a name no source
+     * reported. That is the same asymmetry the underscore fold obeys. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("Lenovo", "Ultraslim DVD", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 6 && info.ar_submissions == 424);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("lenovo", "UltraslimDVD", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 6 && info.ar_submissions == 424);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("think", "plusUltraslimDVD", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 6 && info.ar_submissions == 424);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("ThinkPad", "Ultraslim DVD", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 6 && info.ar_submissions == 424);
 
     /* --- the six generic product names, against the SHIPPED table ---------
      * "OPTICAL DRIVE" names a category, not a model. It rests on 85 real
