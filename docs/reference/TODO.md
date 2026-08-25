@@ -614,9 +614,45 @@ away.
     **two independent model numbers**, so the punctuation is a working
     discrimination, not a typo; `DVD RW` (category words, two already in
     `GENERIC_PRODUCTS`); `DVDROM DH60N` (crosses vendors, no confident read).
-  - *Needs judgement, both spellings backed:* `CDRW 52X32` (+738/88 vs +6/2),
+  - *No clear winner — CLOSED as a decision, not an open question (Keith,
+    2026-08-25): leave them as uniques.* `CDRW 52X32` (+738/88 vs +6/2),
     `CD-RW 52XMAX` (+688/31 vs +6/10 — not lopsided enough to read as a
-    mis-submission), `LG ELECTRONICSDVD-RAM` (+102/14 vs +6/1).
+    mis-submission), `LG ELECTRONICSDVD-RAM` (+102/14 vs +6/1). Each spelling
+    keeps its own row and its own value. "Chasing the nth degree is subject to
+    the law of diminishing returns" — the process is as refined as it needs to
+    be, and a merge nobody can defend on the evidence is worse than two rows.
+
+- **DOES REDUMP STILL EARN ITS PLACE? YES — for NAMES, not values. Measured
+  2026-08-25.** Zero rows carry an offset AccurateRip does not also hold, which
+  is exactly what "REDUMP IS AccurateRip frozen in 2022" predicts. What it holds
+  alone is **1079 spellings**, and they are the load-bearing kind:
+
+  | REDUMP spelling | rows | AccurateRip publishes |
+  |---|---|---|
+  | `HL-DT-ST` | 649 | `LG Electronics` (699 rows, **0** as HL-DT-ST) |
+  | `MATSHITA` | 375 | `Panasonic` (390 rows, **0** as MATSHITA) |
+  | `FREECOM` | 30 | `Freecom_` |
+  | `JLMS` | 9 | `Lite-On` (111 rows, **0** as JLMS) |
+  | glued-name rewrites | 13 | `PanasonicBD-CMB U` -> `MATSHITABD-CMB U` |
+  | rescued rebadge | 1 | `PHILIPS DVD-ROM PCDV632` |
+
+  **AccurateRip publishes MARKETING vendor names; REDUMP publishes what the drive
+  reports over INQUIRY.** The runtime matches literally, so those 1064
+  alias-vendor rows are the only ones real hardware can hit — and the inversion
+  is total: AccurateRip has **zero** rows saying `HL-DT-ST`, the commonest
+  optical-drive vendor string there is. Drop REDUMP and every Hitachi-LG and
+  every Panasonic drive answers ERR_NOTFOUND.
+
+  The 13 "REDUMP-only values" are not measurements either: they are the same
+  drives under names a whole-field alias cannot reach, where AccurateRip prints
+  the marketing vendor GLUED into the product (`PanasonicBD-CMB U` +103 is our
+  `MATSHITABD-CMB U` +103 — same offset). REDUMP substituted the INQUIRY vendor
+  inside the glued string, which `VENDOR_ALIAS` structurally cannot do.
+
+  Synthesising them from AccurateRip is NOT an option: emitting `HL-DT-ST` from
+  an `LG Electronics` row would be inventing a name no source reported, which
+  `assert_every_name_survives` forbids in its second direction, and for good
+  reason. REDUMP stays.
 
   **The survey's scope, stated so it is not mistaken for the class.** It finds
   PRODUCT strings differing only by spacing or punctuation. It cannot see a
