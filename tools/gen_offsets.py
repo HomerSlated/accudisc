@@ -169,13 +169,33 @@ REBADGE = {
 # name that only ONE submitter ever sent has nothing to collide with, and hands
 # back that one drive's offset with the confidence of an exact match.
 #
-# These six are the whole of that set in the current corpus, found by matching
-# bare category words against the emitted product column; every one is a single
-# row, and no other bare-generic name is present:
+# Six bare CATEGORY WORDS are the whole of that set in the current corpus, found
+# by matching them against the emitted product column; every one is a single row,
+# and no other bare-generic name is present:
 #
 #     DVD            +48    FUJITSU     COMBO          +6     E-ELEI
 #     DVDRW          +6     DEXPRESO    DVD+RW         +1292  ATAPI
 #     OPTICAL DRIVE  +6     BUFFALO     CD-ROM DRIVE   +12    900 40X
+#
+# A SECOND CAUSE, THE SAME REMEDY. A product string can fail to identify a model
+# without naming a category at all. The INQUIRY vendor field is EIGHT BYTES, and
+# a drive whose name is longer simply continues into the product field, so what
+# lands there is a FRAGMENT of a name rather than a name:
+#
+#     "DVDROM 8" + "X"  = DVDROM 8X        "DVDROM 1" + "0X" = DVDROM 10X
+#
+# `X` alone — one character — was answering for any vendor at all. Confirmed
+# against AccurateRip's own file, which publishes the two fields separately and
+# prints these as `DVDROM 8 - X` and `DVDROM 1 - 0X`, so the split is what the
+# firmware reported rather than anything this tool inferred.
+#
+# There is no model to recover by rejoining them: the whole reported identity is
+# a category plus a speed, unbranded. The rows nonetheless stay, because +564 is
+# what that generation measures — 14 other rows hold it, among them HITACHI
+# DVD-ROM GD-2500 on 48 submissions and SAMSUNG CD-ROM SN-124 on 48. The string
+# names a class rather than a drive, and two drives reporting `DVDROM 8X` are
+# indistinguishable to us in any case, so it remains the best available answer
+# when the caller supplies the whole of it.
 #
 # THE BLOCK IS ON THE PRODUCT-ONLY PATH, NOT ON THE ROW, and the distinction is
 # the whole design. `BUFFALO OPTICAL DRIVE` rests on 85 submissions — dropping it
@@ -201,6 +221,9 @@ GENERIC_PRODUCTS = frozenset({
     "COMBO",
     "OPTICAL DRIVE",
     "CD-ROM DRIVE",
+    # Fragments left by the eight-byte vendor field overflowing, not categories.
+    "X",
+    "0X",
 })
 
 
@@ -449,6 +472,25 @@ def read_provenance(path: Path) -> dict[str, dict[int, tuple[int, int]]]:
             vendor, product = "", name[2:]
         elif " - " in name:
             vendor, product = name.split(" - ", 1)
+        elif name.endswith(" -"):
+            # TRAILING SEPARATOR: a vendor with an EMPTY product, "DVDROM -".
+            # Without this arm the name falls through to the no-separator branch
+            # and keys as the PRODUCT "DVDROM -", which joins nothing — REDUMP
+            # holds the same drive as ("DVDROM", ""). The provenance lookup then
+            # misses, apply_retractions takes its unjoined branch and continues,
+            # so the live-AR check NEVER RUNS and a row AccurateRip has since
+            # withdrawn survives as "unknown provenance, rule not applied".
+            #
+            # Measured: exactly that happened to "DVDROM -" (+564, 2022: 1 sub,
+            # absent from the live list). It shipped through 0.16.0 and was
+            # harmless only because accudisc_offset_for_inquiry refuses an empty
+            # product — luck, not design. A guard that cannot be reached by the
+            # rows it is meant to catch is not a guard.
+            #
+            # Ordered AFTER the interior-separator arm deliberately: a name with
+            # both ("A - B -") is a vendor plus a product whose name ends in a
+            # hyphen, not an empty product.
+            vendor, product = name[:-2], ""
         else:
             vendor, product = "", name
         off, subs, pct = int(f[1]), int(f[2]), int(f[3].rstrip("%"))
@@ -477,6 +519,19 @@ def read_provenance(path: Path) -> dict[str, dict[int, tuple[int, int]]]:
             )
     if not prov:
         sys.exit(f"no provenance rows parsed from {path}")
+    # THE TRAILING-SEPARATOR GUARD. A key ending in " -" means the arm above was
+    # removed or reordered and a "VENDOR -" row keyed as the PRODUCT "VENDOR -"
+    # instead. That does not fail loudly on its own: it makes the key join
+    # nothing, apply_retractions takes its unjoined branch, and a withdrawn row
+    # is KEPT and merely counted as unknown provenance. Fatal rather than
+    # reported, because the symptom is a row that should not be in the table.
+    stranded = sorted(k for k in prov if k.endswith(" -"))
+    if stranded:
+        sys.exit(
+            f"{path}: {len(stranded)} name(s) parsed with the separator left in "
+            f"the key — {stranded[:5]}. A trailing ' -' is a vendor with an "
+            "EMPTY product, not a product whose name ends in a hyphen."
+        )
     values = sum(len(v) for v in prov.values())
     print(f"  provenance: {len(prov)} keys / {values} values from the 2022"
           f" AccurateRip import ({purged} already [Purged] there)")
@@ -937,6 +992,19 @@ def emit(rows: list[Row], out: Path, stats: dict, dropped: list,
             " * caller whose INQUIRY vendor matches none of the rows below. The",
             " * vendor resolves every one of them; the list is here so that which",
             " * products cannot stand alone is reviewable in a diff.",
+            " *",
+            " * NOT ALL OF THESE ARE PRODUCTS. The INQUIRY vendor field is",
+            " * eight bytes and a longer name continues into the product field,",
+            " * so what is printed here as a product may be a fragment. 'ROM'",
+            " * is the tail of ATAPI CD-ROM and of 16X DVD-ROM — two different",
+            " * drives, not one product held at two offsets. '16X' is a related",
+            " * but distinct fault: there both fields are uninformative, a",
+            " * category as the vendor and a speed rating as the product.",
+            " *",
+            " * The firmware is wrong in both cases and the corpus records it",
+            " * faithfully. Each line below is still exact as a MATCHING rule,",
+            " * which is all this block describes — it is the reading of them",
+            " * as model names that does not hold.",
             " */",
         ]
         for prod_name in sorted(contested):

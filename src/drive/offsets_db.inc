@@ -8,7 +8,7 @@
  * sources bitmask, flags. Offsets are in SAMPLES, where one sample is one
  * stereo frame of 4 bytes (588 per sector) — REDUMP's unit and AccurateRip's.
  *
- * Entries: 5882
+ * Entries: 5881
  */
 
 /* WITHDRAWN BY THE SOURCE — dropped from the table above, listed so the
@@ -21,6 +21,7 @@
  * The 2022 figures are the submission count and agreement percentage that
  * REDUMP's importer discarded; recovered from redumper's git history.
  */
+/* RETRACTED  DVDROM : +564 (2022: 1 subs 100% agree) -> gone from AccurateRip */
 /* RETRACTED  Oh!Soft VirtualDVD-ROM: +667 (2022: 1 subs 100% agree) -> gone from AccurateRip */
 /* RETRACTED  PHILIPS 401248 CDRW: +739 (2022: 2 subs 50% agree) -> gone from AccurateRip */
 /* RETRACTED  PHILIPS CDRW5232P1: +732 (2022: 2 subs 50% agree) -> gone from AccurateRip */
@@ -58,6 +59,19 @@
  * caller whose INQUIRY vendor matches none of the rows below. The
  * vendor resolves every one of them; the list is here so that which
  * products cannot stand alone is reviewable in a diff.
+ *
+ * NOT ALL OF THESE ARE PRODUCTS. The INQUIRY vendor field is
+ * eight bytes and a longer name continues into the product field,
+ * so what is printed here as a product may be a fragment. 'ROM'
+ * is the tail of ATAPI CD-ROM and of 16X DVD-ROM — two different
+ * drives, not one product held at two offsets. '16X' is a related
+ * but distinct fault: there both fields are uninformative, a
+ * category as the vendor and a speed rating as the product.
+ *
+ * The firmware is wrong in both cases and the corpus records it
+ * faithfully. Each line below is still exact as a MATCHING rule,
+ * which is all this block describes — it is the reading of them
+ * as model names that does not hold.
  */
 /* AMBIGUOUS  16X: +6 <- 'DVD' */
 /* AMBIGUOUS  16X: +691 <- 'DVD-ROM' */
@@ -930,13 +944,12 @@
     { "DVD-ROM", "DVD-7T16", +12, 3, 100, 3, 0 },
     { "DVD-ROM", "LTD-16X5H", +12, 3, 100, 3, 0 },
     { "DVDR-RW", "DX162D-A", +618, 20, 100, 3, 0 },
-    { "DVDROM", "", +564, 0, 0, 1, 0 },
     { "DVDROM", "GO-D1600B", +12, 2, 100, 3, 0 },
     { "DVDROM", "GO-D1600D", +12, 3, 100, 3, 0 },
     { "DVDROM", "PATA 16X48X", +6, 1, 100, 3, 0 },
     { "DVDROM", "SATA 18X", +6, 2, 100, 2, 0 },
-    { "DVDROM 1", "0X", +564, 8, 100, 3, 0 },
-    { "DVDROM 8", "X", +564, 2, 100, 3, 0 },
+    { "DVDROM 1", "0X", +564, 8, 100, 3, 8 },
+    { "DVDROM 8", "X", +564, 2, 100, 3, 8 },
     { "DVDRW", "1008IB", +12, 1, 100, 3, 0 },
     { "DVDRW", "16X16", +6, 22, 100, 3, 0 },
     { "DVDRW", "16X16X", +6, 36, 100, 3, 0 },

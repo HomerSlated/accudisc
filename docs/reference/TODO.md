@@ -408,6 +408,86 @@ away.
   gives identical figures, and taking whichever row the scan reached first is
   arbitrary.
 
+- **THE EIGHT-BYTE VENDOR FIELD — CLOSED 2026-08-25 (0.17.0), Keith spotted
+  it.** He read the generated `AMBIGUOUS` block and said the two `ROM` lines were
+  wrong: not one product held at two offsets, but two drives. He was right, and
+  the cause reaches further than those lines.
+
+  The SCSI INQUIRY vendor field is **eight bytes**. A drive whose name is longer
+  simply continues into the product field, and AccurateRip publishes the two
+  halves separately, so the corpus records the cut faithfully:
+
+  | joined name | vendor (8 chars) | product |
+  |---|---|---|
+  | `ATAPI CD-ROM` | `ATAPI CD` | `-ROM` |
+  | `16X DVD-ROM` | `16X DVD-` | `ROM` |
+  | `DVDROM 8X` | `DVDROM 8` | `X` |
+  | `DVDROM 10X` | `DVDROM 1` | `0X` |
+
+  Mid-word cuts put the mechanism beyond doubt — `ATAPI 16` + `X DVDROM VA100`,
+  `hp BD RO` + `M BC-5550H`. **The split is not ours**: `split_drive_name()` cuts
+  on whitespace-hyphen-whitespace, and AccurateRip's own file prints
+  `DVDROM 8 - X`. 8-char-ness is NOT a detector — `TSSTcorp`, `Slimtype`,
+  `Verbatim`, `GoldStar` are genuine 8-char vendors, 618 AR rows have a full
+  vendor field, and what separates a spill is that concatenating the halves
+  WITHOUT a separator yields a real name. That is a human judgement per row.
+
+  **The lookup was never wrong for `ROM` or `16X`.** Both real drives resolve
+  (`ATAPI CD`/`ROM` -> +12, `16X DVD-`/`ROM` -> +738): the vendor carries the
+  identity here — the inverse of the design's assumption — and the collision
+  forces `ERR_AMBIGUOUS` where it cannot. What was wrong was the generated
+  commentary calling a fragment a product; the block header now says so.
+
+  **What DID answer wrongly: `X` and `0X`.** A one-character product returned
+  +564 for any vendor at all — the `GENERIC_PRODUCTS` hazard from a second cause,
+  so it gets the same remedy. Both are unbranded drives whose entire reported
+  identity is a category plus a speed, so there is no model to recover by
+  rejoining. **The rows stay**: +564 is what that generation measures (14 other
+  rows hold it, `HITACHI DVD-ROM GD-2500` on 48 submissions, `SAMSUNG CD-ROM
+  SN-124` on 48), and the string still answers when the caller supplies the whole
+  of it. `GENERIC_PRODUCTS` is therefore no longer only category words.
+
+  **A RETRACTED ROW THAT ESCAPED, found while checking the family.**
+  `("DVDROM", "")` at +564 was in AccurateRip's 2022 list and absent from the
+  live one, so it should have been dropped in 0.13.0. AccurateRip writes a vendor
+  with no product as `DVDROM -`, and `read_provenance()` required whitespace on
+  BOTH sides of the separator, so the name keyed as the PRODUCT `DVDROM -` and
+  joined nothing. **A provenance miss is not loud**: `apply_retractions` takes its
+  unjoined branch and `continue`s, so the live-AR check never runs and the row is
+  KEPT, merely counted as unknown provenance. It was harmless only because the
+  empty-product guard refuses it — luck, not design. Two parsers read the same
+  ` - ` convention (`split_drive_name()` and `read_provenance()`) and BOTH
+  mishandled a trailing separator, so they agreed with each other and disagreed
+  with REDUMP; agreement between two implementations of one mistake looks exactly
+  like corroboration.
+
+  Predicted before regenerating, exact on all four: **entries 5882 -> 5881**,
+  `redump_retracted` 6 -> 7, `redump_unknown_provenance` 14 -> 13,
+  `products_generic` 6 -> 8. Three data-row changes and one new comment line,
+  nothing else moved. Falsified in both directions: the parse arm neutered
+  (guard fires, names `DVDROM -`, first failure not a shadowed one) and the
+  `F_GENERIC` flag removed (`test_offsets.c:337` fires, the product-only
+  assertion rather than a later one).
+
+  **Consequence worth knowing: the shipped table now has ZERO empty-product
+  rows**, so `test_offsets.c`'s `("DVDROM", "")` assertion can no longer tell the
+  guard FIRING from the key being ABSENT. It is kept as a regression pin on the
+  retraction and says so; the guard's discriminating test is `EMPTYP` in
+  `tests/test_offsets_ambiguous.c`, against a fixture that really holds one.
+
+- **OPEN, found 2026-08-25 and NOT fixed — the same parse bug on the
+  AccurateRip side.** `split_drive_name()` in `tools/fetch_ar_offsets.py` has the
+  identical trailing-separator flaw, and unlike the provenance one it has a LIVE
+  victim: AccurateRip's list holds `LG Electronics -`, which parses to
+  `("", "LG Electronics -")` and ships as
+  `{ "", "LG ELECTRONICS -", +103, 1, 100, 2, 0 }` — a phantom product no drive
+  reports, reachable by anyone who queries that string. Correctly split it would
+  be `("LG Electronics", "")`, fold to the `HL-DT-ST` key via `VENDOR_ALIAS`, and
+  become an unreachable empty-product row. NOT done here because the split is
+  baked into the committed `ar_offsets.json`: fixing the fetcher changes nothing
+  until a network re-fetch, and compensating in `read_ar()` instead would change
+  a row's identity — a decision, not a typo. One row, low harm, wants Keith.
+
 - **`ACCUDISC_OFFSET_MAX_VALUES` IS FROZEN BY THE ABI — and the note this
   replaces was wrong about the remedy.** It said to derive the `values[]` write
   bound from `out->size` before growing the macro. That is not enough:

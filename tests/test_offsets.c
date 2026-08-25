@@ -283,9 +283,22 @@ int main(void)
     assert(info.n_values == 1);
     assert(info.ar_submissions == 71);
 
-    /* The one answer in the whole table that 0.15.0 changed. An empty product
-     * identifies nothing; keyed on the product alone this row would have
-     * answered +564 for every drive that reports no product string. */
+    /* The one answer in the whole table that 0.15.0 changed: ("DVDROM", "")
+     * at +564, which keyed on the product alone would have answered for every
+     * drive reporting no product string.
+     *
+     * READ THIS BEFORE TRUSTING THE ASSERTION. In 0.17.0 that row was RETRACTED
+     * — it was in AccurateRip's 2022 list, is absent from the live one, and had
+     * escaped the retraction rule only because "DVDROM -" (a trailing separator,
+     * empty product) mis-parsed and joined nothing. Fixing the parse dropped it,
+     * and it was the LAST empty-product row: the shipped table now has zero.
+     *
+     * So this call can no longer distinguish the empty-product guard FIRING from
+     * the key simply being absent — two causes, one return code. It is kept as a
+     * regression pin on the retraction (a corpus refresh that resurrects the row
+     * must not resurrect the answer), NOT as a test of the guard. The guard is
+     * tested where it can fail: tests/test_offsets_ambiguous.c asserts EMPTYP
+     * against a fixture that really does hold an empty-product row. */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
     assert(accudisc_offset_for_inquiry("DVDROM", "", &info)
            == ACCUDISC_ERR_NOTFOUND);
@@ -313,6 +326,33 @@ int main(void)
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
     assert(accudisc_offset_for_inquiry("ATAPI", "DVD+RW", &info) == ACCUDISC_OK);
     assert(info.read_offset == 1292);
+
+    /* --- and the two that are FRAGMENTS rather than categories -------------
+     * The INQUIRY vendor field is eight bytes; a longer name continues into the
+     * product field. "DVDROM 8X" and "DVDROM 10X" are cut there, leaving "X" and
+     * "0X" as the product. A ONE-CHARACTER product was answering +564 for any
+     * vendor at all — the same hazard as a category word, from a different
+     * cause, so it gets the same remedy. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("NOSUCHVENDOR3", "X", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("", "0X", &info)
+           == ACCUDISC_ERR_NOTFOUND);
+
+    /* The rows are NOT dropped: +564 is what that generation of drive measures
+     * (14 other rows hold it, HITACHI DVD-ROM GD-2500 on 48 submissions among
+     * them), so each still answers for the vendor half it was measured under —
+     * which is the whole of the drive's reported identity. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("DVDROM 8", "X", &info) == ACCUDISC_OK);
+    assert(info.read_offset == 564);
+    assert(info.ar_submissions == 2);
+    assert(info.flags & ACCUDISC_OFFSET_F_GENERIC);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("DVDROM 1", "0X", &info) == ACCUDISC_OK);
+    assert(info.read_offset == 564);
+    assert(info.ar_submissions == 8);
 
     /* NOT extended to the generic names that COLLIDE. "CD-ROM" is at least as
      * generic, and is deliberately still reachable: it refuses to pick rather

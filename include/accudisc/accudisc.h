@@ -27,7 +27,51 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 16 /* 0.16.0: SUBTRACTIVE, and the other half of
+#define ACCUDISC_VERSION_MINOR 17 /* 0.17.0: SUBTRACTIVE. One row RETRACTED and
+                                  * two products blocked from answering alone,
+                                  * all three from ONE cause: the INQUIRY vendor
+                                  * field is EIGHT BYTES, and a drive whose name
+                                  * is longer simply continues into the product
+                                  * field. What lands there is a fragment of a
+                                  * name rather than a name.
+                                  * "DVDROM 8X" and "DVDROM 10X" are cut at that
+                                  * boundary, leaving the products "X" and "0X".
+                                  * A ONE-CHARACTER product was answering +564
+                                  * for any vendor at all, so both now carry
+                                  * ACCUDISC_OFFSET_F_GENERIC: the rows still
+                                  * ship and still answer for the vendor half
+                                  * they were measured under, which is the whole
+                                  * of the drive's reported identity. +564 is
+                                  * right for that generation — 14 other rows
+                                  * hold it — so dropping them would ignore data
+                                  * to fix a matching rule.
+                                  * GENERIC_PRODUCTS is therefore no longer only
+                                  * category words. Two causes, one remedy, and
+                                  * no rule detects either: the corpus is
+                                  * faithfully recording what the firmware
+                                  * reported, and the firmware is wrong.
+                                  * SEPARATELY, ("DVDROM", "") at +564 is gone.
+                                  * It was in AccurateRip's 2022 list and is
+                                  * absent from the live one, so it should have
+                                  * been dropped as RETRACTED in 0.13.0. It was
+                                  * not: AccurateRip writes a vendor with no
+                                  * product as "DVDROM -", and the generator's
+                                  * provenance parser needed whitespace on BOTH
+                                  * sides of the separator, so the name keyed as
+                                  * the PRODUCT "DVDROM -" and joined nothing.
+                                  * A miss there is not loud — apply_retractions
+                                  * takes its unjoined branch and continues, so
+                                  * the live-AR check never runs and the row is
+                                  * KEPT, merely counted as unknown provenance.
+                                  * Table 5882 -> 5881, retracted 6 -> 7,
+                                  * unknown provenance 14 -> 13.
+                                  * NO API CHANGE. It was the LAST empty-product
+                                  * row, so that guard now has nothing in the
+                                  * shipped table to catch; it stays for the next
+                                  * corpus refresh, and is tested against a
+                                  * fixture that does hold one.
+                                  *
+                                  * 0.16.0: SUBTRACTIVE, and the other half of
                                   * 0.15.0. Six product strings that name a
                                   * CATEGORY rather than a model — DVD, DVDRW,
                                   * DVD+RW, COMBO, OPTICAL DRIVE, CD-ROM DRIVE —

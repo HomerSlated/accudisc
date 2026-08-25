@@ -45,11 +45,16 @@ Exit 3 per subcommand:
   it.
 
   **Since 0.16.0 a `generic_product 1` line MAY follow `adjudicated`** on an
-  exit-0 answer, and likewise only when set. It says the product string names a
-  category rather than a model (`DVD`, `OPTICAL DRIVE`), so the VENDOR is what
-  earned the answer — the same query without it exits 3 with `read_offset
-  unknown`. Six products behave this way; they are real measurements kept for
-  the vendor that submitted them, not data withheld.
+  exit-0 answer, and likewise only when set. It says the product string does not
+  identify a model on its own, so the VENDOR is what earned the answer — the
+  same query without it exits 3 with `read_offset unknown`. Eight products
+  behave this way; they are real measurements kept for the vendor that submitted
+  them, not data withheld.
+
+  Two causes, indistinguishable to a caller. Six name a CATEGORY (`DVD`,
+  `OPTICAL DRIVE`). Two are FRAGMENTS: since 0.17.0, `X` and `0X` — the INQUIRY
+  vendor field is eight bytes, so `DVDROM 8X` and `DVDROM 10X` are cut across
+  the two fields and what remains in the product is a piece of a name.
 - `pregaps`: at least one track boundary decoded as `UNKNOWN` — the approach to
   it was too damaged to place INDEX 00, so the pregap is undetermined rather
   than absent. Every other boundary in the listing is still valid.

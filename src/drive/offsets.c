@@ -128,12 +128,13 @@ void adsc_inquiry_normalize(const char *src, char *dst, size_t cap)
  * ERR_AMBIGUOUS for a quarter of the corpus, every one of them a drive whose
  * offset is not in doubt.
  *
- * Measured before adopting it, on this table: 4562 distinct products, 13 with
- * more than one offset, and the vendor narrows ALL 13 to one. Every
- * (vendor, product) pair already in the table returns exactly what it returned
- * under vendor+product keying — verified across all 5882 — so the change is
- * purely additive: what it buys is the drive whose vendor string is not the one
- * a submitter sent.
+ * Measured before adopting it, on the table as it then stood — 5882 rows, 5881
+ * since 0.17.0 retracted one: 4562 distinct products, 13 with more than one
+ * offset, and the vendor narrows ALL 13 to one. Every (vendor, product) pair
+ * already in the table returned exactly what it had returned under
+ * vendor+product keying, verified across all 5882, so the change was purely
+ * additive: what it buys is the drive whose vendor string is not the one a
+ * submitter sent.
  *
  * WHAT IT WOULD COST, and what is done about it. A product string naming a
  * CATEGORY rather than a model would answer for any vendor. Mostly such strings
@@ -144,13 +145,27 @@ void adsc_inquiry_normalize(const char *src, char *dst, size_t cap)
  *
  *   EMPTY product     never answers. It is not a weak identifier but the
  *                     absence of one, so no vendor can rescue it.
- *   GENERIC product   answers only when the VENDOR narrows to it. Six of them,
- *                     reviewed by hand (GENERIC_PRODUCTS in gen_offsets.py) and
- *                     marked ACCUDISC_OFFSET_F_GENERIC by the generator.
+ *   GENERIC product   answers only when the VENDOR narrows to it. Eight of
+ *                     them, reviewed by hand (GENERIC_PRODUCTS in
+ *                     gen_offsets.py) and marked ACCUDISC_OFFSET_F_GENERIC by
+ *                     the generator.
+ *
+ * The eight arrive by TWO different routes and the second is not a category word
+ * at all. The INQUIRY vendor field is eight bytes, so a drive whose name is
+ * longer continues into the product field, and what lands there is a fragment:
+ * "DVDROM 8X" and "DVDROM 10X" are cut at the boundary, leaving the products "X"
+ * and "0X". A one-character product answering for any vendor is the same hazard
+ * as a category word, so it gets the same remedy — but no rule detects it, since
+ * the corpus is faithfully recording what the firmware reported. Each is a human
+ * decision, one line.
  *
  * The generic rule blocks the product-only PATH, not the row, because the rows
  * are real measurements — "BUFFALO OPTICAL DRIVE" carries 85 submissions — and
  * dropping them to fix a matching rule would be ignoring data to fix code.
+ *
+ * An EMPTY product is now unreachable in the shipped table for a second reason:
+ * the last such row, ("DVDROM", "") at +564, was retracted in 0.17.0. The guard
+ * stays, because the next corpus refresh may bring one back.
  */
 int accudisc_offset_for_inquiry(const char *vendor, const char *product,
                                 accudisc_offset_info *out)
