@@ -553,8 +553,77 @@ away.
   (the `stranded` guard fires FIRST, naming the row) and one `KEY_ALIAS` line
   removed (`test_offsets.c:331` fires, the pooled-count assertion).
 
-  **The other 13 disagreeing families are NOT done** and want individual review —
-  each is a claim that two strings name one drive.
+- **KEY_ALIAS group A+B — CLOSED 2026-08-25 (0.19.0). Four wrong answers fixed,
+  and the count was 14 not 13.** I had said "13 others" by subtracting Ultraslim;
+  Ultraslim was in the AGREEING set (all four spellings at +6), so nothing was
+  subtracted. Naming the miscount because the number was what Keith was asked to
+  review.
+
+  **Group A — a one-submission row answering against hundreds.** Same vendor,
+  same model, one punctuation mark apart, and nothing collided so nothing
+  refused:
+
+  | spelling | was | now |
+  |---|---|---|
+  | `DVD-RAM GH24NS95` | +667 / 1 | **+6 / 1315** |
+  | `DVDRAM GSA-E60L` | +667 / 1 | **+102 / 247** |
+  | `DVDRAM- GP65NB60` | +102 / 1 | **+6 / 1151** |
+  | `CDDVDW SE -218GN` | +102 / 1 | **+6 / 197** |
+
+  GH24NS95 and GSA-E60L point OPPOSITE ways — hyphenated is the minority in one
+  and the majority in the other. That is the concrete reason this is a reviewed
+  list rather than a rule.
+
+  **Group B — agreeing spellings, evidence only.** `HP DVDROM DT30N` +103 (9+3 =
+  12) and the two `ATAPI CD` spellings of ATAPI CD-ROM +12 (1+1 = 2).
+  `16X DVD-` + `ROM` stays its own key, so the product `ROM` alone is still
+  ERR_AMBIGUOUS — asserted, as the check that the alias did not over-reach.
+
+  **TWO ARMS HAD TO BE ADDED, and the first was found by predicting it.**
+
+  1. *An aliased REDUMP row must be KEPT by the retraction rule.* The rule asks
+     "does AccurateRip still list THIS NAME at THIS value?"; once aliased,
+     `live[key]` is the merged DRIVE's value, so a mismatch reads as SUPERSEDED.
+     It dropped three rows and with them the ONLY copies of
+     `HL-DT-ST DVD-RAM GH24NS95`, `DVDRAM GSA-E60L` and `DVDRAM- GP65NB60` —
+     AccurateRip files those under "LG Electronics", so no AR spelling replaced
+     them. **`assert_every_name_survives` could not see it**: its reference is
+     `kept` plus AR spellings, and a dropped row is in neither, so the
+     requirement shrank exactly as far as the table did. The vacuous-guard shape,
+     third occurrence. Now guarded directly: no dropped row may have an aliased
+     key, which fires the moment the arm is removed (falsified — it names all
+     three).
+  2. *An aliased REDUMP row contributes its SPELLING but no VALUE.* REDUMP's
+     table IS AccurateRip's 2022 import, so its +667 for that name is the same
+     datum `read_ar()` already discarded for +6/1315. Letting it claim an offset
+     re-entered the discarded row by the other door and `merge()` read one datum
+     as two sources disagreeing: `conflicting_keys` 0 -> 3, three rows shipping
+     `ACCUDISC_OFFSET_F_ADJUDICATED` — telling a caller the sources disagreed
+     about a disagreement the alias itself created. Both back to 0.
+
+  Final: **5881 rows either way, zero names lost or gained**, `redump_superseded`
+  back to 9, `conflicting_keys` 0, AR keys 4772 -> 4765, rival-offset keys
+  9 -> 13. Falsified in both directions. **A build error was nearly missed** —
+  `grep -c error` returned 1 while the stale test binary still reported PASS; the
+  compile had failed on a wrong constant name. Check the build, not the binary.
+
+  **The remaining TEN families are deliberately untouched**, reviewed and
+  recorded rather than left unexamined:
+  - *Do not merge:* `56X CDROM` (different vendors, plausibly two drives);
+    `ATAPI CDROM 48X`/`52X` — the dot form is +12 and the space form +691 across
+    **two independent model numbers**, so the punctuation is a working
+    discrimination, not a typo; `DVD RW` (category words, two already in
+    `GENERIC_PRODUCTS`); `DVDROM DH60N` (crosses vendors, no confident read).
+  - *Needs judgement, both spellings backed:* `CDRW 52X32` (+738/88 vs +6/2),
+    `CD-RW 52XMAX` (+688/31 vs +6/10 — not lopsided enough to read as a
+    mis-submission), `LG ELECTRONICSDVD-RAM` (+102/14 vs +6/1).
+
+  **The survey's scope, stated so it is not mistaken for the class.** It finds
+  PRODUCT strings differing only by spacing or punctuation. It cannot see a
+  family whose VENDOR also differs — Ultraslim, which Keith found and the survey
+  did not — nor one whose product WORDS differ: `HL-DT-ST` GHA2N is listed as
+  `DVD+-RW GHA2N` (169), `DVD-RAM GHA2N` (69) and `DVDRAM GHA2N` (71), one drive
+  with 309 submissions split three ways, all agreeing at +667. Invisible here.
 
 - **`ACCUDISC_OFFSET_MAX_VALUES` IS FROZEN BY THE ABI — and the note this
   replaces was wrong about the remedy.** It said to derive the `values[]` write

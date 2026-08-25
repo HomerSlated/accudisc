@@ -284,9 +284,33 @@ def src_names(mask: int) -> str:
 # best-evidenced spelling so the merge reads naturally; it is a join key only and
 # never reaches the table, which still emits EVERY spelling as its own row.
 KEY_ALIAS = {
+    # ONE DRIVE, FOUR NAMES — evidence split, offset never in doubt (all +6).
     "LENOVO ULTRASLIM DVD":   "THINKPAD ULTRASLIM DVD",
     "LENOVO ULTRASLIMDVD":    "THINKPAD ULTRASLIM DVD",
     "THINK PLUSULTRASLIMDVD": "THINKPAD ULTRASLIM DVD",
+
+    # ONE SUBMISSION CONTRADICTING HUNDREDS. Same vendor, same model number, one
+    # punctuation mark apart, and the minority row ANSWERS — nothing collides, so
+    # a drive reporting the losing spelling was handed a wrong offset at exit 0.
+    # Merging lets read_ar()'s rival-offset resolution pick the evidenced value.
+    #
+    # The two GH24NS95/GSA-E60L lines point OPPOSITE WAYS — hyphenated is the
+    # minority in one and the majority in the other — which is the concrete
+    # reason this is a reviewed list and not a "strip the hyphen" rule.
+    "LG ELECTRONICS DVD-RAM GH24NS95": "LG ELECTRONICS DVDRAM GH24NS95",
+    "LG ELECTRONICS DVDRAM- GP65NB60": "LG ELECTRONICS DVDRAM GP65NB60",
+    "LG ELECTRONICS DVDRAM-GP65NB60":  "LG ELECTRONICS DVDRAM GP65NB60",
+    "LG ELECTRONICS DVDRAM GSA-E60L":  "LG ELECTRONICS DVD-RAM GSA-E60L",
+    "TSSTCORP CDDVDW SE -218GN":       "TSSTCORP CDDVDW SE-218GN",
+
+    # AGREEING SPELLINGS, so nothing changes but the reported evidence. Both HP
+    # spellings of DT30N are +103; the +102 in that family is HL-DT-ST's, a real
+    # vendor difference the narrowing already handles and NOT aliased here. Both
+    # "ATAPI CD" spellings are +12 and are one drive, ATAPI CD-ROM, cut across
+    # the eight-byte vendor field; "16X DVD-" + "ROM" is a different drive and
+    # deliberately stays its own key.
+    "HP DVDROM DT30N":  "HP DVD-ROM DT30N",
+    "ATAPI CD -ROM":    "ATAPI CD ROM",
 }
 
 
@@ -323,7 +347,7 @@ def norm(s: str) -> str:
     return " ".join(s.split())
 
 
-def fold(vendor: str, product: str) -> str:
+def fold(vendor: str, product: str, alias: bool = True) -> str:
     """The build-time join key: aliased, case- and underscore-folded, collapsed.
 
     Case folding matches the runtime, which folds too (adsc_inquiry_normalize
@@ -363,7 +387,12 @@ def fold(vendor: str, product: str) -> str:
     # LAST, so an alias is written in the form every other key already has —
     # upper-cased, collapsed, vendor-aliased, underscores folded. Writing one in
     # raw INQUIRY form would simply never match, and silently.
-    return KEY_ALIAS.get(key, key)
+    #
+    # alias=False returns the key BEFORE this step, which apply_retractions
+    # needs: the retraction rule compares a name against AccurateRip's listing of
+    # THAT NAME, and after aliasing it would be comparing against another drive's
+    # merged value. See the ALIASED arm there.
+    return KEY_ALIAS.get(key, key) if alias else key
 
 
 # --------------------------------------------------------------------------
@@ -662,11 +691,34 @@ def apply_retractions(redump, prov, ar, stats):
     run into the product, so no whole-field alias can reach it.
     """
     live = {fold(a["vendor"], a["product"]): a for a in ar}
-    kept, dropped, unjoined, rescued = [], [], [], []
+    kept, dropped, unjoined, rescued, aliased = [], [], [], [], []
     rebadge_used: set[str] = set()
 
     for vendor, product, off in redump:
         key = fold(vendor, product)
+        raw = fold(vendor, product, alias=False)
+        if raw != key:
+            # ALIASED, so THE RETRACTION RULE DOES NOT APPLY — and this arm is
+            # here because omitting it silently deleted three real spellings.
+            #
+            # The rule asks "does AccurateRip still list THIS NAME at THIS
+            # value?". Once KEY_ALIAS has asserted that this name and another are
+            # one drive, live[key] is the DRIVE's merged value rather than this
+            # name's listing, so an offset mismatch is not AccurateRip
+            # withdrawing anything — it is the alias doing what it was added to
+            # do. Treating it as SUPERSEDED dropped the row, and with it the only
+            # copy of a spelling AccurateRip files under a different vendor:
+            # HL-DT-ST DVD-RAM GH24NS95, DVDRAM GSA-E60L and DVDRAM- GP65NB60 all
+            # vanished, measured — and assert_every_name_survives could NOT see
+            # it, because its reference is `kept` and a dropped row is not there.
+            #
+            # Keeping the row emits the SPELLING; the merged key supplies the
+            # VALUE, so the drive answers with the well-evidenced offset under
+            # every name it is known by. Listed rather than silent: an arm that
+            # skips a guard must be visible in the run that skips it.
+            aliased.append((vendor, product, off, key))
+            kept.append((vendor, product, off))
+            continue
         # The provenance must describe THIS value, not merely this drive: a key
         # the 2022 list held twice describes each of its values separately.
         snap = prov.get(key, {}).get(off)
@@ -708,6 +760,30 @@ def apply_retractions(redump, prov, ar, stats):
             dropped.append(("SUPERSEDED", vendor, product, off, snap_subs, snap_pct, a))
         else:
             kept.append((vendor, product, off))
+
+    # NO ALIASED NAME MAY BE DROPPED. The arm above returns before the retract
+    # and supersede arms, so this cannot fire while that arm exists — which is
+    # the point: it fires the moment someone removes or reorders it.
+    #
+    # Written because nothing else could see the failure. Without the arm, three
+    # REDUMP rows were dropped as SUPERSEDED and the ONLY copies of
+    # HL-DT-ST DVD-RAM GH24NS95, DVDRAM GSA-E60L and DVDRAM- GP65NB60 left the
+    # table — AccurateRip files those under "LG Electronics", so no AR spelling
+    # replaced them. assert_every_name_survives() could not catch it: its
+    # reference is `kept` plus the AR spellings, and a dropped row is in neither,
+    # so the requirement shrank exactly as far as the table did. That is the
+    # vacuous-guard shape this file has now hit three times.
+    mis_dropped = sorted(
+        (v, pr, o) for _, v, pr, o, *_ in dropped
+        if fold(v, pr, alias=False) != fold(v, pr)
+    )
+    if mis_dropped:
+        sys.exit(
+            f"{len(mis_dropped)} KEY_ALIAS'd row(s) were dropped by the "
+            f"retraction rule — {mis_dropped[:3]}. An aliased name is a SPELLING "
+            "of a merged drive, not a value AccurateRip withdrew; dropping it "
+            "deletes the only copy of a name no AccurateRip row carries."
+        )
 
     # CONSERVATION. Every input row leaves here exactly once, kept or dropped.
     # This is not belt-and-braces: assert_every_name_survives() re-reads the AR
@@ -764,6 +840,12 @@ def apply_retractions(redump, prov, ar, stats):
                   if a else "absent from the live AccurateRip list")
         print(f"  {reason} {vendor!r} {product!r}: {off:+d} "
               f"(2022: {subs} subs {pct}% agree) — {detail}")
+    if aliased:
+        print(f"  {len(aliased)} REDUMP row(s) KEPT under a KEY_ALIAS — the "
+              "retraction rule compares a name against its own listing and "
+              "these names were merged into another:")
+        for vendor, product, off, key in sorted(aliased):
+            print(f"    ~ {vendor!r} {product!r} {off:+d} -> {key!r}")
     if unjoined:
         print(f"  {len(unjoined)} REDUMP row(s) of UNKNOWN PROVENANCE — kept, rule not applied:")
         for vendor, product, off in sorted(unjoined):
@@ -821,7 +903,24 @@ def merge(redump, ar) -> tuple[list[Row], dict]:
 
     for vendor, product, off in redump:
         key = fold(vendor, product)
-        claims[key][off] |= SRC_REDUMP
+        # AN ALIASED ROW CONTRIBUTES ITS SPELLING, NOT A VALUE.
+        #
+        # REDUMP's table IS AccurateRip's list frozen in 2022, so a REDUMP row
+        # under a name KEY_ALIAS has merged carries the SAME datum read_ar()
+        # already weighed on the AccurateRip side — and, where they differ,
+        # already DISCARDED: "DVD-RAM GH24NS95" +667 is the one submission that
+        # lost to +6 on 1315. Letting it claim an offset here re-enters that
+        # discarded row by the other door, and merge() then reads two identical
+        # data as two sources disagreeing. Measured: 3 keys became
+        # conflicting_keys and shipped ACCUDISC_OFFSET_F_ADJUDICATED, which tells
+        # a caller "the sources disagreed and this is what most agreed on" about
+        # a disagreement that only the alias created.
+        #
+        # The spelling still goes in, which is the whole point of keeping the row
+        # in apply_retractions: the drive must answer under every name it is
+        # known by. Its VALUE comes from the merged key.
+        if fold(vendor, product, alias=False) == key:
+            claims[key][off] |= SRC_REDUMP
         spellings[key].add((norm(vendor).upper(), norm(product).upper()))
 
     for a in ar:

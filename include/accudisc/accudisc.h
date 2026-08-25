@@ -27,7 +27,47 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 18 /* 0.18.0: ONE DRIVE, SEVERAL NAMES — and a
+#define ACCUDISC_VERSION_MINOR 19 /* 0.19.0: THREE DRIVES CHANGE OFFSET. A
+                                  * spelling backed by ONE submission was
+                                  * answering against a spelling of the SAME
+                                  * drive backed by hundreds, and nothing
+                                  * collided so nothing refused:
+                                  *   DVD-RAM GH24NS95  +667/1  -> +6/1315
+                                  *   DVDRAM GSA-E60L   +667/1  -> +102/247
+                                  *   DVDRAM- GP65NB60  +102/1  -> +6/1151
+                                  *   CDDVDW SE -218GN  +102/1  -> +6/197
+                                  * Same vendor, same model number, one
+                                  * punctuation mark apart. A CALLER THAT CACHED
+                                  * ANY OF THESE HAS A WRONG OFFSET — up to 661
+                                  * samples of misalignment, previously reported
+                                  * at exit 0 with no warning.
+                                  * GH24NS95 and GSA-E60L point OPPOSITE ways —
+                                  * hyphenated is the minority in one and the
+                                  * majority in the other — which is why
+                                  * KEY_ALIAS is a reviewed list and not a
+                                  * "strip the hyphen" rule. Of 146 spacing and
+                                  * punctuation groups in this corpus 132 agree
+                                  * and 14 do not, and some of the 14 are two
+                                  * genuinely different drives; the remaining
+                                  * ten are deliberately untouched.
+                                  * Two more families merge with NO verdict
+                                  * change, only pooled evidence: HP DVDROM
+                                  * DT30N (+103, 9+3=12) and the two ATAPI CD
+                                  * spellings of ATAPI CD-ROM (+12, 1+1=2).
+                                  * "16X DVD-" + "ROM" stays its own key, so the
+                                  * product "ROM" alone is still ambiguous.
+                                  * NO API CHANGE, and no row gained or lost —
+                                  * 5881 either way, with every spelling still
+                                  * emitted. Getting that right needed two arms
+                                  * that did not exist: an aliased REDUMP row is
+                                  * KEPT by the retraction rule (dropping it
+                                  * deleted three names outright) and
+                                  * contributes its SPELLING but no VALUE, since
+                                  * REDUMP is AccurateRip's own 2022 import and
+                                  * re-entering its copy made merge() read one
+                                  * datum as two sources disagreeing.
+                                  *
+                                  * 0.18.0: ONE DRIVE, SEVERAL NAMES — and a
                                   * phantom product removed.
                                   * New KEY_ALIAS in tools/gen_offsets.py pools
                                   * the evidence of a drive AccurateRip lists

@@ -393,6 +393,76 @@ int main(void)
     assert(info.read_offset == 564);
     assert(info.ar_submissions == 8);
 
+    /* --- KEY_ALIAS group A: a 1-submission row that used to answer ---------
+     * Same vendor, same model number, one punctuation mark apart — and the
+     * minority spelling ANSWERED, because nothing collided with it. A drive
+     * reporting "DVD-RAM GH24NS95" was handed +667 on ONE submission while
+     * "DVDRAM GH24NS95" carried +6 on 1315, exit 0 either way. Merging the keys
+     * lets read_ar()'s rival-offset resolution decide it, and every spelling of
+     * the drive now answers with the evidenced value.
+     *
+     * GH24NS95 and GSA-E60L point OPPOSITE WAYS — hyphenated is the minority in
+     * one and the majority in the other — which is why this is a reviewed list
+     * and not a "strip the hyphen" rule. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("HL-DT-ST", "DVD-RAM GH24NS95", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 6 && info.ar_submissions == 1315);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("HL-DT-ST", "DVDRAM GSA-E60L", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 102 && info.ar_submissions == 247);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("HL-DT-ST", "DVDRAM- GP65NB60", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 6 && info.ar_submissions == 1151);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("TSSTCORP", "CDDVDW SE -218GN", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 6 && info.ar_submissions == 197);
+
+    /* NOT flagged ADJUDICATED. REDUMP's table IS AccurateRip's 2022 import, so
+     * its +667 for this name is the SAME datum AccurateRip already discarded for
+     * +6/1315 — not a second source disagreeing. Letting the aliased REDUMP row
+     * claim an offset made merge() read one datum as two and set the flag on
+     * three keys, which would tell a caller the sources disagreed about a
+     * disagreement the alias itself created. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("LG ELECTRONICS", "DVD-RAM GH24NS95",
+                                       &info) == ACCUDISC_OK);
+    assert(!(info.flags & ACCUDISC_OFFSET_F_ADJUDICATED));
+    assert(info.sources == (ACCUDISC_OFFSET_SRC_REDUMP
+                            | ACCUDISC_OFFSET_SRC_AR));
+
+    /* Group B: spellings that already AGREED, so only the evidence moves. Both
+     * HP spellings of DT30N are +103 (9 + 3); the +102 in that family is
+     * HL-DT-ST's, a real vendor difference the narrowing handles and which is
+     * deliberately NOT aliased. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("HP", "DVDROM DT30N", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 103 && info.ar_submissions == 12);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("HL-DT-ST", "DVDROM DT30N", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 102);
+
+    /* The two "ATAPI CD" spellings are one drive (ATAPI CD-ROM, cut across the
+     * eight-byte vendor field) and both +12. "16X DVD-" + "ROM" is a DIFFERENT
+     * drive and stays its own key — so the product "ROM" is still ambiguous on
+     * its own, which is the check that the alias did not over-reach. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("ATAPI CD", "-ROM", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 12 && info.ar_submissions == 2);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("16X DVD-", "ROM", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 738);
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("NOSUCHVENDOR4", "ROM", &info)
+           == ACCUDISC_ERR_AMBIGUOUS);
+
     /* NOT extended to every fragment either. "-952E-AKV" is just as much a
      * spill ("E-IDE CD" + "-952E-AKV" = E-IDE CD-952E-AKV) and stays reachable
      * on the product alone, because it is DISTINCTIVE: nothing but the drive it
