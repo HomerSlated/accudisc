@@ -27,7 +27,42 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 19 /* 0.19.0: THREE DRIVES CHANGE OFFSET. A
+#define ACCUDISC_VERSION_MINOR 20 /* 0.20.0: WRITE-OFFSET MEASUREMENT, the last
+                                  * of the eight offset items and the one that
+                                  * never transferred, because a
+                                  * burn-and-read-back is a PROCEDURE rather
+                                  * than a table.
+                                  * New accudisc_write_offset_signal() and
+                                  * accudisc_write_offset_locate(), plus
+                                  * accudisc_write_offset_info. The library
+                                  * supplies the signal and the arithmetic —
+                                  * what every consumer would otherwise
+                                  * reimplement and get subtly wrong, the same
+                                  * rationale as accudisc_ctdb_repair. It does
+                                  * NOT orchestrate: the burn is accudisc_write
+                                  * and the read-back is the ordinary read
+                                  * path, so no library call destroys a disc.
+                                  * THE READ OFFSET IS A REQUIRED INPUT. The
+                                  * read-back carries both offsets summed, so a
+                                  * defaulted 0 would return a confident number
+                                  * wrong by exactly the drive's read offset —
+                                  * and 0 is legitimate for hundreds of drives,
+                                  * so nothing downstream could tell. The CLI
+                                  * refuses rather than assuming.
+                                  * TWO pulses, at 1 s and 60 s, so a defective
+                                  * disc can be told from a real offset. They
+                                  * are never averaged: disagreement returns
+                                  * ACCUDISC_ERR_AMBIGUOUS with both values and
+                                  * ACCUDISC_WOFF_F_INCONSISTENT.
+                                  * Also fixes a PHANTOM NAME: the header and
+                                  * gen_offsets.py both cited
+                                  * accudisc_measure_write_offset as though it
+                                  * shipped. It never existed — a name for work
+                                  * not yet done, leaked into the contract.
+                                  * ADDITIVE. No existing call, struct or field
+                                  * changes.
+                                  *
+                                  * 0.19.0: THREE DRIVES CHANGE OFFSET. A
                                   * spelling backed by ONE submission was
                                   * answering against a spelling of the SAME
                                   * drive backed by hundreds, and nothing
@@ -496,7 +531,8 @@ ACCUDISC_API int accudisc_drive_identify(accudisc_device *dev,
  *
  * The table is compiled from the two live primary sources on the development
  * cycle (tools/gen_offsets.py) — READ offsets only; a write offset is a
- * measurement (accudisc_measure_write_offset), never a table lookup. There is no runtime lookup of any kind, online or
+ * MEASUREMENT (accudisc_write_offset_signal / _locate below), never a table
+ * lookup. There is no runtime lookup of any kind, online or
  * otherwise. Where sources disagree the query says so and refuses to pick;
  * where nothing holds the drive it says that instead. Both are explicit
  * outcomes rather than a default, because a plausible wrong offset is worse
@@ -641,6 +677,106 @@ ACCUDISC_API int accudisc_offset_for_device(accudisc_device *dev,
  * silently returned whichever row the table listed first. Prefer
  * accudisc_offset_for_inquiry, which can report what the disagreement was. */
 ACCUDISC_API int accudisc_read_offset(accudisc_device *dev, int32_t *samples);
+
+/* ---------------------------------------------------------------------------
+ * WRITE OFFSET — a measurement, and why there is no table for it
+ *
+ * A drive's WRITE offset is how far early or late it lays audio down on a disc.
+ * Unlike the read offset it cannot be looked up here: no live source publishes
+ * one. (AccurateRip and REDUMP publish READ offsets only — redumper's
+ * offsets.ixx declares DriveReadOffset and nothing else, and its "write offset"
+ * code is per-DISC detection, a property of the disc in the tray rather than of
+ * the drive. The ~112 drive write offsets that did exist were EAC's OffsetBase,
+ * dropped as a source in 2026-08: a 2004 Wayback snapshot of a page that no
+ * longer exists is not an independent collection.)
+ *
+ * So it is obtained by BURNING A KNOWN SIGNAL AND READING IT BACK. That is a
+ * procedure, and the procedure belongs to the caller: this library supplies the
+ * two pieces every consumer would otherwise reimplement and get subtly wrong —
+ * the signal, and the arithmetic that finds it again. The burn is
+ * accudisc_write and the read-back is the ordinary read path.
+ *
+ *     1. accudisc_write_offset_signal() -> PCM
+ *     2. caller burns it (accudisc_write), reads it back
+ *     3. accudisc_write_offset_locate(read-back, drive READ offset) -> W
+ *
+ * SIGN CONVENTION, the same one the read offset uses: POSITIVE means the drive
+ * burns LATE — the audio sits W samples further into the disc than it should.
+ * To correct a burn, shift the source by -W: W > 0 trims W samples from the
+ * front, W < 0 prepends |W| samples of silence.
+ *
+ * THE READ OFFSET IS AN INPUT, NOT AN OPTIONAL ONE. What comes back off the
+ * disc carries both offsets summed, so the write offset is only recoverable if
+ * the read offset is already known. A caller that does not know it must say so
+ * rather than pass 0: zero is a legitimate read offset for hundreds of drives,
+ * so a defaulted 0 returns a confident number that is wrong by exactly the
+ * drive's read offset. Same reasoning as ACCUDISC_OFFSET_NONE.
+ * ------------------------------------------------------------------------- */
+
+/* Signal geometry. Fixed constants rather than parameters so that a disc burnt
+ * by one tool can be measured by another — the positions are the contract, and
+ * the same two are used by cdda2img's `setup --write-offset`. 75 seconds with a
+ * one-frame noise burst at 1 s and at 60 s: two independent measurements of the
+ * same quantity, which is what lets a defective disc be told from a real
+ * offset. Both sit inside AccurateRip's 2940-sample exclusion boundary, so a
+ * disc made this way still verifies. */
+#define ACCUDISC_WOFF_SAMPLES   3307500u /* stereo sample pairs = 75 s */
+#define ACCUDISC_WOFF_PULSE_A     44100u /* 1 s  */
+#define ACCUDISC_WOFF_PULSE_B   2646000u /* 60 s */
+#define ACCUDISC_WOFF_PULSE_LEN     588u /* one CD frame */
+#define ACCUDISC_WOFF_SEARCH       8820  /* +/- samples scanned around each
+                                          * expected position: 200 ms, far
+                                          * wider than any real offset (the
+                                          * read-offset corpus tops out near
+                                          * 1300) and far narrower than the
+                                          * 59-second gap between the pulses,
+                                          * so the two windows cannot overlap
+                                          * and a hit is unambiguous */
+
+#define ACCUDISC_WOFF_F_INCONSISTENT 0x01u /* the two pulses disagree. The
+                                            * result is still returned — it is
+                                            * evidence about the DISC — but it
+                                            * is not a drive measurement, and a
+                                            * caller must not store it as one */
+
+#define ACCUDISC_WRITE_OFFSET_INFO_INIT \
+    { .size = sizeof(accudisc_write_offset_info) }
+
+typedef struct accudisc_write_offset_info {
+    uint32_t size;         /* = sizeof(accudisc_write_offset_info). NOT optional */
+    int32_t  write_offset; /* samples; ACCUDISC_OFFSET_NONE unless the call
+                            * returned ACCUDISC_OK */
+    int32_t  offset_a;     /* per-pulse results, so a caller can see WHY a */
+    int32_t  offset_b;     /* run was rejected rather than only that it was */
+    int32_t  found_a;      /* where each pulse actually landed, in READ-OFFSET-
+                            * CORRECTED sample coordinates; ACCUDISC_OFFSET_NONE
+                            * if that pulse was not located at all */
+    int32_t  found_b;
+    uint8_t  flags;        /* ACCUDISC_WOFF_F_* */
+} accudisc_write_offset_info;
+
+/* Fill pcm with the test signal: `samples` stereo pairs, 2 int16 each, s16 host
+ * order — ACCUDISC_WOFF_SAMPLES pairs is the full 75 s. Deterministic: the same
+ * bytes every call, on every machine, so a disc can be re-measured later.
+ *
+ * Returns ACCUDISC_ERR_INVAL if pcm is NULL or samples is not exactly
+ * ACCUDISC_WOFF_SAMPLES — a short signal would place pulse B off the end and
+ * silently halve the measurement to one pulse. */
+ACCUDISC_API int accudisc_write_offset_signal(int16_t *pcm, uint32_t samples);
+
+/* Locate both pulses in audio read back off the burnt disc and report the write
+ * offset. `pcm` is the read-back, `samples` stereo pairs; `read_offset` is the
+ * READING drive's offset in samples (see above — it is required, and passing a
+ * wrong one biases the answer by exactly its error).
+ *
+ * ACCUDISC_OK when both pulses were found AND agree. ACCUDISC_ERR_NOTFOUND when
+ * either could not be located — found_a/found_b say which. ACCUDISC_ERR_AMBIGUOUS
+ * when both were found and DISAGREE: that is a defective disc rather than a
+ * drive property, so it is refused rather than averaged, and F_INCONSISTENT is
+ * set with both values left in place. */
+ACCUDISC_API int accudisc_write_offset_locate(const int16_t *pcm, uint32_t samples,
+                                              int32_t read_offset,
+                                              accudisc_write_offset_info *out);
 
 /* ATIP (Absolute Time In Pregroove) of a recordable disc: the lead-in start
  * time doubles as the manufacturer identification code (97:SS:FF for CD-R),

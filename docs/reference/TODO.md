@@ -1000,12 +1000,63 @@ Consequences to work through, none of them decided:
 - **Integration shape, still undecided:** (a) build-time filter dropping
   identifier-less rows, (b) runtime raw-first with reduced-form fallback, or
   both. Keith's redirection may retire (b) entirely — settle the principle first.
-- **Point 3 of Keith's eight — write-offset measurement — NOT STARTED.** The only
-  unstarted item, and the one thing that did not transfer, because a
-  burn-and-read-back is a procedure rather than a table. Reference implementation
-  is cdda2img's `src/cdda2img/write_offset.py` (`cdda2img setup --write-offset`),
-  explicitly protected from the handover deletion. Read it before writing ours;
-  rewrite, never copy.
+- **Point 3 of Keith's eight — write-offset measurement — DONE 2026-08-25
+  (0.20.0).** The last of the eight. `accudisc_write_offset_signal()` and
+  `accudisc_write_offset_locate()` + `accudisc_write_offset_info`; CLI
+  `write-offset --signal`/`--measure`; `src/write/write_offset.c`.
+
+  **The library supplies the signal and the arithmetic, NOT the procedure.** The
+  burn is `accudisc_write` and the read-back is the ordinary read path, so no
+  library call destroys a disc and the CLI verb touches no device. Same rationale
+  as `accudisc_ctdb_repair`: what crosses is the part every consumer would
+  otherwise reimplement and get subtly wrong.
+
+  **THE READ OFFSET IS A REQUIRED INPUT.** The read-back carries both offsets
+  summed. A defaulted 0 returns a confident number wrong by exactly the drive's
+  read offset, and 0 is legitimate for hundreds of drives, so nothing downstream
+  could tell — the CLI refuses with exit 1 rather than assuming.
+
+  **THE CDEmu TEST CANNOT VALIDATE THE ARITHMETIC, and that is why the unit test
+  exists.** On CDEmu `write_offset == 0` and `read_offset == 0`, so the
+  correction term drops out and a sign error in it is invisible; a green run
+  proves the plumbing and nothing else. `tests/test_write_offset.c` builds the
+  discriminating case with no drive — pulses at `expected + R + W`, `read_offset
+  = R`, result must be exactly `W` — with R and W of OPPOSITE SIGN and
+  |R| != |W| so no compensating error survives (adding R where it should be
+  subtracted gives W + 2R). Falsified: negating the term and dropping it both
+  fire, at the discriminator rather than somewhere downstream.
+
+  **A vacuous assertion was caught in the same file.** The isolated-click check
+  originally ran against a SILENT buffer and asserted `ERR_NOTFOUND` — which
+  comes back whether the click is rejected or not, because pulse B is missing
+  either way. Measured: with the run requirement weakened to 1 the test still
+  passed. Now run against an intact signal, so rejecting the click is the only
+  thing that can produce the expected answer. Shadowed guard, fourth occurrence.
+
+  Hardware-adjacent verification, CDEmu `/dev/sr1`: generate -> burn (5625
+  sectors) -> `read --pcm` -> measure = **+0**, and the round-trip is
+  byte-identical (`cmp`, not the return code). The read-offset term was then
+  shown to move the answer on that real read-back: `--read-offset 30` -> `-30`,
+  `--read-offset -102` -> `+102`. A real disc is still owed.
+
+  CDEmu is itself a good demonstration of the ambiguity machinery: it reports
+  product `CD-ROM`, the four-offset key, so `accudisc offset` refuses to answer
+  and `--read-offset 0` has to be supplied from knowledge (a virtual drive does
+  no seeking) rather than from the table.
+
+  Reference was cdda2img's `src/cdda2img/write_offset.py`. Only the geometry,
+  the signal and the locator crossed; its XDG paths, TOML store, cycle summaries
+  and interactive loops are caller policy and stayed there.
+
+  **Not carried through to the Python binding** — `DriveOffset` has no
+  write-offset counterpart yet. cdda2img drives this through the CLI today, so
+  nothing is blocked, but the project's habit is every surface in step.
+
+- **A PHANTOM NAME in the public header — fixed 2026-08-25 (0.20.0).** Both
+  `accudisc.h` and `tools/gen_offsets.py` cited `accudisc_measure_write_offset`
+  as though it shipped. It never existed: a name for work not yet done that
+  leaked into the installed contract, found while surveying open work. Both now
+  name the two functions that do exist.
 - **Uncommitted in the tree:** the case-folding change (Keith's ruling —
   upper-case the table, upper-case the query) across `accudisc.h`,
   `src/drive/offsets.c`, `offsets_db.inc`, `tests/test_offsets.c`,

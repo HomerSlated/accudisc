@@ -41,6 +41,7 @@ cmd_pregaps:pregaps
 cmd_c2lag:c2lag
 cmd_media:media
 cmd_write:write
+cmd_write_offset:write-offset
 cmd_disc:disc
 report_offset:offset
 dump_blob:read'

@@ -67,6 +67,14 @@ static void usage(FILE *to)
         "                 [--byteswap] [--speed X] [--progress-fd N]\n"
         "                 (--cdtext takes a raw format-05 blob from read --cdtext;\n"
         "                  needs blank disc)\n"
+        "  write-offset   measure how early or late a drive BURNS audio.\n"
+        "                 --signal PCM [--toc TOC] writes the 75 s test\n"
+        "                 signal; --measure PCM --read-offset N locates it\n"
+        "                 in the read-back and reports the write offset.\n"
+        "                 Needs no device: burn with write and read back\n"
+        "                 with read --pcm in between. Exit 3 if a pulse is\n"
+        "                 missing, or if the two disagree (a defective\n"
+        "                 disc — never averaged)\n"
         "  cxscan         hardware C1/C2/CU error census (needs --driver)\n"
         "  version        print the library version\n"
         "\n"
@@ -1225,6 +1233,171 @@ static void write_progress(void *user, uint32_t done, uint32_t total)
     }
 }
 
+/* write-offset: expose the two library calls, and NOTHING ELSE.
+ *
+ * The measurement is generate -> BURN -> READ BACK -> locate, and the two
+ * middle steps are `accudisc write` and `accudisc read --pcm`, which already
+ * exist. Orchestrating them here would put a destructive procedure behind one
+ * verb; composing them is the caller's job, so this command does the two ends
+ * and neither touches a device.
+ *
+ *     accudisc write-offset --signal woff.pcm --toc woff.toc
+ *     accudisc --device DEV write --toc woff.toc --bin woff.pcm
+ *     accudisc --device DEV read --pcm back.pcm
+ *     accudisc write-offset --measure back.pcm --read-offset N
+ */
+static int cmd_write_offset(int argc, char **argv)
+{
+    const char *sig_path = NULL, *toc_path = NULL, *meas_path = NULL;
+    const char *ro_arg = NULL;
+    accudisc_write_offset_info info = ACCUDISC_WRITE_OFFSET_INFO_INIT;
+    int16_t *pcm = NULL;
+    long ro;
+    char *end;
+    FILE *f;
+    size_t n;
+    int i, rc;
+
+    for (i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "--signal") && i + 1 < argc)
+            sig_path = argv[++i];
+        else if (!strcmp(argv[i], "--toc") && i + 1 < argc)
+            toc_path = argv[++i];
+        else if (!strcmp(argv[i], "--measure") && i + 1 < argc)
+            meas_path = argv[++i];
+        else if (!strcmp(argv[i], "--read-offset") && i + 1 < argc)
+            ro_arg = argv[++i];
+        else {
+            usage(stderr);
+            return 1;
+        }
+    }
+    if (!sig_path == !meas_path) {
+        fprintf(stderr, "accudisc: write-offset needs exactly one of "
+                        "--signal or --measure\n");
+        return 1;
+    }
+
+    pcm = malloc((size_t)ACCUDISC_WOFF_SAMPLES * 2 * sizeof(int16_t));
+    if (!pcm) {
+        fprintf(stderr, "accudisc: out of memory\n");
+        return 2;
+    }
+
+    if (sig_path) {
+        rc = accudisc_write_offset_signal(pcm, ACCUDISC_WOFF_SAMPLES);
+        if (rc != ACCUDISC_OK) {
+            fprintf(stderr, "accudisc: signal: %s\n", accudisc_strerror(rc));
+            free(pcm);
+            return 2;
+        }
+        f = fopen(sig_path, "wb");
+        if (!f || fwrite(pcm, 2 * sizeof(int16_t), ACCUDISC_WOFF_SAMPLES, f)
+                  != ACCUDISC_WOFF_SAMPLES) {
+            fprintf(stderr, "accudisc: write %s failed\n", sig_path);
+            if (f)
+                fclose(f);
+            free(pcm);
+            return 2;
+        }
+        fclose(f);
+        free(pcm);
+
+        if (toc_path) {
+            const char *base = strrchr(sig_path, '/');
+            base = base ? base + 1 : sig_path;
+            f = fopen(toc_path, "w");
+            if (!f) {
+                fprintf(stderr, "accudisc: write %s failed\n", toc_path);
+                return 2;
+            }
+            /* BOTH FILE fields in MSF. The .toc parser refuses the bare-integer
+             * form deliberately: cdrdao's grammar reads a bare start as SAMPLES
+             * and a bare length as BYTES, which is a silent misread waiting to
+             * happen. 75 s = 5625 frames = 01:15:00. */
+            fprintf(f, "CD_DA\n\nTRACK AUDIO\n  NO COPY\n  NO PRE_EMPHASIS\n"
+                       "  TWO_CHANNEL_AUDIO\n  FILE \"%s\" 00:00:00 01:15:00\n",
+                    base);
+            fclose(f);
+        }
+        printf("samples %u\npulse_a %u\npulse_b %u\n",
+               (unsigned)ACCUDISC_WOFF_SAMPLES, (unsigned)ACCUDISC_WOFF_PULSE_A,
+               (unsigned)ACCUDISC_WOFF_PULSE_B);
+        return 0;
+    }
+
+    /* THE READ OFFSET IS REQUIRED, not defaulted. What comes off the disc
+     * carries both offsets summed; defaulting to 0 would return a confident
+     * number wrong by exactly the drive's read offset, and 0 is a legitimate
+     * read offset for hundreds of drives so nothing downstream could tell. */
+    if (!ro_arg) {
+        fprintf(stderr,
+                "accudisc: --measure needs --read-offset N (the READING drive's\n"
+                "          offset in samples; `accudisc --device DEV offset`\n"
+                "          reports it). It is not optional and does not default\n"
+                "          to zero: the read-back carries both offsets summed.\n");
+        free(pcm);
+        return 1;
+    }
+    ro = strtol(ro_arg, &end, 10);
+    if (*ro_arg == '\0' || *end != '\0' || ro < -100000 || ro > 100000) {
+        fprintf(stderr, "accudisc: bad --read-offset '%s'\n", ro_arg);
+        free(pcm);
+        return 1;
+    }
+
+    f = fopen(meas_path, "rb");
+    if (!f) {
+        fprintf(stderr, "accudisc: open %s failed\n", meas_path);
+        free(pcm);
+        return 2;
+    }
+    n = fread(pcm, 2 * sizeof(int16_t), ACCUDISC_WOFF_SAMPLES, f);
+    fclose(f);
+    if (n != ACCUDISC_WOFF_SAMPLES) {
+        fprintf(stderr,
+                "accudisc: %s holds %zu sample pairs, need %u — the read-back\n"
+                "          must cover the whole 75 s signal, or pulse B is off\n"
+                "          the end and the cross-check is lost.\n",
+                meas_path, n, (unsigned)ACCUDISC_WOFF_SAMPLES);
+        free(pcm);
+        return 2;
+    }
+
+    rc = accudisc_write_offset_locate(pcm, ACCUDISC_WOFF_SAMPLES, (int32_t)ro,
+                                      &info);
+    free(pcm);
+
+    printf("read_offset %+d\n", (int)ro);
+    if (info.found_a != ACCUDISC_OFFSET_NONE)
+        printf("pulse_a %d expected %u offset %+d\n", info.found_a,
+               (unsigned)ACCUDISC_WOFF_PULSE_A, info.offset_a);
+    else
+        printf("pulse_a not found\n");
+    if (info.found_b != ACCUDISC_OFFSET_NONE)
+        printf("pulse_b %d expected %u offset %+d\n", info.found_b,
+               (unsigned)ACCUDISC_WOFF_PULSE_B, info.offset_b);
+    else
+        printf("pulse_b not found\n");
+
+    if (rc == ACCUDISC_OK) {
+        printf("write_offset %+d\n", info.write_offset);
+        return 0;
+    }
+    if (rc == ACCUDISC_ERR_AMBIGUOUS) {
+        printf("write_offset unknown\n");
+        fprintf(stderr,
+                "accudisc: the two pulses disagree (%+d vs %+d). That is a\n"
+                "          property of THIS DISC, not of the drive — nothing\n"
+                "          here averages them. Burn another and re-measure.\n",
+                info.offset_a, info.offset_b);
+        return 3;
+    }
+    printf("write_offset unknown\n");
+    fprintf(stderr, "accudisc: %s\n", accudisc_strerror(rc));
+    return 3;
+}
+
 static int cmd_write(accudisc_device *dev, int argc, char **argv)
 {
     const char *toc = NULL, *bin = NULL;
@@ -2033,6 +2206,12 @@ int main(int argc, char **argv)
         if (form == 1)
             return cmd_offset_free(ov, op);
     }
+
+    /* write-offset needs no device on either side: one verb writes a file, the
+     * other reads one. The burn and the read-back in between are the ordinary
+     * write/read commands. */
+    if (!strcmp(command, "write-offset"))
+        return cmd_write_offset(nrest, rest);
 
     /* Vendor opcodes and WRITE(10)/SEND CUE SHEET are blocked by the kernel's
      * SG_IO filter on read-only fds, so a permitted driver or the write

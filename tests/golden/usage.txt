@@ -52,6 +52,14 @@ commands:
                  [--byteswap] [--speed X] [--progress-fd N]
                  (--cdtext takes a raw format-05 blob from read --cdtext;
                   needs blank disc)
+  write-offset   measure how early or late a drive BURNS audio.
+                 --signal PCM [--toc TOC] writes the 75 s test
+                 signal; --measure PCM --read-offset N locates it
+                 in the read-back and reports the write offset.
+                 Needs no device: burn with write and read back
+                 with read --pcm in between. Exit 3 if a pulse is
+                 missing, or if the two disagree (a defective
+                 disc — never averaged)
   cxscan         hardware C1/C2/CU error census (needs --driver)
   version        print the library version
 

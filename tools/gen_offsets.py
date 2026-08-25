@@ -21,7 +21,7 @@ page that no longer exists, and EAC-the-application reads its offsets from
 AccurateRip over the network — so agreement between the two measures a corpus
 against its own archived ancestor, not two collections agreeing. Its one unique
 contribution was ~112 WRITE offsets, and write offsets are now a measurement
-(accudisc_measure_write_offset) rather than a table.
+(accudisc_write_offset_signal / _locate) rather than a table.
 
 Output is src/drive/offsets_db.inc, compiled into libaccudisc. Nothing at
 runtime looks anything up over a network; this tool runs on the development

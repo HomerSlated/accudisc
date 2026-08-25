@@ -17,6 +17,14 @@ parsed.
 
 Exit 3 per subcommand:
 
+- `write-offset`: `--measure` could not produce a drive measurement. Either a
+  pulse was not located (`pulse_a`/`pulse_b not found` — the read-back is not
+  the test signal, or is too damaged), or both were found and **disagree**, in
+  which case `write_offset unknown` is printed and both per-pulse offsets are
+  reported. A disagreement is a property of that DISC, not of the drive, so
+  nothing averages the two: burn another and re-measure. `--read-offset` is
+  mandatory and its absence is exit 1, not exit 3 — a missing argument is a
+  usage error, not a measurement that failed.
 - `read`: the image was delivered in full, but `hard > 0`, `suspect > 0`, or
   C2-flagged sectors remain after recovery. Exit 0 means no *relative* signal
   fired — it is **not** verification; absolute gates (AccurateRip/CTDB) are

@@ -556,6 +556,63 @@ see
 .B MACHINE OUTPUT
 below.
 .RE
+.SS write\-offset
+Measure how far early or late a drive
+.B burns
+audio. Unlike the read offset this cannot be looked up: no live source
+publishes per\-drive write offsets, so it is obtained by burning a known signal
+and reading it back. This subcommand supplies the two ends of that procedure
+and needs no device; the burn and the read\-back in between are the ordinary
+.B write
+and
+.B read \-\-pcm
+commands.
+.RS 4
+.TP
+.BI \-\-signal " FILE"
+Write the 75\-second test signal here as raw s16le PCM: digital silence with a
+one\-frame noise burst at 1\ s and another at 60\ s. Deterministic \(em the same
+bytes on every machine, so a disc can be re\-measured later and compared.
+.TP
+.BI \-\-toc " FILE"
+With
+.BR \-\-signal ,
+also write a matching cdrdao
+.I .toc
+naming it, ready to hand to
+.BR write .
+.TP
+.BI \-\-measure " FILE"
+Locate both pulses in a read\-back and report the write offset.
+.TP
+.BI \-\-read\-offset " N"
+The
+.B reading
+drive's offset in samples.
+.B Mandatory,
+and deliberately not defaulted: what comes off the disc carries the read and
+write offsets summed, so a defaulted zero would return a confident number wrong
+by exactly the drive's read offset \(em and zero is a legitimate read offset for
+hundreds of real drives, so nothing downstream could tell.
+.RE
+.PP
+Two pulses are measured, not one, so that a defective disc can be told from a
+real offset. If they disagree the command prints
+.I write_offset unknown
+with both per\-pulse results and exits 3; it never averages them, because the
+disagreement is a property of that disc rather than of the drive. Sign
+convention matches the read offset: positive means the drive burns
+.BR late ,
+so correcting a burn means shifting the source by \-W.
+.PP
+.RS 4
+.EX
+accudisc write\-offset \-\-signal w.pcm \-\-toc w.toc
+accudisc \-\-device /dev/sr0 write \-\-toc w.toc \-\-bin w.pcm
+accudisc \-\-device /dev/sr0 read \-\-pcm back.pcm
+accudisc write\-offset \-\-measure back.pcm \-\-read\-offset 30
+.EE
+.RE
 .SS cxscan
 Hardware C1/C2/CU error census, using the drive's own error counters (Plextor:
 Q\-Check). Requires
