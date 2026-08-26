@@ -449,6 +449,51 @@ lead-out is also 204143, so it never reaches LBA 224850: the one recurring site
 is unreachable there. A clean result on the music CD is therefore much weaker
 evidence than it will look.
 
+#### 2.15 The pressed-disc comparison — flawless at 40x, and what that does and does not show
+
+Keith supplied the newest pressed CD in his collection (11 tracks, lead-out
+204143). Same drive, same session, same read path.
+
+| what | result |
+|---|---|
+| `cxscan` @32x (C1/C2/CU hardware census) | C1 **2–14 per sample interval**, C2 **0**, CU **0** |
+| reference read @8x | clean, 0 C2 |
+| three reads @**40x** | clean, 0 C2 |
+| all three fast passes vs the 8x reference | **byte-identical** |
+| C2 bits set across all four passes | **0** |
+
+Note the drive offers **40x** on the pressed disc and caps at **32x** on the
+CD-R — it derates CD-R reading itself. So the pressed disc was read *faster*
+than the CD-R ever was, and was flawless; the CD-R carried events in four of
+five max-speed passes.
+
+A C1 rate of 2–14/s is a healthy pressed disc (Red Book tolerates far more), and
+it is the yardstick the CD-R scan needs. Without it a C1 count off the CD-R is a
+number with nothing to compare it to.
+
+**The confound, stated plainly: this comparison changes TWO variables at once** —
+media (CD-R vs pressed) *and* content (full-scale white noise vs music). It
+cannot separate them. What it does establish is that neither the drive nor our
+read path is broken in general at maximum speed: 612 429 sectors read at 40x
+across three passes with zero C2 bits and byte-exact agreement.
+
+The blindness declared in §2.14 still applies — no oracle for a pressed disc, so
+a reproducing displacement would be invisible, and the disc never reaches LBA
+224850 anyway.
+
+**Content is NOT what selects the failing sites.** The source audio at all eight
+CD-R failure sites is statistically indistinguishable from random control sites
+on the same disc: RMS ~18 900–19 100 of 32 767 at every one, full ±32 7xx range,
+no zero runs, longest constant run 1–2 samples everywhere. So the noise does not
+explain *where* the failures land. It remains possible that near-full-scale white
+noise (~−4.8 dBFS RMS — maximum transition density, minimum DC-balance headroom)
+makes the disc harder to read *as a whole*; that is a whole-disc property and is
+still untested.
+
+**To separate media from content costs one blank:** burn a CD-R containing music
+(or any ordinary-crest-factor audio) and run the same protocol. Keith's call —
+four blanks remain.
+
 ### 3. Keith's ruling on the interface — NOT YET DONE
 
 The measurement must run **end-to-end in the API**, in RAM, with no files:
