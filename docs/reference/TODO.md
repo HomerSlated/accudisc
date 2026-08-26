@@ -7,6 +7,322 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## WRITE OFFSET measured on real media, and the silent read displacement it exposed (2026-08-25/26)
+
+One of Keith's five blanks (Taiyo Yuden CD-R) was spent on this. The measurement
+itself succeeded; the read-back turned up a separate defect that is **not ours**
+and that **defeats our own consensus defence**. Both are recorded here because
+neither was in git.
+
+### 1. The measurement — DONE
+
+`accudisc write-offset` (0.20.0) burns a known signal and finds it again.
+Procedure: generate the locator signal, burn DAO at 16x, read the disc back,
+locate the burst in read-offset-corrected coordinates.
+
+**PX-716A write offset = −30 samples**, agreed by both pulses (the 1 s and the
+60 s marks) independently. The burn itself was byte-perfect: three of the five
+whole-disc read-backs compare **byte-identical** to the source image across all
+78 minutes.
+
+### 2. The read anomaly — REAL, and it is the drive, not us
+
+Two of the five whole-disc read-backs returned **real disc data from the wrong
+LBA**, with C2 reporting zero errors and no SCSI error of any kind.
+
+Ground truth is `/var/tmp/woff_disc.pcm` — the exact image that was burnt. Keep
+it; the pass files are regenerable, that one is not.
+
+#### 2.1 Exact geometry
+
+Expressed as byte-stream segments against the source (sector = 2352 B):
+
+| pass | byte offset | = sector + off | length | source delta |
+|---|---|---|---|---|
+| woff_read | 528849456 | 224850 + 2256 | 7152 B | −2048 sec |
+| woff_read | 809527936 | 344187 + 112 | 44576 B | −2048 sec |
+| woff_read | 809572512 | 344206 + 0 | 1133664 B | **+2 sec** |
+| passB | 208921064 | 88826 + 2312 | 44728 B | −2048 sec |
+| passB | 528849456 | 224850 + 2256 | 7152 B | −2048 sec |
+
+Four structural facts, each of which constrains the explanation:
+
+1. **Every displacement is a whole number of sectors** (+0 byte remainder) —
+   the substituted data is sector-aligned *content*.
+2. **Every corrupt segment starts at an arbitrary, sample-aligned byte offset
+   INSIDE a sector** (2256, 112, 2312), and **ends exactly on a sector
+   boundary**, after which data is correct with delta 0.
+3. **−2048 sectors, three times out of four events.** 2048 = 2^11. That is an
+   index/tag aliasing constant, not a random seek error.
+4. **The 224850 + 2256 event is byte-for-byte identical in two independent
+   passes** — same splice byte, same length, same delta. It is
+   *position-deterministic*, not transient.
+
+The `+2 sec` segment means two sectors went missing from the stream and
+everything downstream shifted early for 482 sectors, then re-synchronised. It
+spans far more than one READ CD command (`ADSC_CHUNK_MAX` is 32).
+
+#### 2.2 Why it is not ours — proven structurally, not sampled
+
+- **No sub-sector copy exists in the engine.** Every `memcpy`/`memset` in
+  `src/read/engine.c` moves `r->sector_len`, `r->audio_len`, `r->c2_len`,
+  `r->sub_len`, or an `n * sector_len` multiple. A splice at byte 2256 *inside*
+  a sector is therefore not something this code can produce.
+- **The requested LBA and the buffer position come from one counter.** The loop
+  holds a single `uint32_t lba`; every read is `lba + s` paired with
+  `buf + s * r.sector_len`, and the delivered chunk carries `.lba = lba`. There
+  is no second, independently-advanced counter — including on the retry, rescue
+  and consensus paths — so "we asked for L+2 and wrote it at L's offset" is
+  impossible.
+- **Short transfers are already caught.** `sgio.c` records `resid` and
+  `adsc_exec_check_short` promotes it to `ACCUDISC_ERR_SHORT`, so a partially
+  filled buffer cannot silently keep stale bytes in its tail.
+
+#### 2.3 What it probably IS — SETTLED by §2.9; hypothesis (b) is dead
+
+They are not mutually exclusive and the data so far cannot tell them apart:
+
+- **(a) Drive-side positional substitution.** The drive loses sync mid-sector,
+  re-acquires at an aliased address (−2048), and delivers valid, correctly
+  ECC'd audio from the wrong place without raising C2. Mid-sector start,
+  sector-boundary recovery and the 2^11 constant all fit.
+- **(b) A marginal spot in OUR burn.** This is a CD-R that AccuDisc wrote. A
+  link or a weak region gives exactly a location-locked defect that is
+  borderline rather than fatal. If so this is a **write**-path finding, not a
+  read-path one.
+
+(a) and (b) compose: a physical marginal spot at a fixed location, whose
+*recovery* is a silent positional substitution.
+
+**Resolved 2026-08-26 (§2.9).** (a) is right and (b) is dead. A marginal burn
+cannot produce a sector in which **all 96** wrong bytes come from exactly −2048
+sectors and **zero** are bit errors — that is a positional substitution inside
+the drive, not damaged media. The composed story survives only for Mode 1, where
+a real read error is the *trigger*; Mode 2 has no error to trigger on.
+
+#### 2.4 The pass table — speed is NOT isolated
+
+| pass | speed | eject/load first | result |
+|---|---|---|---|
+| woff_read | default (max, reports 32x) | no | 2 bad regions |
+| passB | default (max) | no | 2 bad regions |
+| passC | capped 8x | no | clean |
+| passD | 8x | yes | clean |
+| passE | 32x (cap reset to max) | yes | clean |
+| passF | max, chunk 24 | no | 2 bad regions, 15 sectors |
+| passG | max, **chunk 16** | no | 5 bad regions, 40 sectors |
+
+Four of five full-speed passes are bad; both 8x passes are clean — but
+**passE ran at 32x and was clean**, and the 8x sample is only n=2, so
+"speed-dependent" is directional, not established. Do not write it down as
+proven. `speed 8` persisted across eject/load on this
+drive; `speed 40` reports back 32x.
+
+#### 2.5 THE IMPORTANT PART — this defeats our consensus defence
+
+`src/read/engine.c`'s header states the trust model: a fired C2 flag reliably
+marks a bad byte, **a clear flag is only a claim** — "hence verify passes
+compare actual audio bytes between independent reads rather than trusting 'no
+C2' alone, and consensus demands two byte-identical reads."
+
+The 224850 event **reproduces to the byte across independent reads**. Had
+`woff_read` and `passB` been the two consensus passes, they would have agreed
+byte-for-byte, C2 would have been silent, and the engine would have returned
+wrong audio as verified-good. **Consensus is not a defence against a
+position-deterministic defect.**
+
+Two further gaps, both real:
+
+- `overlap_sectors` checks the *seam* between chunks. Every event here begins
+  mid-chunk, so the boundary check is looking in the wrong place.
+- `accudisc_probe_c2_lag` was never run on this drive before trusting the C2
+  silence. Do that first. Note a lag shifts *where* pointers land, not how many,
+  so it cannot by itself explain zero C2 bits over a 482-sector displacement —
+  and it is the wrong order of magnitude for a sector-scale event.
+
+Candidate fix, already available in the API: **vary `speed_x` between verify
+passes** instead of repeating an identical read. A position-deterministic defect
+survives repetition; it may not survive a speed change. That is the one lever
+the current design has that was not used.
+
+#### 2.6 Caveats on the experiment itself
+
+- The read was run through the **undefended** path — no `--retries`,
+  `--verify`, or `--overlap`. That plausibly explains why weeks of ordinary
+  ripping never surfaced this, and my first "silent corruption" framing was
+  overstated.
+- The 78-minute test signal was AccuDisc's 75 s locator head followed by
+  **numpy-generated white noise (scaffolding, not the feature)**. Full-scale
+  white noise is pathological EFM and a plausible reason the anomaly does not
+  appear on real music.
+- cdda2img's own write-offset test reads only the first 75 s (~5625 sectors).
+  Every event here is past sector 88826, so it never looked there. There is no
+  contradiction between the two projects' results.
+
+#### 2.7 Next steps, cheapest first — costs no disc
+
+1. Run `accudisc_probe_c2_lag` on this drive.
+2. Hammer the reproducible spot: repeated *targeted* reads of ~224840..224870
+   at full speed. Cheap (seconds), and it measures the reproduction rate.
+3. Read the same disc with an **independent tool** (cdda2img). If the anomaly
+   appears there too, hypothesis (a) is confirmed from outside our code.
+4. Re-run the whole disc through the **defended** path and confirm the engine
+   flags rather than silently passes.
+5. Only then decide whether §2.5 warrants an engine change.
+
+#### 2.8 2026-08-26 — reproduced a third time, and the mechanism split in two
+
+`passF` (whole disc, max speed, chunk 24, no eject/load) differs from the source
+at **byte 528849457 — the identical byte as `woff_read` and `passB`**, same
+7152-byte length, same −2048 delta. Three of four max-speed whole-disc passes
+now carry a byte-identical defect at sector 224850 + 2256.
+
+But it does **not** reproduce on demand:
+
+- **0 / 20** targeted reads of 224592..224879 (chunk grid aligned to the
+  original, cache-defeated between reads).
+- **0 / 10** reads with a 10 032-sector run-up at full speed through the spot.
+
+So the trigger is neither location nor streaming speed on its own. Whole-disc
+streaming from LBA 0 is so far the only condition that produces it.
+
+**Two distinct failure modes, separated by counting which source position each
+wrong byte came from:**
+
+| LBA | true bit errors | bytes from −2048 | C2 |
+|---|---|---|---|
+| 324083 (passF) | **104** | 49 | fired — 68 bits, the only C2 sector on the disc |
+| 224850 (passF, passB, woff_read) | **0** | 96 | silent |
+
+- **Mode 1 — detected error, then silent drift.** At 324083 there is a genuine
+  uncorrectable read error: 104 bytes match neither the correct sector nor the
+  displaced one, and C2 fires on 68 of them. From byte 2304 of that same sector
+  onward the data switches to −2048 and stays there for 10 more sectors,
+  stopping at chunk offset 22. The drive's *error recovery* is what returns
+  wrong-position data, and it does not flag it.
+- **Mode 2 — no error at all.** At 224850 every one of the 96 wrong bytes comes
+  from −2048. Zero bit errors, zero C2, and it reproduces to the byte across
+  three independent passes. This is the dangerous one: nothing in the sector is
+  physically wrong, so no relative check has anything to fire on.
+
+All four −2048 events (three passes, four distinct sites) end at **chunk offset
+22** of a 24-sector transfer. *(Refuted in part by §2.9 — the extent does track
+our transfer geometry, but the constant is not "−2"; under `--chunk 16` the same
+event runs to the very end of the transfer.)*
+
+**Engine consequence for Mode 1 — actionable now.** C2-guided rescue re-reads
+the *flagged sector*. Here the flagged sector is the one with real errors, and
+the ten silently-displaced sectors after it are C2-clean, so rescue repairs the
+one sector it can see and passes ten wrong ones through. The rule that would
+have caught it: **a C2 hit (or a hard error) invalidates the remainder of that
+transfer, not just the flagged sector.** That is cheap and it is squarely inside
+the trust model already stated in `engine.c` — a clear flag is only a claim, and
+after this drive has erred once in a transfer the claim is worth less still.
+
+Mode 2 remains uncaught by anything we currently have.
+
+#### 2.9 2026-08-26 — chunk 16 + C2 capture: two bugs, not one, and C2 fires at run position 0
+
+`passG` = whole disc, max speed, **`--chunk 16`**, C2 captured to a file. It
+differs from the source at **byte 528849457 — the same byte again**, a fourth
+time.
+
+**The prediction made before looking** (kept, with its falsifiers, at
+`scratchpad/PREDICTION.md`) was half right:
+
+- **Start is invariant.** Sector 224850 + 2256 B, identical under both chunk 24
+  and chunk 16, across four passes. It is a fixed physical position on the disc.
+- **Extent tracks our transfer geometry** — confirmed, and this is the half I
+  got right. Under chunk 24 the run is 4 sectors (224850..224853); under chunk
+  16 it is **14** (224850..224863, to the very end of that transfer).
+- **The "chunk_end − 2" rule is refuted.** It held 4/4 on the 24-sector grid and
+  did not survive a second grid. Four events on one disc were never independent.
+- **`--chunk` is not a mitigation.** Chunk 16 made it *worse*: 40 corrupt
+  sectors in 5 runs, against 15 in 2 runs for chunk 24.
+
+**C2 correlation, measured against a real C2 file rather than a summary line:**
+
+| run | sectors | C2 fires at | per-sector composition |
+|---|---|---|---|
+| 224850..224863 | 14 | **none** | all −2048 |
+| 236359..236367 | 9 | 236359 (position 0) | true errors, then 8 × −2048 |
+| 236629..236639 | 11 | 236629 (position 0) | true errors, then 10 × **−1024** |
+| 237071 | 1 | 237071 (position 0) | true errors only |
+| 267387..267391 | 5 | **none** | all −2048 |
+
+Three C2 sectors on the whole disc, and **every one of them is position 0 of a
+corrupt run**. Never anywhere else in the run. The mechanism is now clear and it
+is not one bug but two:
+
+- **Mode 1 (3 runs, 21 sectors).** A genuine uncorrectable read error. C2 fires
+  on that sector and that sector only. The drive's recovery then returns
+  wrong-position data for the rest of the transfer, silently. **Displacement is
+  −2048 or −1024** — it varies, and both are powers of two, which points at an
+  index/tag aliasing inside the drive rather than a seek error.
+- **Mode 2 (2 runs, 19 sectors).** No bit errors anywhere, no C2 anywhere, and
+  the 224850 site reproduces to the byte across four independent passes. The
+  earlier suspicion that Mode 2 might collapse into Mode 1 once C2 was actually
+  captured is now **ruled out by measurement**.
+
+**Scored against the rule proposed in §2.8** — a C2 hit invalidates the
+remainder of the transfer — it would catch **21 of 40** corrupt sectors in
+passG: all of Mode 1, none of Mode 2. Worth doing, and not sufficient.
+
+#### 2.10 What actually catches Mode 2 — vary the READ, not just repeat it
+
+Repetition cannot see Mode 2: four passes agree byte-for-byte and are all wrong.
+Two levers exist, and both are already expressible in the current API.
+
+1. **Speed.** Both 8x passes (`passC`, `passD`) are byte-identical to the
+   source. Four of five max-speed passes carry events. The 8x sample is only
+   n=2, so this is directional rather than established — but it is consistent
+   with the physical story, and `accudisc_read_opts` already carries the
+   reread-speed machinery. **Verify passes should differ in speed rather than
+   repeat an identical read.** That is the single highest-value change here.
+2. **Chunk size.** The extent moves with the transfer geometry, so a chunk-24
+   pass and a chunk-16 pass disagree over 224854..224863 — but they *agree*, and
+   are both wrong, over 224850..224853. A partial detector only.
+
+Neither is a substitute for the absolute gates (AccurateRip / CTDB) that live in
+the calling application, per `docs/reference/RECOVERY.md`. This is squarely the
+invariant that document already states: a relative check never outranks an
+absolute one. What is new is a measured case where **every** relative check we
+own — C2, repetition-consensus, and the chunk-seam overlap test — fails
+simultaneously on the same sectors.
+
+### 3. Keith's ruling on the interface — NOT YET DONE
+
+The measurement must run **end-to-end in the API**, in RAM, with no files:
+
+- The audio is generated **inside AccuDisc**, never by an external tool.
+- `accudisc write-offset` alone must suffice — no `--signal <file>`.
+- The signal is 13.23 MB, so it is too large to bake in as a build-time hunk;
+  generating into RAM is the fix.
+- **Python AND Rust bindings are required.** "No consumer will be using the CLI
+  at all, for any purpose."
+
+This overrules the mechanism-only design that shipped in 0.20.0 (library
+supplies signal + locator, caller orchestrates the burn and read-back).
+
+### 4. A silent-truncation path found while diagnosing the above — `[P2]`, OUR DEFECT
+
+`read_sink` in `cli/main.c` makes **five `fwrite` calls and checks none of
+them** (audio, C2, subchannel, CD+G packs). `ferror` is never consulted either,
+and the sink always returns 0. So ENOSPC, a full filesystem, or any write error
+part-way through a rip produces a **short or truncated output file and exit 0** —
+"the rip succeeded" while the data is wrong.
+
+This is NOT the cause of the displacement in §2 — the pass files are all exactly
+the right length, and a writer cannot invent audio from 2048 sectors away — but
+it is the same failure shape the project already treats as its dominant one: a
+well-formed output that nothing downstream can catch.
+
+Fix: check each `fwrite` return, latch the failure in `struct read_ctx`, and
+have `cmd_read` fail loudly. The sink's only current signal back to the engine
+is a non-zero return, which the engine maps to `ACCUDISC_ERR_CANCELLED` — the
+wrong name for an I/O error, so the exit-code mapping in
+`docs/reference/cli-machine-interface.md` needs a look at the same time.
+
 ## OFFSET DICTIONARY — REDUMP is AccurateRip, frozen in 2022 (2026-08-22) — DONE
 
 **Supersedes the 2026-08-19 section below wherever the two disagree.** That
