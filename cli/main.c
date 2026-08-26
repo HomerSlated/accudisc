@@ -2066,6 +2066,14 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                 (unsigned long long)st.subq_total,
                 100.0 * (double)st.subq_ok / (double)st.subq_total,
                 (unsigned long long)(st.subq_total - st.subq_ok));
+    /* Unconditional when non-zero, and NOT folded into the CRC line above: a
+     * mis-positioned frame is CRC-OK, so it is counted in subq_ok and would
+     * otherwise be reported as health. It is also the only lane here that says
+     * the drive read the wrong part of the disc. */
+    if (st.subq_misposition)
+        fprintf(stderr, "  Q MISPOSITION    : %llu sectors whose valid Q named "
+                        "a DIFFERENT LBA than requested\n",
+                (unsigned long long)st.subq_misposition);
     if (req.c2_retries || req.verify_passes >= 2 || req.overlap_sectors)
         fprintf(stderr, "  accuracy         : %llu recovered, %llu suspect, "
                         "%llu extra reads, %llu slips\n",
@@ -2081,7 +2089,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         dprintf(ctx.prog_fd,
                 "summary hard=%llu c2=%llu recovered=%llu suspect=%llu "
                 "rereads=%llu slips=%llu subq_total=%llu subq_ok=%llu "
-                "subq_bad=%llu\n",
+                "subq_bad=%llu subq_misposition=%llu\n",
                 (unsigned long long)st.hard_errors,
                 (unsigned long long)st.sectors_flagged,
                 (unsigned long long)st.sectors_recovered,
@@ -2090,7 +2098,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                 (unsigned long long)st.slips,
                 (unsigned long long)st.subq_total,
                 (unsigned long long)st.subq_ok,
-                (unsigned long long)(st.subq_total - st.subq_ok));
+                (unsigned long long)(st.subq_total - st.subq_ok),
+                (unsigned long long)st.subq_misposition);
     /* Exit 3 = delivered but degraded: the caller should gate before
      * trusting the image (relative signals only — see the header). */
     ret = (st.hard_errors || st.sectors_suspect || st.sectors_flagged) ? 3

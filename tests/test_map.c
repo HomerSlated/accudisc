@@ -21,12 +21,24 @@ static void q_seal(uint8_t q[12])
     q[11] = (uint8_t)(c & 0xff);
 }
 
-static uint8_t classify(const uint8_t q[12], accudisc_q *out)
+/* Write an absolute MSF into a position frame, BCD, from an LBA. */
+static void q_set_abs(uint8_t q[12], int32_t lba)
+{
+    uint8_t m, sec, f;
+
+    accudisc_lba_to_msf(lba, &m, &sec, &f);
+    q[7] = (uint8_t)(((m / 10) << 4) | (m % 10));
+    q[8] = (uint8_t)(((sec / 10) << 4) | (sec % 10));
+    q[9] = (uint8_t)(((f / 10) << 4) | (f % 10));
+}
+
+static uint8_t classify(const uint8_t q[12], accudisc_q *out,
+                        uint32_t expect_lba)
 {
     accudisc_q parsed;
 
     accudisc_q_parse(q, out ? out : &parsed);
-    return adsc_subq_byte(out ? out : &parsed);
+    return adsc_subq_byte(out ? out : &parsed, expect_lba);
 }
 
 static void test_subq_bytes(void)
@@ -40,20 +52,53 @@ static void test_subq_bytes(void)
     q[1] = 0x01;  /* track 1, BCD */
     q[2] = 0x01;  /* index 1 */
     q_seal(q);
-    assert(classify(q, &parsed) == ACCUDISC_SUBQ_OK);
+    q_set_abs(q, 224850);
+    q_seal(q);
+    assert(classify(q, &parsed, 224850) == ACCUDISC_SUBQ_OK);
     assert(parsed.crc_ok && parsed.adr == ACCUDISC_Q_POSITION);
+
+    /* THE MISPOSITION TRAP, and the reason this state exists. The SAME frame —
+     * valid CRC, ADR=1, internally consistent — is healthy when it names the
+     * sector we asked for and a fault when it does not. A drive that lost lock
+     * and re-acquired elsewhere emits exactly this: nothing about the frame is
+     * malformed, so every check that inspects only the frame calls it OK.
+     * Measured on a PX-716A at 2048 sectors of displacement. */
+    assert(classify(q, NULL, 224851) == ACCUDISC_SUBQ_MISPOSITION);
+    assert(classify(q, NULL, 224850 - 2048) == ACCUDISC_SUBQ_MISPOSITION);
+    assert(classify(q, NULL, 224850) == ACCUDISC_SUBQ_OK);
+
+    /* Off by ONE must fail. A margin belongs in the engine, which widens a
+     * detected run; the classifier itself has to be exact, or a one-sector
+     * slip — the smallest real one — reads as health. */
+    assert(classify(q, NULL, 224849) == ACCUDISC_SUBQ_MISPOSITION);
+
+    /* And the state must not collide with the others in the lane. */
+    assert(ACCUDISC_SUBQ_MISPOSITION != ACCUDISC_SUBQ_OK &&
+           ACCUDISC_SUBQ_MISPOSITION != ACCUDISC_SUBQ_BAD &&
+           ACCUDISC_SUBQ_MISPOSITION != ACCUDISC_SUBQ_NO_POSITION &&
+           ACCUDISC_SUBQ_MISPOSITION != ACCUDISC_SUBQ_NO_AUDIO &&
+           ACCUDISC_SUBQ_MISPOSITION != ACCUDISC_SUBQ_PENDING);
+    assert(ACCUDISC_SUBQ_STATE(ACCUDISC_SUBQ_MISPOSITION) ==
+           ACCUDISC_SUBQ_MISPOSITION);
+
+    /* A MISPOSITION frame must still decode its position for the caller. */
+    {
+        accudisc_q qd;
+        classify(q, &qd, 224851);
+        assert(adsc_q_position_lba(&qd) == 224850);
+    }
 
     /* MCN and ISRC frames are healthy too — they are interleaved into the
      * position stream by the pressing, not a symptom of anything. */
     memset(q, 0, sizeof q);
     q[0] = 0x02;
     q_seal(q);
-    assert(classify(q, NULL) == ACCUDISC_SUBQ_NO_POSITION);
+    assert(classify(q, NULL, (uint32_t)-150) == ACCUDISC_SUBQ_NO_POSITION);
 
     memset(q, 0, sizeof q);
     q[0] = 0x03;
     q_seal(q);
-    assert(classify(q, NULL) == ACCUDISC_SUBQ_NO_POSITION);
+    assert(classify(q, NULL, (uint32_t)-150) == ACCUDISC_SUBQ_NO_POSITION);
 
     /* THE POLARITY TRAP. A frame whose CRC fails but whose header byte still
      * decodes to ADR=2 must be BAD, never NO_POSITION — the latter is the
@@ -68,10 +113,10 @@ static void test_subq_bytes(void)
     q[0] = 0x02;
     q_seal(q);
     q[3] ^= 0xff; /* payload damage: CRC now fails, header byte untouched */
-    classify(q, &parsed);
+    classify(q, &parsed, (uint32_t)-150);
     assert(!parsed.crc_ok);                 /* the CRC really did fail... */
     assert(parsed.adr == ACCUDISC_Q_MCN);   /* ...and adr really is still 2 */
-    assert(classify(q, NULL) == ACCUDISC_SUBQ_BAD);
+    assert(classify(q, NULL, (uint32_t)-150) == ACCUDISC_SUBQ_BAD);
 
     /* Same trap from the other direction: damage that lands IN the header byte
      * and turns a position frame into a plausible-looking MCN one. */
@@ -80,9 +125,9 @@ static void test_subq_bytes(void)
     q[1] = 0x01;
     q_seal(q);
     q[0] = 0x02;
-    classify(q, &parsed);
+    classify(q, &parsed, (uint32_t)-150);
     assert(!parsed.crc_ok && parsed.adr == ACCUDISC_Q_MCN);
-    assert(classify(q, NULL) == ACCUDISC_SUBQ_BAD);
+    assert(classify(q, NULL, (uint32_t)-150) == ACCUDISC_SUBQ_BAD);
 
     /* The measurement the whole lane rests on: the frame a hard-unreadable
      * sector delivers is zero-filled, and it FAILS CRC-16 rather than being
@@ -90,17 +135,17 @@ static void test_subq_bytes(void)
      * records fabricated Q damage on every sector whose audio is already gone.
      * The engine stores NO_AUDIO there instead, before parsing anything. */
     memset(q, 0x00, sizeof q);
-    assert(classify(q, NULL) == ACCUDISC_SUBQ_BAD);
+    assert(classify(q, NULL, (uint32_t)-150) == ACCUDISC_SUBQ_BAD);
     memset(q, 0xff, sizeof q);
-    assert(classify(q, NULL) == ACCUDISC_SUBQ_BAD);
+    assert(classify(q, NULL, (uint32_t)-150) == ACCUDISC_SUBQ_BAD);
 
     /* Severity is always zero: one CRC over one frame has no gradient. */
     memset(q, 0, sizeof q);
     q[0] = 0x01;
     q_seal(q);
-    assert((classify(q, NULL) >> 4) == 0);
+    assert((classify(q, NULL, (uint32_t)-150) >> 4) == 0);
     q[3] ^= 0xff;
-    assert((classify(q, NULL) >> 4) == 0);
+    assert((classify(q, NULL, (uint32_t)-150) >> 4) == 0);
 
     assert(ACCUDISC_SUBQ_STATE(ACCUDISC_SUBQ_NO_AUDIO) ==
            ACCUDISC_SUBQ_NO_AUDIO);

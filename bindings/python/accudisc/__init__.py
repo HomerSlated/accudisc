@@ -398,6 +398,16 @@ class SubQState(enum.IntEnum):
     — ``NO_AUDIO`` reads back as ``RECOVERED``, ``BAD`` as ``C2``. Use
     :func:`subq_state`.
 
+    ``MISPOSITION`` is the opposite trap: the frame is **valid** — CRC-16
+    verified, ADR=1, internally consistent — and names a *different* sector
+    from the one that was asked for. It means the drive lost its place and read
+    somewhere else, and it is the only signal in this library that contradicts
+    the drive on its own account rather than by comparing two of its answers.
+    Measured on a PX-716A returning 17 consecutive sectors from 2048 sectors
+    earlier while C2 stayed silent and four independent passes agreed
+    byte-for-byte. It requires ``Sub.RAW``; with no subchannel there is no
+    claim to contradict.
+
     ``NO_POSITION`` is **healthy**, and it is the member most likely to be
     misread. MCN and ISRC frames are interleaved into the position stream by
     the pressing itself: roughly 1% of frames on a disc that carries them, and
@@ -410,6 +420,7 @@ class SubQState(enum.IntEnum):
     BAD = lib.ACCUDISC_SUBQ_BAD
     NO_POSITION = lib.ACCUDISC_SUBQ_NO_POSITION
     NO_AUDIO = lib.ACCUDISC_SUBQ_NO_AUDIO
+    MISPOSITION = lib.ACCUDISC_SUBQ_MISPOSITION
 
 
 def subq_state(b: int) -> SubQState:
@@ -1214,6 +1225,7 @@ class ReadStats:
     subq_ok: int
     speed_requested_x: int
     speed_honoured_x: int
+    subq_misposition: int
 
     @property
     def speed_quantized(self) -> bool:
@@ -1244,6 +1256,21 @@ class ReadStats:
         integrity check, and it fails independently of the audio C2 counters.
         """
         return self.subq_total - self.subq_ok
+
+    @property
+    def positional_fault(self) -> bool:
+        """The drive read the wrong part of the disc, and its own Q said so.
+
+        ``subq_misposition`` counts sectors whose CRC-valid ADR=1 Q frame named
+        an LBA other than the one commanded. Unlike :attr:`subq_bad` this is
+        **not** a metadata-loss measure — the audio for those sectors is intact
+        and came from the wrong place, which no C2 flag and no amount of
+        re-reading at the same speed can reveal.
+
+        Zero here is not a clean bill of health: it is 0 whenever the read did
+        not request ``Sub.RAW``, because the check has nothing to work from.
+        """
+        return self.subq_misposition > 0
 
 
 @dataclass(slots=True)

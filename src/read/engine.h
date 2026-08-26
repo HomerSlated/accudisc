@@ -9,7 +9,10 @@
  * Exposed for unit testing rather than for use — the classification order is
  * load-bearing (crc_ok must be consulted before adr) and a reimplementation in
  * the test would be free to get it right while the engine got it wrong. Pure. */
-uint8_t adsc_subq_byte(const accudisc_q *q);
+uint8_t adsc_subq_byte(const accudisc_q *q, uint32_t expect_lba);
+/* Absolute disc position a CRC-valid ADR=1 frame reports, as an LBA.
+ * Meaningless for any other frame — check crc_ok and adr first. */
+int32_t adsc_q_position_lba(const accudisc_q *q);
 
 /* Status-map byte builders (state + severity nibble). Pure — unit-tested. */
 uint8_t adsc_map_c2_byte(uint32_t c2_bits);        /* sev ~log2(bits) */

@@ -27,7 +27,29 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 20 /* 0.20.0: WRITE-OFFSET MEASUREMENT, the last
+#define ACCUDISC_VERSION_MINOR 21 /* 0.21.0: Q-POSITION CHECK. A new subq_map
+                                  * state, ACCUDISC_SUBQ_MISPOSITION, and a
+                                  * new read_stats counter, subq_misposition,
+                                  * for the case where a CRC-VALID ADR=1 Q
+                                  * frame names a different LBA than the one
+                                  * commanded — the drive read somewhere else
+                                  * and said so in its own subcode.
+                                  *
+                                  * Additive, and the struct did NOT grow: the
+                                  * counter went into the 4 bytes of tail
+                                  * padding the 0.9.0 comment reserved. But
+                                  * ACCUDISC_SUBQ_OK now means strictly less
+                                  * than it did — a mis-positioned sector used
+                                  * to be reported OK and is now its own state.
+                                  * A consumer switching exhaustively on the
+                                  * lane sees a value it has never seen, which
+                                  * is exactly the changed-MEANING case the
+                                  * 0.4.0 note bumped the minor for.
+                                  *
+                                  * Costs nothing when subchannel is not read:
+                                  * with no Q there is no claim to contradict,
+                                  * and the whole check is skipped.
+                                  * 0.20.0: WRITE-OFFSET MEASUREMENT, the last
                                   * of the eight offset items and the one that
                                   * never transferred, because a
                                   * burn-and-read-back is a PROCEDURE rather
@@ -1983,6 +2005,38 @@ ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
 #define ACCUDISC_SUBQ_BAD         0x2 /* CRC-16 failed */
 #define ACCUDISC_SUBQ_NO_POSITION 0x3 /* CRC-16 verified, ADR != 1 (MCN/ISRC) */
 #define ACCUDISC_SUBQ_NO_AUDIO    0x4 /* hard-unreadable; no frame delivered */
+#define ACCUDISC_SUBQ_MISPOSITION 0x5 /* CRC-16 verified, ADR=1 — and the
+                                       * position it reports is NOT the sector
+                                       * that was asked for. See below. */
+
+/* ACCUDISC_SUBQ_MISPOSITION — the drive was somewhere else.
+ *
+ * A CRC-valid ADR=1 frame carries the drive's own claim about where the head
+ * is. Comparing that claim against the LBA the command asked for is the only
+ * check in this library that can contradict the drive on ITS OWN account
+ * rather than by comparing two of its answers to each other.
+ *
+ * It exists because a real drive was measured doing exactly this: on a
+ * PX-716A at maximum CAV speed, a whole-disc read returned 17 consecutive
+ * sectors of perfectly valid audio from 2048 sectors earlier, each carrying a
+ * CRC-valid Q frame that agreed with the displaced audio. C2 was silent, four
+ * independent passes agreed byte-for-byte, and the chunk-seam check saw
+ * nothing — the fault sat mid-transfer with correct data either side. Every
+ * RELATIVE check in this engine failed simultaneously; the drive's own
+ * position report was the one signal that dissented, and before this state
+ * existed the lane labelled all 17 sectors ACCUDISC_SUBQ_OK.
+ *
+ * Measured over 1 404 000 sectors (four whole-disc passes): 17/17 true
+ * positives, ZERO false positives, and zero on a pass carrying 2052
+ * bit-error-corrupt sectors — a bit error is not a positioning fault and this
+ * state correctly stays silent on one. Note the raw Q CRC failure rate on the
+ * same passes was ~1600 per pass and is far too noisy to use as a signal;
+ * position disagreement is the clean one.
+ *
+ * NOT a substitute for the absolute gates (AccurateRip / CTDB) in the calling
+ * application, per docs/reference/RECOVERY.md — it catches a drive that lost
+ * its place, not a rip that is wrong for some other reason. Requires
+ * ACCUDISC_SUB_RAW: with no subchannel there is no claim to contradict. */
 
 #define ACCUDISC_SUBQ_STATE(b) ((uint8_t)(b) & 0x0f)
 
@@ -2221,6 +2275,15 @@ typedef struct accudisc_read_stats {
      * exactly that question asked per rung, before the read. */
     uint16_t speed_requested_x; /* echo of req->speed_x; 0 = none asked */
     uint16_t speed_honoured_x;  /* page 2A current after the set; 0 = unknown */
+    uint32_t subq_misposition;  /* sectors whose CRC-valid ADR=1 Q reported a
+                                 * DIFFERENT LBA than the one commanded — the
+                                 * drive read somewhere else and said so.
+                                 * Counts ONLY the sectors that actually
+                                 * disagreed — the engine additionally treats a
+                                 * small margin either side as suspect, because
+                                 * the leading edge of a slip carries correct Q
+                                 * with already-wrong audio, but those are not
+                                 * counted here. Always 0 without SUB_RAW. */
     /* These two took the struct 136 -> 144 (measured, both compiled), and left
      * 4 bytes of tail padding behind: the next two uint16_t, or one uint32_t,
      * are free. Growth is safe here because this is an OUT struct — the caller

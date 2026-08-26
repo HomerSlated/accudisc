@@ -784,6 +784,69 @@ subchannel capture (chunk 23) it landed at byte **2264**, not 2256, and the run
 was 20 sectors. The site recurs; the exact byte and extent move with the
 transfer geometry. "Byte-identical" held only within one chunk size.
 
+#### 2.22 IMPLEMENTED 0.21.0 — the Q-position check, and the defect I nearly shipped inside it
+
+`ACCUDISC_SUBQ_MISPOSITION` (0x5) and `read_stats.subq_misposition` are live.
+The counter went into the 4 bytes of tail padding the 0.9.0 note reserved, so
+the struct did not grow. Surfaces updated in step: engine, CLI (human line +
+`summary subq_misposition=` token), Python binding (`SubQState.MISPOSITION`,
+`ReadStats.subq_misposition`, `ReadStats.positional_fault`), man page,
+`cli-machine-interface.md`, and the two pin tests. 44/44.
+
+**Detection** is a comparison, not an inference: decode Q for every delivered
+sector and require `q_abs_lba == commanded_lba` whenever the frame is CRC-valid
+with ADR=1. Verified live on hardware — a whole-disc read reported
+`Q MISPOSITION : 22 sectors`.
+
+**THE DEFECT, found before shipping and worth recording in full.** The first cut
+routed a Q mismatch into `consensus()`. Reading that function settles it:
+
+```c
+memcpy(r->samples, sec, r->sector_len);   /* sample 0 = the copy in hand */
+count = 1;                                 /* alt was NULL, so that is ALL */
+...
+if (adsc_audio_diff(r->scratch, r->samples + i * r->sector_len) == 0) {
+        memcpy(sec, r->scratch, r->sector_len);
+        return 1;                          /* "agreed" -> RECOVERED */
+```
+
+For this fault, sample 0 is the known-bad displaced copy and **the slip
+reproduces** — the same site returned the same displaced data across five
+independent whole-disc passes. A faithful reproduction would therefore "confirm"
+the corruption, and the sector would be relabelled RECOVERED. The check that
+found the fault would have laundered it. Worse than not checking.
+
+This is the project's recorded dominant failure mode in a new place: *a check is
+only worth what its inputs can distinguish.* The **detector** was sound — it uses
+the drive's own position claim, which the fault cannot fake — but the **repair**
+was validated by byte-agreement between rereads, the one signal Mode 2 defeats.
+Detection and repair must not share a weakness.
+
+**The fix — `qpos_rescue()`.** The bad copy is never a vote. A replacement is
+accepted only when its **own Q frame** agrees with the commanded LBA, i.e.
+validated by the same independent signal that detected the fault. A reread whose
+Q is unreadable is rejected too: with no claim there is nothing to check, and
+silence is not consent. No position-correct copy after the ladder is exhausted
+=> the sector is marked SUSPECT, honestly, rather than recovered.
+
+**Counting.** `subq_misposition` counts only sectors that actually disagreed.
+The engine additionally treats `ADSC_QPOS_MARGIN` (4) sectors either side as
+suspect — the leading edge of a slip carries correct Q with already-wrong audio,
+measured worst case 2 — but those are NOT counted, so the number means what its
+name says.
+
+**Known gap.** The detector is unit-tested (`tests/test_map.c`, including a
+falsification run: with the position comparison removed the test aborts). The
+**repair path needs a drive** and has no desk test. A green suite is not
+evidence that `qpos_rescue` behaves on hardware.
+
+**Why `subq_map` can read 0 while the counter is non-zero.** The map's referent
+is the sector as DELIVERED (documented in the header). A detected-and-repaired
+sector is delivered correct, so its Q matches and the lane says OK; the
+`status_map` shows RECOVERED. MISPOSITION appears in the lane only for sectors
+the rescue could not fix. That is coherent, and it is why the counter — not the
+lane — is the thing to watch.
+
 ### 3. Keith's ruling on the interface — NOT YET DONE
 
 The measurement must run **end-to-end in the API**, in RAM, with no files:

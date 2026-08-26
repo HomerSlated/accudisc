@@ -376,8 +376,31 @@ def test_subq_states_match_the_c_constants():
     assert int(ad.SubQState.BAD) == lib.ACCUDISC_SUBQ_BAD
     assert int(ad.SubQState.NO_POSITION) == lib.ACCUDISC_SUBQ_NO_POSITION
     assert int(ad.SubQState.NO_AUDIO) == lib.ACCUDISC_SUBQ_NO_AUDIO
+    assert int(ad.SubQState.MISPOSITION) == lib.ACCUDISC_SUBQ_MISPOSITION
     for st in ad.SubQState:
         assert ad.subq_state(int(st)) is st
+
+
+def test_misposition_is_distinct_and_not_a_health_state():
+    """MISPOSITION must not collide with, or be mistaken for, OK.
+
+    The frame it describes is CRC-valid and ADR=1 — everything a naive check
+    inspects says healthy — so the only thing separating it from OK is the
+    comparison against the commanded LBA. If the two ever shared a value, the
+    fault this state exists to surface would be invisible again.
+    """
+    others = {ad.SubQState.PENDING, ad.SubQState.OK, ad.SubQState.BAD,
+              ad.SubQState.NO_POSITION, ad.SubQState.NO_AUDIO}
+    assert ad.SubQState.MISPOSITION not in others
+    assert ad.subq_state(int(ad.SubQState.MISPOSITION)) \
+        is ad.SubQState.MISPOSITION
+
+
+def test_positional_fault_reads_the_misposition_counter():
+    import dataclasses
+    zero = {f.name: 0 for f in dataclasses.fields(ad.ReadStats)}
+    assert ad.ReadStats(**zero).positional_fault is False
+    assert ad.ReadStats(**{**zero, "subq_misposition": 17}).positional_fault
 
 
 def test_subq_and_map_vocabularies_are_not_interchangeable():
@@ -441,7 +464,7 @@ def test_public_dataclass_field_names_are_pinned():
         "max_bits_sector", "first_flagged_lba", "last_flagged_lba",
         "sense_medium", "sense_hardware", "sense_other", "rereads",
         "sectors_recovered", "sectors_suspect", "slips",
-        "subq_total", "subq_ok",
+        "subq_total", "subq_ok", "subq_misposition",
         "speed_requested_x", "speed_honoured_x",
     }
 
@@ -455,7 +478,7 @@ def test_public_dataclass_field_names_are_pinned():
         "PENDING", "OK", "C2", "HARD", "RECOVERED", "SUSPECT",
     }
     assert {m.name for m in ad.SubQState} == {
-        "PENDING", "OK", "BAD", "NO_POSITION", "NO_AUDIO",
+        "PENDING", "OK", "BAD", "NO_POSITION", "NO_AUDIO", "MISPOSITION",
     }
 
 

@@ -165,7 +165,9 @@ Newline-delimited machine tokens on caller-supplied fd `N` (unaffected by
 ```
 progress <done> <total>
 summary hard=<n> c2=<n> recovered=<n> suspect=<n> rereads=<n> slips=<n>
+        subq_total=<n> subq_ok=<n> subq_bad=<n> subq_misposition=<n>
 ```
+(one physical line; wrapped here only to fit)
 
 `progress` lines are throttled (roughly 4/s); the final one always reports
 `<total> <total>`. `summary` is emitted exactly once, after a completed read
@@ -173,7 +175,9 @@ summary hard=<n> c2=<n> recovered=<n> suspect=<n> rereads=<n> slips=<n>
 Counter meanings: `hard` = zero-filled unreadable sectors, `c2` = sectors
 whose delivered copy still carries fired C2 bits, `recovered`/`suspect` =
 consensus outcomes, `rereads` = extra per-sector reads issued, `slips` =
-positioning-slip detections. New `key=value` pairs may be appended to the
+positioning-slip detections, `subq_total`/`subq_ok`/`subq_bad` = Q-frame CRC
+health, and **`subq_misposition` = sectors whose CRC-VALID Q named a different
+LBA than the one commanded** (0 unless `--sub raw` was requested). New `key=value` pairs may be appended to the
 summary line; parse it as tokens, not positionally.
 
 ## `read --map-file F`
@@ -219,11 +223,32 @@ Low nibble via `ACCUDISC_SUBQ_STATE()`; the high nibble is always 0.
 | 0x2 | `SUBQ_BAD` | CRC-16 failed |
 | 0x3 | `SUBQ_NO_POSITION` | CRC-16 verified, ADR ≠ 1 — an MCN or ISRC frame |
 | 0x4 | `SUBQ_NO_AUDIO` | sector unreadable; no frame was delivered |
+| 0x5 | `SUBQ_MISPOSITION` | CRC-16 verified, ADR=1 — and it names a **different LBA** than the one commanded |
 
 **The numbering is parallel to `ACCUDISC_MAP_*` and the vocabularies are
 disjoint.** `map_state()` on a byte from this file returns a well-formed name
 for a state that never occurred — `NO_AUDIO` reads back as `RECOVERED`, `BAD` as
 `C2`. Nothing raises. Use the subq decoder.
+
+**`MISPOSITION` is the opposite of healthy, and it looks healthy.** The frame
+verified, carries ADR=1, and is internally consistent — every check that
+inspects only the frame calls it `OK`. What makes it a fault is the comparison
+against the sector that was *asked for*: the drive lost its place and returned
+intact audio from the wrong address.
+
+Measured on a PX-716A at maximum CAV speed: a whole-disc read returned 17
+consecutive sectors from 2048 sectors earlier, each with a CRC-valid Q frame
+agreeing with the displaced audio. C2 was silent, four independent passes agreed
+byte-for-byte, and the chunk-seam check saw nothing. Over 1 404 000 sectors:
+**17/17 true positives, zero false positives** — including zero on a pass
+carrying 2052 bit-error-corrupt sectors, because a bit error is not a
+positioning fault. The raw Q CRC failure rate on the same passes was ~1600 per
+pass, far too noisy to serve as a signal; position disagreement is the clean one.
+
+It is **0 whenever the read did not request raw subchannel**, because there is
+then no claim to contradict — zero is not a clean bill of health unless
+`--sub raw` was used. And it remains a relative check: it never outranks the
+absolute gates in the calling application.
 
 **`NO_POSITION` is healthy.** MCN and ISRC frames are interleaved into the
 position stream by the pressing: measured 1.00% of sectors on a disc carrying an

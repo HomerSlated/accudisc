@@ -30,6 +30,8 @@
 /* Audio-only sector_len >= 2352 bounds the chunk at 27; round up. */
 #define ADSC_CHUNK_MAX 32
 #define ADSC_OVERLAP_MAX 8
+/* Sectors either side of a Q-position mismatch to treat as suspect too. */
+#define ADSC_QPOS_MARGIN 4u
 #define ADSC_SPAN_MAX (ADSC_CHUNK_MAX + ADSC_OVERLAP_MAX)
 /* Independent samples kept during consensus (the two passes + extras). */
 #define ADSC_SAMPLES_MAX 6
@@ -62,7 +64,7 @@ uint8_t adsc_map_suspect_byte(uint32_t diff_bytes)
     return (uint8_t)(ACCUDISC_MAP_SUSPECT | (sev_log2(diff_bytes) << 4));
 }
 
-uint8_t adsc_subq_byte(const accudisc_q *q)
+uint8_t adsc_subq_byte(const accudisc_q *q, uint32_t expect_lba)
 {
     /* crc_ok BEFORE adr, and the order is the whole content of this function.
      * accudisc_q_parse fills adr from q[0] whether or not the CRC verified —
@@ -79,7 +81,18 @@ uint8_t adsc_subq_byte(const accudisc_q *q)
         return ACCUDISC_SUBQ_BAD;
     if (q->adr != ACCUDISC_Q_POSITION)
         return ACCUDISC_SUBQ_NO_POSITION;
+    /* The frame verified and it names a position. Whose? A drive that lost
+     * lock and re-acquired elsewhere reports the place it actually reached,
+     * with a valid CRC — so this frame is well-formed, self-consistent, and
+     * about a different sector. Before this test the lane called that OK. */
+    if (adsc_q_position_lba(q) != (int32_t)expect_lba)
+        return ACCUDISC_SUBQ_MISPOSITION;
     return ACCUDISC_SUBQ_OK;
+}
+
+int32_t adsc_q_position_lba(const accudisc_q *q)
+{
+    return accudisc_msf_to_lba(q->abs_m, q->abs_s, q->abs_f);
 }
 
 uint32_t adsc_audio_diff(const uint8_t *a, const uint8_t *b)
@@ -315,6 +328,47 @@ static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
 /* Two reads disagreed on this sector. Collect further independent reads
  * until any two audio payloads (among everything seen) match byte-for-byte;
  * the agreeing read replaces the sector. 1 = recovered, 0 = suspect. */
+/* Rescue a sector whose Q reported the drive was somewhere else.
+ *
+ * DELIBERATELY NOT consensus(). consensus() seeds its first sample with the
+ * copy already in hand and accepts any reread that MATCHES it — which for this
+ * fault is precisely the evidence that must not count. The slip REPRODUCES:
+ * the same site was measured returning the same displaced data across five
+ * independent whole-disc passes. Feed the bad copy in as a vote and a faithful
+ * reproduction "confirms" it, the sector is relabelled RECOVERED, and the
+ * check that found the corruption launders it. That is worse than not
+ * checking at all.
+ *
+ * So the bad copy is never a vote. A replacement is accepted only when its OWN
+ * Q frame agrees with the LBA that was asked for — validated by the same
+ * independent signal that detected the fault, rather than by agreement with
+ * the thing it is replacing. A reread whose Q is unreadable is not usable
+ * either: with no claim there is nothing to check, and silence is not consent. */
+static int qpos_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
+                       unsigned *attempts)
+{
+    for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2; a++) {
+        uint8_t qf[12];
+        accudisc_q qd;
+
+        ladder_speed(r, a);
+        cache_defeat(r, lba);
+        if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
+            continue;
+        r->st.rereads++;
+        *attempts = a;
+        accudisc_sub_extract_q(r->scratch + r->audio_len + r->c2_len, qf);
+        accudisc_q_parse(qf, &qd);
+        if (!qd.crc_ok || qd.adr != ACCUDISC_Q_POSITION)
+            continue;
+        if (adsc_q_position_lba(&qd) != (int32_t)lba)
+            continue; /* still elsewhere */
+        memcpy(sec, r->scratch, r->sector_len);
+        return 1;
+    }
+    return 0;
+}
+
 static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
                      const uint8_t *alt, unsigned *attempts)
 {
@@ -506,6 +560,78 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         ladder_restore(&r);
         read_span(&r, lba, n + ext, buf, hard, n);
 
+        /* Q-POSITION CHECK — the drive's own account of where it was.
+         *
+         * Every other check in this loop compares two of the drive's answers
+         * to each other. This one compares its answer to the QUESTION, which
+         * is why it survives a fault that reproduces: a drive that lost lock
+         * and re-acquired 2048 sectors early returns valid audio AND a
+         * CRC-valid Q frame naming the place it actually reached. C2 is
+         * silent, repeated reads agree with each other, and the seam check
+         * looks at seams while the fault sits mid-transfer. Measured on a
+         * PX-716A: 17/17 caught, zero false positives over 1.4 M sectors.
+         *
+         * Needs raw P-W. With no subchannel there is no claim to contradict,
+         * and this whole block is skipped. */
+        if (r.sub_len == ACCUDISC_BYTES_SUB_RAW) {
+            uint8_t qbad[ADSC_CHUNK_MAX] = {0}, qsus[ADSC_CHUNK_MAX] = {0};
+
+            for (uint32_t s = 0; s < n; s++) {
+                const uint8_t *sub;
+                uint8_t qf[12];
+                accudisc_q qd;
+
+                if (hard[s])
+                    continue; /* zero-filled: its Q is fabricated, not read */
+                sub = buf + (size_t)s * r.sector_len + r.audio_len + r.c2_len;
+                accudisc_sub_extract_q(sub, qf);
+                accudisc_q_parse(qf, &qd);
+                if (qd.crc_ok && qd.adr == ACCUDISC_Q_POSITION &&
+                    adsc_q_position_lba(&qd) != (int32_t)(lba + s)) {
+                    qbad[s] = 1;
+                    /* Counted here, on the sectors that actually disagreed —
+                     * NOT on the widened set below. The margin is a
+                     * precaution; reporting it would inflate the number past
+                     * what was measured. */
+                    r.st.subq_misposition++;
+                }
+            }
+
+            /* Widen by a margin. The LEADING EDGE of a slip carries correct Q
+             * with already-wrong audio — the two channels are offset in time,
+             * so the audio goes bad a sector or two before Q admits it. The
+             * worst case measured on this drive was 2 sectors; the margin is
+             * that, doubled, because it is cheap (the widened sectors are
+             * merely rechecked, not discarded) and being one sector short
+             * leaks exactly the corruption this exists to catch. Computed
+             * into a second array so a widened sector cannot widen further. */
+            for (uint32_t s = 0; s < n; s++) {
+                if (!qbad[s])
+                    continue;
+                uint32_t lo = s > ADSC_QPOS_MARGIN ? s - ADSC_QPOS_MARGIN : 0;
+                uint32_t hi = s + ADSC_QPOS_MARGIN;
+
+                if (hi >= n)
+                    hi = n - 1;
+                for (uint32_t k = lo; k <= hi; k++)
+                    qsus[k] = 1;
+            }
+
+            for (uint32_t s = 0; s < n; s++) {
+                unsigned used = 0;
+
+                if (!qsus[s] || hard[s] || susp[s])
+                    continue;
+                if (qpos_rescue(&r, lba + s, buf + (size_t)s * r.sector_len,
+                                &used)) {
+                    recov[s] = 1;
+                    att[s] += used;
+                } else {
+                    susp[s] = 1;
+                }
+            }
+        }
+
         /* Boundary overlap check: the previous chunk read past its seam;
          * those extension sectors must byte-match this chunk's head. A
          * mismatch means one of the two reads slipped — consensus decides. */
@@ -628,7 +754,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                 if (qd.crc_ok)
                     r.st.subq_ok++;
 
-                map_store(req->subq_map, idx, adsc_subq_byte(&qd));
+                map_store(req->subq_map, idx, adsc_subq_byte(&qd, cur));
             }
 
             if (bits[s]) {

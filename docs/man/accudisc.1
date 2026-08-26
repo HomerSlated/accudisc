@@ -939,10 +939,22 @@ value	name	meaning
 0x2	ACCUDISC_SUBQ_BAD	CRC-16 failed
 0x3	ACCUDISC_SUBQ_NO_POSITION	CRC-16 verified, ADR \(!= 1 (MCN/ISRC)
 0x4	ACCUDISC_SUBQ_NO_AUDIO	sector unreadable; no frame delivered
+0x5	ACCUDISC_SUBQ_MISPOSITION	valid ADR=1 frame naming a DIFFERENT LBA
 .TE
 .PP
 The severity nibble is always 0: Q integrity is one CRC-16 over one 12-byte
 frame, so there is no gradient to report.
+.PP
+.B MISPOSITION looks healthy and is not.
+The frame verified, carries ADR=1 and is internally consistent, so any check
+that inspects only the frame calls it OK. What makes it a fault is the
+comparison against the sector that was asked for: the drive lost its place and
+returned intact audio from the wrong address. Measured on a PX\-716A at maximum
+CAV speed \(em 17 consecutive sectors from 2048 sectors earlier, C2 silent, four
+independent passes agreeing byte\-for\-byte. Over 1404000 sectors: 17/17 true
+positives, zero false positives. It is 0 whenever raw subchannel was not
+requested, so zero means nothing without
+.BR \-\-sub " " raw .
 .PP
 .B NO_POSITION is healthy.
 MCN and ISRC frames are interleaved into the position stream by the pressing
