@@ -655,6 +655,135 @@ drive idle for ~45-60 minutes with no eject, then read the whole disc at max.
 Predicted BAD. That is the only untested factor that separates the two
 populations.
 
+#### 2.19b Keith's 20-read test — the cdrdao difference is NOT significant, and cdrdao fails too
+
+10 AccuDisc reads at 32x then 10 cdrdao reads at 32x, same disc, no eject,
+each compared to the burnt image immediately.
+
+| | bad | clean |
+|---|---|---|
+| AccuDisc | **4** / 10 | 6 |
+| cdrdao | **1** / 10 | 9 |
+
+**Fisher exact, one-tailed: p = 0.1517. Not significant.** And cdrdao *failed*,
+which ends the "cdrdao reads this disc correctly" reading of §2.17 outright.
+
+| pass | sectors | span | true bit errors | displaced |
+|---|---|---|---|---|
+| accudisc1 | 4 | 224850–224853 | 0 | **4 × −2048** |
+| accudisc3 | 64 | 319291–321113 | 64 | 0 |
+| accudisc9 | 185 | 288401–291336 | 185 | 0 |
+| accudisc10 | 2530 | 311113–317889 | 2530 | 0 |
+| **cdrdao9** | 64 | 345818–347637 | **64** | 0 |
+
+**Mode 1 is radial.** Every Mode 1 event in the session, both tools, lies beyond
+**LBA 288 000 (~64 min)** — the outer 14 minutes of a 78-minute disc. That
+matches the census exactly: the C1 peaks at 32x were at 346875, 347550 and
+350775, the outermost samples. At 32x CAV the outer edge runs at the highest
+linear velocity the drive ever sees, and that is where its read margin runs out.
+Physical, tool-independent, and not our defect.
+
+**Mode 2 remains AccuDisc-only but weakly.** Across the session: 5 displacement
+events in 19 AccuDisc max-speed passes, 0 in 12 cdrdao passes. Fisher one-tailed
+p ~ 0.068 — a lead, not a finding, and it pools passes across conditions.
+
+**A correction: the C2 hypothesis was NOT ruled out.** §2.17 declared "the C2
+request is not the trigger" because passJ/K/L were clean. With Mode 2 running at
+roughly 26% per pass, three clean passes has probability 0.74^3 ~ 0.40 — that
+test could not have detected anything. The claim was underpowered and is
+withdrawn. **C2 is still the most conspicuous difference between the two tools:
+we request C2 pointers, cdrdao does not.**
+
+The design that could settle it: `--no-c2` vs default, **interleaved** rather
+than sequential (the failure rate drifts, so sequential arms are confounded),
+**20 passes per arm**. ~2 hours unattended, no discs. Note §2.20 may make this
+moot — a Q-position check detects the fault regardless of what triggers it.
+
+#### 2.20 SOLVED — the drive genuinely mis-positions, and its own Q subchannel says so
+
+Keith asked for the Q subchannel at 224850. It answers the question completely.
+
+Four whole-disc reads at 32x capturing audio + C2 + **raw P-W subchannel** +
+the `subq_map` lane. `q1` caught a live Mode 2 event at the usual site. Decoding
+Q per sector and comparing its **absolute MSF against the LBA we commanded**:
+
+```
+    LBA    expect | Q crc  Q abs MSF   Q lba  delta  subq_map
+ 224851  50:00:01 |   OK   50:00:01  224851     +0    1 (OK)
+ 224852  50:00:02 |  BAD          -       -      -    2 (CRC fail)
+ 224853  50:00:03 |   OK   49:32:55  222805  -2048    1 (OK)   <-- !!
+ 224854  50:00:04 |   OK   49:32:56  222806  -2048    1 (OK)
+   ...          17 sectors, continuous, all CRC-VALID, all -2048
+ 224869  50:00:19 |   OK   49:32:71  222821  -2048    1 (OK)
+ 224870  50:00:20 |   OK   50:00:20  224870     +0    1 (OK)
+```
+
+**The drive is not handing back the wrong buffer. It genuinely believes it is
+2048 sectors back.** The Q it returns agrees with the audio it returns, carries a
+valid CRC, and is internally consistent across the whole run. There is one Q CRC
+failure at 224852 — the transition sector, the moment position is lost — and the
+run ends as cleanly as it began.
+
+That kills the cache/buffer-aliasing reading of §2.9 entirely. This is a servo
+positioning slip: the drive loses lock, re-acquires 2048 sectors earlier,
+streams correctly from there, and re-acquires the true position ~17 sectors
+later. Everything it reports about itself is self-consistent and wrong.
+
+**Measured across all four whole-disc passes (1 404 000 sectors):**
+
+| pass | audio-bad sectors | Q CRC failures | **Q position mismatch** |
+|---|---|---|---|
+| q1 (Mode 2 live) | 20 | 1599 | **17** — one run, all −2048 |
+| q2 (clean) | 0 | 1670 | **0** |
+| q3 (clean) | 0 | 1560 | **0** |
+| q4 (Mode 1, 2052 bad) | 2052 | 5494 | **0** |
+
+- **Zero false positives.** Three passes with no positional fault produced no
+  position mismatch at all, despite ~1600 benign Q CRC failures each (the
+  drive's normal subcode error rate at 32x on this disc — CRC failure alone is
+  far too noisy to use as a signal).
+- **Complete sensitivity to Mode 2.** 17/17 displaced sectors flagged. The 2
+  remaining audio-bad sectors (224850, 224851) carry *correct* Q with wrong
+  audio — the leading edge of the slip, where audio and subcode are offset in
+  time — and lie within **2 sectors** of a flagged one.
+- **q4 confirms the check is specific.** Mode 1 is not a positioning fault, and
+  it correctly produced no position mismatches.
+
+#### 2.21 THE FIX — and a concrete defect in what we already ship
+
+`ACCUDISC_SUBQ_OK` is documented as "CRC-16 verified, ADR=1 position". It does
+**not** compare that position against the LBA the caller asked for. So in the
+table above, **the library labelled all 17 displaced sectors `1` (OK)** — a
+sector whose own subcode proves the drive was in the wrong place is reported as
+healthy. Verified directly from `q_1.qmap`.
+
+**The check to add:** for every delivered sector, decode Q; if the CRC is valid
+and ADR == 1, require `q_abs_lba == commanded_lba`. A mismatch means the drive
+silently mis-positioned. On this data that is 100% sensitive to Mode 2 with zero
+false positives over 1.4 M sectors.
+
+Design notes for when it is implemented:
+
+- It needs a **new `subq_map` state** (or a flag bit) — `OK` cannot keep meaning
+  two different things. `BAD` is wrong too: the frame is perfectly valid, it
+  just describes somewhere else.
+- **Extend suspicion by a small margin either side of a mismatch.** The leading
+  edge of the slip has correct Q with wrong audio; measured worst case here is
+  2 sectors, so a margin of a few sectors covers it. Combine with the §2.8 rule
+  (a fault invalidates the remainder of the transfer).
+- It requires subchannel capture, which costs transfer bandwidth
+  (`sector_len` 2742 vs 2646, chunk 23 vs 24). That is a caller choice, not a
+  default to force.
+- **This is the first check we have that catches Mode 2 at all.** C2 is silent,
+  repetition-consensus agrees with itself, and the chunk-seam test looks at
+  seams. §2.10 said only "vary the read"; this is better — it is a direct
+  contradiction between what we asked for and what the drive says it did.
+
+**One earlier claim narrowed.** §2.9 said the splice byte was invariant. Under
+subchannel capture (chunk 23) it landed at byte **2264**, not 2256, and the run
+was 20 sectors. The site recurs; the exact byte and extent move with the
+transfer geometry. "Byte-identical" held only within one chunk size.
+
 ### 3. Keith's ruling on the interface — NOT YET DONE
 
 The measurement must run **end-to-end in the API**, in RAM, with no files:
