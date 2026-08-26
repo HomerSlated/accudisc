@@ -111,11 +111,13 @@ a real read error is the *trigger*; Mode 2 has no error to trigger on.
 | passE | 32x (cap reset to max) | yes | clean |
 | passF | max, chunk 24 | no | 2 bad regions, 15 sectors |
 | passG | max, **chunk 16** | no | 5 bad regions, 40 sectors |
+| passH | 8x | no | clean, 0 C2 |
+| passI | 8x | no | clean, 0 C2 |
 
-Four of five full-speed passes are bad; both 8x passes are clean — but
-**passE ran at 32x and was clean**, and the 8x sample is only n=2, so
-"speed-dependent" is directional, not established. Do not write it down as
-proven. `speed 8` persisted across eject/load on this
+Nine whole-disc passes. **All four 8x passes are byte-identical to the burnt
+image with zero C2 sectors; four of five max-speed passes carry events.** See
+§2.12 — the speed effect is now measured rather than asserted, and `passE` (32x,
+clean) is the one max-speed pass that does not fit. `speed 8` persisted across eject/load on this
 drive; `speed 40` reports back 32x.
 
 #### 2.5 THE IMPORTANT PART — this defeats our consensus defence
@@ -268,6 +270,32 @@ is not one bug but two:
 remainder of the transfer — it would catch **21 of 40** corrupt sectors in
 passG: all of Mode 1, none of Mode 2. Worth doing, and not sufficient.
 
+#### 2.11 Site recurrence — ONE site recurs, the other five do not
+
+Tabulated across the four bad passes, so the "invariant" claim is not carried
+further than it goes:
+
+| site | woff_read | passB | passF | passG (chunk 16) |
+|---|---|---|---|---|
+| **224850** | yes | yes | yes | yes |
+| 88826 | — | yes | — | — |
+| 324083 | — | — | yes | — |
+| 344187 / 344206 | yes | — | — | — |
+| 236359, 236629, 237071 | — | — | — | yes |
+| 267387 | — | — | — | yes |
+
+**224850 fires in every bad pass, always at the same byte. Every other site
+fires exactly once.** So the correct statement is *"when 224850 fires it fires
+identically"*, not *"the sites are deterministic"* — five of six are not. Do not
+carry the stronger claim into later reasoning; it would predict a determinism
+the data does not show. (The commit message for this work, e4a3cd3, states the
+invariance without that qualifier and is overstated on this point.)
+
+The 21-of-40 score in §2.9 is likewise **one pass, not a rate** — passG is the
+only pass with a captured C2 file. On passF the same rule scores about 11 of 15.
+The rule's *shape* is what is established (C2 at run position 0, three for
+three), not its yield.
+
 #### 2.10 What actually catches Mode 2 — vary the READ, not just repeat it
 
 Repetition cannot see Mode 2: four passes agree byte-for-byte and are all wrong.
@@ -289,6 +317,32 @@ invariant that document already states: a relative check never outranks an
 absolute one. What is new is a measured case where **every** relative check we
 own — C2, repetition-consensus, and the chunk-seam overlap test — fails
 simultaneously on the same sectors.
+
+#### 2.12 2026-08-26 — the speed lever, tested against the site that recurs
+
+§2.10 recommended varying speed between verify passes off n=2. Two more 8x
+whole-disc passes take that to n=4, and the discriminating question is not "is
+8x clean" but **does site 224850 fire at 8x** — it is the only site that recurs
+(§2.11), and it fires in every bad max-speed pass.
+
+- `passH`, `passI` (8x, whole disc, C2 captured): **byte-identical to the burnt
+  image, zero C2 sectors.** With `passC` and `passD` that is **4/4 clean at 8x**.
+- Site 224850: **4 of 5 max-speed passes, 0 of 4 at 8x.**
+  Fisher exact, one-tailed, **p = 0.0397**.
+
+So the recommendation stands, and it is now measured rather than directional.
+Honest limits on it:
+
+- p ≈ 0.04 on n=9 is a real signal, not a strong one. It is one disc, one drive,
+  one signal — full-scale white noise, which is pathological EFM.
+- **`passE` is the counter-example and has not been explained.** 32x, after an
+  eject/load, byte-clean. If speed alone drove this it should have fired. Either
+  the eject/load matters, or the effect is probabilistic at max speed rather
+  than deterministic. Do not describe the max-speed behaviour as deterministic —
+  only *site 224850, when it fires, is byte-deterministic*.
+- This says nothing about other drives or ordinary music, and nothing about
+  whether 8x is a *sufficient* defence. It is evidence for varying the read, not
+  for trusting a slow one.
 
 ### 3. Keith's ruling on the interface — NOT YET DONE
 
