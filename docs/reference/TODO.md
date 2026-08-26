@@ -556,6 +556,105 @@ both be wrong; a 32x read and an 8x read cannot.
 would separate "this disc at this address" from "this drive at this address" —
 one blank, four remain. Nothing else on our side is unexhausted.
 
+#### 2.17 Keith's tests 1-3 — and the anomaly STOPPED REPRODUCING, which voids the comparison
+
+**Test 1 as run:** `cdrdao read-cd --rspeed 32 --paranoia-mode 0 --fast-toc`,
+twice, same CD-R, same drive. Both passes **byte-perfect** against the burnt
+image and identical to each other.
+
+(cdrdao writes **big-endian** audio in its `.bin`. The raw compare fails from
+sector 75 — the first locator pulse — matching wherever the source is digital
+silence and differing everywhere it is not. That is the byteswap signature, not
+a read fault. Byteswapped: 0 differing sectors. Anyone repeating this without
+the swap will "find" 345 375 bad sectors.)
+
+**I read that as "cdrdao is clean where we are not" and it was wrong.** The
+control run settles it:
+
+| pass | config | result |
+|---|---|---|
+| passJ | `--no-c2` (2352 B/sector, like cdrdao) | **byte-identical** |
+| passK | default, **C2 requested** (2646 B/sector) | **byte-identical** |
+| passL | `--no-c2` again | **byte-identical** |
+
+`passK` is the exact configuration that failed four times out of four this
+morning, and it is clean. **The anomaly is not reproducing at all any more**, so
+cdrdao ran in a state where our own reads are also clean. *The tool comparison
+measures nothing.* Test 3 (a cdrdao write/read pipeline) would have been
+confounded identically and would have cost a blank to prove nothing — do not
+spend one on it in this state.
+
+What test 1 and the control DO establish: **the C2 request is not the trigger.**
+
+**The timeline is the actual finding:**
+
+```
+23:50  burn ends
+00:30  woff_read  max   BAD    <- first max read after the burn
+00:49  passB      max   BAD
+00:59  passC      8x    clean
+01:05  EJECT/LOAD
+01:11  passD      8x    clean
+01:18  passE      32x   clean
+       ~8.5 h idle, disc loaded, drive spun down
+10:09  passF      max   BAD    <- first max read after the long idle
+10:15  passG      max   BAD
+10:26  passH/I    8x    clean
+11:55  disc OUT (pressed CD tested)
+12:38  disc BACK IN
+12:45  cxscan 8x        C2 = 0 whole disc
+13:22  cdrdao x2  32x   clean
+13:31  passJ/K/L  max   clean   (K requests C2)
+13:46  EJECT/LOAD
+13:49  passM      max   clean   <- see the falsified prediction below
+```
+
+**4 of 4 bad before 11:55; 7 of 7 clean since 12:39.**
+
+#### 2.18 A prediction, written in advance, and FALSIFIED
+
+Hypothesis: a slow whole-disc pass *trains* the drive (adaptive servo
+calibration) and a fresh load discards it, so the first max-speed read after a
+reload should fail. Recorded at `scratchpad/PREDICTION2.md` with its falsifiers
+before running.
+
+**Test: eject, load, immediately read whole disc at max with C2. Predicted BAD
+at or near LBA 224850. Result: byte-identical.** The prediction is wrong and the
+training hypothesis is unsupported. Recorded rather than quietly dropped.
+
+Also ruled out while looking: `census.c` calls `accudisc_counter_scan_end` on
+every path out, so `cxscan` did not leave the drive armed in a modified state.
+
+#### 2.19 Honest position
+
+**The anomaly is currently not reproducible and its trigger is unknown.**
+Everything that separates "then" from "now" is confounded — elapsed time,
+thermal state, and how much this disc has been read since.
+
+What IS established, and survives:
+
+- The disc is physically excellent (§2.16): CU zero disc-wide, C1 comparable to
+  a pressed CD, and the recurring site among the cleanest places on it.
+- The burn is good. Links/underruns are not the cause (§2.16).
+- Our read engine cannot splice sub-sector, and LBA and buffer position share one
+  counter (§2.2). The substitution is drive-side.
+- The C2 request is not the trigger (§2.17).
+- When it does occur, it is invisible to every relative check we own (§2.9,
+  §2.10).
+
+**The one distinguishing factor not yet tested.** Both bad episodes were max-speed
+reads with **no reload since the disc was last inserted or burnt, and a
+substantial gap since the drive last touched it** — 40 minutes after the burn,
+and 8.5 hours of idle. Every clean max-speed pass came within minutes of a
+reload. A plausible firmware story: on eject/load the drive performs a full disc
+calibration, but on spin-up after an idle with the same disc still loaded it
+reuses stale parameters.
+
+**Test that would settle it, costing no disc:** leave the disc loaded and the
+drive idle for ~45-60 minutes with no eject, then read the whole disc at max.
+Predicted BAD. That is the only untested factor that separates the two
+populations.
+
 ### 3. Keith's ruling on the interface — NOT YET DONE
 
 The measurement must run **end-to-end in the API**, in RAM, with no files:
