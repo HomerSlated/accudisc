@@ -344,6 +344,51 @@ Honest limits on it:
   whether 8x is a *sufficient* defence. It is evidence for varying the read, not
   for trusting a slow one.
 
+#### 2.13 Not damage, and probably not the noise either — site 224850 is MSF 50:00:00
+
+Keith asked the right question: is this white noise being hard to read, or is
+the disc damaged? Measured answer: **neither, for the mode that matters.**
+
+**The disc is physically sound.** Four whole-disc passes at 8x are byte-identical
+to the burnt image with **zero** C2 sectors between them. Damaged media does not
+read perfectly four times running with no error pointers anywhere.
+
+**Mode 1 is marginal high-speed reading, and it MOVES.** C2 fired at four
+distinct sites across two max-speed passes and never at the same site twice
+(324083; 236359, 236629, 237071). A fixed physical defect would fire in the same
+place every time. This is the drive at 32x sitting at the edge of its ability,
+with which sectors tip over varying pass to pass. Full-scale white noise is a
+plausible aggravator — maximum transition density, minimum DC-balance headroom,
+the worst case for EFM — but that is **untested**: nothing here compares this
+disc against music, so it stays a hypothesis.
+
+**Mode 2 is not a read-quality problem at all.** At 224850 there are *zero* bit
+errors — the audio came off the disc perfectly — and it recurs at the identical
+byte. The drive delivered correct data from the wrong address. Data quality is
+not involved.
+
+**And the site is exactly a minute boundary:**
+
+    LBA 224850 + 150 = 225000 frames = MSF 50:00:00.00
+
+Of the nine sites observed, that is the only one on a minute boundary, and it is
+the only one that recurs. Expected number landing on a boundary by chance is
+9/4500 ~ 0.002, so this is very unlikely to be coincidence — the drive tracks
+position by Q-subchannel MSF, and 49:59:74 -> 50:00:00 is a multi-digit BCD
+carry.
+
+**Do not promote this to a mechanism yet.** The disc crosses 78 minute
+boundaries and seven tens-of-minutes boundaries; exactly one of them misbehaves.
+So "minute rollover" is not sufficient on its own. What is established is that
+the recurring site sits on a boundary, not that boundaries cause the fault.
+n = 1 site.
+
+**Rejected the same session, recorded so it is not re-derived:** the
+displacements are −2048, −1024 and +2, all powers of two, which invites "a
+single-bit error in the drive's binary LBA". Tested against all eleven events —
+does the LBA actually have that bit in the state a flip would require?
+**7 of 11, against 5.5 expected by chance.** No signal. The hypothesis is dead.
+
 ### 3. Keith's ruling on the interface — NOT YET DONE
 
 The measurement must run **end-to-end in the API**, in RAM, with no files:
