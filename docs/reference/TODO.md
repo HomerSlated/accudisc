@@ -494,6 +494,68 @@ still untested.
 (or any ordinary-crest-factor audio) and run the same protocol. Keith's call —
 four blanks remain.
 
+#### 2.16 The census — THE BURN IS GOOD, and the recurring site is one of the cleanest places on the disc
+
+`accudisc cxscan` on the burnt CD-R, whole disc, 4680 samples of 75 sectors,
+at both speeds. (Verified first that `census.c` reads the counters after exactly
+`cadence` sectors at either speed, so the counts are per-sector normalised and
+the two are comparable — the "/s" in the summary label is 75 sectors, i.e. one
+second of *audio*, not of wall clock.)
+
+| | C1 total | C1 mean/sample | C1 max | C2 | CU |
+|---|---|---|---|---|---|
+| **32x** | 30 523 | 6.5 | 70 | **16** (4 samples) | **0** |
+| **8x** | 12 221 | 2.6 | 30 | **0** | **0** |
+| pressed CD @32x (outer region) | — | 2–14 observed | — | 0 | 0 |
+
+**The marginal-burn hypothesis is refuted, and refuted where it matters.**
+
+- **CU = 0 across the whole disc at both speeds.** Nothing uncorrectable anywhere.
+- **C2 = 0 across the whole disc at 8x.**
+- C1 is comparable to Keith's pressed disc.
+- **At site 224850 — the recurring Mode 2 site — C1 = 1 at 32x and 0 at 8x, C2
+  and CU zero.** It is one of the *cleanest* places on the disc. There is no
+  physical defect where the fault occurs.
+
+So §2.14's link/underrun theory is dead as an explanation of Mode 2. It was
+worth testing and it failed. (The two write-path gaps it turned up —
+unconditional BURN-Proof and no underrun accounting — are still real and still
+worth fixing; they just are not the cause here.)
+
+**What the census DOES establish: speed-conditional read margin, measured.**
+
+- C1 rises **2.5x** from 8x to 32x on the same physical disc. The disc did not
+  change; the drive's ability to read it did.
+- C2 appears **only at 32x** — 16 errors in 4 sample intervals (122775, 143025,
+  319800, 319875). None coincides with any observed read-failure site, which is
+  what a stochastic process should look like.
+
+**Where that leaves the two modes:**
+
+- **Mode 1 — explained.** The drive's read margin on CD-R at 32x is marginal.
+  C2 fires, our engine sees it, and the recovery that follows is what silently
+  substitutes. The trigger is real and now measured.
+- **Mode 2 — NOT explained by disc quality, and the alternatives are exhausted
+  on our side.** The spot is physically clean, the burn is good, our read engine
+  provably cannot splice sub-sector, and the pressed disc is flawless at a higher
+  speed. What remains is a drive positioning fault at a specific address under
+  sustained high-speed streaming. The MSF 50:00:00 coincidence (§2.13) gets
+  *stronger* now that no physical explanation competes with it — but 60:00:00 and
+  70:00:00 are on the same disc and do not fire, so "minute boundary" is still
+  not sufficient, and the mechanism stays inside firmware we cannot see.
+
+**Practical conclusion for the library.** On this drive, CD-R media at maximum
+speed is not trustworthy, and *none* of our relative checks can see the worst of
+it. The 8x evidence is now strong on both instruments — 4/4 whole-disc passes
+byte-exact, and a census with zero C2 over the entire disc. This is the
+strongest form yet of the §2.10 recommendation: **verify passes must differ in
+speed.** Two reads at the same speed on this drive can agree byte-for-byte and
+both be wrong; a 32x read and an 8x read cannot.
+
+**Not done, and Keith's call.** Burning a second CD-R with the same content
+would separate "this disc at this address" from "this drive at this address" —
+one blank, four remain. Nothing else on our side is unexhausted.
+
 ### 3. Keith's ruling on the interface — NOT YET DONE
 
 The measurement must run **end-to-end in the API**, in RAM, with no files:
