@@ -7,6 +7,131 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## READ BUFFER ("AccuBuffer") — the slow-sink experiment, and why the page cache already is one (2026-08-26)
+
+Keith asked for a read buffer before the powered C2 test, and asked the right
+question with it: *where would it actually be useful?* System built `slowdisk`
+(a cgroup write-rate-capped ext4 container, currently 2 822 400 B/s = 16x) so
+the question could be measured rather than argued.
+
+### 1. The experiment — UNINFORMATIVE, and that is the honest verdict
+
+Interleaved fast-sink / capped-sink whole-disc passes, 4 pairs. Prediction and
+falsifiers written first (`scratchpad/PREDICTION3.md`): a starved sink should
+provoke MORE Mode 2, because our engine is synchronous and a blocked `fwrite`
+delays the next READ CD until the drive must stop and **re-position** — the
+operation that produces the slip.
+
+| pair | fast arm | capped arm |
+|---|---|---|
+| 1 | clean | *(comparison produced no output — treated as MISSING)* |
+| 2 | clean | clean |
+| 3 | **BAD** 3 sectors, bit errors, 289503..289565 | clean |
+| 4 | clean | clean |
+
+**Zero Q-mispositions in either arm.** The only corruption was Mode 1, on the
+*fast* arm, in the outer region — consistent with the radial read-margin
+explanation and unrelated to the sink.
+
+**This does not falsify the prediction; it fails to test it.** Mode 2's base rate
+this evening was ~1 in 8 passes, so `P(zero events in 7) = 0.393`. Seeing nothing
+is unremarkable whether or not the sink matters. Recorded as underpowered rather
+than negative — the same trap as §2.19b, and the third time today that a small
+sample of a ~10-25% intermittent event has invited a conclusion it cannot carry.
+
+### 2. What the timings DO establish — the kernel is already the buffer
+
+Pure sink time for the image at the cap: `825 552 000 / 2 822 400 = 292.5 s`.
+
+| capped pass | elapsed | vs pure sink time | excess |
+|---|---|---|---|
+| 1 | 306.5 s | 104.8% | 14.0 s |
+| 2 | 307.1 s | 105.0% | 14.6 s |
+| 3 | 301.2 s | 103.0% | 8.7 s |
+| 4 | 301.1 s | 102.9% | 8.6 s |
+
+The steady-state disc read alone takes 191.9-192.3 s. **If read and write
+serialised, a capped pass would take 484.4 s. It took 301.1.** So **95.5% of the
+disc read is hidden behind the sink.**
+
+The mechanism is not ours: `fwrite` returns into the page cache and the kernel
+drains asynchronously via kworkers, so the drive keeps streaming while writeback
+is throttled. Corroborated independently by System, who measured the sink at
+**100.0% of cap** mid-pass from `stat` deltas — the sink is the binding
+constraint continuously, and our 4.7% residual is startup/seek/per-command time
+when it is not.
+
+**So for a page-cached file sink on Linux, a user-space read buffer adds almost
+nothing.** That is the configuration every measurement in this project has used,
+and it is why the buffer has looked like a "just in case" feature.
+
+### 3. Where a read buffer IS worth having
+
+The cases the page cache does *not* cover — i.e. where there is no kernel buffer
+between us and the slow thing:
+
+1. **Work inside the sink callback.** This is the real one, and it is AccuDisc's
+   own API shape: `accudisc_read` streams chunks to a caller-supplied function.
+   FLAC encoding, hashing, AccurateRip/CTDB checksumming, a GUI update — every
+   millisecond spent there is a millisecond the drive is not being read, with no
+   page cache to hide it. A consumer doing 1 ms of work per 24-sector chunk adds
+   ~15 s to a whole-disc rip and, more importantly, inserts a stall exactly where
+   the engine is synchronous.
+2. **Sinks with no page cache behind them** — a pipe or socket to a slow reader,
+   `O_DIRECT`, a synchronous network filesystem.
+3. **Bursty interference** — writeback storms, another process hammering the
+   disc. The page cache absorbs these too, up to the dirty limit; a bounded ring
+   raises that ceiling under our control rather than the kernel's.
+
+Note what is NOT on this list: **making a sustainably-slower-than-the-drive sink
+keep up.** Nothing can do that. A buffer converts a *burst* into a delay; it
+cannot create bandwidth.
+
+### 4. Sizing and placement — answering "malloc from paged memory?"
+
+Yes, and it is already the default: a large `malloc()` is anonymous pages, RAM
+first, swap under pressure, nothing committed until touched. `mlock()` would be
+needed to *prevent* paging. But relying on that as the policy is wrong here:
+
+- **Swap is slower than the sink we are buffering for.** A buffer that grows
+  into swap replaces a slow sink with a slower one, and turns steady backpressure
+  into an unpredictable page-fault stall on the producer. On a burn that is the
+  underrun we were preventing.
+- **Linux overcommits.** A 4 GiB `malloc` succeeds instantly; the OOM killer
+  arrives later, mid-burn, aimed by heuristic. "Unless both RAM and swap are
+  exhausted" is not a boundary the allocator enforces.
+
+Design of record: a **bounded ring with explicit backpressure** — fixed capacity
+chosen at open, `malloc`ed (so it *is* pageable; we simply do not depend on it),
+touched once at allocation so a shortfall fails at startup rather than at 60% of
+a burn, and a producer that blocks when full. Bounded means the failure mode is
+"the drive waits", which this session measured the drive handling gracefully
+(chunk-size sweep: 11.48 s for 24 000 sectors at chunk 8, 16, 24 and 27 alike).
+
+Sizing has a clean answer on the write path: cover the longest sink stall worth
+surviving. At a 16x burn (2.8 MB/s) a 64 MiB ring rides out 23 s.
+
+### 5. Consumer-visible contract — two points that are NOT transparent
+
+The buffer sits between engine and sink, so chunk callbacks arrive in the same
+order and consumers need no change. Two exceptions must be documented:
+
+- **Chunk lifetime.** `chunk.data` currently points into the engine buffer and is
+  valid for the callback only. With a ring it points into the ring — same rule,
+  but a slow sink now *holds a ring slot*, so a consumer that retains the pointer
+  stalls the producer rather than merely reading stale bytes. The Python binding
+  already pins this as `test_sink_zero_copy_retained_slice_is_a_KNOWN_HOLE`.
+- **Cancellation ordering.** A sink returning non-zero cancels at the next chunk.
+  With a buffer the engine may be N chunks ahead when the sink refuses, so cancel
+  becomes "stop producing, then drain or discard what is queued" — and which of
+  those it is has to be specified, not left to the implementation.
+
+### 6. Loose end
+
+`slow 1`'s comparison produced no output and its stderr went to a buffered pipe
+that could not be recovered. Cause unknown; the data point is recorded as
+MISSING, not clean. Any rerun must capture stderr per-arm.
+
 ## WRITE OFFSET measured on real media, and the silent read displacement it exposed (2026-08-25/26)
 
 One of Keith's five blanks (Taiyo Yuden CD-R) was spent on this. The measurement
