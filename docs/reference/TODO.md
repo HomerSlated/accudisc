@@ -132,6 +132,80 @@ order and consumers need no change. Two exceptions must be documented:
 that could not be recovered. Cause unknown; the data point is recorded as
 MISSING, not clean. Any rerun must capture stderr per-arm.
 
+### 7. THE ACCUBUFFER — built 0.22.0, and measured before and after
+
+`src/read/accubuf.{c,h}`: a bounded chunk ring with a consumer thread, between
+the engine and the caller's sink. Opt-in via `accudisc_read_req.buffer_bytes`;
+**0 by default and the default path is byte-for-byte unchanged**. Surfaces in
+step: engine, CLI (`--buffer`, a human line, `buffer_peak=`/`buffer_stalls=` on
+the machine summary), Python binding (`buffer_bytes=` on `read`,
+`ReadStats.buffer_peak_chunks/.buffer_stalls`, `ReadStats.buffer_helped`), man
+page, `cli-machine-interface.md`, ABI pins, golden usage. 45/45.
+
+**Hardware verification, whole disc:**
+
+| run | sink | buffer | elapsed | ring |
+|---|---|---|---|---|
+| A | capped (2.82 MB/s) | none | 316.0 s | — |
+| B | capped | 64 MiB | 301.3 s | peak **1056** chunks, **373** stalls |
+| C | fast (`/var/tmp`) | 64 MiB | 261.5 s | peak **1**, **0** stalls — "never the constraint" |
+
+Read carefully, because two of these three numbers say less than they look:
+
+- **A vs B is n=1 each and proves nothing.** B (301.3 s) sits inside the range of
+  the four *unbuffered* capped passes measured earlier the same evening
+  (301.1-307.1 s); A (316.0 s) is worse than any of them. The apparent 14.7 s
+  "win" is within the drift. And a win was never expected here: the capped sink
+  is *sustainably* slower than the drive, and a ring cannot create bandwidth —
+  §1 of this section says so, and B's 373 stalls are the ring filling and then
+  bounding the read exactly as designed.
+- **C is the honest-reporting mechanism working.** Peak 1 chunk, 0 stalls, and
+  the CLI says "never the constraint". A fast file sink does not need this
+  feature and the API says so rather than implying a win.
+
+**C's 261.5 s against a ~192 s baseline looked like 36% buffer overhead, and it
+is not.** Interleaved, same span, fast sink, 6 pairs:
+
+```
+  nobuf  12.139  11.631  11.623  11.601  11.569  11.496
+  buf    11.621  11.636  11.519  11.617  11.618  11.679
+```
+
+**~0.3% difference.** Scaled to a whole disc, a 36% overhead would have shown as
+~4.8 s on this 11.6 s span and is nowhere in the data. C's number is a single
+unexplained outlier — recorded as such rather than attributed.
+
+**The test that would catch a fake.** Ordering, payload-copy and bounds tests all
+pass on a ring that is secretly synchronous. `tests/test_accubuf.c` therefore
+measures wall clock: 8 chunks into an 8-slot ring against a 20 ms sink must
+return in far less than 160 ms. **Falsified** — patching `push` to deliver inline
+aborts the test; restored, it passes.
+
+**Two mistakes made and fixed during the build**, both worth keeping:
+
+1. The new stats fields went in **before** `subq_misposition`, moving a field
+   0.21.0 had already shipped. Appended instead, and the offset is now pinned at
+   **140** — measured by compiling against `git show 9679b3c:...` rather than
+   assumed.
+2. The `--buffer` usage text went into a C string literal as raw multi-line text.
+   Same mistake as an earlier session; the usage block needs per-line `"...\n"`
+   fragments.
+
+**Sizing — start small, and this is measured, not guessed.** System reported the
+container's dirty budget as **3.8 MiB hard-capped**, working set under 2.6 MiB,
+against **1.6 GiB** on this machine's ordinary storage — a factor of 432. So the
+95.5% read-hiding in §2 above was achieved by a *few megabytes* of kernel buffer
+in the hostile case. There is no evidence that hundreds of megabytes buy
+anything, and the ring is touched at allocation, so an oversized one costs
+resident memory up front. Single-digit MiB first; raise only if `buffer_stalls`
+says the ring was actually the constraint.
+
+**Still unproven.** The case the buffer was built for — work inside the sink
+callback — has no hardware test here, because every sink used in this session is
+an `fwrite`. `tests/test_accubuf.c` proves the overlap synthetically. A real
+demonstration wants a consumer doing per-chunk work (hashing, encoding), which
+is a consumer-side experiment rather than one this repo can run alone.
+
 ## WRITE OFFSET measured on real media, and the silent read displacement it exposed (2026-08-25/26)
 
 One of Keith's five blanks (Taiyo Yuden CD-R) was spent on this. The measurement

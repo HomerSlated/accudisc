@@ -1226,6 +1226,8 @@ class ReadStats:
     speed_requested_x: int
     speed_honoured_x: int
     subq_misposition: int
+    buffer_peak_chunks: int
+    buffer_stalls: int
 
     @property
     def speed_quantized(self) -> bool:
@@ -1271,6 +1273,21 @@ class ReadStats:
         not request ``Sub.RAW``, because the check has nothing to work from.
         """
         return self.subq_misposition > 0
+
+    @property
+    def buffer_helped(self) -> bool:
+        """The AccuBuffer was actually the constraint at some point.
+
+        ``buffer_stalls == 0`` means the producer never once had to wait for a
+        free slot, i.e. the sink always kept up and the ring did nothing. That
+        is the common case for an ordinary buffered file sink, where the page
+        cache already decouples the drive from the storage — measured at 95.5%
+        of the disc read hidden behind a sink running at half the drive's rate,
+        with no buffer at all.
+
+        False is therefore not a fault. It means this read did not need one.
+        """
+        return self.buffer_stalls > 0
 
 
 @dataclass(slots=True)
@@ -2223,12 +2240,30 @@ class Device:
         status_map: bool | Any = False,
         subq_map: bool | Any = False,
         cancel: Cancel | None = None,
+        buffer_bytes: int = 0,
     ) -> ReadResult:
         """Stream ``count`` sectors from ``lba`` to ``sink``.
 
         ``sink`` may be ``None`` to read for status and stats only. It receives
         a :class:`Chunk`; return normally to continue, raise to cancel — the
         exception is re-raised here rather than swallowed.
+
+        ``buffer_bytes`` enables the **AccuBuffer**: a bounded chunk ring
+        between the drive and ``sink``, so time spent in ``sink`` is not time
+        the drive is not being read. Leave it 0 (the default) for an ordinary
+        file sink — the kernel page cache already does that job, measured at
+        95.5% of the disc read hidden behind a sink running at half the drive's
+        rate. Set it when ``sink`` itself does **work**: encoding, hashing,
+        AccurateRip/CTDB checksums, a GUI repaint. No kernel buffer covers that.
+
+        .. warning::
+           With ``buffer_bytes`` non-zero, **your sink runs on another thread**.
+           It is never called concurrently with itself, but it is not called on
+           the thread that invoked :meth:`read`. In CPython the callback
+           re-acquires the GIL, so ordinary Python sinks are safe; anything
+           touching thread-affine state (some GUI toolkits) is not. Cancellation
+           also *discards* whatever is still queued rather than draining it, so
+           a cancelled read may deliver fewer chunks than the sectors it read.
 
         ``copy=False`` hands the sink a ``memoryview`` over library memory
         instead of ``bytes``, avoiding a copy of every sector. The view is
@@ -2301,6 +2336,7 @@ class Device:
         req.any_type = 1 if any_type else 0
         req.retries = retries
         req.chunk_sectors = chunk_sectors
+        req.buffer_bytes = buffer_bytes
         req.speed_x = speed_x
         req.c2_retries = c2_retries
         req.verify_passes = verify_passes

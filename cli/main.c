@@ -105,6 +105,12 @@ static void usage(FILE *to)
         "  --subf FILE    write the subchannel stream here (needs --sub)\n"
         "  --cdg FILE     write CD+G packs here: R-W de-interleaved and\n"
         "                 Reed-Solomon corrected, 24 bytes/pack (needs --sub raw)\n"
+        "  --buffer N     AccuBuffer: bytes of chunk ring between the drive\n"
+        "                 and the output, so time in the sink is not time the\n"
+        "                 drive is idle. 0 = off (default). Pointless for a\n"
+        "                 plain file (the page cache already does this); it\n"
+        "                 is for a sink that does WORK. Writer runs on its\n"
+        "                 own thread\n"
         "  --chunk N      sectors per READ CD (default: max under 64 KiB)\n"
         "  --retries K    per-sector attempts on failed chunks (default 2)\n"
         "  --c2-retries N hunt a C2-clean copy of each flagged sector with\n"
@@ -1707,6 +1713,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             cdg_path = argv[++i];
         else if (!strcmp(a, "--subf") && i + 1 < argc)
             sub_path = argv[++i];
+        else if (!strcmp(a, "--buffer") && i + 1 < argc)
+            req.buffer_bytes = (uint32_t)strtoul(argv[++i], NULL, 0);
         else if (!strcmp(a, "--chunk") && i + 1 < argc)
             req.chunk_sectors = (uint16_t)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--retries") && i + 1 < argc)
@@ -2070,6 +2078,12 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
      * mis-positioned frame is CRC-OK, so it is counted in subq_ok and would
      * otherwise be reported as health. It is also the only lane here that says
      * the drive read the wrong part of the disc. */
+    if (req.buffer_bytes)
+        fprintf(stderr, "  AccuBuffer       : peak %u chunks queued, %llu "
+                        "producer stalls%s\n",
+                st.buffer_peak_chunks,
+                (unsigned long long)st.buffer_stalls,
+                st.buffer_stalls ? "" : " (never the constraint)");
     if (st.subq_misposition)
         fprintf(stderr, "  Q MISPOSITION    : %llu sectors whose valid Q named "
                         "a DIFFERENT LBA than requested\n",
@@ -2089,7 +2103,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         dprintf(ctx.prog_fd,
                 "summary hard=%llu c2=%llu recovered=%llu suspect=%llu "
                 "rereads=%llu slips=%llu subq_total=%llu subq_ok=%llu "
-                "subq_bad=%llu subq_misposition=%llu\n",
+                "subq_bad=%llu subq_misposition=%llu buffer_peak=%u "
+                "buffer_stalls=%llu\n",
                 (unsigned long long)st.hard_errors,
                 (unsigned long long)st.sectors_flagged,
                 (unsigned long long)st.sectors_recovered,
@@ -2099,7 +2114,9 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                 (unsigned long long)st.subq_total,
                 (unsigned long long)st.subq_ok,
                 (unsigned long long)(st.subq_total - st.subq_ok),
-                (unsigned long long)st.subq_misposition);
+                (unsigned long long)st.subq_misposition,
+                st.buffer_peak_chunks,
+                (unsigned long long)st.buffer_stalls);
     /* Exit 3 = delivered but degraded: the caller should gate before
      * trusting the image (relative signals only — see the header). */
     ret = (st.hard_errors || st.sectors_suspect || st.sectors_flagged) ? 3

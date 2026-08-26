@@ -57,8 +57,16 @@ _Static_assert(sizeof(accudisc_speed_rung) == 20,
  * updating the number below, bumping ACCUDISC_VERSION_MINOR so the .so version
  * moves with the layout, and adding a row to API_PLAN §8. Tripping these is a
  * reminder, not a defect. */
-_Static_assert(sizeof(accudisc_read_req) == 64, "read_req grew — see above");
-_Static_assert(sizeof(accudisc_read_stats) == 144, "read_stats grew — see above");
+_Static_assert(sizeof(accudisc_read_req) == 72, "read_req grew — see above");
+_Static_assert(sizeof(accudisc_read_stats) == 160, "read_stats grew — see above");
+
+/* 0.22.0 moved these: read_req 64 -> 72 (buffer_bytes, plus the padding it
+ * pulled in) and read_stats 144 -> 160 (buffer_peak_chunks, buffer_stalls).
+ * Both APPENDED, so nothing above them moved — subq_misposition in particular
+ * keeps the offset 0.21.0 shipped it at, which is the whole reason they went
+ * to the tail rather than beside the counters they belong with. */
+_Static_assert(offsetof(accudisc_read_stats, subq_misposition) == 140,
+               "subq_misposition moved: 0.21.0 consumers read the wrong field");
 _Static_assert(sizeof(accudisc_write_opts) == 24, "write_opts grew — see above");
 
 /* The size field landed in padding, so adding it did NOT move sizeof. Pinned

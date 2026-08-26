@@ -131,8 +131,9 @@ def test_struct_sizes_match_api_plan():
     table and the ABI rules were reasoned about, so a silent change should
     fail something.
     """
-    assert ffi.sizeof("accudisc_read_req") == 64
-    assert ffi.sizeof("accudisc_read_stats") == 144  # 136 -> 144 in 0.7.0
+    assert ffi.sizeof("accudisc_read_req") == 72   # 64 -> 72 in 0.22.0
+    assert ffi.sizeof("accudisc_read_stats") == 160  # 136 -> 144 in 0.7.0,
+                                                     # 144 -> 160 in 0.22.0
     assert ffi.sizeof("accudisc_chunk") == 32
 
 
@@ -466,6 +467,7 @@ def test_public_dataclass_field_names_are_pinned():
         "sectors_recovered", "sectors_suspect", "slips",
         "subq_total", "subq_ok", "subq_misposition",
         "speed_requested_x", "speed_honoured_x",
+        "buffer_peak_chunks", "buffer_stalls",
     }
 
     assert {f.name for f in dataclasses.fields(ad.Chunk)} == {

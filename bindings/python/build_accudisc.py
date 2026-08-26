@@ -576,6 +576,7 @@ typedef struct accudisc_read_req {
     uint8_t *status_map;
     const volatile int *cancel;
     uint8_t *subq_map;
+    uint32_t buffer_bytes;
     ...;
 } accudisc_read_req;
 
@@ -613,6 +614,8 @@ typedef struct accudisc_read_stats {
     uint16_t speed_requested_x;
     uint16_t speed_honoured_x;
     uint32_t subq_misposition;
+    uint32_t buffer_peak_chunks;
+    uint64_t buffer_stalls;
     ...;
 } accudisc_read_stats;
 

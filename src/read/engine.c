@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "../mmc/mmc.h"
+#include "accubuf.h"
 #include "engine.h"
 
 /* Keep one READ CD transfer under 64 KiB (sg one-shot buffer comfort zone). */
@@ -520,6 +521,14 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         }
     }
 
+    /* AccuBuffer, if the caller asked for one. Declared here so `out:` can see
+     * it; started below, after rc exists and the allocations have been
+     * checked, so its failure path is the same one as theirs. */
+    struct adsc_accubuf ab;
+    int ab_live = 0;
+
+    memset(&ab, 0, sizeof(ab));
+
     uint8_t *buf = malloc((size_t)(chunk + overlap) * r.sector_len);
     uint8_t *buf2 = passes > 1 ? malloc((size_t)chunk * r.sector_len) : NULL;
     uint8_t *prev_ext =
@@ -536,6 +545,18 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         (passes > 1 && !buf2) || (overlap && !prev_ext)) {
         rc = ACCUDISC_ERR_NOMEM;
         goto out;
+    }
+
+    /* Sized in whole chunks, so this has to follow `chunk` and `sector_len`
+     * being settled. A failure is RETURNED, never worked around: a caller who
+     * asked for a buffer and silently got the synchronous path would have no
+     * way to know their sink is back on the critical path. */
+    if (sink && req->buffer_bytes) {
+        rc = adsc_accubuf_start(&ab, req->buffer_bytes,
+                                (size_t)chunk * r.sector_len, sink, user);
+        if (rc != ACCUDISC_OK)
+            goto out;
+        ab_live = 1;
     }
 
     uint32_t lba = req->lba;
@@ -790,7 +811,8 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                 .c2_len = r.c2_len,
                 .sub_len = r.sub_len,
             };
-            if (sink(user, &out) != 0) {
+            if ((ab_live ? adsc_accubuf_push(&ab, &out)
+                         : sink(user, &out)) != 0) {
                 rc = ACCUDISC_ERR_CANCELLED;
                 goto out;
             }
@@ -810,6 +832,17 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     ladder_restore(&r);
 
 out:
+    if (ab_live) {
+        /* Discard on any abort, drain on success. A cancel that waited for the
+         * backlog would take as long as the backlog, which is the opposite of
+         * what a caller asking to stop wants. */
+        int src = adsc_accubuf_stop(&ab, rc != ACCUDISC_OK);
+
+        if (src != 0 && rc == ACCUDISC_OK)
+            rc = ACCUDISC_ERR_CANCELLED; /* the sink refused during the drain */
+        r.st.buffer_peak_chunks = ab.peak_count;
+        r.st.buffer_stalls = ab.stalls;
+    }
     free(buf);
     free(buf2);
     free(prev_ext);

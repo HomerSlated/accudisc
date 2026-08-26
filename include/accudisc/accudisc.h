@@ -27,7 +27,32 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 21 /* 0.21.0: Q-POSITION CHECK. A new subq_map
+#define ACCUDISC_VERSION_MINOR 22 /* 0.22.0: THE ACCUBUFFER. A bounded chunk
+                                  * ring between the engine and the caller's
+                                  * sink, so time spent in the sink is not time
+                                  * the drive is not being read.
+                                  * accudisc_read_req gained buffer_bytes
+                                  * (64 -> 72) and accudisc_read_stats gained
+                                  * buffer_peak_chunks + buffer_stalls
+                                  * (144 -> 160). Both APPENDED; nothing above
+                                  * them moved.
+                                  *
+                                  * OFF by default (0), and the default path is
+                                  * byte-for-byte what it was. Measured first:
+                                  * against a write-rate-capped sink at half
+                                  * the drive's rate, 95.5% of the disc read
+                                  * was ALREADY hidden by the page cache, so
+                                  * this earns nothing on an ordinary file sink
+                                  * and the header says so. What it earns is
+                                  * work done INSIDE the sink callback, which
+                                  * no kernel buffer covers.
+                                  *
+                                  * WHEN ENABLED THE SINK RUNS ON ANOTHER
+                                  * THREAD. Overlap requires it. That is a real
+                                  * contract change for a caller, which is why
+                                  * it is opt-in per read rather than a global
+                                  * improvement.
+                                  * 0.21.0: Q-POSITION CHECK. A new subq_map
                                   * state, ACCUDISC_SUBQ_MISPOSITION, and a
                                   * new read_stats counter, subq_misposition,
                                   * for the case where a CRC-VALID ADR=1 Q
@@ -2176,6 +2201,64 @@ typedef struct accudisc_read_req {
      * caller's shorter struct zero-extends to subq_map == NULL and gets exactly
      * its old behaviour (the IN rule above), so no soname bump. */
     uint8_t *subq_map;
+    /* AccuBuffer: bytes of chunk ring between the engine and `sink`, or 0 for
+     * none (the default, and byte-for-byte the previous behaviour).
+     *
+     * WHAT IT BUYS, and what it does not. The kernel already decouples us from
+     * slow STORAGE: measured against a write-rate-capped container at half the
+     * drive's streaming rate, a whole-disc read took 301.1 s against a
+     * pure-sink floor of 292.5 s — 95.5% of the disc read was hidden behind
+     * the sink with no help from us, because fwrite returns into the page
+     * cache and kworkers drain it. For an ordinary buffered file sink this
+     * field is close to pointless and should be left 0.
+     *
+     * What no kernel buffer covers is work done INSIDE your sink: encoding,
+     * hashing, AccurateRip/CTDB checksums, a GUI repaint. That time is time
+     * the drive is not being read, and it is what this decouples. Pipes,
+     * sockets, O_DIRECT and synchronous network filesystems are the same
+     * shape.
+     *
+     * It CANNOT create bandwidth. A sink sustainably slower than the drive
+     * fills any ring and then bounds the read regardless — a ring turns a
+     * BURST into a delay. Size it for the longest stall worth surviving, not
+     * for the disc: at a 16x rate, 64 MiB rides out about 23 s.
+     *
+     * SIZING, MEASURED. Start small. The 95.5% figure above was achieved by a
+     * kernel dirty budget measured at 3.8 MiB hard-capped, with the working
+     * set under 2.6 MiB — against 1.6 GiB on this machine's ordinary storage,
+     * a factor of 432. So a few megabytes of buffer hid almost all of a 191.9 s
+     * read behind a sink running at 1.6x slower, in the hostile case. There is
+     * no evidence here that hundreds of megabytes buy anything, and the ring is
+     * touched at allocation, so an oversized one costs real resident memory up
+     * front. Single-digit MiB is the figure to try first; raise it only if
+     * `buffer_stalls` says the ring was actually the constraint.
+     *
+     * >>> YOUR SINK RUNS ON ANOTHER THREAD. <<< That is the whole mechanism —
+     * overlap requires it — and it is the one thing a caller must adapt to:
+     *
+     *   - The sink must be thread-safe with respect to your own state. It is
+     *     called from exactly one thread, never concurrently with itself, and
+     *     never concurrently with accudisc_read_cdda's return.
+     *   - `chunk.data` points into the ring and is valid for the duration of
+     *     the callback only, exactly as before — but now a slow sink HOLDS A
+     *     RING SLOT, so retaining that pointer stalls the producer rather than
+     *     merely reading stale bytes.
+     *   - Cancellation DISCARDS what is queued. With a ring the engine may be
+     *     several chunks ahead when your sink returns non-zero or *cancel goes
+     *     nonzero; those chunks are never delivered. Draining instead would
+     *     make a cancel take as long as the backlog.
+     *   - status_map and subq_map are still written by the reading thread, so
+     *     a sector's map byte may settle BEFORE its chunk reaches your sink.
+     *     Without a buffer the two were effectively simultaneous.
+     *
+     * Rounded DOWN to whole chunks and clamped to at least two (one filling,
+     * one draining — a single slot is the synchronous path with extra steps).
+     * If the ring cannot be created the read FAILS with ACCUDISC_ERR_NOMEM; it
+     * never silently falls back, because a caller who asked for a buffer and
+     * got different behaviour without being told is exactly the defect shape
+     * this library refuses. Appended last, so a shorter caller's struct
+     * zero-extends to 0 and gets the old path (the IN rule above). */
+    uint32_t buffer_bytes;
 } accudisc_read_req;
 
 /* One delivered chunk. data holds nsec sectors, each sector_len bytes laid
@@ -2290,6 +2373,25 @@ typedef struct accudisc_read_stats {
      * declares `size`, adsc_abi_export REFUSES rather than truncates when we
      * have less than they declared, and a shorter caller simply never sees
      * these fields. That is the opposite direction from the IN rule. */
+    /* AccuBuffer high-water mark: most chunks queued at once, and how many
+     * times the producer had to wait for a free slot. Both 0 when no buffer
+     * was requested.
+     *
+     * APPENDED AT THE END, not beside the other throughput counters where they
+     * read better. 0.21.0 shipped subq_misposition at a fixed offset one week
+     * -- one commit -- ago, and inserting anything above it would move it
+     * under every consumer already built against that release. Same reasoning
+     * as subq_map's note in accudisc_read_req: once a field is public, meaning
+     * loses to layout.
+     *
+     * These are the honest answer to "did the buffer help?", which a
+     * throughput figure cannot give: a rip that was never sink-bound looks
+     * identical either way. `buffer_stalls == 0` means the ring was never the
+     * constraint and the buffer did nothing. A peak at capacity with stalls
+     * climbing means it was full — undersized, or a sink sustainably slower
+     * than the drive, which no size fixes. */
+    uint32_t buffer_peak_chunks;
+    uint64_t buffer_stalls;
 } accudisc_read_stats;
 
 /* Blocking. Streams req->count sectors from req->lba into sink (which may be

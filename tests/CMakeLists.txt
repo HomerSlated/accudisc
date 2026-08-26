@@ -33,9 +33,10 @@ foreach(t test_version test_cdb test_sense test_toc test_map test_decode
         test_resid test_audio_diff test_write_intake test_cdtext_blob
         test_cdtext_encode test_discinfo test_alloc_even test_uncap test_plan
         test_abi test_speeds test_rs16 test_rs16_kat test_ctdb_api
-        test_write_offset)
+        test_write_offset test_accubuf)
     add_executable(${t} ${t}.c)
-    target_link_libraries(${t} PRIVATE accudisc_static)
+    # test_accubuf drives the ring's own threads; the others do not care.
+    target_link_libraries(${t} PRIVATE accudisc_static Threads::Threads)
     target_include_directories(${t} PRIVATE ${PROJECT_SOURCE_DIR}/src)
     add_test(NAME ${t} COMMAND ${t})
 endforeach()

@@ -90,6 +90,12 @@ read options:
   --subf FILE    write the subchannel stream here (needs --sub)
   --cdg FILE     write CD+G packs here: R-W de-interleaved and
                  Reed-Solomon corrected, 24 bytes/pack (needs --sub raw)
+  --buffer N     AccuBuffer: bytes of chunk ring between the drive
+                 and the output, so time in the sink is not time the
+                 drive is idle. 0 = off (default). Pointless for a
+                 plain file (the page cache already does this); it
+                 is for a sink that does WORK. Writer runs on its
+                 own thread
   --chunk N      sectors per READ CD (default: max under 64 KiB)
   --retries K    per-sector attempts on failed chunks (default 2)
   --c2-retries N hunt a C2-clean copy of each flagged sector with

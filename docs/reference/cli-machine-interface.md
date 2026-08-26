@@ -166,6 +166,7 @@ Newline-delimited machine tokens on caller-supplied fd `N` (unaffected by
 progress <done> <total>
 summary hard=<n> c2=<n> recovered=<n> suspect=<n> rereads=<n> slips=<n>
         subq_total=<n> subq_ok=<n> subq_bad=<n> subq_misposition=<n>
+        buffer_peak=<n> buffer_stalls=<n>
 ```
 (one physical line; wrapped here only to fit)
 
@@ -177,7 +178,16 @@ whose delivered copy still carries fired C2 bits, `recovered`/`suspect` =
 consensus outcomes, `rereads` = extra per-sector reads issued, `slips` =
 positioning-slip detections, `subq_total`/`subq_ok`/`subq_bad` = Q-frame CRC
 health, and **`subq_misposition` = sectors whose CRC-VALID Q named a different
-LBA than the one commanded** (0 unless `--sub raw` was requested). New `key=value` pairs may be appended to the
+LBA than the one commanded** (0 unless `--sub raw` was requested), and
+`buffer_peak`/`buffer_stalls` = AccuBuffer high-water mark and the number of
+times the drive had to wait for a free slot (both 0 unless `--buffer` was
+given).
+
+**`buffer_stalls=0` means the buffer did nothing.** It is the honest answer to
+"did it help?", which a throughput figure cannot give — a read that was never
+sink-bound looks identical with and without. A peak at capacity with stalls
+climbing means the ring filled, i.e. it is undersized *or* the sink is
+sustainably slower than the drive, which no size fixes. New `key=value` pairs may be appended to the
 summary line; parse it as tokens, not positionally.
 
 ## `read --map-file F`

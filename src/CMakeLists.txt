@@ -23,6 +23,7 @@ set(ACCUDISC_SOURCES
     toc/session.c
     toc/plan.c
     read/engine.c
+    read/accubuf.c
     cdda/crc16.c
     cdda/subq.c
     cdda/scan.c
@@ -56,7 +57,8 @@ foreach(tgt accudisc accudisc_static)
         PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}
     )
-    target_link_libraries(${tgt} PRIVATE ${CMAKE_DL_LIBS})
+    # AccuBuffer runs the sink on its own thread; see src/read/accubuf.h.
+    target_link_libraries(${tgt} PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
     target_compile_definitions(${tgt} PRIVATE
         ACCUDISC_DRIVER_DIR_DEFAULT="${CMAKE_INSTALL_FULL_LIBDIR}/accudisc/drivers")
 endforeach()
