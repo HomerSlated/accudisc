@@ -847,6 +847,44 @@ sector is delivered correct, so its Q matches and the lane says OK; the
 the rescue could not fix. That is coherent, and it is why the counter — not the
 lane — is the thing to watch.
 
+#### 2.23 VERIFIED ON HARDWARE — detected, repaired, and the audio came out right
+
+Eight whole-disc passes at 32x on the fixed build. One carried the fault:
+
+```
+Q MISPOSITION       : 17 sectors whose valid Q named a DIFFERENT LBA
+status_map RECOVERED: 22 sectors  224849..224870 (one run)
+subq_map MISPOSITION: 0
+audio at 224800..224899: CORRECT
+```
+
+Every number checks out against the independent offline analysis of §2.20:
+
+- **17 detected** is exactly the 17 Q-position mismatches measured offline in
+  `q1` (224853..224869). The detector's calibration is corroborated by a
+  separate measurement rather than by itself.
+- **22 recovered** is those 17 widened by `ADSC_QPOS_MARGIN`, clipped to the
+  transfer: 224849..224870. The margin picked up 224850..224852 — precisely the
+  leading-edge sectors that carry *correct* Q with already-wrong audio, which is
+  the case it exists for and the case a bare mismatch test would have missed.
+- **subq_map 0** because every sector was repaired, so the delivered Q agrees.
+  The counter is the signal; the lane shows only what could not be fixed.
+- **Zero suspects** — `qpos_rescue` found a position-correct replacement for all
+  22, so nothing had to be given up.
+- **The audio is byte-correct at the site.** In four earlier passes this exact
+  run came back displaced and silently wrong.
+
+So the whole path works: detect by contradiction, repair by an independent
+signal, deliver correct data, and report it.
+
+**Rate note.** 1 of 8 passes carried it here, against 3 of 4 this morning. The
+fault is intermittent and its rate drifts substantially over hours — which is
+why every arm of a comparison has to be interleaved, not sequential (§2.19b),
+and why "N clean passes" means nothing until N is large.
+
+**Still no desk test for the repair path.** This is hardware evidence, one
+occurrence. It is the right evidence, and it is a single sample.
+
 ### 3. Keith's ruling on the interface — NOT YET DONE
 
 The measurement must run **end-to-end in the API**, in RAM, with no files:
