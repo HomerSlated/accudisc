@@ -94,11 +94,16 @@ They are not mutually exclusive and the data so far cannot tell them apart:
 (a) and (b) compose: a physical marginal spot at a fixed location, whose
 *recovery* is a silent positional substitution.
 
-**Resolved 2026-08-26 (§2.9).** (a) is right and (b) is dead. A marginal burn
-cannot produce a sector in which **all 96** wrong bytes come from exactly −2048
-sectors and **zero** are bit errors — that is a positional substitution inside
-the drive, not damaged media. The composed story survives only for Mode 1, where
-a real read error is the *trigger*; Mode 2 has no error to trigger on.
+**Resolved 2026-08-26 (§2.9), then PARTLY RETRACTED the same day — see §2.14.**
+The original wording said "(a) is right and (b) is dead", on the grounds that a
+marginal burn cannot produce a sector in which **all 96** wrong bytes come from
+exactly −2048 sectors and **zero** are bit errors.
+
+That argument is sound about the **substitution** and was wrongly applied to the
+**trigger**. Fetching data from −2048 sectors is certainly drive-side; a marginal
+burn cannot do it. But nothing in that argument shows what made the drive lose
+position in the first place, and a physical discontinuity we wrote is a perfectly
+good candidate for that. **(b) is not dead — it was never tested.**
 
 #### 2.4 The pass table — speed is NOT isolated
 
@@ -388,6 +393,61 @@ displacements are −2048, −1024 and +2, all powers of two, which invites "a
 single-bit error in the drive's binary LBA". Tested against all eleven events —
 does the LBA actually have that bit in the state a flip would require?
 **7 of 11, against 5.5 expected by chance.** No signal. The hypothesis is dead.
+
+#### 2.14 Keith's reframe — a pristine CD-R should never error, so look at what WE wrote
+
+Keith, 2026-08-26: comparing a freshly-burnt CD-R against a played pressed disc
+is apples and oranges, and more to the point *"a pristine disc should not produce
+errors, ever. The fact that we're seeing errors is deeply suspicious."*
+
+That is right, and it exposes a conflation in §2.3 (now corrected there):
+
+- **What produces the wrong bytes** is drive-side. Settled.
+- **What triggers the fault** is a separate question that was never asked. I
+  treated "reads clean at 8x" as proof the disc is sound. It is not. A disc that
+  is readable at 8x and fails at 32x is the textbook signature of a **marginal
+  burn**, not of sound media — pristine dye plus a bad write gives exactly this.
+
+**So this may be a WRITE-path finding, and the burn was never examined.**
+
+Two concrete gaps in our own write path, found by reading it rather than by
+measurement:
+
+1. **BURN-Proof is enabled unconditionally** — `src/write/wparams.c:41` sets
+   `p[2] |= 0x40`. Every buffer underrun therefore becomes a **link point**: a
+   place where the laser stopped and restarted, i.e. a physical discontinuity in
+   the spiral at a fixed location, benign at low read speed and marginal at high
+   speed. That is the shape of what we are chasing.
+2. **Nothing counts or reports underruns.** `write_chunk` loops only on
+   "buffer full" (SK 2 / ASC 04 / ASCQ 08), which is the drive telling the *host*
+   to wait — the opposite condition. The write loop is synchronous
+   (`pread` then `WRITE(10)`, no prefetch), so a stalled `pread` can starve the
+   drive, and BURN-Proof would mask it silently. **A burn can underrun and report
+   complete success, and we would never know.** That is a genuine gap independent
+   of this investigation.
+
+**Do not promote links to the leading explanation yet.** The burn ran at 16x
+(~2.8 MB/s) from a local file and reported success, so the link theory currently
+predicts underruns for which there is **zero evidence** — none was recorded,
+because nothing records them. If a census shows diffuse errors rather than a few
+sharp fixed spikes, links are wrong and "this drive mis-tracks at high speed on
+CD-R media generally" moves ahead of them.
+
+**The instrument that settles it was available all along and was not used:**
+`accudisc cxscan` — the Plextor C1/C2/CU hardware census. It must be run on the
+burnt CD-R **at both 8x and 32x**, because the whole anomaly is speed-conditional:
+a spike at 224850 present at 32x but absent at 8x means "the drive cannot handle
+this spot fast"; present at both means a physical defect, full stop. Those are
+different diagnoses. A pressed disc scanned on the same drive is the yardstick —
+a C1 count with nothing to compare it to is not evidence.
+
+**Limits of the pressed-disc comparison, stated in advance.** There is no oracle
+for a pressed disc, so passes can only be compared against each other and against
+a slow reference. That detects Mode 1 and *non-reproducing* displacement, and is
+**blind to reproducing displacement** — precisely the Mode 2 shape. The disc's
+lead-out is also 204143, so it never reaches LBA 224850: the one recurring site
+is unreachable there. A clean result on the music CD is therefore much weaker
+evidence than it will look.
 
 ### 3. Keith's ruling on the interface — NOT YET DONE
 
