@@ -65,12 +65,32 @@ int accudisc_write_offset_signal(int16_t *pcm, uint32_t samples)
         burst[i][0] = (int16_t)(woff_rand(&st) >> 17) - 16384;
         burst[i][1] = (int16_t)(woff_rand(&st) >> 17) - 16384;
     }
-    /* THE LEADING EDGE IS FORCED FULL SCALE. Random noise puts roughly one
-     * sample in 4000 below threshold on BOTH channels at once, and if that
-     * sample is the first one the locator reports the burst starting a sample
-     * late. Rare, undetectable in a single run, and it would move a measured
-     * offset by 1 — so the ambiguity is removed at the source rather than
-     * papered over in the locator. */
+    /* THE LEADING EDGE IS FORCED FULL SCALE, and this is LOAD-BEARING rather
+     * than a refinement. Two facts make it so.
+     *
+     * FIRST, the rate. Samples are uniform on [-16384, 16383] and woff_loud
+     * tests |L| > 500 OR |R| > 500, so a pair is quiet with probability
+     * (1001/32768)^2 = 1 in 1072. Measured over 2e7 draws of this exact
+     * generator: 1 in 1068. (This comment said "one in 4000" until 2026-08-27,
+     * which understated it 3.7x — that figure was reasoned about full-scale
+     * noise, and these samples are half scale.) If the FIRST pair is quiet the
+     * locator reports the burst starting a sample late, and the measured offset
+     * moves by 1.
+     *
+     * SECOND, and this is what makes it the only guard: BOTH BURSTS ARE THE
+     * SAME WAVEFORM — one `burst` array written at pos[0] and pos[1] below. So
+     * a quiet leading pair would bias A and B IDENTICALLY, off_a == off_b would
+     * hold, and the two-pulse consistency check in accudisc_write_offset_locate
+     * would pass while both values were wrong by one. That check tests the
+     * DISC, not the SIGNAL, and it is structurally blind to any defect the two
+     * pulses share. (Identified by cdda2img 2026-08-27, whose own tool has the
+     * same shared-waveform shape and no forced edge; their seed happens not to
+     * trigger it, which is precisely the point — it is a property of the seed,
+     * so "it has never fired" is not evidence that it cannot.)
+     *
+     * The ambiguity is therefore removed at the source rather than papered over
+     * in the locator, and tests/test_write_offset.c pins it so it cannot be
+     * tidied away as redundant. */
     burst[0][0] = 32767;
     burst[0][1] = -32768;
 

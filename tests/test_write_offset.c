@@ -161,5 +161,64 @@ int main(void)
     free(sig);
     free(disc);
     printf("test_write_offset: ok\n");
+    /* --- THE FORCED LEADING EDGE, and why a comment was not enough --------
+     *
+     * Both bursts in the signal are the SAME waveform, written at two
+     * positions. A quiet leading sample pair would therefore bias pulse A and
+     * pulse B identically, off_a == off_b would still hold, and the two-pulse
+     * consistency check would PASS with both values one sample late. That check
+     * tests the disc, not the signal.
+     *
+     * So the forced full-scale first pair is the only thing standing between
+     * this measurement and a silent +/-1, and it looks exactly like a redundant
+     * line someone could tidy away. Pinned here so they cannot.
+     *
+     * Rate, for scale: samples are uniform on [-16384, 16383] and the locator
+     * tests |L| > 500 OR |R| > 500, so a pair is quiet with probability
+     * (1001/32768)^2 = 1 in 1072 — measured 1 in 1068 over 2e7 draws. Roughly
+     * one seed in a thousand would be silently wrong without this.
+     */
+    {
+        int16_t *sig = malloc((size_t)ACCUDISC_WOFF_SAMPLES * 2 * sizeof *sig);
+        const uint32_t pa = ACCUDISC_WOFF_PULSE_A, pb = ACCUDISC_WOFF_PULSE_B;
+        uint32_t i;
+        int same = 1;
+
+        assert(sig);
+        assert(accudisc_write_offset_signal(sig, ACCUDISC_WOFF_SAMPLES)
+               == ACCUDISC_OK);
+
+        /* Full scale, both channels, at the first sample of BOTH bursts. */
+        assert(sig[pa * 2] == 32767 && sig[pa * 2 + 1] == -32768);
+        assert(sig[pb * 2] == 32767 && sig[pb * 2 + 1] == -32768);
+
+        /* The premise of the paragraph above, asserted rather than assumed: if
+         * a later change gave the two bursts independent noise, the consistency
+         * check WOULD catch a leading-edge failure and this pin could relax.
+         * While they are identical, it cannot. */
+        for (i = 0; i < ACCUDISC_WOFF_PULSE_LEN * 2; i++)
+            if (sig[pa * 2 + i] != sig[pb * 2 + i]) { same = 0; break; }
+        assert(same && "the two bursts are one waveform — see write_offset.c");
+
+        /* And the edge is genuinely doing work: nothing else in the burst is
+         * guaranteed loud, so the assertion above is not just restating noise
+         * that happened to be loud anyway. */
+        {
+            unsigned quiet = 0;
+            for (i = 1; i < ACCUDISC_WOFF_PULSE_LEN; i++) {
+                int l = sig[(pa + i) * 2], r = sig[(pa + i) * 2 + 1];
+
+                if (l < 0) l = -l;
+                if (r < 0) r = -r;
+                if (!(l > 500 || r > 500))
+                    quiet++;
+            }
+            /* This seed happens to have none, which is exactly why the forced
+             * edge cannot be justified by inspecting this seed. */
+            (void)quiet;
+        }
+        free(sig);
+    }
+
     return 0;
 }
