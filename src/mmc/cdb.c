@@ -30,6 +30,15 @@ void adsc_cdb_read_toc(uint8_t cdb[10], unsigned format, unsigned time_bit,
     cdb[8] = (uint8_t)(alloc & 0xff);
 }
 
+void adsc_cdb_read_buffer_capacity(uint8_t cdb[10])
+{
+    memset(cdb, 0, 10);
+    cdb[0] = ADSC_OP_READ_BUFFER_CAPACITY;
+    /* cdb[1] bit 0 = Block. Left ZERO: report in bytes. */
+    cdb[7] = 0;
+    cdb[8] = 12;  /* the whole Buffer Capacity structure */
+}
+
 void adsc_cdb_read_disc_info(uint8_t cdb[10], uint16_t alloc)
 {
     memset(cdb, 0, 10);

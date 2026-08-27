@@ -83,6 +83,22 @@ int adsc_mmc_write10(struct accudisc_device *dev, int32_t lba,
                      uint32_t nblocks, const void *buf, uint32_t block_bytes);
 
 /* SYNCHRONIZE CACHE — flush the write buffer (finish DAO). */
+/* Drive buffer capacity in BYTES, during a write. `*total` is the whole buffer,
+ * `*blank` the unused part — so fill is total - blank.
+ *
+ * MMC-5 6.18 makes this conditional on the Real-time Streaming feature being
+ * present AND CURRENT, and says that if the feature is present but not current
+ * the blank field is UNDEFINED. A feature bit is therefore not enough to trust
+ * it, which is the project's standing gate order: smoke-test the opcode, never
+ * infer support from an advertisement. Callers get ACCUDISC_ERR_SENSE or
+ * ACCUDISC_ERR_SHORT and must treat the fill as UNKNOWN, never as zero.
+ *
+ * ACCUDISC_ERR_SHORT when the drive answers with a Data Length under 10, which
+ * means bytes 4-11 were not filled and reading them would be reading whatever
+ * the buffer held. */
+int adsc_mmc_read_buffer_capacity(struct accudisc_device *dev,
+                                  uint32_t *total, uint32_t *blank);
+
 int adsc_mmc_sync_cache(struct accudisc_device *dev);
 
 /* SEND CUE SHEET — the DAO layout descriptor (8 bytes/entry). */

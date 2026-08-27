@@ -16,6 +16,7 @@
 #define ADSC_OP_READ_TOC      0x43
 #define ADSC_OP_GET_CONFIG    0x46
 #define ADSC_OP_READ_DISC_INFO 0x51
+#define ADSC_OP_READ_BUFFER_CAPACITY 0x5C
 #define ADSC_OP_SEND_OPC      0x54
 #define ADSC_OP_MODE_SELECT10 0x55
 #define ADSC_OP_CLOSE_TRK_SES 0x5B
@@ -79,6 +80,14 @@ void adsc_cdb_write10(uint8_t cdb[10], uint32_t lba, uint16_t nblocks);
 
 /* SYNCHRONIZE CACHE (flush written data / close). */
 void adsc_cdb_sync_cache(uint8_t cdb[10]);
+
+/* READ BUFFER CAPACITY, Block=0 (bytes, not blocks). The Block=1 form exists
+ * and is deliberately NOT offered: its field layout was never read out of the
+ * spec here (the extracted table was truncated), and on an idle drive — where
+ * blank == length — the two candidate readings are INDISTINGUISHABLE, so the
+ * "it matches" check that would normally settle it proves only that the buffer
+ * is empty. Block=0 was read in full and returns both fields. */
+void adsc_cdb_read_buffer_capacity(uint8_t cdb[10]);
 
 /* SEND CUE SHEET; len is the 24-bit payload length. */
 void adsc_cdb_send_cue(uint8_t cdb[10], uint32_t len);

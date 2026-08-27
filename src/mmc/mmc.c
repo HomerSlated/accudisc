@@ -192,6 +192,48 @@ int adsc_mmc_write10(struct accudisc_device *dev, int32_t lba,
     return adsc_dev_exec(dev, &cmd);
 }
 
+int adsc_mmc_read_buffer_capacity(struct accudisc_device *dev,
+                                  uint32_t *total, uint32_t *blank)
+{
+    adsc_cmd cmd = {0};
+    uint8_t buf[12] = {0};
+    int rc;
+
+    if (!total || !blank)
+        return ACCUDISC_ERR_INVAL;
+
+    adsc_cdb_read_buffer_capacity(cmd.cdb);
+    cmd.cdb_len = 10;
+    cmd.dir = ADSC_XFER_IN;
+    cmd.buf = buf;
+    cmd.buf_len = sizeof buf;
+    cmd.timeout_ms = ADSC_TIMEOUT_CTRL_MS;
+
+    rc = adsc_dev_exec(dev, &cmd);
+    if (rc != ACCUDISC_OK)
+        return rc;
+
+    /* Data Length is 16 bits at bytes 0-1; bytes 2-3 are RESERVED (MMC-5
+     * Table 353). Reading 0-3 as one 32-bit field is an easy mistake that
+     * happens to look right — 0x000A0000 for a valid answer — because the
+     * reserved bytes are zero. It is wrong, and the first probe here made it. */
+    if (((unsigned)buf[0] << 8 | buf[1]) < 10)
+        return ACCUDISC_ERR_SHORT;
+
+    *total = (uint32_t)buf[4] << 24 | (uint32_t)buf[5] << 16 |
+             (uint32_t)buf[6] << 8  | buf[7];
+    *blank = (uint32_t)buf[8] << 24 | (uint32_t)buf[9] << 16 |
+             (uint32_t)buf[10] << 8 | buf[11];
+    /* A zero-capacity buffer is not a full one. The caller must read this as
+     * "unknown"; returning OK with total 0 and letting it divide would report
+     * a starving drive forever. */
+    if (*total == 0)
+        return ACCUDISC_ERR_SHORT;
+    if (*blank > *total)
+        return ACCUDISC_ERR_SHORT;   /* free space exceeding the buffer */
+    return ACCUDISC_OK;
+}
+
 int adsc_mmc_sync_cache(struct accudisc_device *dev)
 {
     adsc_cmd cmd = {0};

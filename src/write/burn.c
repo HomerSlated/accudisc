@@ -81,7 +81,82 @@ struct write_flow {
     uint64_t stalls;        /* retries across the whole burn */
     uint64_t stall_ms;      /* total time spent waiting for room */
     uint32_t worst_ms;      /* longest single hold-off */
+
+    /* Drive-buffer fill, from READ BUFFER CAPACITY (0x5C). `live` is 0 until
+     * the first successful poll and goes back to 0 permanently on the first
+     * refusal — the command is conditional on the Real-time Streaming feature
+     * being CURRENT, so a drive may simply not answer, and that must read as
+     * UNKNOWN rather than as an empty buffer. */
+    int      cap_live;
+    uint32_t cap_total;     /* buffer size in bytes */
+    uint32_t min_fill_pct;  /* lowest fill seen, 0-100 */
+    uint32_t polls;
+    uint32_t low_samples;   /* polls under ADSC_BUF_LOW_PCT */
+
+    /* Did the reported buffer ever CHANGE? A device that answers the command
+     * with a constant is not measuring anything, and the constant it picks may
+     * be "entirely free" — which reads as a drive on the point of underrunning
+     * for the whole burn. Measured on CDEmu 2026-08-27: total=131584
+     * blank=131584 on every one of 11 polls, bit-identical, through a burn that
+     * completed cleanly. Without this the report called that "minimum fill 0%,
+     * 11 below 25%", which is a confident description of a catastrophe that did
+     * not happen. A real buffer cannot hold one value across a whole burn. */
+    int      cap_varied;
+    uint32_t first_total, first_blank;
 };
+
+/* Below this the drive is close to running dry. Not a threshold anything acts
+ * on — nothing here can prevent an underrun — only the boundary the report
+ * counts, so "it got low N times" is a number rather than an impression. */
+#define ADSC_BUF_LOW_PCT 25u
+
+/* Poll every Nth chunk, not every chunk. The poll is a command on the same bus
+ * that carries the data, so at ~88 chunks/s polling each one roughly doubles
+ * the command rate on a USB link — measuring the thing hard enough to cause it.
+ * Every 8th costs ~11 polls/s and still samples far faster than a buffer of a
+ * few MB can drain. */
+#define ADSC_BUF_POLL_EVERY 8u
+
+/* Sample the drive's buffer fill. CALLED BEFORE THE WRITE, deliberately.
+ *
+ * The buffer is at its FULLEST just after a WRITE(10) returns and at its
+ * emptiest just before the next one, after the host has done its pread and
+ * whatever else. Sampling after the write would measure the peak and report a
+ * comfortable minimum on a burn that was actually starving.
+ *
+ * STATE PLAINLY WHAT THIS IS: the true minimum lives INSIDE the WRITE transfer
+ * or inside a long pread stall, and cannot be sampled from this thread. So
+ * min_fill_pct is an UPPER BOUND on the true minimum — optimistic. It is not a
+ * guarantee that the buffer never went lower, and must never be read as one. */
+static void buf_sample(struct accudisc_device *dev, struct write_flow *fl)
+{
+    uint32_t total, blank, fill_pct;
+
+    if (!fl->cap_live)
+        return;
+    if (adsc_mmc_read_buffer_capacity(dev, &total, &blank) != ACCUDISC_OK) {
+        /* One refusal disarms it for the rest of the burn. Retrying every
+         * chunk on a drive that does not implement this would spend the whole
+         * burn issuing a command that will never work. */
+        fl->cap_live = 0;
+        adsc_dev_log(dev, "write: drive stopped answering READ BUFFER CAPACITY;"
+                          " fill is UNKNOWN from here, not zero");
+        return;
+    }
+    if (fl->polls == 0) {
+        fl->first_total = total;
+        fl->first_blank = blank;
+    } else if (total != fl->first_total || blank != fl->first_blank) {
+        fl->cap_varied = 1;
+    }
+    fl->cap_total = total;
+    fill_pct = (uint32_t)(((uint64_t)(total - blank) * 100u) / total);
+    if (fill_pct < fl->min_fill_pct)
+        fl->min_fill_pct = fill_pct;
+    if (fill_pct < ADSC_BUF_LOW_PCT)
+        fl->low_samples++;
+    fl->polls++;
+}
 
 /* WRITE(10) one chunk, retrying while the drive reports its buffer is full
  * ("Not Ready, long write in progress": SK 2 / ASC 04 / ASCQ 08). block_bytes
@@ -255,6 +330,26 @@ int adsc_write_run(struct accudisc_device *dev,
         goto done;
     }
 
+    /* Arm the buffer poll with ONE probe. Gate order as everywhere else here:
+     * try the opcode, believe the result, never the feature bit. MMC-5 6.18
+     * makes this conditional on Real-time Streaming being CURRENT and says the
+     * blank field is UNDEFINED when the feature is present but not current — so
+     * an advertisement is not evidence and a smoke test is. */
+    {
+        uint32_t t, b;
+
+        fl.min_fill_pct = 100;
+        if (adsc_mmc_read_buffer_capacity(dev, &t, &b) == ACCUDISC_OK) {
+            fl.cap_live = 1;
+            fl.cap_total = t;
+            adsc_dev_log(dev, "write: drive buffer %u bytes (%.1f chunks of %u)",
+                         t, (double)t / (CHUNK * SECTOR), CHUNK * SECTOR);
+        } else {
+            adsc_dev_log(dev, "write: no READ BUFFER CAPACITY; buffer fill will "
+                              "be reported as unknown");
+        }
+    }
+
     /* 5. Lead-in gap: LEADIN_GAP zero sectors starting at LBA -150. */
     int32_t lba = -(int32_t)LEADIN_GAP;
     for (uint32_t left = LEADIN_GAP; left > 0;) {
@@ -279,6 +374,8 @@ int adsc_write_run(struct accudisc_device *dev,
             }
             if (opts->byteswap)
                 byteswap16(chunk, (size_t)n * SECTOR);
+            if (done_sec / CHUNK % ADSC_BUF_POLL_EVERY == 0)
+                buf_sample(dev, &fl);
             if ((ret = write_chunk(dev, lba, chunk, n, SECTOR, &fl)) != ACCUDISC_OK)
                 goto done;
             lba += (int32_t)n;
@@ -303,6 +400,23 @@ done:
                       "worst single hold-off %u ms",
                  (unsigned long long)fl.stalls,
                  (unsigned long long)fl.stall_ms, fl.worst_ms);
+    if (fl.polls > 1 && !fl.cap_varied)
+        /* The device answered, and answered the SAME thing every time. That is
+         * not a fill measurement, whatever number it contains — so no number is
+         * reported. Saying "0%" here would describe a clean burn as a drive
+         * that never had a byte in hand. */
+        adsc_dev_log(dev, "write: drive buffer fill UNRELIABLE — %u polls all "
+                          "returned an identical %u/%u, so the drive is not "
+                          "reporting a live value. No fill figure given.",
+                     fl.polls, fl.first_blank, fl.first_total);
+    else if (fl.polls)
+        adsc_dev_log(dev, "write: drive buffer — %u polls, minimum fill %u%% "
+                          "(upper bound), %u below %u%%, capacity %u bytes",
+                     fl.polls, fl.min_fill_pct, fl.low_samples,
+                     ADSC_BUF_LOW_PCT, fl.cap_total);
+    else
+        adsc_dev_log(dev, "write: drive buffer fill UNKNOWN — the drive does not "
+                          "report it. This is not a reading of zero.");
     free(chunk);
     free(zero);
     return ret;
