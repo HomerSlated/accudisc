@@ -81,6 +81,25 @@ target_compile_definitions(test_offsets_ambiguous PRIVATE
                            ADSC_OFFSETS_DB="offsets_ambiguous_db.inc")
 add_test(NAME test_offsets_ambiguous COMMAND test_offsets_ambiguous)
 
+# The burn engine's flow control, against a stub MMC layer. Compiles the REAL
+# src/write/burn.c — a copy of the retry loop would assert that the copy works.
+# The two timing constants are shrunk here so the timeout can actually be
+# OBSERVED: at the shipped 120 s cap this test would take two minutes and
+# nobody would run it, which is the same as not having the cap tested at all.
+# 400 ms / 10 ms keeps the ratio (40 waits) while costing under a second.
+# cuesheet.c is linked for real rather than stubbed: it is pure layout
+# arithmetic with no device in it, so a stub would only be a second thing to
+# keep in step with the first.
+add_executable(test_burn_flow test_burn_flow.c
+               ${PROJECT_SOURCE_DIR}/src/write/burn.c
+               ${PROJECT_SOURCE_DIR}/src/write/cuesheet.c)
+target_include_directories(test_burn_flow PRIVATE
+                           ${PROJECT_SOURCE_DIR}/include
+                           ${PROJECT_SOURCE_DIR}/src)
+target_compile_definitions(test_burn_flow PRIVATE
+                           STALL_CAP_MS=400u STALL_POLL_MS=10u)
+add_test(NAME test_burn_flow COMMAND test_burn_flow)
+
 # Golden test for the CLI machine interface. Compiles cli/format.c directly:
 # it asserts the bytes the *binary* emits, so it must exercise the binary's own
 # formatter, not a copy. Run the executable with --dump to regenerate a golden

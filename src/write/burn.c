@@ -40,21 +40,84 @@ static void byteswap16(uint8_t *p, size_t bytes)
     }
 }
 
+/* Both are overridable at compile time, on the ADSC_OFFSETS_DB precedent: a
+ * test cannot spend two real minutes proving the cap fires, and a cap nobody
+ * has watched fire is not a cap. Defaults only — the library builds unchanged
+ * and only tests/test_burn_flow.c ever defines them. */
+#ifndef STALL_POLL_MS
+#  define STALL_POLL_MS  40u    /* wait between retries of one chunk */
+#endif
+
+/* How long the drive may hold one chunk off before we call it stuck.
+ *
+ * DERIVED, not chosen. "Buffer full" is the drive telling us it has no room,
+ * which resolves as it writes what it holds, so the longest LEGITIMATE hold-off
+ * is the time to drain a full buffer at the slowest write speed: an 8 MiB
+ * buffer (the largest we have seen; the PX-716A here reports 4802784 bytes) at
+ * 1x = 176400 B/s is 47.6 s. This is 2.5x that, which is loose on purpose —
+ * the cost of being too tight is aborting a burn that would have finished, and
+ * the cost of being too loose is only that a genuinely wedged drive takes two
+ * minutes to say so instead of one.
+ *
+ * The point is the BOUND, not its exact value. Until 0.24.0 this loop was
+ * `for (;;)` with no cap and no count: a drive that stayed not-ready held the
+ * burn forever with nothing on stdout, nothing in the log, and no way to tell
+ * that from a slow burn making progress. */
+#ifndef STALL_CAP_MS
+#  define STALL_CAP_MS   120000u
+#endif
+
+/* Per-burn flow-control tally. NOT an underrun counter, and the distinction is
+ * the whole reason this is written down.
+ *
+ * These count the drive telling us its buffer is FULL — i.e. the HOST is ahead
+ * of the drive, which is the healthy direction. An UNDERRUN is the opposite and
+ * MMC gives us no way to count it: with BURN-Proof enabled the drive simply
+ * stops, repositions and resumes, reporting nothing, and there is no standard
+ * command that says it happened. So a burn with many stalls is demonstrably
+ * safe, while a burn with NO stalls is merely unproven — never confuse the
+ * second for evidence of trouble, or the first for evidence of it. */
+struct write_flow {
+    uint64_t stalls;        /* retries across the whole burn */
+    uint64_t stall_ms;      /* total time spent waiting for room */
+    uint32_t worst_ms;      /* longest single hold-off */
+};
+
 /* WRITE(10) one chunk, retrying while the drive reports its buffer is full
  * ("Not Ready, long write in progress": SK 2 / ASC 04 / ASCQ 08). block_bytes
  * is 2352 for audio and 96 for the CD-Text lead-in (which transfers subchannel
- * only — the drive generates the main channel). */
+ * only — the drive generates the main channel).
+ *
+ * On giving up it returns ACCUDISC_ERR_SENSE with dev->last_sense still holding
+ * the drive's own 2/04/08, rather than inventing an error code: the sense IS
+ * the explanation, a caller that inspects it learns more than a new enumerator
+ * would tell it, and adding a code to the public enum is an ABI event this does
+ * not need. The log line says we stopped waiting. */
 static int write_chunk(struct accudisc_device *dev, int32_t lba,
                        const uint8_t *buf, uint32_t nblocks,
-                       uint32_t block_bytes)
+                       uint32_t block_bytes, struct write_flow *fl)
 {
+    uint32_t waited_ms = 0;
+
     for (;;) {
         int rc = adsc_mmc_write10(dev, lba, nblocks, buf, block_bytes);
-        if (rc == ACCUDISC_OK)
+        if (rc == ACCUDISC_OK) {
+            if (waited_ms > fl->worst_ms)
+                fl->worst_ms = waited_ms;
             return ACCUDISC_OK;
+        }
         if (rc == ACCUDISC_ERR_SENSE && dev->last_sense.key == 0x02 &&
             dev->last_sense.asc == 0x04 && dev->last_sense.ascq == 0x08) {
-            sleep_ms(40); /* then retry the same LBA */
+            if (waited_ms >= STALL_CAP_MS) {
+                adsc_dev_log(dev, "write: drive still reports its buffer full "
+                                  "%u s after LBA %d; giving up (sense 2/04/08)",
+                             waited_ms / 1000u, lba);
+                return rc;   /* dev->last_sense still describes it */
+            }
+            fl->stalls++;
+            fl->stall_ms += STALL_POLL_MS;
+            waited_ms += STALL_POLL_MS;
+            sleep_ms(STALL_POLL_MS); /* then retry the same LBA */
             continue;
         }
         return rc;
@@ -69,7 +132,8 @@ static int write_chunk(struct accudisc_device *dev, int32_t lba,
  * so any pack count fills it, and the ring simply wraps as often as needed. */
 static int write_cdtext_leadin(struct accudisc_device *dev,
                                const struct adsc_write_toc *toc,
-                               const struct adsc_disc_info *di)
+                               const struct adsc_disc_info *di,
+                               struct write_flow *fl)
 {
     uint32_t npacks = (toc->cdtext_len - 4u) / ADSC_CDTEXT_PACK_BYTES;
     uint32_t nblocks = adsc_cdtext_rw_block_count(npacks);
@@ -106,7 +170,7 @@ static int write_cdtext_leadin(struct accudisc_device *dev,
             if (++scp >= nblocks)
                 scp = 0;
         }
-        if ((ret = write_chunk(dev, lba, xfer, n, ADSC_RW_BLOCK_BYTES)) !=
+        if ((ret = write_chunk(dev, lba, xfer, n, ADSC_RW_BLOCK_BYTES, fl)) !=
             ACCUDISC_OK)
             goto out;
         lba += (int32_t)n;
@@ -128,6 +192,7 @@ int adsc_write_run(struct accudisc_device *dev,
     uint8_t cue[ADSC_CUE_MAX_BYTES];
     uint32_t cuelen = 0;
     uint8_t *chunk = NULL, *zero = NULL;
+    struct write_flow fl = {0};
     int ret;
 
     if (!dev || !toc || !opts || bin_fd < 0)
@@ -179,7 +244,7 @@ int adsc_write_run(struct accudisc_device *dev,
      * extent immediately preceding LBA -150 (cdrdao order: cue sheet ->
      * writeCdTextLeadIn -> gap -> audio). */
     if (have_cdtext) {
-        if ((ret = write_cdtext_leadin(dev, toc, &di)) != ACCUDISC_OK)
+        if ((ret = write_cdtext_leadin(dev, toc, &di, &fl)) != ACCUDISC_OK)
             return ret;
     }
 
@@ -194,7 +259,7 @@ int adsc_write_run(struct accudisc_device *dev,
     int32_t lba = -(int32_t)LEADIN_GAP;
     for (uint32_t left = LEADIN_GAP; left > 0;) {
         uint32_t n = left < CHUNK ? left : CHUNK;
-        if ((ret = write_chunk(dev, lba, zero, n, SECTOR)) != ACCUDISC_OK)
+        if ((ret = write_chunk(dev, lba, zero, n, SECTOR, &fl)) != ACCUDISC_OK)
             goto done;
         lba += (int32_t)n;
         left -= n;
@@ -214,7 +279,7 @@ int adsc_write_run(struct accudisc_device *dev,
             }
             if (opts->byteswap)
                 byteswap16(chunk, (size_t)n * SECTOR);
-            if ((ret = write_chunk(dev, lba, chunk, n, SECTOR)) != ACCUDISC_OK)
+            if ((ret = write_chunk(dev, lba, chunk, n, SECTOR, &fl)) != ACCUDISC_OK)
                 goto done;
             lba += (int32_t)n;
             off += (uint64_t)n * SECTOR;
@@ -229,6 +294,15 @@ int adsc_write_run(struct accudisc_device *dev,
     ret = adsc_mmc_sync_cache(dev);
 
 done:
+    /* The tally, logged whatever the outcome — a failed burn is exactly when
+     * knowing how the flow behaved is worth most. Read it as described at
+     * struct write_flow: stalls are the drive holding US off, which is the safe
+     * direction. Zero stalls does NOT mean an underrun occurred; it means the
+     * host never got ahead, and nothing here can see the other side of that. */
+    adsc_dev_log(dev, "write: flow — %llu buffer-full stalls, %llu ms waited, "
+                      "worst single hold-off %u ms",
+                 (unsigned long long)fl.stalls,
+                 (unsigned long long)fl.stall_ms, fl.worst_ms);
     free(chunk);
     free(zero);
     return ret;
