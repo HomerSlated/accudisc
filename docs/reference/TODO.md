@@ -854,6 +854,77 @@ drive idle for ~45-60 minutes with no eject, then read the whole disc at max.
 Predicted BAD. That is the only untested factor that separates the two
 populations.
 
+#### 2.24 Test 1 — the powered C2 test: UNINFORMATIVE, as its own pre-written falsifier requires
+
+Keith's test 1. 40 whole-disc passes at 32x, **interleaved** C2 / `--no-c2`,
+`--sub raw` throughout so the 0.21.0 Q-position check ran on both arms, each
+pass compared to the burnt image immediately. Design, prediction and falsifiers
+written before running (`scratchpad/PREDICTION4.md`).
+
+| arm | passes | misposition events | audio BAD |
+|---|---|---|---|
+| C2 requested | 20 | **1** | 0 |
+| `--no-c2` | 20 | **0** | 0 |
+
+Fisher one-tailed **p = 0.5**. This is the third falsifier as written: *"FEW OR
+NO EVENTS IN EITHER ARM -> uninformative, full stop."* **The C2 question is not
+resolved and remains open.** It is not resolved in either direction — this says
+nothing about whether the C2 request matters.
+
+**The base rate collapsed, which is the actual finding.**
+
+| when | rate |
+|---|---|
+| 2026-08-26 morning | 3/4 = 0.75 |
+| 2026-08-26 evening | 1/8 = 0.125 |
+| 2026-08-26/27 overnight | **1/40 = 0.025** |
+
+**A 30x swing in under 24 hours, same disc, same drive, same command.** This
+outranks the C2 question in importance: any A/B on this fault needs its arms
+interleaved (they were) *and* enough events to be worth comparing (there were
+not). At 1/40, resolving a 4x effect would need hundreds of passes per arm —
+days of drive time — so **the C2 question is not answerable by this method at
+tonight's rate**. That is a fact about the fault, not a scheduling problem.
+
+Note also the power arithmetic, computed BEFORE the run rather than after: even
+at n=20/arm with a true 4x effect, p<0.05 requires the counts to land near
+expectation (8 vs 2 -> p=0.032; 6 vs 2 -> p=0.118; 5 vs 2 -> p=0.204). The test
+could confirm a large effect; it could never rule one out.
+
+#### 2.25 What the run DID establish
+
+**1. The Q-position check works unattended, at scale, with zero false
+positives.** 40 whole-disc passes, 14 040 000 sectors, one fault detected and
+**39 clean passes reporting nothing.** Combined with §2.20's 1 404 000 sectors,
+the check now has ~15.4 M sectors of hardware evidence and has never once fired
+on a clean read. That is the strongest support the feature has.
+
+**2. The repair path works — audio was CLEAN on the pass that carried the
+fault.** The event was the familiar shape:
+
+```
+  C2-flagged       : 0 sectors, 0 bits          <- C2 silent, as always
+  subchannel Q     : 349829/351000 CRC-ok (99.67%), 1171 bad
+  Q MISPOSITION    : 17 sectors
+  audio            : CLEAN vs the burnt image
+```
+
+Same 17 sectors as §2.23. Detected, repaired by `qpos_rescue`, and the delivered
+audio was byte-perfect — the second independent hardware confirmation of the
+whole path, and this one arrived unattended in the middle of a 40-pass run.
+
+**3. Q CRC failure remains useless as a signal, quantitatively.** 1171 bad
+frames on the pass that carried the fault — 0.33% of sectors — against 17
+mispositions. Anyone tempted to gate on Q CRC health would be swamped 69:1 by
+benign failures. Position disagreement is the clean signal; CRC failure is not.
+
+**Consequence for the two-lever recovery model.** Nothing here changes the
+absolute-gate invariant, but it sharpens the practical advice: on this drive the
+fault is rare enough that a single rip will almost always be clean, and rare
+enough that *testing* for it needs the Q-position check rather than repetition.
+A caller who wants protection should request `--sub raw` and read
+`subq_misposition`, not run more passes.
+
 #### 2.19b Keith's 20-read test — the cdrdao difference is NOT significant, and cdrdao fails too
 
 10 AccuDisc reads at 32x then 10 cdrdao reads at 32x, same disc, no eject,
