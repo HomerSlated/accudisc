@@ -602,6 +602,55 @@ forces the request on a drive that does not claim the capability, for firmware
 that under-reports itself; MODE SELECT may simply refuse, and that refusal is
 reported rather than swallowed.
 .TP
+.BI \-\-fifo " SIZE"
+.TQ
+.B \-\-no\-fifo
+Capacity of the write FIFO, the memory-locked ring between the source file and
+the drive.
+.B On by default
+at five seconds.
+.I SIZE
+is either a
+.B duration
+.RB ( 5s ", " 2.5s )
+or a
+.B byte size
+.RB ( 8m ,
+.BR 512k )
+or a plain byte count.
+.IP
+.B Size it in time.
+What matters is how long a host stall the burn can absorb, and that is
+capacity divided by write rate \(em so the same byte count is 3.4 seconds at CD
+8x and under a fifth of a second at Blu-ray speeds. A duration is converted
+against the speed you request with
+.BR \-\-speed ,
+or 8x when you leave the drive's own setting, and the assumed rate is printed
+so the assumption is visible rather than silent. The drive cannot be asked:
+mode page 2A reports the speed that was
+.I requested
+rather than delivered, and its fields describe reading.
+.IP
+Large durations are
+.B capped
+(five seconds at 48x would be some 42 MB of locked memory, which on a small
+board is a refusal to start rather than a buffer). When the cap bites it is
+reported, because silently returning 0.9 seconds when five were asked for is
+worse than refusing.
+.IP
+The ring is
+.B locked into memory
+where the system permits it. That is the point rather than a refinement: under
+memory pressure the kernel evicts the least-recently-touched pages, which in a
+burn FIFO is the part not yet written, so an unlocked ring would fault during
+exactly the stall it exists to absorb. A failed lock is reported and the burn
+continues unlocked.
+.IP
+It cannot create bandwidth. A source
+.I sustainably
+slower than the drive fills any ring and then bounds the burn regardless; a
+ring converts a burst into a delay.
+.TP
 .BI \-\-speed " X"
 Write speed. 0 or absent leaves the drive's current setting.
 .TP

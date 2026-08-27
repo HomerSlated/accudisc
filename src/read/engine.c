@@ -551,8 +551,17 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
      * being settled. A failure is RETURNED, never worked around: a caller who
      * asked for a buffer and silently got the synchronous path would have no
      * way to know their sink is back on the critical path. */
-    if (sink && req->buffer_bytes) {
-        rc = adsc_accubuf_start(&ab, req->buffer_bytes,
+    /* 0 -> the default; ACCUDISC_BUFFER_NONE -> genuinely off. A caller whose
+     * struct predates the field zero-extends to 0 and is therefore PROTECTED,
+     * which is the intended direction for a default that exists to absorb the
+     * stall nobody predicted. Sized against the drive's read rate the same way
+     * the write FIFO is sized against its write rate — 3 s at 8x. */
+    uint32_t want_buf = req->buffer_bytes == ACCUDISC_BUFFER_NONE ? 0
+                      : req->buffer_bytes ? req->buffer_bytes
+                      : accudisc_fifo_bytes_for(ACCUDISC_BUFFER_DEFAULT_SECONDS,
+                                                req->speed_x ? req->speed_x : 8u);
+    if (sink && want_buf) {
+        rc = adsc_accubuf_start(&ab, want_buf,
                                 (size_t)chunk * r.sector_len, sink, user);
         if (rc != ACCUDISC_OK)
             goto out;

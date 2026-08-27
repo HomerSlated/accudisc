@@ -92,12 +92,14 @@ add_test(NAME test_offsets_ambiguous COMMAND test_offsets_ambiguous)
 # keep in step with the first.
 add_executable(test_burn_flow test_burn_flow.c
                ${PROJECT_SOURCE_DIR}/src/write/burn.c
-               ${PROJECT_SOURCE_DIR}/src/write/cuesheet.c)
+               ${PROJECT_SOURCE_DIR}/src/write/cuesheet.c
+               ${PROJECT_SOURCE_DIR}/src/write/fifo.c)
 target_include_directories(test_burn_flow PRIVATE
                            ${PROJECT_SOURCE_DIR}/include
                            ${PROJECT_SOURCE_DIR}/src)
 target_compile_definitions(test_burn_flow PRIVATE
                            STALL_CAP_MS=400u STALL_POLL_MS=10u)
+target_link_libraries(test_burn_flow PRIVATE Threads::Threads)
 add_test(NAME test_burn_flow COMMAND test_burn_flow)
 
 # Golden test for the CLI machine interface. Compiles cli/format.c directly:

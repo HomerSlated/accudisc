@@ -66,6 +66,7 @@ static void usage(FILE *to)
         "                 --toc FILE --bin FILE [--cdtext FILE] [--simulate]\n"
         "                 [--byteswap] [--speed X] [--progress-fd N]\n"
         "                 [--burnproof | --no-burnproof]\n"
+        "                 [--fifo 5s|8m|BYTES | --no-fifo]\n"
         "                 (--cdtext takes a raw format-05 blob from read --cdtext;\n"
         "                  needs blank disc)\n"
         "  write-offset   measure how early or late a drive BURNS audio.\n"
@@ -106,7 +107,8 @@ static void usage(FILE *to)
         "  --subf FILE    write the subchannel stream here (needs --sub)\n"
         "  --cdg FILE     write CD+G packs here: R-W de-interleaved and\n"
         "                 Reed-Solomon corrected, 24 bytes/pack (needs --sub raw)\n"
-        "  --buffer N     AccuBuffer: bytes of chunk ring between the drive\n"
+        "  --buffer 3s|8m|N  AccuBuffer ring: a duration or a byte size.\n"
+        "                 ON by default (3s); --no-buffer runs without one\n"
         "                 and the output, so time in the sink is not time the\n"
         "                 drive is idle. 0 = off (default). Pointless for a\n"
         "                 plain file (the page cache already does this); it\n"
@@ -737,6 +739,35 @@ static const char *rotation_str(accudisc_rotation r)
  *               it do with this disc" — so it does NOT print the current speed.
  *   --all / bare  everything, informational, exit 0 (2 on probe error)
  */
+/* "5s" / "2.5s" -> seconds; "8m"/"512k" -> bytes; a bare number -> bytes.
+ *
+ * ONE PARSER for both buffers, because two would drift and the drift would be
+ * silent — a flag that means seconds on one command and bytes on the other is
+ * the kind of thing nobody notices until a burn is 8 MB of ride-through short.
+ * Returns 0 on success, -1 on a malformed value; `*secs` is negative when the
+ * caller gave bytes. */
+static int parse_capacity(const char *a, double *secs, unsigned long long *bytes)
+{
+    char *end = NULL;
+    double v;
+
+    *secs = -1.0;
+    *bytes = 0;
+    if (!a || !*a)
+        return -1;
+    v = strtod(a, &end);
+    if (end == a || v < 0)
+        return -1;
+    if (!*end || !strcmp(end, "b") || !strcmp(end, "B")) {
+        *bytes = (unsigned long long)v;
+        return 0;
+    }
+    if (!strcmp(end, "s") || !strcmp(end, "S")) { *secs = v; return 0; }
+    if (!strcmp(end, "k") || !strcmp(end, "K")) { *bytes = (unsigned long long)(v * 1024); return 0; }
+    if (!strcmp(end, "m") || !strcmp(end, "M")) { *bytes = (unsigned long long)(v * 1024 * 1024); return 0; }
+    return -1;
+}
+
 static int cmd_features(accudisc_device *dev, int argc, char **argv)
 {
     int c2 = 0, stream = 0, rotation = 0, all = 0;
@@ -1432,6 +1463,7 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
 {
     const char *toc = NULL, *bin = NULL;
     accudisc_write_opts o = ACCUDISC_WRITE_OPTS_INIT;
+    double fifo_secs = -1.0;   /* >=0 when the user gave a duration */
     struct write_prog wp = { -1, 0, 0 };
 
     for (int i = 0; i < argc; i++) {
@@ -1453,6 +1485,24 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
             o.burnproof = ACCUDISC_BURNPROOF_ON;
         else if (!strcmp(argv[i], "--no-burnproof"))
             o.burnproof = ACCUDISC_BURNPROOF_OFF;
+        else if (!strcmp(argv[i], "--no-fifo"))
+            o.fifo_bytes = ACCUDISC_FIFO_NONE;
+        else if (!strcmp(argv[i], "--fifo") && i + 1 < argc) {
+            double secs; unsigned long long b;
+            if (parse_capacity(argv[++i], &secs, &b) != 0) {
+                fprintf(stderr, "accudisc: bad --fifo '%s' "
+                                "(try 5s, 8m, 512k, or a byte count)\n", argv[i]);
+                return 1;
+            }
+            /* Converted HERE against the speed being requested, so the
+             * assumption is made once and can be reported. o.speed may be 0
+             * (leave the drive's setting), in which case 8x is assumed and
+             * said out loud rather than silently. */
+            fifo_secs = secs;
+            o.fifo_bytes = secs >= 0
+                ? accudisc_fifo_bytes_for(secs, o.speed > 0 ? (unsigned)o.speed : 8u)
+                : (uint32_t)(b > ACCUDISC_FIFO_MAX_BYTES ? ACCUDISC_FIFO_MAX_BYTES : b);
+        }
         else if (!strcmp(argv[i], "--speed") && i + 1 < argc)
             o.speed = (int)strtol(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--progress-fd") && i + 1 < argc)
@@ -1465,6 +1515,23 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
     if (!toc || !bin) {
         fprintf(stderr, "accudisc: write needs --toc FILE and --bin FILE\n");
         return 1;
+    }
+
+    /* SAY WHAT RATE THE DURATION WAS CONVERTED AGAINST, and say when the cap
+     * bit. The drive cannot be asked: mode page 2A reports the speed that was
+     * REQUESTED rather than delivered, and its fields describe reading. So the
+     * rate here is an ASSUMPTION, and an assumption that decides how many
+     * seconds of protection the user actually got has to be visible. Silently
+     * handing back 0.9 s when 5 s was asked for is the failure this project
+     * keeps meeting. */
+    if (fifo_secs >= 0) {
+        unsigned x = o.speed > 0 ? (unsigned)o.speed : 8u;
+        double got = (double)o.fifo_bytes / (2352.0 * 75.0 * x);
+
+        fprintf(stderr, "accudisc: fifo %u bytes = %.1f s at %ux (assumed%s)%s\n",
+                o.fifo_bytes, got, x, o.speed > 0 ? "" : ", drive default",
+                o.fifo_bytes >= ACCUDISC_FIFO_MAX_BYTES
+                    ? " — CAPPED, you asked for more" : "");
     }
 
     int err = accudisc_write(dev, toc, bin, &o, write_progress, &wp);
@@ -1745,8 +1812,19 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             cdg_path = argv[++i];
         else if (!strcmp(a, "--subf") && i + 1 < argc)
             sub_path = argv[++i];
-        else if (!strcmp(a, "--buffer") && i + 1 < argc)
-            req.buffer_bytes = (uint32_t)strtoul(argv[++i], NULL, 0);
+        else if (!strcmp(a, "--no-buffer"))
+            req.buffer_bytes = ACCUDISC_BUFFER_NONE;
+        else if (!strcmp(a, "--buffer") && i + 1 < argc) {
+            double secs; unsigned long long b;
+            if (parse_capacity(argv[++i], &secs, &b) != 0) {
+                fprintf(stderr, "accudisc: bad --buffer '%s' "
+                                "(try 3s, 8m, 512k, or a byte count)\n", argv[i]);
+                return 1;
+            }
+            req.buffer_bytes = secs >= 0
+                ? accudisc_fifo_bytes_for(secs, req.speed_x ? req.speed_x : 8u)
+                : (uint32_t)(b > ACCUDISC_FIFO_MAX_BYTES ? ACCUDISC_FIFO_MAX_BYTES : b);
+        }
         else if (!strcmp(a, "--chunk") && i + 1 < argc)
             req.chunk_sectors = (uint16_t)strtol(argv[++i], NULL, 0);
         else if (!strcmp(a, "--retries") && i + 1 < argc)

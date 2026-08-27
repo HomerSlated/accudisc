@@ -24,6 +24,7 @@ set(ACCUDISC_SOURCES
     toc/plan.c
     read/engine.c
     read/accubuf.c
+    write/fifo.c
     cdda/crc16.c
     cdda/subq.c
     cdda/scan.c

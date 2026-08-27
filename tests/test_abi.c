@@ -72,6 +72,13 @@ _Static_assert(sizeof(accudisc_write_opts) == 32, "write_opts grew — see above
  * field, so a 0.25.0 caller passing 24 is honoured and simply gets AUTO. */
 _Static_assert(offsetof(accudisc_write_opts, burnproof) == 24,
                "write_opts: burnproof was supposed to APPEND");
+/* fifo_bytes filled 0.26.0's TAIL PADDING at 28, so sizeof stayed 32 and the
+ * `size` field cannot tell a 0.26.0 caller from a 0.27.0 one. That is why
+ * 0.27.0 is a minor bump for a struct that did not grow, and why write_api.c
+ * clamps the field rather than trusting it. Pinned so the next field to land
+ * in padding gets the same scrutiny instead of the same silence. */
+_Static_assert(offsetof(accudisc_write_opts, fifo_bytes) == 28,
+               "write_opts: fifo_bytes moved");
 
 /* accudisc_features has NO size field, so the version bump is the only signal a
  * consumer gets that it grew — 11 -> 16 bytes in 0.26.0, five write-capability

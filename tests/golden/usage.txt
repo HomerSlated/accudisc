@@ -51,6 +51,7 @@ commands:
                  --toc FILE --bin FILE [--cdtext FILE] [--simulate]
                  [--byteswap] [--speed X] [--progress-fd N]
                  [--burnproof | --no-burnproof]
+                 [--fifo 5s|8m|BYTES | --no-fifo]
                  (--cdtext takes a raw format-05 blob from read --cdtext;
                   needs blank disc)
   write-offset   measure how early or late a drive BURNS audio.
@@ -91,7 +92,8 @@ read options:
   --subf FILE    write the subchannel stream here (needs --sub)
   --cdg FILE     write CD+G packs here: R-W de-interleaved and
                  Reed-Solomon corrected, 24 bytes/pack (needs --sub raw)
-  --buffer N     AccuBuffer: bytes of chunk ring between the drive
+  --buffer 3s|8m|N  AccuBuffer ring: a duration or a byte size.
+                 ON by default (3s); --no-buffer runs without one
                  and the output, so time in the sink is not time the
                  drive is idle. 0 = off (default). Pointless for a
                  plain file (the page cache already does this); it

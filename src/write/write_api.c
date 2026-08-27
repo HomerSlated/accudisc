@@ -17,6 +17,7 @@
 #include "../meta/cdtext_blob.h"
 #include "../mmc/mmc.h"
 #include "write.h"
+#include "fifo.h"
 
 /* Read an entire file into a fresh malloc'd buffer. If nul, a terminating
  * '\0' is appended and NOT counted in *out_len (for text like the .toc);
@@ -179,6 +180,23 @@ int accudisc_write(accudisc_device *dev, const char *toc_path,
         .byteswap  = opts->byteswap,
         .speed     = opts->speed,
         .burnproof = opts->burnproof,
+        /* 0 -> the default, ACCUDISC_FIFO_NONE -> off. A caller whose struct
+         * predates the field zero-extends to 0 and is therefore PROTECTED,
+         * which is the intended direction for a default that exists to stop
+         * coasters. */
+        /* CLAMPED, and not only for tidiness. fifo_bytes occupies what 0.26.0
+         * left as tail padding, so sizeof is 32 in both and the `size` field
+         * cannot distinguish them — a 0.26.0 caller's uninitialised padding
+         * arrives here as a buffer size. The version macro is the real guard;
+         * this is the belt to it, and it turns "allocate 3 GB and lock it"
+         * into a sane ring. */
+        .fifo_bytes = opts->fifo_bytes == ACCUDISC_FIFO_NONE ? 0
+                    : opts->fifo_bytes
+                        ? (opts->fifo_bytes > ACCUDISC_FIFO_MAX_BYTES
+                               ? ACCUDISC_FIFO_MAX_BYTES : opts->fifo_bytes)
+                    : accudisc_fifo_bytes_for(ACCUDISC_FIFO_DEFAULT_SECONDS,
+                                              opts->speed > 0
+                                                  ? (unsigned)opts->speed : 8u),
     };
     rc = adsc_write_run(dev, toc, bin, &bo, progress, user);
 

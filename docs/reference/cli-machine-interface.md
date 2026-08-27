@@ -150,6 +150,55 @@ Three properties of that table are load-bearing:
   `accudisc.h` repeats this beside the fields, because this document's audience
   is shrinking to CLI consumers while the fields' audience is not.
 
+## Buffers: `--fifo` and `--buffer` (0.27.0)
+
+Both buffers are **ON by default** and both accept the same two forms:
+
+| form | example | meaning |
+|---|---|---|
+| duration | `5s`, `2.5s` | seconds of ride-through, converted against the write/read rate |
+| byte size | `8m`, `512k`, `7056000` | exact capacity |
+
+`--no-fifo` / `--no-buffer` run without one, deliberately. In the API, `0`
+means **the default**, not off — `ACCUDISC_FIFO_NONE` / `ACCUDISC_BUFFER_NONE`
+mean off. A zero-init caller is therefore protected rather than unprotected.
+
+**The rate a duration converts against is an ASSUMPTION and is printed:**
+
+```
+accudisc: fifo 2822400 bytes = 2.0 s at 8x (assumed, drive default)
+accudisc: fifo 33554432 bytes = 0.9 s at 48x (assumed) — CAPPED, you asked for more
+```
+
+It cannot be read back from the drive: mode page 2A reports the speed
+**requested** rather than delivered, and its fields describe reading. The
+`CAPPED` suffix appears when the byte ceiling bit; a parser wanting the real
+ride-through should read the printed seconds, not the requested duration.
+
+### Burn-time FIFO report
+
+```
+write: FIFO 7048944 bytes in 111 slots of 27 sectors, memory LOCKED
+write: FIFO primed 111/111 slots before the first sector
+write: FIFO — 0 starvations, low-water 110/111 slots, producer waited 1766 times
+```
+
+- `memory LOCKED` / `NOT locked` — whether `mlock` succeeded. Unlocked, the ring
+  can be paged out under the very pressure it exists to absorb; the burn
+  continues and says so rather than failing.
+- `primed N/M` — the ring is filled **before** the first sector. Without it the
+  opening pop reads an empty ring and scores a starvation, which on a drive with
+  no failover stops every burn at sector 0.
+- `low-water` counts only while the source still has data. The ring necessarily
+  empties at end of stream because the file ran out, and counting that reported
+  `low-water 1/111` on a burn where the producer was blocked on a **full** ring
+  throughout.
+- `starvations` is the host losing. What it costs depends on
+  `burnproof_claimed`: with a failover the drive links and the burn continues;
+  **without one the burn stops**, because the disc is already spoilt and
+  continuing would only hide that.
+
+
 ## `features` write-capability tokens (added 0.26.0)
 
 `accudisc features` gained one line, from the CD Mastering feature descriptor

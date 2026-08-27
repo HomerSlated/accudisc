@@ -24,6 +24,7 @@ static void sleep_ms(long ms)
 #include "../meta/cdtext_encode.h"
 #include "../mmc/mmc.h"
 #include "write.h"
+#include "fifo.h"
 
 #define SECTOR   2352u
 #define CHUNK    27u        /* sectors/WRITE(10): 27*2352 = 63504 B (< 64 KiB) */
@@ -109,6 +110,9 @@ struct write_flow {
      * underrun was survived or was fatal. */
     uint8_t  burnproof_claimed;   /* the drive's CD Mastering BUF bit */
     uint8_t  burnproof_on;        /* what we actually asked MODE SELECT for */
+    uint64_t fifo_starved;        /* times the ring was dry when the drive
+                                   * wanted data — the HOST-side twin of the
+                                   * drive-buffer low-water mark */
 };
 
 /* Below this the drive is close to running dry. Not a threshold anything acts
@@ -273,6 +277,9 @@ int adsc_write_run(struct accudisc_device *dev,
     uint8_t cue[ADSC_CUE_MAX_BYTES];
     uint32_t cuelen = 0;
     uint8_t *chunk = NULL, *zero = NULL;
+    struct adsc_wfifo fifo;
+    struct adsc_wfifo_seg seg[99];
+    int fifo_live = 0;
     struct write_flow fl = {0};
     int ret;
 
@@ -411,37 +418,135 @@ int adsc_write_run(struct accudisc_device *dev,
         left -= n;
     }
 
-    /* 6. Track audio, contiguous from LBA 0. */
+    /* 6. Track audio, contiguous from LBA 0 — fed through the FIFO. */
     uint32_t total = toc->leadout_lba, done_sec = 0;
     for (int i = 0; i < toc->ntracks; i++) {
-        const struct adsc_write_track *t = &toc->track[i];
-        uint64_t off = t->file_offset;
-        for (uint32_t rem = t->sectors; rem > 0;) {
-            uint32_t n = rem < CHUNK ? rem : CHUNK;
-            ssize_t got = pread(bin_fd, chunk, (size_t)n * SECTOR, (off_t)off);
-            if (got != (ssize_t)(n * SECTOR)) {
+        seg[i].file_offset = toc->track[i].file_offset;
+        seg[i].sectors     = toc->track[i].sectors;
+    }
+    if (opts->fifo_bytes) {
+        ret = adsc_wfifo_start(&fifo, opts->fifo_bytes, CHUNK, bin_fd,
+                               seg, (unsigned)toc->ntracks, opts->byteswap);
+        if (ret != ACCUDISC_OK) {
+            /* A caller that asked for a buffer and quietly got the synchronous
+             * path would be told nothing and protected by nothing. */
+            adsc_dev_log(dev, "write: FIFO could not start (rc %d) — refusing "
+                              "rather than burning unprotected", ret);
+            goto done;
+        }
+        fifo_live = 1;
+        adsc_dev_log(dev, "write: FIFO %zu bytes in %u slots of %u sectors, "
+                          "memory %s",
+                     fifo.arena_bytes, fifo.nslots, CHUNK,
+                     fifo.locked ? "LOCKED"
+                                 : "NOT locked (mlock refused; it can be paged "
+                                   "out under the pressure it exists to absorb)");
+        /* Fill it BEFORE the first write. Without this the opening pop reads
+         * an empty ring and scores a starvation, which on a drive with no
+         * failover stops the burn at sector 0 — every time. And a burn that
+         * begins with a full ring is protected from its first sector rather
+         * than some seconds in, which is the point. */
+        {
+            unsigned filled = 0;
+            ret = adsc_wfifo_prefill(&fifo, &filled);
+            if (ret != ACCUDISC_OK)
+                goto done;
+            adsc_dev_log(dev, "write: FIFO primed %u/%u slots before the first "
+                              "sector", filled, fifo.nslots);
+        }
+    }
+
+    for (;;) {
+        const uint8_t *src;
+        uint32_t n;
+        int was_empty = 0, got;
+
+        if (fifo_live) {
+            got = adsc_wfifo_pop(&fifo, &src, &was_empty);
+            if (got < 0) { ret = got; goto done; }
+            if (got == 0) break;                    /* end of stream */
+            n = (uint32_t)got;
+        } else {
+            /* Unbuffered path, kept working and kept honest: --no-fifo means
+             * exactly the old synchronous behaviour, not a smaller ring. */
+            if (done_sec >= total) break;
+            n = total - done_sec < CHUNK ? total - done_sec : CHUNK;
+            {
+                uint64_t off = 0; uint32_t acc = 0; int t;
+                for (t = 0; t < toc->ntracks; t++) {
+                    if (done_sec < acc + toc->track[t].sectors) {
+                        off = toc->track[t].file_offset
+                            + (uint64_t)(done_sec - acc) * SECTOR;
+                        if (n > acc + toc->track[t].sectors - done_sec)
+                            n = acc + toc->track[t].sectors - done_sec;
+                        break;
+                    }
+                    acc += toc->track[t].sectors;
+                }
+                if (pread(bin_fd, chunk, (size_t)n * SECTOR, (off_t)off)
+                        != (ssize_t)((size_t)n * SECTOR)) {
+                    ret = ACCUDISC_ERR_IO;
+                    goto done;
+                }
+                if (opts->byteswap)
+                    byteswap16(chunk, (size_t)n * SECTOR);
+            }
+            src = chunk;
+        }
+
+        /* THE UNDERRUN POLICY. The ring ran dry: the host lost. What that
+         * costs depends entirely on whether anything is behind us.
+         *
+         * With BURN-Proof the drive stops, repositions and resumes — a link in
+         * the stream, and the burn survives. Without it the drive runs its own
+         * buffer out and the disc is lost. We own the pipeline, so we stop and
+         * say so rather than feed a drive we know cannot recover.
+         *
+         * BE HONEST ABOUT WHAT STOPPING BUYS: the disc is already spoilt by the
+         * time this fires. Stopping does not save it. What it saves is the
+         * DIAGNOSIS — a clean, attributed failure instead of a disc that reads
+         * as fine until something downstream disagrees, and the minutes that
+         * would be spent finishing a burn already known to be bad. */
+        if (was_empty) {
+            fl.fifo_starved++;
+            if (!fl.burnproof_on) {
+                adsc_dev_log(dev, "write: FIFO EMPTY at sector %u and there is "
+                                  "no failover behind it — stopping. The disc "
+                                  "is already spoilt; continuing would only "
+                                  "hide that.", done_sec);
                 ret = ACCUDISC_ERR_IO;
                 goto done;
             }
-            if (opts->byteswap)
-                byteswap16(chunk, (size_t)n * SECTOR);
-            if (done_sec / CHUNK % ADSC_BUF_POLL_EVERY == 0)
-                buf_sample(dev, &fl);
-            if ((ret = write_chunk(dev, lba, chunk, n, SECTOR, &fl)) != ACCUDISC_OK)
-                goto done;
-            lba += (int32_t)n;
-            off += (uint64_t)n * SECTOR;
-            rem -= n;
-            done_sec += n;
-            if (cb)
-                cb(user, done_sec, total);
+            adsc_dev_log(dev, "write: FIFO empty at sector %u — deferring to "
+                              "BURN-Proof, which links and resumes", done_sec);
         }
+
+        if (done_sec / CHUNK % ADSC_BUF_POLL_EVERY == 0)
+            buf_sample(dev, &fl);
+        if ((ret = write_chunk(dev, lba, src, n, SECTOR, &fl)) != ACCUDISC_OK)
+            goto done;
+        if (fifo_live)
+            adsc_wfifo_release(&fifo);
+        lba += (int32_t)n;
+        done_sec += n;
+        if (cb)
+            cb(user, done_sec, total);
     }
 
     /* 7. Flush / close. */
     ret = adsc_mmc_sync_cache(dev);
 
 done:
+    if (fifo_live) {
+        int frc = adsc_wfifo_stop(&fifo, ret != ACCUDISC_OK);
+        if (ret == ACCUDISC_OK && frc != ACCUDISC_OK)
+            ret = frc;
+        adsc_dev_log(dev, "write: FIFO — %llu starvations, low-water %u/%u "
+                          "slots, producer waited %llu times",
+                     (unsigned long long)fl.fifo_starved,
+                     fifo.min_count, fifo.nslots,
+                     (unsigned long long)fifo.producer_waits);
+    }
     /* The tally, logged whatever the outcome — a failed burn is exactly when
      * knowing how the flow behaved is worth most. Read it as described at
      * struct write_flow: stalls are the drive holding US off, which is the safe

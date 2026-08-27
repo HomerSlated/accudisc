@@ -27,7 +27,17 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 26 /* 0.26.0: BURN-Proof is no longer forced on
+#define ACCUDISC_VERSION_MINOR 27 /* 0.27.0: THE WRITE FIFO. accudisc_write_opts
+                                  * gained `fifo_bytes` — and it landed in what
+                                  * 0.26.0 left as TAIL PADDING, so sizeof is 32
+                                  * either way and the `size` field CANNOT tell
+                                  * the two apart. The version is the only
+                                  * signal, which is why this is a minor bump
+                                  * for a struct that did not grow. A 0.26.0
+                                  * caller's uninitialised padding would
+                                  * otherwise be read as a buffer size; the
+                                  * value is clamped on entry for that reason.
+                                  * 0.26.0: BURN-Proof is no longer forced on
                                   * every drive. The CD Mastering feature
                                   * (002Eh) is probed, accudisc_features gained
                                   * five write-capability flags (11 -> 16 B) and
@@ -68,8 +78,13 @@ extern "C" {
                                   * (144 -> 160). Both APPENDED; nothing above
                                   * them moved.
                                   *
-                                  * OFF by default (0), and the default path is
-                                  * byte-for-byte what it was. Measured first:
+                                  * OFF by default in 0.22.0 — CHANGED in
+                                  * 0.27.0, where 0 means the default size and
+                                  * ACCUDISC_BUFFER_NONE means off. The
+                                  * measurement below stands; what changed is
+                                  * the conclusion drawn from it, because it
+                                  * describes the steady state and a buffer is
+                                  * for the tail. Measured first:
                                   * against a write-rate-capped sink at half
                                   * the drive's rate, 95.5% of the disc read
                                   * was ALREADY hidden by the page cache, so
@@ -971,7 +986,53 @@ typedef struct accudisc_write_opts {
      * happens when the host cannot keep up: with a failover, defer to it; with
      * none, stop, because we own the pipeline and a coaster is the alternative. */
     int burnproof;
+    /* Write FIFO capacity in BYTES. Appended in 0.26.0.
+     *
+     * 0 means USE THE DEFAULT (a few seconds of audio, see
+     * ACCUDISC_FIFO_DEFAULT_SECONDS) — NOT "no FIFO", because a zero-init
+     * caller should get the protection rather than opt into it. Pass
+     * ACCUDISC_FIFO_NONE to run the old synchronous path deliberately.
+     *
+     * SIZE IT IN TIME, NOT BYTES, and let this field carry the conversion. The
+     * quantity that matters is how long a host stall the burn can absorb, and
+     * that is bytes / write-rate — so the same byte count is 3.4 s at CD 8x and
+     * under 0.2 s at BD speeds. accudisc_fifo_bytes_for() does the conversion
+     * with the rate stated rather than assumed.
+     *
+     * uint32_t, NOT size_t. size_t is 4 bytes on a 32-bit target and 8 on a
+     * 64-bit one, so a size_t here would make this struct's layout differ by
+     * PLATFORM — and the platforms that would diverge are exactly the small
+     * boards and legacy hosts this buffer is most needed on. A FIFO above
+     * 4 GiB is not a thing anyone wants. */
+    uint32_t fifo_bytes;
 } accudisc_write_opts;
+
+/* fifo_bytes sentinel: run without a FIFO, deliberately. Not 0, because 0 is
+ * what a zero-init caller passes and such a caller should be PROTECTED by
+ * default rather than unprotected by accident. */
+#define ACCUDISC_FIFO_NONE ((uint32_t)0xFFFFFFFFu)
+/* The read side's twin, and the same reasoning: 0 is what a zero-init caller
+ * passes, and such a caller should be protected rather than unprotected. */
+#define ACCUDISC_BUFFER_NONE ((uint32_t)0xFFFFFFFFu)
+#define ACCUDISC_BUFFER_DEFAULT_SECONDS 3.0
+
+/* Default ride-through. Conservative on purpose: enough to cross a writeback
+ * storm or a page-cache stall, small enough to lock on a modest machine. */
+#define ACCUDISC_FIFO_DEFAULT_SECONDS 5.0
+/* Byte ceiling for the duration form. 5 s at 48x would be ~42 MB of LOCKED
+ * memory, which on a small board is a refusal to start rather than a buffer. */
+#define ACCUDISC_FIFO_MAX_BYTES (32u * 1024u * 1024u)
+
+/* Bytes for `seconds` of CD audio at `speed_x`, clamped to
+ * ACCUDISC_FIFO_MAX_BYTES. Exposed so a caller sizing in time uses the same
+ * arithmetic the engine does, rather than a second implementation of one rule.
+ *
+ * `speed_x` is the WRITE speed you intend to request. It cannot be read back
+ * from the drive: mode page 2A reports the speed that was REQUESTED, not the
+ * one delivered, and its fields describe reading. Pass what you will ask for,
+ * or the drive's maximum for a conservative size. */
+ACCUDISC_API uint32_t accudisc_fifo_bytes_for(double seconds,
+                                             unsigned speed_x);
 
 /* accudisc_write_opts.burnproof. AUTO is 0 so a zero-init caller gets it. */
 #define ACCUDISC_BURNPROOF_AUTO 0 /* enable when the drive claims BUF (002Eh) */
@@ -2378,6 +2439,19 @@ typedef struct accudisc_read_req {
      * this library refuses. Appended last, so a shorter caller's struct
      * zero-extends to 0 and gets the old path (the IN rule above). */
     uint32_t buffer_bytes;
+    /* 0 means the DEFAULT (a few seconds of audio), not "off" — since 0.27.0.
+     * Pass ACCUDISC_BUFFER_NONE to run without one deliberately.
+     *
+     * WHY THIS FLIPPED, since the paragraph at the version macro above still
+     * records the measurement that said it should be off. That measurement
+     * stands and is not being disowned: against a rate-capped file sink, 95.5%
+     * of a disc read was already hidden by the page cache, so the ring added
+     * almost nothing THERE. What it measured was a quiet machine doing one
+     * thing. A buffer earns its keep in the tail — the writeback storm, the
+     * filled tmpfs, the desktop that stops responding — and a measurement of
+     * the steady state cannot speak to that. Defaulting it off meant the
+     * protection was absent exactly when nobody was thinking about it, which
+     * is when it is needed. */
 } accudisc_read_req;
 
 /* One delivered chunk. data holds nsec sectors, each sector_len bytes laid

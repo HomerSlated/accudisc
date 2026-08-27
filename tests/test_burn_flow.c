@@ -28,6 +28,7 @@
 #include "accudisc/accudisc.h"
 #include "internal.h"
 #include "write/write.h"
+#include "write/fifo.h"
 
 /* ---- the fake drive ------------------------------------------------------ */
 
@@ -41,6 +42,8 @@ static struct {
     char     flow_log[512];    /* the end-of-burn tally line */
     char     buf_log[512];     /* the buffer-fill line, whichever it is */
     char     bp_log[512];      /* the BURN-Proof decision line */
+    char     fifo_log[512];    /* the end-of-burn FIFO tally */
+    char     prime_log[512];   /* the prefill line */
 
     /* READ BUFFER CAPACITY behaviour. `cap_refuse` makes the drive reject it
      * outright — the case a real drive without Real-time Streaming presents,
@@ -147,6 +150,10 @@ void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...)
         snprintf(fake.gave_up_log, sizeof fake.gave_up_log, "%s", fake.last_log);
     if (strstr(fake.last_log, "flow —"))
         snprintf(fake.flow_log, sizeof fake.flow_log, "%s", fake.last_log);
+    if (strstr(fake.last_log, "FIFO —"))
+        snprintf(fake.fifo_log, sizeof fake.fifo_log, "%s", fake.last_log);
+    if (strstr(fake.last_log, "primed"))
+        snprintf(fake.prime_log, sizeof fake.prime_log, "%s", fake.last_log);
     if (strstr(fake.last_log, "BURN-Proof"))
         snprintf(fake.bp_log, sizeof fake.bp_log, "%s", fake.last_log);
     if (strstr(fake.last_log, "drive buffer"))
@@ -466,12 +473,161 @@ static void test_the_poll_is_not_issued_for_every_chunk(void)
     assert(fake.cap_polls < fake.write_calls);
 }
 
+/* ---- the FIFO ------------------------------------------------------------ */
+
+static int run_fifo(uint32_t sectors, uint32_t fifo_bytes)
+{
+    struct adsc_write_toc toc;
+    struct adsc_burn_opts opts;
+    int fd = bin_fd_n(sectors), rc;
+
+    memset(&toc, 0, sizeof toc);
+    memset(&opts, 0, sizeof opts);
+    toc.ntracks = 1;
+    toc.leadout_lba = sectors;
+    toc.track[0].audio = 1;
+    toc.track[0].sectors = sectors;
+    opts.simulate = 1;
+    opts.fifo_bytes = fifo_bytes;
+
+    rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
+    close(fd);
+    return rc;
+}
+
+/* Big enough to hold the ENTIRE test burn. The stub drive accepts a chunk
+ * instantly, so it is infinitely faster than any real one — against that, a
+ * ring smaller than the burn must starve no matter how quick the producer is,
+ * and starvation would be a property of the fixture rather than of the code.
+ * 1080 sectors is 40 chunks; 4 MiB is 66 slots. */
+#define FIFO_WHOLE_BURN (4u * 1024u * 1024u)
+
+static void test_the_fifo_delivers_every_sector(void)
+{
+    reset();
+    assert(run_fifo(LONG_SECTORS, FIFO_WHOLE_BURN) == ACCUDISC_OK);
+    /* Every sector reached WRITE(10) — a ring that dropped or duplicated a
+     * chunk would still "succeed", and the disc would be silently wrong. */
+    assert(fake.write_calls >= LONG_SECTORS / 27u);
+}
+
+static void test_priming_stops_a_false_starvation_at_sector_zero(void)
+{
+    reset();
+    assert(run_fifo(LONG_SECTORS, FIFO_WHOLE_BURN) == ACCUDISC_OK);
+    /* THE DEFECT THIS CATCHES, measured on the PX-716A before the prefill
+     * existed: the opening pop found an empty ring and scored a starvation.
+     * Harmless with BURN-Proof; on a drive WITHOUT it the underrun policy
+     * stops the burn — so a buffer added to protect unprotected drives would
+     * have made burning impossible on precisely those drives, at sector 0,
+     * every time. */
+    assert(strstr(fake.fifo_log, "0 starvations"));
+    assert(strstr(fake.prime_log, "primed"));
+}
+
+static void test_end_of_stream_drain_is_not_a_low_water_mark(void)
+{
+    reset();
+    assert(run_fifo(LONG_SECTORS, FIFO_WHOLE_BURN) == ACCUDISC_OK);
+    /* The ring necessarily empties at the end because the FILE ran out.
+     * Counting that as the low-water mark reported "low-water 1/111" on a run
+     * where the producer spent the entire burn blocked on a FULL ring — a
+     * well-formed number about the wrong event. */
+    assert(!strstr(fake.fifo_log, "low-water 0/"));
+    assert(!strstr(fake.fifo_log, "low-water 1/"));
+}
+
+static void test_a_starving_ring_STOPS_a_drive_with_no_failover(void)
+{
+    struct adsc_write_toc toc;
+    struct adsc_burn_opts opts;
+    int fd, rc;
+
+    reset();
+    fake.mastering_absent = 1;      /* no BURN-Proof behind us */
+    memset(&toc, 0, sizeof toc);
+    memset(&opts, 0, sizeof opts);
+    toc.ntracks = 1;
+    toc.leadout_lba = LONG_SECTORS;
+    toc.track[0].audio = 1;
+    toc.track[0].sectors = LONG_SECTORS;
+    opts.simulate = 1;
+    opts.fifo_bytes = 1;            /* clamped to the 2-slot floor: it WILL dry */
+
+    fd = bin_fd_n(LONG_SECTORS);
+    rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
+    close(fd);
+
+    /* KEITH'S POLICY, asserted. We own the pipeline. With nothing behind us a
+     * dry ring means the drive is about to run its own buffer out and the disc
+     * is lost, so the burn STOPS and says why — rather than feeding a drive
+     * already known to be unable to recover. */
+    assert(rc == ACCUDISC_ERR_IO && "no failover + empty ring must stop the burn");
+    assert(strstr(fake.bp_log, "no failover behind the host"));
+}
+
+static void test_the_same_starvation_is_SURVIVED_with_a_failover(void)
+{
+    struct adsc_write_toc toc;
+    struct adsc_burn_opts opts;
+    int fd, rc;
+
+    reset();
+    fake.buf_claimed = 1;           /* ... and now there IS something behind us */
+    memset(&toc, 0, sizeof toc);
+    memset(&opts, 0, sizeof opts);
+    toc.ntracks = 1;
+    toc.leadout_lba = LONG_SECTORS;
+    toc.track[0].audio = 1;
+    toc.track[0].sectors = LONG_SECTORS;
+    opts.simulate = 1;
+    opts.fifo_bytes = 1;            /* the SAME starvation as above */
+
+    fd = bin_fd_n(LONG_SECTORS);
+    rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
+    close(fd);
+
+    /* Identical input, opposite outcome, and the ONLY difference is whether a
+     * failover exists. That is the whole reason 0.26.0 had to learn the
+     * difference before this ring could be written. */
+    assert(rc == ACCUDISC_OK && "BURN-Proof links and the burn completes");
+    assert(strstr(fake.fifo_log, "starvations"));
+    assert(!strstr(fake.fifo_log, "0 starvations") && "it really did starve");
+}
+
+static void test_no_fifo_still_burns(void)
+{
+    reset();
+    /* --no-fifo must be the OLD synchronous path, not a small ring. */
+    assert(run_fifo(LONG_SECTORS, 0) == ACCUDISC_OK);
+    assert(!fake.fifo_log[0] && "no FIFO line when there is no FIFO");
+}
+
+static void test_sizing_converts_duration_and_clamps(void)
+{
+    /* One rule, used by both the flag parser and the engine. 1 s of CD audio
+     * is 176400 bytes; at 8x that is 1411200. */
+    assert(accudisc_fifo_bytes_for(1.0, 1) == 176400u);
+    assert(accudisc_fifo_bytes_for(1.0, 8) == 1411200u);
+    /* The cap is not cosmetic: 5 s at 48x is ~42 MB of LOCKED memory, which on
+     * a small board is a refusal to start rather than a buffer. */
+    assert(accudisc_fifo_bytes_for(5.0, 48) == ACCUDISC_FIFO_MAX_BYTES);
+    assert(accudisc_fifo_bytes_for(0.0, 8) == 0);
+}
+
 int main(void)
 {
     test_a_clean_burn_never_stalls();
     test_transient_buffer_full_is_survived_and_counted();
     test_a_wedged_drive_is_given_up_on();
     test_the_sense_survives_the_refusal();
+    test_the_fifo_delivers_every_sector();
+    test_priming_stops_a_false_starvation_at_sector_zero();
+    test_end_of_stream_drain_is_not_a_low_water_mark();
+    test_a_starving_ring_STOPS_a_drive_with_no_failover();
+    test_the_same_starvation_is_SURVIVED_with_a_failover();
+    test_no_fifo_still_burns();
+    test_sizing_converts_duration_and_clamps();
     test_burnproof_follows_the_drive_by_default();
     test_a_drive_that_does_not_claim_it_does_not_get_it();
     test_the_caller_can_refuse_the_failover();
