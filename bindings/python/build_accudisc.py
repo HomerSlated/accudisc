@@ -251,6 +251,30 @@ int accudisc_offset_for_inquiry(const char *vendor, const char *product,
                                 accudisc_offset_info *out);
 int accudisc_offset_for_device(accudisc_device *dev, accudisc_offset_info *out);
 
+/* ---- write offset (measurement, not a lookup) --------------------------- */
+#define ACCUDISC_WOFF_SAMPLES ...
+#define ACCUDISC_WOFF_PULSE_A ...
+#define ACCUDISC_WOFF_PULSE_B ...
+#define ACCUDISC_WOFF_PULSE_LEN ...
+#define ACCUDISC_WOFF_SEARCH ...
+#define ACCUDISC_WOFF_F_INCONSISTENT ...
+
+typedef struct accudisc_write_offset_info {
+    uint32_t size;
+    int32_t  write_offset;
+    int32_t  offset_a;
+    int32_t  offset_b;
+    int32_t  found_a;
+    int32_t  found_b;
+    uint8_t  flags;
+    ...;
+} accudisc_write_offset_info;
+
+int accudisc_write_offset_signal(int16_t *pcm, uint32_t samples);
+int accudisc_write_offset_locate(const int16_t *pcm, uint32_t samples,
+                                 int32_t read_offset,
+                                 accudisc_write_offset_info *out);
+
 int accudisc_driver_attach(accudisc_device *dev, const char *name,
                            const char *dir);
 void accudisc_driver_detach(accudisc_device *dev);

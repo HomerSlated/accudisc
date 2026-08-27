@@ -27,7 +27,14 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 23 /* 0.23.0: RIP ACCURACY. accudisc_offset_info
+#define ACCUDISC_VERSION_MINOR 24 /* 0.24.0: the write-offset MEASUREMENT
+                                  * reaches Python. No library change — 0.20.0
+                                  * shipped _signal/_locate and the binding
+                                  * never exposed them, so two of the three
+                                  * documented steps were unreachable from the
+                                  * one place a consumer works. Binding surface
+                                  * only; the C API is untouched.
+                                  * 0.23.0: RIP ACCURACY. accudisc_offset_info
                                   * gained ar_acc_ok/ar_acc_bad, appended, from
                                   * AccurateRip's periodic drive-accuracy
                                   * report. BOTH ZERO MEANS NOT MEASURED — it

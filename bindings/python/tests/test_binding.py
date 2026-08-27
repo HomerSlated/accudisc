@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import mmap
+import pathlib
 import sys
 import types
 
@@ -1559,29 +1560,6 @@ def test_ctdb_parity_size_mismatch_raises():
     raise AssertionError("a blob sized for a different npar was accepted")
 
 
-# ---------------------------------------------------------------------------
-# standalone runner (no pytest required)
-# ---------------------------------------------------------------------------
-
-
-def _main() -> int:
-    tests = [(n, o) for n, o in sorted(globals().items())
-             if n.startswith("test_") and callable(o)]
-    failed = 0
-    for name, fn in tests:
-        try:
-            fn()
-        except Exception as exc:  # noqa: BLE001 — a test runner reports everything
-            failed += 1
-            print(f"FAIL {name}: {type(exc).__name__}: {exc}")
-        else:
-            print(f"ok   {name}")
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    return 1 if failed else 0
-
-
-if __name__ == "__main__":
-    sys.exit(_main())
 
 
 def test_accuracy_is_none_when_not_measured():
@@ -1611,3 +1589,210 @@ def test_accuracy_is_none_when_not_measured():
 def test_accuracy_matches_the_counts():
     d = ad.offset_for("PLEXTOR", "DVDR PX-716A")
     assert d.accuracy == 100.0 * d.ar_acc_ok / (d.ar_acc_ok + d.ar_acc_bad)
+
+
+# ---------------------------------------------------------------------------
+# write offset — measurement, not a lookup
+#
+# Requested by cdda2img (§178) because their new architecture calculates the
+# write offset once per drive rather than holding a table, which made steps 1
+# and 3 of accudisc.h's own three-step flow unreachable from Python: the
+# library shipped them in 0.20.0 and the binding never exposed them.
+#
+# Every assertion below is device-free. The locator takes a buffer, so a
+# simulated drive is a shifted array — which is exactly enough to check the
+# arithmetic, and NOT enough to claim hardware validation. Nothing here should
+# be read as evidence the measurement works on a real burn; it has never been
+# run end to end.
+# ---------------------------------------------------------------------------
+
+def _shift(buf: bytes, pairs: int) -> bytes:
+    """A drive that burns LATE by `pairs` puts the audio further along."""
+    b = bytearray(len(buf))
+    if pairs >= 0:
+        b[pairs * 4:] = buf[: len(buf) - pairs * 4]
+    else:
+        b[: len(buf) + pairs * 4] = buf[-pairs * 4:]
+    return bytes(b)
+
+
+def test_write_offset_signal_is_deterministic_and_exact():
+    a = ad.write_offset_signal()
+    b = ad.write_offset_signal()
+
+    assert len(a) == ad.WOFF_SAMPLES * 4 == 13_230_000
+    # THE POINT of determinism: a disc burnt today can be re-measured months
+    # later, and a disc burnt by cdda2img's tool can be measured by ours.
+    assert a == b
+
+    # The pulses are where the contract says, and they are loud. Checked
+    # against silence 1000 pairs earlier so "loud" is a comparison rather than
+    # an assertion about an absolute the test made up.
+    for pos in (ad.WOFF_PULSE_A, ad.WOFF_PULSE_B):
+        head = a[pos * 4: pos * 4 + 4]
+        quiet = a[(pos - 1000) * 4: (pos - 1000) * 4 + 4]
+        assert head != b"\x00\x00\x00\x00"
+        assert quiet == b"\x00\x00\x00\x00"
+
+
+def test_write_offset_signal_into_a_caller_buffer():
+    out = bytearray(ad.WOFF_SAMPLES * 4)
+    got = ad.write_offset_signal(out=out)
+
+    assert got is out
+    assert bytes(out) == ad.write_offset_signal()
+
+    # Exactly, not "at least": a short buffer would put pulse B off the end and
+    # quietly reduce the measurement to one pulse — losing the cross-check that
+    # is the whole reason there are two.
+    try:
+        ad.write_offset_signal(out=bytearray(ad.WOFF_SAMPLES * 4 - 4))
+    except ad.InvalidArgument:
+        pass
+    else:
+        raise AssertionError("a short out buffer must be refused")
+
+
+def test_write_offset_locate_recovers_an_injected_offset():
+    sig = ad.write_offset_signal()
+
+    w = ad.write_offset_locate(sig, read_offset=0)
+    assert w.usable and w.write_offset == 0
+    assert w.found_a == ad.WOFF_PULSE_A and w.found_b == ad.WOFF_PULSE_B
+
+    for injected in (30, -30, 667, -12):
+        got = ad.write_offset_locate(_shift(sig, injected), read_offset=0)
+        assert got.write_offset == injected, (injected, got)
+        assert got.offset_a == got.offset_b == injected
+
+
+def test_read_offset_is_subtracted_out():
+    """The reason `read_offset` is a required input rather than a refinement.
+
+    A round trip measures the COMBINED offset W + R — one equation, two
+    unknowns — so R has to come from outside. This injects W + R and passes R,
+    and the answer must be W alone. A binding that ignored the argument would
+    return 697 here and look perfectly plausible doing it.
+    """
+    sig = ad.write_offset_signal()
+    W, R = 30, 667
+
+    got = ad.write_offset_locate(_shift(sig, W + R), read_offset=R)
+    assert got.write_offset == W
+
+    # And a WRONG R biases the answer by exactly its error — stated in the
+    # docstring, asserted here so it cannot quietly stop being true.
+    wrong = ad.write_offset_locate(_shift(sig, W + R), read_offset=R - 5)
+    assert wrong.write_offset == W + 5
+
+
+def test_disagreeing_pulses_are_a_result_about_the_disc():
+    """Not an exception, and not averaged.
+
+    A disc that reproduces one offset at 1 s and a different one at 60 s is
+    defective. Both candidates survive so the caller can see WHY it was
+    refused; `write_offset` is None so nothing can store it as a drive
+    property by accident.
+    """
+    sig = bytearray(ad.write_offset_signal())
+    # Move pulse B alone, by rewriting the burst four pairs later.
+    burst = bytes(sig[ad.WOFF_PULSE_B * 4:
+                      (ad.WOFF_PULSE_B + ad.WOFF_PULSE_LEN) * 4])
+    sig[ad.WOFF_PULSE_B * 4: (ad.WOFF_PULSE_B + ad.WOFF_PULSE_LEN) * 4] = \
+        b"\x00" * (ad.WOFF_PULSE_LEN * 4)
+    sig[(ad.WOFF_PULSE_B + 4) * 4: (ad.WOFF_PULSE_B + 4 + ad.WOFF_PULSE_LEN) * 4] = burst
+
+    w = ad.write_offset_locate(bytes(sig), read_offset=0)
+    assert w is not None
+    assert w.inconsistent
+    assert w.write_offset is None
+    assert not w.usable
+    # The evidence is still there — this is what makes it a result rather than
+    # a failure. Averaging (2) or picking A (0) would both be silent choices.
+    assert w.offset_a == 0 and w.offset_b == 4
+
+
+def test_no_pulse_at_all_is_None_not_a_bogus_measurement():
+    """Silence is the wrong audio, not an offset of zero."""
+    assert ad.write_offset_locate(b"\x00" * (ad.WOFF_SAMPLES * 4),
+                                  read_offset=0) is None
+
+
+def test_a_short_read_back_is_refused():
+    sig = ad.write_offset_signal()
+    try:
+        ad.write_offset_locate(sig[:-4], read_offset=0)
+    except ad.InvalidArgument:
+        pass
+    else:
+        raise AssertionError("a short read-back must be refused")
+
+
+# ---------------------------------------------------------------------------
+# standalone runner (no pytest required)
+#
+# IT MUST STAY LAST IN THE FILE. `sys.exit(_main())` runs at IMPORT time, so
+# every `def test_*` written BELOW it is never defined when _main() collects
+# from globals() — and the collection is by name, so the count simply comes out
+# lower and nothing reports a problem. Measured 2026-08-27: nine tests had
+# accumulated below it, two of them shipped in 0.23.0 that morning on a green
+# 89/89 which had never executed them.
+#
+# The project's signature failure aimed at the test runner itself, and the same
+# shape as the NDEBUG one: a suite that runs, prints a plausible number and
+# checks less than it says. A skipped test is loud; an uncollected one is not
+# distinguishable from a test that does not exist.
+#
+# test_the_runner_reaches_the_end_of_the_file below is the guard, and it is
+# what makes "keep this last" enforceable rather than a convention someone has
+# to remember.
+# ---------------------------------------------------------------------------
+
+
+def test_the_runner_reaches_the_end_of_the_file():
+    """No `def test_*` may appear after `sys.exit(_main())`.
+
+    Reads this file as TEXT rather than asking the module about itself,
+    because a test defined after the exit line does not exist as an attribute
+    — the very defect being checked erases its own evidence from globals().
+    """
+    src = pathlib.Path(__file__).read_text(encoding="utf-8").splitlines()
+    exit_line = next(i for i, ln in enumerate(src)
+                     if ln.startswith("    sys.exit(_main())"))
+    stranded = [f"{i + 1}: {ln}" for i, ln in enumerate(src)
+                if i > exit_line and ln.startswith("def test_")]
+    assert not stranded, (
+        "tests defined after sys.exit(_main()) are never collected — "
+        "move the runner to the end of the file:\n  " + "\n  ".join(stranded)
+    )
+
+
+def _main() -> int:
+    tests = [(n, o) for n, o in sorted(globals().items())
+             if n.startswith("test_") and callable(o)]
+    # A count nobody checks is how the stranding above stayed invisible: the
+    # suite printed a smaller number every time and a smaller number looks
+    # exactly like a smaller suite.
+    declared = sum(1 for ln in
+                   pathlib.Path(__file__).read_text(encoding="utf-8").splitlines()
+                   if ln.startswith("def test_"))
+    if len(tests) != declared:
+        print(f"FAIL collection: {declared} test functions in the file, "
+              f"{len(tests)} collected")
+        return 1
+
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 — a test runner reports everything
+            failed += 1
+            print(f"FAIL {name}: {type(exc).__name__}: {exc}")
+        else:
+            print(f"ok   {name}")
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(_main())

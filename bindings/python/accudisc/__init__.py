@@ -44,6 +44,8 @@ from ._accudisc import ffi, lib
 __all__ = [
     "DriveOffset",
     "offset_for",
+    "WriteOffset", "write_offset_signal", "write_offset_locate",
+    "WOFF_SAMPLES", "WOFF_PULSE_A", "WOFF_PULSE_B", "WOFF_PULSE_LEN",
     "AccuDiscError", "InvalidArgument", "OutOfMemory", "OpenFailed", "IOFailed",
     "SenseError", "ShortResponse", "Unsupported", "NotBlank", "Cancelled", "CrcError",
     "NotFound", "AbiMismatch", "RetainedBufferError",
@@ -1436,6 +1438,20 @@ def parse_q(q12: bytes) -> Q:
 #: that looks like a typo.
 MAX_SPAN_BYTES = 128 * 1024 * 1024
 
+#: Stereo sample pairs in the write-offset test signal: 75 s. Both a buffer
+#: size (``* 4`` for bytes) and a contract — :func:`write_offset_locate`
+#: requires exactly this many, because a short read-back would put pulse B off
+#: the end and silently halve the measurement to a single pulse.
+WOFF_SAMPLES = int(lib.ACCUDISC_WOFF_SAMPLES)
+#: Where the two noise bursts sit, in sample pairs: 1 s and 60 s. THE POSITIONS
+#: ARE THE CONTRACT — they are what let a disc burnt by one tool be measured by
+#: another, and both sit inside AccurateRip's 2940-sample exclusion boundary so
+#: a disc made this way still verifies.
+WOFF_PULSE_A = int(lib.ACCUDISC_WOFF_PULSE_A)
+WOFF_PULSE_B = int(lib.ACCUDISC_WOFF_PULSE_B)
+#: One CD frame. The burst length.
+WOFF_PULSE_LEN = int(lib.ACCUDISC_WOFF_PULSE_LEN)
+
 SinkFn = Callable[["Chunk"], None]
 
 
@@ -2725,6 +2741,131 @@ def _rung_from_c(r) -> SpeedRung:
         equiv_x=r.equiv_x,
         verdict=Verdict(r.verdict),
         bands_cx=tuple(r.band_cx[i] or None for i in range(3)),  # type: ignore[arg-type]
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class WriteOffset:
+    """The drive's WRITE offset, measured — never looked up.
+
+    There is no write-offset table anywhere in AccuDisc and there is not going
+    to be one: the published data is too sparse to mean anything, so this is
+    always a measurement, made once per drive and stored by the caller.
+
+    ``write_offset`` is ``None`` when the two pulses were located but DISAGREE.
+    That is not a failure of the call, it is evidence about the DISC — a disc
+    that reproduces one number at 1 s and a different one at 60 s is defective,
+    and the two candidates are left in ``offset_a``/``offset_b`` for the caller
+    to look at. Nothing here averages them or picks one, because either would be
+    a silent choice between two measurements of a quantity that has one value.
+
+    The unit is a sample = one stereo frame = 4 bytes. POSITIVE means the drive
+    burns LATE, matching the read side's sense (positive = reads early), and the
+    correction is the same single shift applied once, at storage.
+    """
+
+    write_offset: int | None
+    offset_a: int
+    offset_b: int
+    #: Where each pulse actually landed, in READ-OFFSET-CORRECTED sample
+    #: coordinates; ``None`` for a pulse that was not located at all.
+    found_a: int | None
+    found_b: int | None
+    #: The two pulses disagree. ``write_offset`` is ``None`` and this is a
+    #: statement about the disc, not about the drive.
+    inconsistent: bool = False
+
+    @property
+    def usable(self) -> bool:
+        """True when this is a drive measurement fit to store."""
+        return self.write_offset is not None
+
+
+def write_offset_signal(out=None) -> bytes | memoryview:
+    """The test signal to burn: 75 s of s16 host-order stereo PCM.
+
+    Deterministic — the same bytes every call on every machine — so a disc can
+    be re-measured months later, and so a disc burnt by one tool can be measured
+    by another. The positions ARE the contract: one-frame noise bursts at 1 s
+    and 60 s, both inside AccurateRip's 2940-sample exclusion boundary, so a
+    disc made this way still verifies. cdda2img's ``setup --write-offset`` uses
+    the same two.
+
+    Pass ``out`` (a writable buffer of exactly ``WOFF_SAMPLES * 4`` bytes) to
+    fill it in place; otherwise a fresh ``bytes`` is returned. 13.2 MB either
+    way.
+    """
+    nbytes = lib.ACCUDISC_WOFF_SAMPLES * 4
+    if out is None:
+        buf = ffi.new("int16_t[]", int(lib.ACCUDISC_WOFF_SAMPLES) * 2)
+        _check(lib.accudisc_write_offset_signal(buf, lib.ACCUDISC_WOFF_SAMPLES))
+        return bytes(ffi.buffer(buf, nbytes))
+
+    ob = ffi.from_buffer(out, require_writable=True)
+    if len(ob) != nbytes:
+        raise InvalidArgument(
+            lib.ACCUDISC_ERR_INVAL,
+            f"out is {len(ob)} bytes, the signal is exactly {nbytes}",
+        )
+    _check(lib.accudisc_write_offset_signal(ffi.cast("int16_t *", ob),
+                                            lib.ACCUDISC_WOFF_SAMPLES))
+    return out
+
+
+def write_offset_locate(pcm, read_offset: int) -> WriteOffset | None:
+    """Find both pulses in audio read back off the burnt disc.
+
+    ``pcm`` is the read-back: s16 host-order stereo, exactly ``WOFF_SAMPLES``
+    pairs. Needs no device — this is arithmetic on a buffer you already hold.
+
+    **``read_offset`` is a required INPUT, not something this finds.** A round
+    trip measures the COMBINED offset ``W + R`` — one equation, two unknowns —
+    so the READING drive's offset has to come from outside, and passing a wrong
+    one biases the answer by exactly its error. Get it from :func:`offset_for`
+    or :attr:`Device.read_offset`.
+
+    Returns ``None`` when a pulse could not be located at all — a bad read-back
+    or the wrong audio, not a measurement. A disc whose two pulses DISAGREE
+    comes back as a :class:`WriteOffset` with ``write_offset is None`` and
+    ``inconsistent`` set, for the reason given there: that is a result about the
+    disc, and dropping it would throw away the evidence.
+
+    ::
+
+        sig = accudisc.write_offset_signal()
+        # ... burn sig, read it back into `back` ...
+        w = accudisc.write_offset_locate(back, read_offset=30)
+        if w and w.usable:
+            store(w.write_offset)
+    """
+    pb = ffi.from_buffer(pcm)
+    want = lib.ACCUDISC_WOFF_SAMPLES * 4
+    if len(pb) != want:
+        raise InvalidArgument(
+            lib.ACCUDISC_ERR_INVAL,
+            f"pcm is {len(pb)} bytes, the read-back must be exactly {want} "
+            f"({lib.ACCUDISC_WOFF_SAMPLES} stereo pairs)",
+        )
+
+    info = ffi.new("accudisc_write_offset_info*")
+    info.size = ffi.sizeof("accudisc_write_offset_info")
+    rc = lib.accudisc_write_offset_locate(ffi.cast("const int16_t *", pb),
+                                          lib.ACCUDISC_WOFF_SAMPLES,
+                                          read_offset, info)
+    if rc == lib.ACCUDISC_ERR_NOTFOUND:
+        return None
+    if rc != lib.ACCUDISC_ERR_AMBIGUOUS:
+        _check(rc)
+
+    none_ = lib.ACCUDISC_OFFSET_NONE
+    inconsistent = bool(info.flags & lib.ACCUDISC_WOFF_F_INCONSISTENT)
+    return WriteOffset(
+        write_offset=None if info.write_offset == none_ else info.write_offset,
+        offset_a=info.offset_a,
+        offset_b=info.offset_b,
+        found_a=None if info.found_a == none_ else info.found_a,
+        found_b=None if info.found_b == none_ else info.found_b,
+        inconsistent=inconsistent,
     )
 
 
