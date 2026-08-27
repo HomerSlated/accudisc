@@ -23,6 +23,45 @@
 
 #define N ACCUDISC_WOFF_SAMPLES
 
+/* THE GEOMETRY IS A WIRE FORMAT, PINNED BY LITERAL — and it was pinned by
+ * NOTHING here until 2026-08-27.
+ *
+ * Every other reference to these constants in this file is SYMBOLIC, so it
+ * moves with them: changing ACCUDISC_WOFF_PULSE_B from 2646000 to 2000000 and
+ * rebuilding passed 46/46, measured. That change would make every
+ * AccuDisc-burnt disc unmeasurable by cdda2img and every cdda2img-burnt disc
+ * unmeasurable by us — a silent break of the one thing both projects agreed on
+ * independently. A test that USES a constant cannot pin that constant.
+ *
+ * The header calls this a contract. This is what makes it one. It is a
+ * compile-time assert rather than a runtime check because a wire-format change
+ * should not get as far as producing a binary.
+ *
+ * cdda2img pins the same four values from their side, against our published
+ * numbers (their tests/test_write_offset.py). Two independent pins on one
+ * agreement is the right shape — but until this block existed, THEIR suite was
+ * the only thing guarding OUR wire format, which is not a arrangement either
+ * project should rely on.
+ *
+ * Changing any of these deliberately is a breaking change for both projects and
+ * wants a message before a commit, not after. */
+_Static_assert(ACCUDISC_WOFF_SAMPLES   == 3307500u, "wire format: 75 s at 44100");
+_Static_assert(ACCUDISC_WOFF_PULSE_A   ==   44100u, "wire format: pulse A at 1 s");
+_Static_assert(ACCUDISC_WOFF_PULSE_B   == 2646000u, "wire format: pulse B at 60 s");
+_Static_assert(ACCUDISC_WOFF_PULSE_LEN ==     588u, "wire format: one CD frame");
+/* And the relations that make them a coherent geometry rather than four
+ * numbers: both pulses inside the signal, B far enough past A that the +/-8820
+ * search windows cannot overlap, and both inside AccurateRip's 2940-sample
+ * exclusion boundary measured from the track edges. */
+_Static_assert(ACCUDISC_WOFF_PULSE_A > 2940u,
+               "pulse A must clear AccurateRip's exclusion boundary");
+_Static_assert(ACCUDISC_WOFF_PULSE_B + ACCUDISC_WOFF_PULSE_LEN
+               < ACCUDISC_WOFF_SAMPLES - 2940u,
+               "pulse B must clear the trailing exclusion boundary");
+_Static_assert(ACCUDISC_WOFF_PULSE_B - ACCUDISC_WOFF_PULSE_A
+               > 2u * ACCUDISC_WOFF_SEARCH,
+               "the two search windows must not overlap");
+
 /* raw[i] = signal[i - shift]: the whole disc laid down `shift` samples late. */
 static void shift_into(int16_t *dst, const int16_t *src, int32_t shift)
 {

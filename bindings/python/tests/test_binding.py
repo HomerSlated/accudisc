@@ -1616,6 +1616,29 @@ def _shift(buf: bytes, pairs: int) -> bytes:
     return bytes(b)
 
 
+def test_the_signal_geometry_is_a_wire_format():
+    """Pinned by LITERAL, because every other reference moves with the symbol.
+
+    Measured 2026-08-27: changing ACCUDISC_WOFF_PULSE_B in the header and
+    rebuilding passed the whole C and Python suite, because every assertion
+    used the constant rather than pinning it. That change would make every
+    AccuDisc-burnt disc unmeasurable by cdda2img and vice versa.
+
+    cdda2img pins the same four numbers from their side against our published
+    values. Until this existed, their suite was the only guard on our wire
+    format.
+    """
+    assert ad.WOFF_SAMPLES == 3_307_500      # 75 s at 44100
+    assert ad.WOFF_PULSE_A == 44_100         # 1 s
+    assert ad.WOFF_PULSE_B == 2_646_000      # 60 s
+    assert ad.WOFF_PULSE_LEN == 588          # one CD frame
+    # Both pulses clear AccurateRip's 2940-sample exclusion boundary, so a disc
+    # made this way still verifies — which is why the positions are what they
+    # are rather than round numbers.
+    assert ad.WOFF_PULSE_A > 2940
+    assert ad.WOFF_PULSE_B + ad.WOFF_PULSE_LEN < ad.WOFF_SAMPLES - 2940
+
+
 def test_write_offset_signal_is_deterministic_and_exact():
     a = ad.write_offset_signal()
     b = ad.write_offset_signal()
