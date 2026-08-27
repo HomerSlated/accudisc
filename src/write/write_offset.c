@@ -35,7 +35,24 @@
  * that another tool generates identical bytes: the locator is threshold-based,
  * not correlation-based, so any sufficiently loud burst at the documented
  * positions measures the same — which is what makes a cdda2img-burnt disc
- * readable here and vice versa. */
+ * readable here and vice versa.
+ *
+ * THAT LAST SENTENCE IS NOW MEASURED RATHER THAN INTENDED, 2026-08-27. cdda2img
+ * ran this locator against a real PX-716A read-back of a disc burnt from THEIR
+ * generator — full-scale uniform noise, a different distribution from the
+ * half-scale bursts above, with no forced leading edge — and it located both
+ * pulses and returned -30, agreeing with their own tool on the offset AND on
+ * the absolute found positions (44070 / 2645970). A correlation-based locator
+ * would have returned NOTFOUND on that file.
+ *
+ * It also happens to be the locator's first contact with real drive output at
+ * all; everything in our own suite is a shifted array, which tests the
+ * arithmetic and never the jitter.
+ *
+ * What made the cross-check possible is that both projects independently chose
+ * the SAME four numbers — 75 s, 1 s, 60 s, one frame. Interoperability rests on
+ * that geometry, not on the noise, which is why the constants are in the public
+ * header as a contract and the seed is not. */
 static uint32_t woff_rand(uint32_t *st)
 {
     uint32_t x = *st;

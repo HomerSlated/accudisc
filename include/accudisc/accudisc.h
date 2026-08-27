@@ -27,7 +27,14 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 24 /* 0.24.0: the write-offset MEASUREMENT
+#define ACCUDISC_VERSION_MINOR 25 /* 0.25.0: the write-offset locator met real
+                                  * drive output for the first time and its
+                                  * threshold-not-correlation property became a
+                                  * documented CONTRACT, pinned by a test that
+                                  * locates a FOREIGN waveform. No behaviour
+                                  * change — the property was always there,
+                                  * nothing protected it.
+                                  * 0.24.0: the write-offset MEASUREMENT
                                   * reaches Python. No library change — 0.20.0
                                   * shipped _signal/_locate and the binding
                                   * never exposed them, so two of the three
@@ -868,6 +875,15 @@ ACCUDISC_API int accudisc_write_offset_signal(int16_t *pcm, uint32_t samples);
  * offset. `pcm` is the read-back, `samples` stereo pairs; `read_offset` is the
  * READING drive's offset in samples (see above — it is required, and passing a
  * wrong one biases the answer by exactly its error).
+ *
+ * THE LOCATOR IS THRESHOLD-BASED, NOT CORRELATION-BASED, and that is a
+ * CONTRACT rather than an implementation note: any sufficiently loud burst at
+ * the documented positions measures the same, whoever generated it. Measured
+ * 2026-08-27 — cdda2img ran this against a real PX-716A read-back of a disc
+ * burnt from THEIR generator (a different noise distribution, no forced leading
+ * edge) and it located both pulses, agreeing with their own tool on the offset
+ * and on both absolute positions. The GEOMETRY above is what interoperability
+ * rests on; the noise is not part of the contract and the seed never was.
  *
  * ACCUDISC_OK when both pulses were found AND agree. ACCUDISC_ERR_NOTFOUND when
  * either could not be located — found_a/found_b say which. ACCUDISC_ERR_AMBIGUOUS

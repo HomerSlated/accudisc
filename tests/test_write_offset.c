@@ -158,6 +158,64 @@ int main(void)
     info.size = sizeof(info) + 1;
     assert(accudisc_write_offset_locate(sig, N, 0, &info) == ACCUDISC_ERR_ABI);
 
+    /* --- THRESHOLD, NOT CORRELATION: a FOREIGN waveform must locate ------
+     *
+     * The interoperability promise in write_offset.c's header — "a
+     * cdda2img-burnt disc is readable here and vice versa" — rests entirely on
+     * the locator keying off LOUDNESS at the documented positions rather than
+     * off the bytes our own generator emits. Nothing in the rest of this file
+     * can tell the two apart: every buffer above is built from
+     * accudisc_write_offset_signal, so a correlation-based locator matched to
+     * that exact signal would pass all of them.
+     *
+     * Confirmed on real hardware 2026-08-27 (cdda2img ran this locator against
+     * a PX-716A read-back of a disc burnt from THEIR generator and got -30,
+     * agreeing with their tool on the offset and on both absolute positions).
+     * Pinned here so the property cannot be lost to a future "optimisation"
+     * that correlates against a known burst — which would look faster, pass
+     * every other test, and silently stop reading other tools' discs.
+     *
+     * The foreign burst below is deliberately NOT ours: full scale rather than
+     * half, a different generator, and NO forced full-scale leading edge.
+     */
+    {
+        int16_t *foreign = malloc((size_t)N * 2 * sizeof(int16_t));
+        const uint32_t pos[2] = { ACCUDISC_WOFF_PULSE_A, ACCUDISC_WOFF_PULSE_B };
+        accudisc_write_offset_info fi = ACCUDISC_WRITE_OFFSET_INFO_INIT;
+        uint32_t st = 12345u, k, i;
+        int differs = 0;
+
+        assert(foreign);
+        memset(foreign, 0, (size_t)N * 2 * sizeof(int16_t));
+        for (k = 0; k < 2; k++)
+            for (i = 0; i < ACCUDISC_WOFF_PULSE_LEN; i++) {
+                /* Any loud noise will do — that is the whole claim. */
+                st = st * 1103515245u + 12345u;
+                foreign[(pos[k] + i) * 2]     = (int16_t)(st >> 16);
+                st = st * 1103515245u + 12345u;
+                foreign[(pos[k] + i) * 2 + 1] = (int16_t)(st >> 16);
+            }
+
+        /* It really is a different signal, or the test below proves nothing. */
+        for (i = 0; i < ACCUDISC_WOFF_PULSE_LEN * 2; i++)
+            if (foreign[pos[0] * 2 + i] != sig[pos[0] * 2 + i]) { differs = 1; break; }
+        assert(differs && "the foreign burst must not be our own waveform");
+
+        assert(accudisc_write_offset_locate(foreign, N, 0, &fi) == ACCUDISC_OK);
+        assert(fi.write_offset == 0);
+        assert(fi.found_a == (int32_t)ACCUDISC_WOFF_PULSE_A);
+        assert(fi.found_b == (int32_t)ACCUDISC_WOFF_PULSE_B);
+
+        /* And it measures a real offset on that foreign signal, not merely
+         * "finds something at zero". */
+        shift_into(disc, foreign, -30);
+        fi = (accudisc_write_offset_info)ACCUDISC_WRITE_OFFSET_INFO_INIT;
+        assert(accudisc_write_offset_locate(disc, N, 0, &fi) == ACCUDISC_OK);
+        assert(fi.write_offset == -30);
+
+        free(foreign);
+    }
+
     free(sig);
     free(disc);
     printf("test_write_offset: ok\n");
