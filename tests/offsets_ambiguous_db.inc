@@ -5,39 +5,47 @@
  * and the test would pass against the wrong data.
  *
  * Columns match src/drive/offsets_db.inc exactly:
- *   vendor, product, read_offset, ar_submissions, ar_agree_pct, sources, flags
+ *   vendor, product, read_offset, ar_submissions, ar_agree_pct, sources, flags,
+ *   ar_acc_ok, ar_acc_bad
  *
  * EVERY ROW IS BUILT TO DISCRIMINATE. An assertion that a field is 0 proves
  * nothing if the field was 0 before the code ran, and an OR across rows is
  * indistinguishable from "took the first" unless the rows carry different bits.
  * So: the first matching row of each ambiguous key carries NONZERO AccurateRip
  * figures, and no two rows of a key share a sources/flags value.
+ *
+ * THE ACCURACY COUNTS FOLLOW THE SAME RULE, and it bites harder there because
+ * 0/0 is a MEANINGFUL value in that pair — "not measured" — rather than merely
+ * an uninteresting one. "Cleared on ambiguity" and "never filled in" are the
+ * same observation unless the row that would have supplied the figure carries
+ * one, so SOLO and the first row of every ambiguous key carry nonzero counts.
+ * GENERICPROD keeps 0/0 as the genuine not-measured control.
  */
 
     /* The single-value control: the OK path must still work here, or a failure
      * below cannot be attributed to the multi-value branch. */
-    { "FIXTURE", "SOLO", +100, 55, 88, 3, 0 },
+    { "FIXTURE", "SOLO", +100, 55, 88, 3, 0, 9000, 100 },
 
     /* Two values, one key. sources 1 vs 2 so the OR must produce 3; flags 1 vs
      * 4 likewise; 1234/99 on the FIRST row so "cleared to 0" can fail. */
-    { "FIXTURE", "PAIR", +10, 1234, 99, 1, 1 },
-    { "FIXTURE", "PAIR", +20,    7, 50, 2, 4 },
+    { "FIXTURE", "PAIR", +10, 1234, 99, 1, 1, 8000, 200 },
+    { "FIXTURE", "PAIR", +20,    7, 50, 2, 4, 7000, 300 },
 
     /* The same key spelled two ways. Normalisation (case fold, whitespace
      * collapse) has to happen on BOTH the query and the table for these to
      * collide, and the collision is what makes the key ambiguous at all. */
-    { "fixture", "SPACED  KEY", +30, 3, 100, 1, 0 },
-    { "FIXTURE", "SPACED KEY",  +40, 4, 100, 2, 0 },
+    { "fixture", "SPACED  KEY", +30, 3, 100, 1, 0, 6000, 400 },
+    { "FIXTURE", "SPACED KEY",  +40, 4, 100, 2, 0, 5000, 500 },
 
     /* FIVE values against ACCUDISC_OFFSET_MAX_VALUES == 4. The fifth row is the
      * one that matters: it must NOT reach values[], and its sources/flags bits
      * must still reach the caller, because the loop keeps accumulating after the
      * value array is full. Bits 2 and 4 appear ONLY on that row. */
-    { "FIXTURE", "FIVE", +1, 11, 100, 1, 0 },
-    { "FIXTURE", "FIVE", +2, 12, 100, 1, 0 },
-    { "FIXTURE", "FIVE", +3, 13, 100, 1, 0 },
-    { "FIXTURE", "FIVE", +4, 14, 100, 1, 0 },
-    { "FIXTURE", "FIVE", +5, 15, 100, 2, 4 },
+    { "FIXTURE", "FIVE", +1, 11, 100, 1, 0, 4001, 1 },
+    { "FIXTURE", "FIVE", +2, 12, 100, 1, 0, 4002, 2 },
+    { "FIXTURE", "FIVE", +3, 13, 100, 1, 0, 4003, 3 },
+    { "FIXTURE", "FIVE", +4, 14, 100, 1, 0, 4004, 4 },
+    { "FIXTURE", "FIVE", +5, 15, 100, 2, 4, 4005, 5 },
 
     /* --- product-only keying -------------------------------------------
      * ONE PRODUCT, ONE OFFSET, THREE VENDOR SPELLINGS. This is the shape the
@@ -47,24 +55,24 @@
      * differ deliberately (3, 9, 1) so that "which row's figures?" has an
      * observable answer, and the sources bits differ so the per-value OR is
      * distinguishable from taking one row's. */
-    { "ALPHA", "TWIN", +70, 3, 100, 1, 0 },
-    { "",      "TWIN", +70, 9,  90, 2, 0 },
-    { "BETA",  "TWIN", +70, 1, 100, 1, 0 },
+    { "ALPHA", "TWIN", +70, 3, 100, 1, 0, 3300, 33 },
+    { "",      "TWIN", +70, 9,  90, 2, 0, 9900, 99 },
+    { "BETA",  "TWIN", +70, 1, 100, 1, 0, 1100, 11 },
 
     /* ONE PRODUCT, TWO OFFSETS, AND THE VENDOR DECIDES. Keith's rule in both
      * directions: a vendor that matches narrows to one answer, a vendor that
      * matches nothing narrows nothing and the caller is told there are two. */
-    { "GAMMA", "SPLIT", +80, 5, 100, 1, 0 },
-    { "DELTA", "SPLIT", +90, 6, 100, 2, 0 },
+    { "GAMMA", "SPLIT", +80, 5, 100, 1, 0, 5500, 55 },
+    { "DELTA", "SPLIT", +90, 6, 100, 2, 0, 6600, 66 },
 
     /* AN EMPTY PRODUCT is not a weak identifier, it is the absence of one.
      * Keyed on the product alone this row would answer for every drive that
      * reports no product string at all, so the lookup refuses it — including
      * for the exact vendor that submitted it. */
-    { "EMPTYP", "", +123, 2, 100, 1, 0 },
+    { "EMPTYP", "", +123, 2, 100, 1, 0, 2200, 22 },
 
     /* A GENERIC PRODUCT — flags carry ACCUDISC_OFFSET_F_GENERIC (8). Weaker
      * than the empty-product rule on purpose: this row is a real measurement and
      * still answers for the vendor it was submitted under. What it may not do is
      * answer for a vendor it has never been seen with. */
-    { "KAPPA", "GENERICPROD", +55, 4, 100, 1, 8 },
+    { "KAPPA", "GENERICPROD", +55, 4, 100, 1, 8, 0, 0 },

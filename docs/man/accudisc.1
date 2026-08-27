@@ -135,6 +135,36 @@ and one
 line per candidate with its sources. Nothing here picks between them: an offset
 applied wrongly is silent, so the choice is the caller's and must be passed back
 through the caller's own configuration.
+.PP
+Since 0.23.0 the report also carries
+.IR ar_acc_ok ,
+.I ar_acc_bad
+and
+.IR ar_accuracy_pct ,
+from AccurateRip's periodic drive\-accuracy report (compiled and published by
+Spoon of Illustrate; see
+.BR docs/reference/ATTRIBUTION.md ).
+These count the tracks this drive submitted that did, and did not, match
+AccurateRip's reference \(em a
+.B different
+quantity from
+.IR ar_agree_pct ,
+which is how many submitters agreed on the drive's
+.BR offset .
+.PP
+.B Both counts zero means not measured, never a score of zero.
+.I ar_accuracy_pct
+is then omitted entirely, and its absence is the signal. The report covers only
+drives with over 4000 submissions from 40 or more users, so most rows of the
+table carry nothing \(em for being
+.BR uncommon ,
+which says nothing about how the drive reads. Treating absence as zero would
+rank every rare drive below the worst drive ever measured.
+.PP
+It is a prior about a population of owners, not a verdict on the disc in the
+tray: the figure rests on the report's own premise that every drive's owners
+have equally damaged discs on average. Do not gate a rip on it. AccurateRip and
+CTDB, in the calling application, remain the absolute checks.
 .SS disc
 Pre-flight guard: classify the loaded disc as rippable audio, a blank to burn,
 or neither. One token line on stdout:
@@ -1222,13 +1252,23 @@ this is the summary it requires here.
 .TP
 .B Data
 The drive read-offset table holds user-submitted factual offset measurements
-from two independent collections: the
+from the
 .B REDUMP Disc Preservation Project
 (<https://redump.org>), via the table shipped with redumper, and the
 .B AccurateRip
 drive offset list (<http://www.accuraterip.com/driveoffsets.htm>), which also
-supplies the per-drive submission count and agreement percentage. Both are
-merged on the development cycle; the library itself never uses a network. The ATIP
+supplies the per-drive submission count and agreement percentage. These are
+.B not
+two independent collections \(em REDUMP's is AccurateRip's own list imported
+once in 2022 and frozen, established by set comparison in 2026; treat both
+sources holding a row as "unrevised since 2022", never as corroboration.
+The per-drive accuracy counts come from a third derivation of the same
+database, AccurateRip's periodic
+.B CD Drive Accuracy
+report compiled and published by
+.B Spoon
+of Illustrate. All are merged on the development cycle; the library itself
+never uses a network. The ATIP
 media catalogue behind
 .B media
 compiles public ATIP manufacturer codes, informed by the PlexTools Professional

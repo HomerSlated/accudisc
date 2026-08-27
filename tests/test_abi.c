@@ -78,6 +78,32 @@ _Static_assert(offsetof(accudisc_write_opts, size) == 0,
 _Static_assert(offsetof(accudisc_write_opts, cdtext_path) == 16,
                "write_opts: the guard was supposed to be free; it moved a field");
 
+/* accudisc_offset_info, pinned from 0.23.0 — and it had NO pin before that,
+ * which is precisely how the near-miss below stayed invisible.
+ *
+ * 0.23.0 appended ar_acc_ok/ar_acc_bad, 36 -> 44 bytes. The lookup used to
+ * decide whether it could write values[] by asking `out->size >= sizeof(*out)`,
+ * which was right only while value_sources[] was the last field. Appending
+ * after it would have made every 0.22.0 caller — reporting the correct size of
+ * 36 — fail that test and silently stop receiving values[] on an ambiguous
+ * key: no error, no crash, an empty array where four offsets belonged.
+ * offsets.c now gates each field on reaching its OWN end. These pins are what
+ * make the next append notice the same problem. */
+_Static_assert(sizeof(accudisc_offset_info) == 44,
+               "offset_info grew — see above; and re-check the per-field size "
+               "gates in accudisc_offset_for_inquiry, which are what let an "
+               "older caller keep the fields it was compiled to know about");
+_Static_assert(offsetof(accudisc_offset_info, values) == 16,
+               "offset_info: values[] moved, breaking 0.22.0 consumers");
+_Static_assert(offsetof(accudisc_offset_info, value_sources) == 32,
+               "offset_info: value_sources[] moved, breaking 0.22.0 consumers");
+/* 36 is the OLD sizeof. A 0.22.0 caller passes exactly that, so this is the
+ * boundary the values[] gate has to sit at or below, not above. */
+_Static_assert(offsetof(accudisc_offset_info, ar_acc_ok) == 36,
+               "offset_info: the accuracy counts were supposed to APPEND");
+_Static_assert(offsetof(accudisc_offset_info, ar_acc_bad) == 40,
+               "offset_info: the accuracy counts were supposed to APPEND");
+
 #endif
 
 int main(void)

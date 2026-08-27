@@ -853,12 +853,95 @@ def apply_retractions(redump, prov, ar, stats):
     return kept, dropped, rescued
 
 
+def read_accuracy(path: Path) -> tuple[dict, dict, int]:
+    """Pool ``ar_accuracy.json`` onto the build-time fold key.
+
+    Returns ``(by_key, pooled, year)`` where ``by_key`` maps the folded key to
+    ``{"ok", "bad", "users", "names"}`` and ``pooled`` records only the keys that
+    more than one published row landed on.
+
+    POOLING IS WHY THE COUNTS ARE CARRIED RATHER THAN THE PERCENTAGE. The report
+    spells one drive two ways — ``DVDRAM GSA-H60N`` beside ``DVDRAM_GSA-H60N`` —
+    which ``fold()`` already treats as one drive for the offset, on a measured
+    rule (see its docstring). Two percentages cannot be combined without their
+    denominators; two counts add. So the counts are the honest thing to store,
+    the percentage is derived, and the arithmetic happens here rather than in a
+    comment someone typed.
+    """
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    by_key: dict[str, dict] = {}
+    for r in doc["rows"]:
+        key = fold(r["vendor"], r["product"])
+        e = by_key.setdefault(key, {"ok": 0, "bad": 0, "users": 0, "names": []})
+        e["ok"] += r["accurate"]
+        e["bad"] += r["inaccurate"]
+        e["users"] += r["users"]
+        e["names"].append((r["vendor"], r["product"], r["accurate"], r["inaccurate"]))
+    pooled = {k: v for k, v in by_key.items() if len(v["names"]) > 1}
+    return by_key, pooled, int(doc["report_year"])
+
+
+def attach_accuracy(rows: list[Row], by_key: dict) -> list[tuple[str, dict]]:
+    """Write the counts onto EVERY row of a matched fold group.
+
+    Not onto "the row that matched" — there is no such thing here. One folded
+    key can own several emitted rows, because the runtime matches literal
+    INQUIRY spellings and merge() therefore emits one row per spelling. The
+    lookup then answers from whichever of them has the highest ar_submissions
+    (offsets.c), which is NOT the spelling the report happened to print. Attach
+    to one and the drive that asks would frequently be handed zeros while the
+    figure sat on a sibling row.
+
+    Returns the accuracy keys that matched no row at all, for the caller to
+    report; they are a gap in the OFFSET table, not an error in this one.
+    """
+    for r in rows:
+        e = by_key.get(fold(r.vendor, r.product))
+        if e is not None:
+            r.acc_ok, r.acc_bad = e["ok"], e["bad"]
+    seen = {fold(r.vendor, r.product) for r in rows}
+    return sorted(((k, v) for k, v in by_key.items() if k not in seen),
+                  key=lambda kv: kv[0])
+
+
+def assert_accuracy_is_group_complete(rows: list[Row], by_key: dict) -> None:
+    """Every row of a matched group carries the figure, and the SAME figure.
+
+    The defect this exists to catch is silent by construction: a row that missed
+    the attachment holds 0/0, which is a VALID value meaning "not measured". No
+    consumer could tell it from a genuine absence, so nothing downstream would
+    ever fail. Cf. assert_every_name_survives().
+    """
+    groups: dict[str, list[Row]] = {}
+    for r in rows:
+        groups.setdefault(fold(r.vendor, r.product), []).append(r)
+    for key, e in by_key.items():
+        members = groups.get(key)
+        if members is None:
+            continue  # unmatched; reported separately, not an error
+        for r in members:
+            if (r.acc_ok, r.acc_bad) != (e["ok"], e["bad"]):
+                raise SystemExit(
+                    f"accuracy not attached uniformly for {key!r}: "
+                    f"{r.vendor!r}/{r.product!r} holds {r.acc_ok}/{r.acc_bad}, "
+                    f"group is {e['ok']}/{e['bad']}"
+                )
+    # And the converse: no row invented a figure the report does not publish.
+    for r in rows:
+        if (r.acc_ok or r.acc_bad) and fold(r.vendor, r.product) not in by_key:
+            raise SystemExit(
+                f"row {r.vendor!r}/{r.product!r} carries accuracy counts that no "
+                "published row accounts for"
+            )
+
+
 # --------------------------------------------------------------------------
 # Merge
 # --------------------------------------------------------------------------
 
 class Row:
-    __slots__ = ("vendor", "product", "read", "subs", "pct", "sources", "flags")
+    __slots__ = ("vendor", "product", "read", "subs", "pct", "sources", "flags",
+                 "acc_ok", "acc_bad")
 
     def __init__(self, vendor: str, product: str, read: int) -> None:
         self.vendor = norm(vendor)
@@ -868,6 +951,10 @@ class Row:
         self.pct = 0
         self.sources = 0
         self.flags = 0
+        # AccurateRip rip-accuracy counts. Zero/zero means NOT MEASURED, and
+        # that is the whole convention — see attach_accuracy().
+        self.acc_ok = 0
+        self.acc_bad = 0
 
     def sort_key(self) -> tuple:
         return (self.vendor.upper(), self.product.upper(), self.read)
@@ -1095,22 +1182,45 @@ def assert_rescues_are_corroborated(rows: list[Row], rescued: list) -> None:
 
 
 def emit(rows: list[Row], out: Path, stats: dict, dropped: list,
-         rescued: list) -> None:
+         rescued: list, acc_pooled: dict, acc_unmatched: list,
+         acc_year: int) -> None:
     def c_str(s: str) -> str:
         return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
     lines = [
         "/* Drive read-offset table — generated by tools/gen_offsets.py; do not edit.",
         " *",
-        " * Sources, both factual user-submitted measurement data:",
+        " * Sources, all factual user-submitted measurement data:",
         " *   REDUMP Disc Preservation Project (https://redump.org), via redumper",
         " *   AccurateRip drive offset list (http://www.accuraterip.com/driveoffsets.htm)",
+        f" *   AccurateRip drive accuracy report, {acc_year} (dbpoweramp forum)",
         " *",
         " * Columns: vendor, product, read_offset, ar_submissions, ar_agree_pct,",
-        " * sources bitmask, flags. Offsets are in SAMPLES, where one sample is one",
-        " * stereo frame of 4 bytes (588 per sector) — REDUMP's unit and AccurateRip's.",
+        " * sources bitmask, flags, ar_acc_ok, ar_acc_bad. Offsets are in SAMPLES,",
+        " * where one sample is one stereo frame of 4 bytes (588 per sector) —",
+        " * REDUMP's unit and AccurateRip's.",
         " *",
-        f" * Entries: {len(rows)}",
+        " * ar_acc_ok / ar_acc_bad — RIP ACCURACY, AND WHAT IT MUST NOT BE USED FOR.",
+        " * Counts of tracks this drive submitted to AccurateRip that did, and did",
+        " * not, match the reference. BOTH ZERO MEANS NOT MEASURED — never a score",
+        " * of zero. Most rows are 0/0 and that is the expected state: the report",
+        " * only publishes drives with over 4000 submissions and 40 users, so a",
+        " * drive is absent for being UNCOMMON, which says nothing about how it",
+        " * reads. Writing an absence as 0% would rank every rare drive below the",
+        " * worst measured one, which is the opposite of what the data supports.",
+        " *",
+        " * This is a PRIOR about a population of owners, not a fact about the disc",
+        " * in the tray: the report's own premise is that every drive's owners have",
+        " * equally damaged discs on average. It must never gate a rip, and nothing",
+        " * here enforces that — it is documentation, not a guard. AccurateRip and",
+        " * CTDB remain the absolute gates (docs/reference/RECOVERY.md).",
+        " *",
+        " * NOTE THE GRANULARITY DIFFERS from the two columns before it.",
+        " * ar_submissions/ar_agree_pct describe the SINGLE row that answered;",
+        " * these describe the whole folded group of spellings, so they repeat",
+        " * across sibling rows by design. They are not commensurate.",
+        " *",
+        f" * Entries: {len(rows)}, of which {sum(1 for r in rows if r.acc_ok or r.acc_bad)} carry accuracy counts",
         " */",
         "",
     ]
@@ -1221,10 +1331,69 @@ def emit(rows: list[Row], out: Path, stats: dict, dropped: list,
         lines.extend(block + [""])
         stats["products_ambiguous"] = len(contested)
 
+    # POOLED SPELLINGS — where the report published one drive under two names
+    # and fold() joined them. Named because the pooled percentage is not either
+    # of the printed ones, so a reader checking our table against the forum post
+    # would otherwise find a figure that appears nowhere in it.
+    if acc_pooled:
+        blk = [
+            "/* ACCURACY POOLED ACROSS SPELLINGS — one drive, published twice.",
+            " *",
+            " * fold() treats a separator as a spelling, not a different drive",
+            " * (measured; see its docstring). The counts therefore ADD, and the",
+            " * combined rate below is what the table carries — it will not match",
+            " * either line in the source report, which is the point of saying so.",
+            " */",
+        ]
+        for key in sorted(acc_pooled):
+            e = acc_pooled[key]
+            for v, prod, ok, bad in sorted(e["names"]):
+                blk.append(
+                    f"/* POOLED     {v} {prod}: {ok} ok / {bad} bad "
+                    f"= {100.0 * ok / (ok + bad):.4f}% */"
+                )
+            blk.append(
+                f"/* POOLED  -> {key}: {e['ok']} ok / {e['bad']} bad "
+                f"= {100.0 * e['ok'] / (e['ok'] + e['bad']):.4f}% */"
+            )
+        lines.extend(blk + [""])
+        stats["accuracy_pooled_keys"] = len(acc_pooled)
+
+    # MEASURED BUT UNPLACED — AccurateRip publishes an accuracy figure for a
+    # drive whose read offset it does not list. That is a hole in the OFFSET
+    # data, visible only from this side, so this is the one place it can be
+    # said. NOT filled in: see the block text for why the obvious inference
+    # was measured and rejected.
+    if acc_unmatched:
+        blk = [
+            "/* MEASURED BUT UNPLACED — AccurateRip's accuracy report covers these",
+            " * drives; its offset list does not, so they have no row above and the",
+            " * figure has nowhere to attach. Recorded rather than dropped: a drive",
+            " * with thousands of submissions and no offset is a gap worth seeing.",
+            " *",
+            " * NO OFFSET IS INFERRED FOR THEM, and the tempting inference was",
+            " * measured before being refused. Leave-one-out over every family in",
+            " * this table with at least five lettered members: where the other",
+            " * four or more agree on an offset, the held-out sibling agrees 32",
+            " * times out of 36 and DIFFERS 4 times — and it differs by hundreds of",
+            " * samples, not by rounding. TSSTCORP CDDVDW TS-H663 is the case in",
+            " * point: B, D and L are +6 and C is +697.",
+            " */",
+        ]
+        for key, e in acc_unmatched:
+            v, prod, ok, bad = sorted(e["names"])[0]
+            blk.append(
+                f"/* UNPLACED   {v} {prod}: {e['users']} users, {ok} ok / {bad} bad "
+                f"= {100.0 * ok / (ok + bad):.4f}% -> no offset published */"
+            )
+        lines.extend(blk + [""])
+        stats["accuracy_unplaced"] = len(acc_unmatched)
+
     for r in rows:
         lines.append(
             f"    {{ {c_str(r.vendor)}, {c_str(r.product)}, {r.read:+d}, "
-            f"{r.subs}, {r.pct}, {r.sources}, {r.flags} }},"
+            f"{r.subs}, {r.pct}, {r.sources}, {r.flags}, "
+            f"{r.acc_ok}, {r.acc_bad} }},"
         )
     out.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -1264,6 +1433,16 @@ def main() -> int:
              "run and the table would look identical, which is the silent kind "
              "of wrong this generator exists to avoid.",
     )
+    ap.add_argument(
+        "--ar-accuracy",
+        type=Path,
+        required=True,
+        help="AccurateRip's periodic drive-accuracy report, from "
+             "tools/fetch_ar_accuracy.py. REQUIRED for the same reason "
+             "--redump-provenance is: optional inputs get forgotten, and a "
+             "regenerated table that had quietly lost this column would still "
+             "compile, still pass, and still answer every lookup.",
+    )
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
 
@@ -1278,8 +1457,15 @@ def main() -> int:
     rows, stats = merge(kept, ar)
     assert_every_name_survives(rows, kept, args.ar)
     assert_rescues_are_corroborated(rows, rescued)
+
+    acc_by_key, acc_pooled, acc_year = read_accuracy(args.ar_accuracy)
+    acc_unmatched = attach_accuracy(rows, acc_by_key)
+    assert_accuracy_is_group_complete(rows, acc_by_key)
+    stats["accuracy_rows_matched"] = len(acc_by_key) - len(acc_unmatched)
+
     stats.update(retractions)
-    emit(rows, args.out, stats, dropped, rescued)
+    emit(rows, args.out, stats, dropped, rescued,
+         acc_pooled, acc_unmatched, acc_year)
     return 0
 
 

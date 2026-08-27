@@ -242,6 +242,8 @@ typedef struct accudisc_offset_info {
     uint8_t  n_values;
     int32_t  values[4];
     uint8_t  value_sources[4];
+    uint32_t ar_acc_ok;
+    uint32_t ar_acc_bad;
     ...;
 } accudisc_offset_info;
 

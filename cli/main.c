@@ -260,6 +260,17 @@ static int report_offset(int rc, const accudisc_offset_info *info_in)
     print_sources(info.sources);
     printf("\nar_submissions %u\nar_agree_pct %u\n",
            info.ar_submissions, info.ar_agree_pct);
+    /* RIP ACCURACY. The COUNTS are always printed, because 0/0 is a real
+     * answer — "AccurateRip's periodic report does not cover this drive",
+     * which is the case for most of the table and says nothing about how it
+     * reads. The derived PERCENTAGE is printed only when there is a
+     * denominator: emitting `ar_accuracy_pct 0` for an unmeasured drive would
+     * hand every parser a score of nought for the crime of being uncommon.
+     * Absence of the line is the signal, and it is a signal a script can see. */
+    printf("ar_acc_ok %u\nar_acc_bad %u\n", info.ar_acc_ok, info.ar_acc_bad);
+    if (info.ar_acc_ok + info.ar_acc_bad)
+        printf("ar_accuracy_pct %.4f\n",
+               100.0 * info.ar_acc_ok / (info.ar_acc_ok + info.ar_acc_bad));
     printf("adjudicated %d\n",
            (info.flags & ACCUDISC_OFFSET_F_ADJUDICATED) ? 1 : 0);
     /* Printed only when set, so an OK answer for an ordinary drive is

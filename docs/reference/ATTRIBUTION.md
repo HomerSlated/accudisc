@@ -23,6 +23,27 @@ anything listed here must also be credited in the man page when it exists.
     `tools/fetch_ar_offsets.py` on the development cycle — a developer tool,
     excluded from the distribution; the library itself never uses a network.
 
+- **Drive rip-accuracy figures** (`ar_acc_ok`/`ar_acc_bad` in the same table):
+  AccurateRip's periodic **CD Drive Accuracy** report, compiled and published by
+  **Spoon** (Illustrate / dbPoweramp) on the dbPoweramp forum — the 2026 edition
+  at https://forum.dbpoweramp.com/forum/dbpoweramp/cd-ripper/337997-cd-drive-accuracy-2026,
+  a series that has run since 2006. Fetched by `tools/fetch_ar_accuracy.py`,
+  again a developer tool excluded from the distribution.
+
+  A **third derivation of the same collection**, not a third collection: it is
+  AccurateRip's own submission database read the other way round — instead of
+  asking whether a disc is accurate, asking which drives disagree with the
+  reference most often. Credit is owed for the derivation and for publishing it,
+  and the method is Spoon's own and stated in the post: it assumes the owners of
+  any given drive have, on average, equally damaged discs. Counts, not
+  percentages, are what we store, so the confidence travels with the figure.
+
+  It covers 634 drives against our table's 5881 rows. **Absence is recorded as
+  absence** (both counts zero), never as a score of zero — the report's own
+  inclusion threshold is 4000 submissions and 40 users, so a missing drive is an
+  uncommon one. The one drive it measures that our offset table cannot place is
+  named in a `MEASURED BUT UNPLACED` block in `offsets_db.inc`.
+
   A third KIND of input, though not a third measurement: **rebadge
   identifications**. A rebadged drive reports the badge over INQUIRY, so a row
   withdrawn under that name strands its owner while the identical measurement

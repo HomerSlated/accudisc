@@ -27,7 +27,14 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 22 /* 0.22.0: THE ACCUBUFFER. A bounded chunk
+#define ACCUDISC_VERSION_MINOR 23 /* 0.23.0: RIP ACCURACY. accudisc_offset_info
+                                  * gained ar_acc_ok/ar_acc_bad, appended, from
+                                  * AccurateRip's periodic drive-accuracy
+                                  * report. BOTH ZERO MEANS NOT MEASURED — it
+                                  * is never a score of nought, and 85% of rows
+                                  * carry nothing because the report only
+                                  * publishes common drives.
+                                  * 0.22.0: THE ACCUBUFFER. A bounded chunk
                                   * ring between the engine and the caller's
                                   * sink, so time spent in the sink is not time
                                   * the drive is not being read.
@@ -666,6 +673,40 @@ typedef struct accudisc_offset_info {
     uint8_t  n_values;       /* values[] filled; 1 unless ERR_AMBIGUOUS */
     int32_t  values[ACCUDISC_OFFSET_MAX_VALUES];       /* every value found */
     uint8_t  value_sources[ACCUDISC_OFFSET_MAX_VALUES]; /* who holds each one */
+
+    /* RIP ACCURACY — appended in 0.23.0, so every field above keeps its offset.
+     *
+     * Tracks this drive submitted to AccurateRip that matched the reference,
+     * and that did not. BOTH ZERO MEANS NOT MEASURED. That is the same
+     * convention ar_submissions already uses, and it is deliberate: there is no
+     * "0% accurate" here to confuse it with, and a caller must not invent one.
+     *
+     * WHY ABSENCE IS THE COMMON CASE AND MEANS NOTHING BAD. The report only
+     * covers drives with over 4000 submissions from 40+ users, so roughly one
+     * row in seven of our table carries a figure. A drive is missing because it
+     * is UNCOMMON. Scoring absence as zero would rank every rare drive below
+     * the worst measured one — the exact inversion the data cannot support.
+     *
+     * A PRIOR, NOT A GATE, AND NOT ABOUT YOUR DISC. The figure rests on the
+     * report's own premise that every drive's owners have equally damaged discs
+     * on average; it therefore measures a population of owners as much as a
+     * drive. Fine for "this drive has a good history", useless for "this rip is
+     * good". AccurateRip and CTDB, in the calling application, remain the
+     * absolute gates (docs/reference/RECOVERY.md). Nothing in the library
+     * enforces this — it is a documented limit, not a check.
+     *
+     * GRANULARITY DIFFERS FROM ar_submissions/ar_agree_pct. Those describe the
+     * single row that answered. These describe the whole group of INQUIRY
+     * spellings the build-time join treats as one drive, so sibling rows repeat
+     * the same counts. The two pairs are not commensurate; do not combine them.
+     *
+     * Derive a percentage only when the denominator is non-zero:
+     *     if (i.ar_acc_ok + i.ar_acc_bad)
+     *         pct = 100.0 * i.ar_acc_ok / (i.ar_acc_ok + i.ar_acc_bad);
+     * The counts rather than a stored percentage, because the denominator is
+     * the confidence: the published rows run from ~4k submissions to ~81k. */
+    uint32_t ar_acc_ok;      /* accurate submissions, 0 if not measured */
+    uint32_t ar_acc_bad;     /* inaccurate submissions, 0 if not measured */
 } accudisc_offset_info;
 
 /* Look up a drive by INQUIRY strings, WITHOUT a device. The table is drive
@@ -708,7 +749,12 @@ typedef struct accudisc_offset_info {
  * best-evidenced row backing that offset, as a pair. Several AccurateRip
  * entries can back one offset under different vendor spellings; their counts
  * are not summed, because the table gives every spelling of one entry the same
- * pooled figure and adding them would multiply it. */
+ * pooled figure and adding them would multiply it.
+ *
+ * ar_acc_ok/ar_acc_bad are filled on ACCUDISC_OK and CLEARED on
+ * ACCUDISC_ERR_AMBIGUOUS, for the same reason the AccurateRip figures are: an
+ * ambiguous product matched rows from several vendors, which are different
+ * drives, and no single accuracy figure describes them. */
 ACCUDISC_API int accudisc_offset_for_inquiry(const char *vendor,
                                              const char *product,
                                              accudisc_offset_info *out);

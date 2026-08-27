@@ -14,7 +14,14 @@ can settle it:
 import re, sys, collections, pathlib
 
 SRC = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "src/drive/offsets_db.inc")
-ROW = re.compile(r'\{\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*([+-]?\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\}')
+# The seven fields this tool uses, and then ANYTHING — the row is allowed to
+# grow. It ended in `\}` until 0.23.0 appended two accuracy columns, at which
+# point this matched nothing and the tool reported "0 rows, 0 conflicting" and
+# exited 0: a clean bill of health from a parser that had read the file and
+# understood none of it. Hence both halves of this fix — the open tail, and the
+# refusal below.
+ROW = re.compile(r'\{\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*([+-]?\d+)\s*,\s*(\d+)'
+                 r'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*[,}]')
 
 by_product = collections.defaultdict(list)
 n = 0
@@ -25,6 +32,11 @@ for line in SRC.read_text(encoding="utf-8").splitlines():
     n += 1
     vendor, product, off, subs, pct, src, flags = m.groups()
     by_product[product].append((vendor, int(off), int(subs), int(src)))
+
+# A table with no rows is not a table. Nothing downstream can tell "no conflicts"
+# from "read nothing", so say so here rather than printing a reassuring zero.
+if n == 0:
+    sys.exit(f"{SRC}: no rows matched — the row format changed; fix ROW above")
 
 SRCNAME = {1: "R", 2: "A", 3: "RA"}   # REDUMP / AccurateRip / both
 resolvable, unresolvable = [], []

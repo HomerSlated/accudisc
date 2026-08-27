@@ -135,6 +135,13 @@ def test_struct_sizes_match_api_plan():
     assert ffi.sizeof("accudisc_read_stats") == 160  # 136 -> 144 in 0.7.0,
                                                      # 144 -> 160 in 0.22.0
     assert ffi.sizeof("accudisc_chunk") == 32
+    assert ffi.sizeof("accudisc_offset_info") == 44   # 36 -> 44 in 0.23.0
+    # 36 is the size a 0.22.0 consumer still passes, and the library has to keep
+    # filling values[] for it. Pinned here because cffi API mode would happily
+    # follow a header that had moved the array, and the C-side gate is written
+    # against this exact number.
+    assert ffi.offsetof("accudisc_offset_info", "values") == 16
+    assert ffi.offsetof("accudisc_offset_info", "ar_acc_ok") == 36
 
 
 def test_error_codes_are_the_headers():
@@ -1575,3 +1582,32 @@ def _main() -> int:
 
 if __name__ == "__main__":
     sys.exit(_main())
+
+
+def test_accuracy_is_none_when_not_measured():
+    """Absence must arrive as None, never as 0.0.
+
+    This is the whole missing-value decision, asserted. The two drives below
+    share an offset and a source set; what differs is that AccurateRip's
+    periodic report covers one and not the other. If absence were scored as
+    zero, the unmeasured drive would read as "never rips accurately" — worse
+    than the worst drive ever measured — for the crime of being uncommon.
+    """
+    measured = ad.offset_for("YAMAHA", "CRW-F1E")
+    absent = ad.offset_for("YAMAHA", "CRW-F1S")
+
+    assert measured.read_offset == absent.read_offset == 733
+    assert measured.accuracy is not None
+    assert 80.0 < measured.accuracy < 100.0
+    assert measured.ar_acc_ok > 0
+
+    assert absent.accuracy is None
+    assert absent.ar_acc_ok == 0 and absent.ar_acc_bad == 0
+    # Well evidenced as an OFFSET, all the same: the two axes are independent
+    # and a caller must not read one as the other.
+    assert absent.ar_submissions > 0
+
+
+def test_accuracy_matches_the_counts():
+    d = ad.offset_for("PLEXTOR", "DVDR PX-716A")
+    assert d.accuracy == 100.0 * d.ar_acc_ok / (d.ar_acc_ok + d.ar_acc_bad)

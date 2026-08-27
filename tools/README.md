@@ -142,10 +142,23 @@ and `accudisc pregaps`, which supersede them for routine use. Kept because an
 independent second implementation is what caught the C decoder's over-strict
 UNKNOWN rule.
 
+## Fetchers (networked, development-only)
+
+- **`fetch_ar_offsets.py`** — AccurateRip's drive read-offset list
+- **`fetch_ar_accuracy.py`** — AccurateRip's periodic drive-ACCURACY report,
+  from the dbPoweramp forum. A different quantity from the offset list's
+  "percentage agree": that one is how many submitters agreed on the OFFSET,
+  this one is how often the drive's rips matched the reference. Both are
+  per-drive percentages published by AccurateRip, which is exactly why the
+  generated table names them apart.
+
 ## Generators
 
 - **`gen_media_db.py`** — ATIP media catalog -> `src/drive/media_atip_db.inc`
-- **`gen_offsets.py`** — read-offset table
+- **`gen_offsets.py`** — read-offset table. Takes `--ar-accuracy` as well as
+  `--redump`/`--ar`/`--redump-provenance`, all four REQUIRED: an optional input
+  gets forgotten, and a table regenerated without one still compiles, still
+  passes and still answers every lookup.
 
 ## Test targets
 

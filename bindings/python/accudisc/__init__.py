@@ -695,6 +695,30 @@ class DriveOffset:
     #: left where a longer name overflowed the eight-byte INQUIRY vendor field
     #: ("DVDROM 8X" is cut into "DVDROM 8" + "X").
     generic_product: bool = False
+    #: Tracks this drive submitted to AccurateRip that matched the reference,
+    #: and that did not, from AccurateRip's periodic drive-accuracy report.
+    #: BOTH ZERO MEANS NOT MEASURED — read :attr:`accuracy`, which says so with
+    #: ``None`` instead of leaving two zeros to be mistaken for a score.
+    ar_acc_ok: int = 0
+    ar_acc_bad: int = 0
+
+    @property
+    def accuracy(self) -> float | None:
+        """Share of this drive's AccurateRip submissions that matched, or None.
+
+        ``None`` MEANS NOT MEASURED, and Python has that word so this type does
+        not have to overload a number for it. The report covers only drives with
+        over 4000 submissions from 40+ users, so most drives return ``None`` —
+        for being UNCOMMON, which says nothing about how they read. Returning
+        ``0.0`` there would sort every rare drive below the worst measured one.
+
+        A PRIOR ABOUT A POPULATION OF OWNERS, NOT A VERDICT ON YOUR DISC. The
+        figure assumes every drive's owners have equally damaged discs on
+        average. Never gate a rip on it: AccurateRip and CTDB, in the calling
+        application, are the absolute checks.
+        """
+        total = self.ar_acc_ok + self.ar_acc_bad
+        return 100.0 * self.ar_acc_ok / total if total else None
 
     @property
     def conflicting(self) -> bool:
@@ -758,14 +782,18 @@ def offset_for(vendor: str, product: str) -> DriveOffset | None:
     truncated = bool(info.flags & lib.ACCUDISC_OFFSET_F_TRUNCATED)
     generic = bool(info.flags & lib.ACCUDISC_OFFSET_F_GENERIC)
     if rc == lib.ACCUDISC_ERR_AMBIGUOUS:
+        # The accuracy counts stay 0/0 here for the same reason the AccurateRip
+        # figures do: an ambiguous product matched rows from several vendors,
+        # which are several drives, and no one figure describes them. `accuracy`
+        # then reports None — not measured, for this query.
         return DriveOffset(vendor, product, None, names(info.sources),
-                           0, 0, False, values, truncated, generic)
+                           0, 0, False, values, truncated, generic, 0, 0)
     _check(rc, None)
     return DriveOffset(
         vendor, product, info.read_offset, names(info.sources),
         info.ar_submissions, info.ar_agree_pct,
         bool(info.flags & lib.ACCUDISC_OFFSET_F_ADJUDICATED), values, truncated,
-        generic,
+        generic, info.ar_acc_ok, info.ar_acc_bad,
     )
 
 

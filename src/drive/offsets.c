@@ -26,6 +26,7 @@
  */
 
 #include <ctype.h>
+#include <stddef.h>
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
@@ -40,6 +41,12 @@ struct offset_entry {
     uint8_t  ar_agree_pct;
     uint8_t  sources;        /* ACCUDISC_OFFSET_SRC_* */
     uint8_t  flags;          /* ACCUDISC_OFFSET_F_* */
+    /* AccurateRip rip-accuracy counts, both zero when the report does not
+     * cover this drive. uint32 because the largest published figure is 78549,
+     * which a uint16 would silently wrap to 12 in a field whose whole purpose
+     * is to be a denominator. */
+    uint32_t ar_acc_ok;
+    uint32_t ar_acc_bad;
 };
 
 /* The table is a parameter so a test can substitute a small one. The generated
@@ -175,7 +182,8 @@ int accudisc_offset_for_inquiry(const char *vendor, const char *product,
     int32_t vals[ACCUDISC_OFFSET_MAX_VALUES];
     uint8_t vsrc[ACCUDISC_OFFSET_MAX_VALUES];
     unsigned nvals = 0;
-    int matched = 0, vendor_hit = 0, overflow = 0, caller_has_values;
+    int matched = 0, vendor_hit = 0, overflow = 0;
+    int caller_has_values, caller_has_accuracy;
     size_t i, k;
 
     if (!vendor || !product || !out)
@@ -183,11 +191,23 @@ int accudisc_offset_for_inquiry(const char *vendor, const char *product,
     if (out->size == 0 || out->size > sizeof(*out))
         return ACCUDISC_ERR_ABI;
 
-    /* values[] and value_sources[] are the LAST fields, so a caller whose
-     * struct does not reach them must not have them written. Today only one
-     * layout has ever shipped and this is always true; it is here so that the
-     * scan below cannot become the thing that overruns a short struct. */
-    caller_has_values = (out->size >= sizeof(*out));
+    /* WHAT THE CALLER'S STRUCT ACTUALLY REACHES, field by field.
+     *
+     * This deliberately does NOT ask whether out->size equals sizeof(*out).
+     * Until 0.23.0 it did, because values[]/value_sources[] were the last
+     * fields and the two questions had the same answer. Appending ar_acc_*
+     * after them broke that equivalence in the silent direction: a caller
+     * built against 0.22.0 reports the SHORTER size, and a whole-struct test
+     * would have quietly stopped filling values[] for every one of them — the
+     * ABI rule kept, the behaviour regressed, and nothing to notice it.
+     *
+     * Each field is therefore gated on reaching its own end. */
+    caller_has_values =
+        out->size >= offsetof(accudisc_offset_info, value_sources)
+                     + sizeof(out->value_sources);
+    caller_has_accuracy =
+        out->size >= offsetof(accudisc_offset_info, ar_acc_bad)
+                     + sizeof(out->ar_acc_bad);
 
     /* Zero everything the caller's struct covers, then set the sentinels. A
      * caller that ignores the return code must not find a usable-looking number
@@ -295,11 +315,24 @@ int accudisc_offset_for_inquiry(const char *vendor, const char *product,
          * a contested key there is no single such value for them to describe. */
         out->ar_submissions = 0;
         out->ar_agree_pct = 0;
+        /* Same argument, one step further: the accuracy counts describe a
+         * drive, and an ambiguous product matched rows from several vendors —
+         * several drives. Leaving one vendor's figure attached to a value the
+         * caller has not yet chosen would put a real measurement beside the
+         * wrong drive. */
+        if (caller_has_accuracy) {
+            out->ar_acc_ok = 0;
+            out->ar_acc_bad = 0;
+        }
         return ACCUDISC_ERR_AMBIGUOUS;
     }
 
     out->ar_submissions = best->ar_submissions;
     out->ar_agree_pct = best->ar_agree_pct;
+    if (caller_has_accuracy) {
+        out->ar_acc_ok = best->ar_acc_ok;
+        out->ar_acc_bad = best->ar_acc_bad;
+    }
     out->read_offset = vals[0];
     return ACCUDISC_OK;
 }

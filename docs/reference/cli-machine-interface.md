@@ -150,6 +150,34 @@ Three properties of that table are load-bearing:
   `accudisc.h` repeats this beside the fields, because this document's audience
   is shrinking to CLI consumers while the fields' audience is not.
 
+## `offset` accuracy tokens (added 0.23.0)
+
+`accudisc offset` gained three lines, from AccurateRip's periodic drive-accuracy
+report — a different quantity from the `ar_agree_pct` beside them:
+
+| token | meaning |
+|---|---|
+| `ar_acc_ok N` | tracks this drive submitted that matched the reference |
+| `ar_acc_bad N` | tracks that did not |
+| `ar_accuracy_pct F` | `100 * ok / (ok + bad)`, four decimals |
+
+**`ar_accuracy_pct` is printed only when `ar_acc_ok + ar_acc_bad > 0`, and its
+absence is the machine-readable signal for "not measured".** The counts are
+always printed and are `0`/`0` in that case. A parser must not substitute a zero
+percentage: the report covers only drives with over 4000 submissions from 40+
+users, so roughly six rows in seven of the table carry nothing, and they carry
+nothing for being **uncommon**. Scoring absence as `0` ranks every rare drive
+below the worst drive ever measured.
+
+Both counts are cleared, and `ar_accuracy_pct` omitted, on the ambiguous exit
+(3) — an ambiguous product matched rows from several vendors, which are several
+drives, and no single figure describes them.
+
+This is a prior about a population of owners, not a verdict on the disc in the
+tray. It must not gate a rip; AccurateRip and CTDB remain the absolute checks
+(`docs/reference/RECOVERY.md`).
+
+
 ## `features` output (stdout)
 
 Newline-delimited `key value` / `combo <name> ok|failed` lines. Frozen keys:

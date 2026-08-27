@@ -54,6 +54,11 @@ int main(void)
     assert(info.values[0] == 100);
     assert(info.ar_submissions == 55);
     assert(info.ar_agree_pct == 88);
+    /* The accuracy counts reach the caller on the OK path. Nonzero in the
+     * fixture on purpose: 0/0 is this pair's "not measured", so asserting
+     * against zero here could not tell a working copy from no copy at all. */
+    assert(info.ar_acc_ok == 9000);
+    assert(info.ar_acc_bad == 100);
 
     /* --- two values under one key ----------------------------------------- */
     info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
@@ -225,6 +230,12 @@ int main(void)
     assert(accudisc_offset_for_device(&dev, &info) == ACCUDISC_ERR_AMBIGUOUS);
     assert(info.read_offset == ACCUDISC_OFFSET_NONE);
     assert(info.n_values == 2);
+    /* Including the accuracy counts. The device path delegates to the INQUIRY
+     * one today, so this is a statement that it must keep doing so — the two
+     * entry points are separately documented and a future divergence would
+     * leave a real measurement attached to a drive the caller has not yet
+     * identified. */
+    assert(info.ar_acc_ok == 0 && info.ar_acc_bad == 0);
 
     /* The pre-0.10 contract, which is the one most callers are still on. It
      * used to hand back whichever row the table listed first; it must now
@@ -259,5 +270,72 @@ int main(void)
     assert(ACCUDISC_OFFSET_MAX_VALUES == 4);
 
     printf("test_offsets_ambiguous: ok\n");
+
+    /* --- accuracy is CLEARED on an ambiguous key -------------------------
+     * The first PAIR row carries 8000/200, so "cleared" and "never written"
+     * are distinguishable — without that the assertion would pass against a
+     * lookup that had simply forgotten the field. An ambiguous product matched
+     * rows from several vendors, i.e. several drives, and no one accuracy
+     * figure describes them. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("FIXTURE", "PAIR", &info)
+           == ACCUDISC_ERR_AMBIGUOUS);
+    assert(info.ar_acc_ok == 0 && info.ar_acc_bad == 0);
+
+    /* --- "not measured" is a real answer, not a missing one ---------------
+     * GENERICPROD is the only fixture row with 0/0, and it answers OK. So the
+     * caller sees a successful lookup whose accuracy pair is zero, which is
+     * the shape 85% of the shipped table has. A consumer that reads that as a
+     * score of nought is the whole reason the header says so twice. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("KAPPA", "GENERICPROD", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 55);
+    assert(info.ar_submissions == 4);          /* the row IS well evidenced */
+    assert(info.ar_acc_ok == 0 && info.ar_acc_bad == 0);  /* and unmeasured */
+
+    /* --- A 0.22.0 CALLER STILL GETS values[] -----------------------------
+     * The regression this file would otherwise have shipped. Before 0.23.0 the
+     * lookup gated values[] on `size >= sizeof(*out)`; appending the accuracy
+     * counts made that false for every consumer compiled against 0.22.0, which
+     * passes the perfectly correct size of 36. They would have kept receiving
+     * ACCUDISC_ERR_AMBIGUOUS with an empty values[] and no way to tell.
+     *
+     * Simulated by declaring the CURRENT struct and lying about its size, which
+     * is exactly what an old binary does. The tail bytes are poisoned first so
+     * that "did not write past the caller's size" is observable rather than
+     * assumed — zeroed padding would look identical to a correct short write. */
+    {
+        accudisc_offset_info old;
+        const uint32_t v022_size = 36;
+        unsigned char *raw = (unsigned char *)&old;
+        size_t i;
+
+        memset(&old, 0xC5, sizeof old);
+        old.size = v022_size;
+        assert(accudisc_offset_for_inquiry("FIXTURE", "PAIR", &old)
+               == ACCUDISC_ERR_AMBIGUOUS);
+        assert(old.n_values == 2);
+        assert(old.values[0] == 10 && old.values[1] == 20);
+        assert(old.value_sources[0] == 1 && old.value_sources[1] == 2);
+        /* Everything from v022_size on is still poison: the lookup wrote no
+         * field the caller did not declare. */
+        for (i = v022_size; i < sizeof old; i++)
+            assert(raw[i] == 0xC5);
+    }
+
+    /* And the same short caller on the OK path keeps its offset. */
+    {
+        accudisc_offset_info old;
+
+        memset(&old, 0xC5, sizeof old);
+        old.size = 36;
+        assert(accudisc_offset_for_inquiry("FIXTURE", "SOLO", &old)
+               == ACCUDISC_OK);
+        assert(old.read_offset == 100);
+        assert(old.values[0] == 100);
+        assert(old.ar_submissions == 55);
+    }
+
     return 0;
 }

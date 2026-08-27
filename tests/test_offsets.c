@@ -26,6 +26,13 @@ int main(void)
     assert(info.sources == (ACCUDISC_OFFSET_SRC_REDUMP | ACCUDISC_OFFSET_SRC_AR));
     assert(info.ar_submissions > 1000);   /* 2781 at the time of writing */
     assert(info.ar_agree_pct == 100);
+    /* RIP ACCURACY, from AccurateRip's 2026 report: 69302 / 1337 = 98.11%.
+     * Asserted as a range, not a literal, because the report is periodic and a
+     * re-fetch is supposed to move these — a pinned pair would turn a routine
+     * data refresh into a test failure. What must not change is that this drive
+     * has a figure AT ALL and that it is a plausible one. */
+    assert(info.ar_acc_ok > 10000 && info.ar_acc_bad > 0);
+    assert(info.ar_acc_bad < info.ar_acc_ok / 10);   /* i.e. better than ~90% */
     assert(info.n_values == 1);
     assert((info.flags & ACCUDISC_OFFSET_F_CONFLICT) == 0);
 
@@ -510,6 +517,50 @@ int main(void)
     /* The sentinel must not be a value any drive could legitimately have. */
     assert(ACCUDISC_OFFSET_NONE != 0);
     assert(ACCUDISC_OFFSET_NONE < -100000);
+
+
+    /* --- MOST ROWS HAVE NO ACCURACY FIGURE, AND THAT IS NOT A ZERO SCORE ---
+     * The report only covers drives with 4000+ submissions from 40+ users, so
+     * roughly six rows in seven carry 0/0. This asserts the shape a consumer
+     * will actually meet: a perfectly good lookup, a well-evidenced offset, and
+     * an accuracy pair that means "nobody measured it" rather than "it never
+     * rips accurately".
+     *
+     * The pair is chosen so the two readings are separable. Both YAMAHA drives
+     * below share the +733 offset and the same source bits; one is common
+     * enough to be in the report and one is not, so what differs between them
+     * is exactly the thing under test and nothing else. */
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("YAMAHA", "CRW-F1E", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 733);
+    assert(info.ar_acc_ok > 0);                       /* measured */
+
+    info = (accudisc_offset_info)ACCUDISC_OFFSET_INFO_INIT;
+    assert(accudisc_offset_for_inquiry("YAMAHA", "CRW-F1S", &info)
+           == ACCUDISC_OK);
+    assert(info.read_offset == 733);                  /* same answer */
+    assert(info.ar_submissions > 0);                  /* equally well evidenced */
+    assert(info.ar_acc_ok == 0 && info.ar_acc_bad == 0);   /* just not measured */
+
+    /* --- THE FIGURE IS ON EVERY SPELLING, NOT ONLY THE ONE THE REPORT USED ---
+     * The report prints "HL-DT-ST"; AccurateRip's offset list prints "LG
+     * Electronics" for the same drives, and the table carries a row for each
+     * because the runtime matches INQUIRY literally. The lookup answers from
+     * whichever row has the most submissions, which is NOT necessarily the
+     * spelling the report used — so attaching the figure to one row only would
+     * hand most callers zeros. Both spellings must carry it. */
+    {
+        accudisc_offset_info a = ACCUDISC_OFFSET_INFO_INIT;
+        accudisc_offset_info b = ACCUDISC_OFFSET_INFO_INIT;
+
+        assert(accudisc_offset_for_inquiry("HL-DT-ST", "BD-RE BH14NS40", &a)
+               == ACCUDISC_OK);
+        assert(accudisc_offset_for_inquiry("LG Electronics", "BD-RE BH14NS40",
+                                           &b) == ACCUDISC_OK);
+        assert(a.ar_acc_ok > 0);
+        assert(a.ar_acc_ok == b.ar_acc_ok && a.ar_acc_bad == b.ar_acc_bad);
+    }
 
     return 0;
 }
