@@ -150,6 +150,34 @@ Three properties of that table are load-bearing:
   `accudisc.h` repeats this beside the fields, because this document's audience
   is shrinking to CLI consumers while the fields' audience is not.
 
+## `features` write-capability tokens (added 0.26.0)
+
+`accudisc features` gained one line, from the CD Mastering feature descriptor
+(002Eh) — the write type this library uses:
+
+```
+cd_mastering present current=U burnproof_claimed=U sao_claimed=U test_write_claimed=U
+cd_mastering absent
+```
+
+**`claimed` is the operative word and the token names say so.** Every `combo`
+line in this output is a functional smoke read; these are not. Verifying
+BURN-Proof means deliberately starving a real burn and inspecting the disc,
+which destroys a blank per drive, so the capability is acted on and never
+checked. A consumer must not promote `burnproof_claimed=1` to "BURN-Proof
+works".
+
+`current=` is a **separate question** from `burnproof_claimed=`. Current means
+"active for the loaded medium", so a drive that supports mastering reports
+`current=0` with a finished disc in the tray and `current=1` with a blank.
+Reading the two as one question refuses BURN-Proof on every burn.
+
+`cd_mastering absent` is not an error and does not affect the exit code —
+CDEmu returns no such descriptor and burns through it fine. It does mean **no
+failover exists behind the host**, which is what decides whether a buffer
+underrun costs a link or costs the disc.
+
+
 ## `offset` accuracy tokens (added 0.23.0)
 
 `accudisc offset` gained three lines, from AccurateRip's periodic drive-accuracy

@@ -65,6 +65,7 @@ static void usage(FILE *to)
         "  write          burn an audio session DAO from a cdrdao .toc:\n"
         "                 --toc FILE --bin FILE [--cdtext FILE] [--simulate]\n"
         "                 [--byteswap] [--speed X] [--progress-fd N]\n"
+        "                 [--burnproof | --no-burnproof]\n"
         "                 (--cdtext takes a raw format-05 blob from read --cdtext;\n"
         "                  needs blank disc)\n"
         "  write-offset   measure how early or late a drive BURNS audio.\n"
@@ -763,6 +764,18 @@ static int cmd_features(accudisc_device *dev, int argc, char **argv)
                    f.cdtext_claimed);
         else
             printf("cd_read_feature absent\n");
+        /* WRITE capability, and it is printed as a CLAIM. Every `combo` line
+         * below is a functional smoke read; this one cannot be, because
+         * verifying BURN-Proof means starving a real burn and destroying a
+         * blank. Printing it as `claimed` rather than `ok` is the whole
+         * difference between what we tested and what the firmware asserts. */
+        if (f.mastering_present)
+            printf("cd_mastering present current=%u burnproof_claimed=%u "
+                   "sao_claimed=%u test_write_claimed=%u\n",
+                   f.mastering_current, f.buf_claimed, f.sao_claimed,
+                   f.test_write_claimed);
+        else
+            printf("cd_mastering absent\n");
         printf("combo c2 %s\n", f.ok_c2 ? "ok" : "failed");
         printf("combo sub_raw %s\n", f.ok_sub_raw ? "ok" : "failed");
         printf("combo sub_q %s\n", f.ok_sub_q ? "ok" : "failed");
@@ -1432,6 +1445,14 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
             o.simulate = 1;
         else if (!strcmp(argv[i], "--byteswap"))
             o.byteswap = 1;
+        /* Default is AUTO (0): on where the drive claims BUF, off where it does
+         * not. --no-burnproof removes the failover deliberately, which also
+         * makes an underrun fatal rather than survivable — that is the point of
+         * it, not a side effect. */
+        else if (!strcmp(argv[i], "--burnproof"))
+            o.burnproof = ACCUDISC_BURNPROOF_ON;
+        else if (!strcmp(argv[i], "--no-burnproof"))
+            o.burnproof = ACCUDISC_BURNPROOF_OFF;
         else if (!strcmp(argv[i], "--speed") && i + 1 < argc)
             o.speed = (int)strtol(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "--progress-fd") && i + 1 < argc)

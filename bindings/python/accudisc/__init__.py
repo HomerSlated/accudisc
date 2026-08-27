@@ -960,6 +960,36 @@ class Features:
     ok_c2_sub_q: bool
     c2_verdict: C2Verdict
 
+    # ---- WRITE capability, from CD Mastering (002Eh), since 0.26.0.
+    #
+    # UNLIKE EVERY FIELD ABOVE, these are claims with no functional check
+    # behind them. `ok_c2` and friends are cross-checked against a real read
+    # because drives advertise C2 they do not honour. BUF cannot be checked
+    # that way: proving buffer-underrun-free recording works means starving a
+    # real burn and inspecting the disc, destroying a blank per drive. Report
+    # them as claimed, never as verified.
+    mastering_present: bool = False
+    #: Active for the LOADED medium — a separate question from
+    #: :attr:`buf_claimed`. A drive that supports this reports False with a
+    #: finished disc and True with a blank, so reading the two as one question
+    #: refuses BURN-Proof on every burn.
+    mastering_current: bool = False
+    #: The BUF bit: zero-loss linking, i.e. BURN-Proof / Just-Link.
+    buf_claimed: bool = False
+    sao_claimed: bool = False
+    test_write_claimed: bool = False
+
+    @property
+    def burnproof_available(self) -> bool:
+        """Whether a failover exists behind the host during a burn.
+
+        This is what decides the response to the host falling behind: with a
+        failover an underrun costs a link, without one it costs the disc, and
+        those want opposite handling. False when the drive does not report CD
+        Mastering at all — CDEmu is the case, and it burns fine regardless.
+        """
+        return self.mastering_present and self.buf_claimed
+
     @property
     def combos(self) -> dict[str, bool]:
         """The functional smoke-read results, keyed as the CLI names them."""
@@ -1879,6 +1909,11 @@ class Device:
             ok_c2_sub_raw=bool(out.ok_c2_sub_raw),
             ok_c2_sub_q=bool(out.ok_c2_sub_q),
             c2_verdict=C2Verdict(out.c2_verdict),
+            mastering_present=bool(out.mastering_present),
+            mastering_current=bool(out.mastering_current),
+            buf_claimed=bool(out.buf_claimed),
+            sao_claimed=bool(out.sao_claimed),
+            test_write_claimed=bool(out.test_write_claimed),
         )
 
     def probe_accurate_stream(self, lba: int = 5000) -> bool:

@@ -144,6 +144,7 @@ struct adsc_burn_opts {
     int simulate;   /* test-write: run the whole path with the laser off */
     int byteswap;   /* swap each 16-bit audio sample before writing */
     int speed;      /* 0 = leave the drive's current speed */
+    int burnproof;  /* ACCUDISC_BURNPROOF_* — AUTO (0) asks the drive */
 };
 
 typedef void (*adsc_burn_progress)(void *user, uint32_t done, uint32_t total);

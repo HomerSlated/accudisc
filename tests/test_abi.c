@@ -67,7 +67,22 @@ _Static_assert(sizeof(accudisc_read_stats) == 160, "read_stats grew — see abov
  * to the tail rather than beside the counters they belong with. */
 _Static_assert(offsetof(accudisc_read_stats, subq_misposition) == 140,
                "subq_misposition moved: 0.21.0 consumers read the wrong field");
-_Static_assert(sizeof(accudisc_write_opts) == 24, "write_opts grew — see above");
+_Static_assert(sizeof(accudisc_write_opts) == 32, "write_opts grew — see above");
+/* 24 -> 32 in 0.26.0: `burnproof` appended at offset 24. Guarded by the `size`
+ * field, so a 0.25.0 caller passing 24 is honoured and simply gets AUTO. */
+_Static_assert(offsetof(accudisc_write_opts, burnproof) == 24,
+               "write_opts: burnproof was supposed to APPEND");
+
+/* accudisc_features has NO size field, so the version bump is the only signal a
+ * consumer gets that it grew — 11 -> 16 bytes in 0.26.0, five write-capability
+ * flags appended. Pinned because "always bump the version" is a load-bearing
+ * invariant for size-less structs rather than a habit, and cdda2img found the
+ * case where it was not kept (their §113.2). */
+_Static_assert(sizeof(accudisc_features) == 16, "features grew — bump the version");
+_Static_assert(offsetof(accudisc_features, c2_verdict) == 10,
+               "features: c2_verdict moved, breaking every 0.25.0 consumer");
+_Static_assert(offsetof(accudisc_features, buf_claimed) == 13,
+               "features: the write flags were supposed to APPEND");
 
 /* The size field landed in padding, so adding it did NOT move sizeof. Pinned
  * because that fact is load-bearing in the header's own explanation of why an

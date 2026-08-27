@@ -576,6 +576,32 @@ Test-write: run the whole path with the laser off.
 Swap each 16-bit audio sample before writing. Audio byte order is
 drive-specific; settle it empirically by read-back before trusting a real burn.
 .TP
+.B \-\-burnproof
+.TQ
+.B \-\-no\-burnproof
+Force buffer-underrun-free recording (BURN-Proof, Just-Link) on or off. The
+default is neither: it is enabled when the drive claims the capability in its
+CD Mastering feature descriptor (002Eh, BUF bit) and disabled when it does not.
+.IP
+.B This is a claim AccuDisc cannot verify.
+Every other capability reported by
+.B features
+is cross-checked against a functional probe, because drives advertise what they
+do not honour. BUF has no such check: proving it works means deliberately
+starving a real burn and inspecting the disc, destroying a blank per drive. It
+is therefore acted on and reported as
+.IR claimed ,
+never as verified.
+.IP
+.B \-\-no\-burnproof
+does more than turn off a convenience. With no failover behind the host, a
+buffer underrun costs the disc rather than a link, so the burn stops instead of
+continuing. That is the point of the flag rather than a side effect.
+.B \-\-burnproof
+forces the request on a drive that does not claim the capability, for firmware
+that under-reports itself; MODE SELECT may simply refuse, and that refusal is
+reported rather than swallowed.
+.TP
 .BI \-\-speed " X"
 Write speed. 0 or absent leaves the drive's current setting.
 .TP

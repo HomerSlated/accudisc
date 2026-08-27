@@ -27,7 +27,17 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 25 /* 0.25.0: the write-offset locator met real
+#define ACCUDISC_VERSION_MINOR 26 /* 0.26.0: BURN-Proof is no longer forced on
+                                  * every drive. The CD Mastering feature
+                                  * (002Eh) is probed, accudisc_features gained
+                                  * five write-capability flags (11 -> 16 B) and
+                                  * accudisc_write_opts gained `burnproof`
+                                  * (24 -> 32 B, appended). Until now the engine
+                                  * asked EVERY drive for a failover many do not
+                                  * have, and could not tell which — the
+                                  * question that decides whether an underrun
+                                  * costs a link or costs the disc.
+                                  * 0.25.0: the write-offset locator met real
                                   * drive output for the first time and its
                                   * threshold-not-correlation property became a
                                   * documented CONTRACT, pinned by a test that
@@ -951,7 +961,26 @@ typedef struct accudisc_write_opts {
      * lead-in verbatim. NULL = burn no CD-Text. Appended field: zero-init
      * callers get NULL and the prior behaviour unchanged. */
     const char *cdtext_path;
+    /* BURN-Proof (buffer-underrun-free recording). One of the
+     * ACCUDISC_BURNPROOF_* values; appended, so a zero-init caller gets AUTO
+     * and the library decides from what the drive claims.
+     *
+     * Until 0.26.0 this was forced ON unconditionally, which asked every drive
+     * for a feature many do not have — and, worse, left the engine with no way
+     * to know whether a failover existed. That matters because it decides what
+     * happens when the host cannot keep up: with a failover, defer to it; with
+     * none, stop, because we own the pipeline and a coaster is the alternative. */
+    int burnproof;
 } accudisc_write_opts;
+
+/* accudisc_write_opts.burnproof. AUTO is 0 so a zero-init caller gets it. */
+#define ACCUDISC_BURNPROOF_AUTO 0 /* enable when the drive claims BUF (002Eh) */
+#define ACCUDISC_BURNPROOF_OFF  1 /* never — the caller wants the raw pipeline */
+#define ACCUDISC_BURNPROOF_ON   2 /* force, even where the drive does not claim
+                                   * it. For a drive whose firmware under-reports
+                                   * its own capability; the request may simply
+                                   * be refused by MODE SELECT, which is honest
+                                   * and is reported rather than swallowed. */
 
 #define ACCUDISC_WRITE_OPTS_INIT { .size = sizeof(accudisc_write_opts) }
 
@@ -1766,6 +1795,27 @@ typedef struct accudisc_features {
     uint8_t ok_c2_sub_raw;
     uint8_t ok_c2_sub_q;
     uint8_t c2_verdict;      /* accudisc_c2_verdict */
+
+    /* ---- WRITE capability, from CD Mastering (002Eh) — appended in 0.26.0.
+     *
+     * A CLAIM, NOT A VERIFIED CAPABILITY, and the distinction is load-bearing
+     * here in a way it is not for the fields above. Every other flag in this
+     * struct is cross-checked against a functional read, because drives
+     * advertise C2 they do not honour. BUF cannot be checked that way: proving
+     * buffer-underrun-free recording works means deliberately starving a real
+     * burn and inspecting the disc, which costs a blank per drive and destroys
+     * it. So this is acted on and never verified, and a consumer must report it
+     * as claimed rather than as fact.
+     *
+     * mastering_current is a SEPARATE question from buf_claimed. Current means
+     * "active for the loaded medium", so a drive that supports this reports
+     * Current=0 with a finished disc and Current=1 with a blank; treating the
+     * two as one question refuses BURN-Proof on every burn. */
+    uint8_t mastering_present;   /* the 002Eh descriptor came back */
+    uint8_t mastering_current;   /* active for the LOADED medium */
+    uint8_t buf_claimed;         /* BUF: zero-loss linking (BURN-Proof) */
+    uint8_t sao_claimed;         /* SAO: Session-At-Once, our write type */
+    uint8_t test_write_claimed;  /* the drive can --simulate */
 } accudisc_features;
 
 ACCUDISC_API int accudisc_probe_features(accudisc_device *dev,

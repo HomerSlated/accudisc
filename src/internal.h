@@ -127,4 +127,12 @@ int adsc_abi_import(void *dst, size_t dst_size,
                     const void *src, uint32_t src_size);
 int adsc_abi_export(uint32_t want, size_t have, size_t *n_out);
 
+
+/* CD Mastering (002Eh) alone — no smoke reads, so the write path can ask
+ * "does this drive claim BURN-Proof?" without the cost of a full feature
+ * probe. Fills only the mastering_* / *_claimed fields. Returns 0 when the
+ * descriptor came back, -1 when it did not (which is not an error: CDEmu
+ * reports no CD Mastering descriptor and burns through it fine). */
+int adsc_probe_cd_mastering(struct accudisc_device *dev, accudisc_features *f);
+
 #endif /* ADSC_INTERNAL_H */

@@ -50,6 +50,7 @@ commands:
   write          burn an audio session DAO from a cdrdao .toc:
                  --toc FILE --bin FILE [--cdtext FILE] [--simulate]
                  [--byteswap] [--speed X] [--progress-fd N]
+                 [--burnproof | --no-burnproof]
                  (--cdtext takes a raw format-05 blob from read --cdtext;
                   needs blank disc)
   write-offset   measure how early or late a drive BURNS audio.

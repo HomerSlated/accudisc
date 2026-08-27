@@ -9,6 +9,10 @@
 #include "../mmc/mmc.h"
 
 #define ADSC_FEATURE_CD_READ 0x001E
+/* CD Mastering — Session/Disc-At-Once, which is the write type this library
+ * uses. Its BUF bit is the drive's claim to "zero loss linking", i.e.
+ * BURN-Proof / Just-Link / whatever the vendor calls it. MMC-5 5.3.24. */
+#define ADSC_FEATURE_CD_MASTERING 0x002E
 
 static int cd_read_feature(struct accudisc_device *dev, accudisc_features *f)
 {
@@ -26,6 +30,41 @@ static int cd_read_feature(struct accudisc_device *dev, accudisc_features *f)
     f->dap = (buf[12] >> 7) & 1;
     f->c2_claimed = (buf[12] >> 1) & 1;
     f->cdtext_claimed = buf[12] & 1;
+    return 0;
+}
+
+/* CD Mastering (002Eh): what the drive claims about DAO writing.
+ *
+ * THIS ONE IS A CLAIM WE CANNOT SMOKE-TEST, and that is why it is reported
+ * separately from the functional probes below rather than beside them.
+ * Everything else in this file cross-checks an advertisement against a real
+ * read, because drives are known to advertise C2 they do not honour. There is
+ * no equivalent for buffer-underrun-free recording: proving BUF works means
+ * deliberately starving a real burn and inspecting the disc afterwards — one
+ * blank per drive, destructively. So `buf_claimed` is acted on and NOT
+ * verified, and every consumer must say so rather than print it as a fact.
+ *
+ * `mastering_current` is a SEPARATE question from `buf_claimed`: Current means
+ * "active for the loaded medium" (MMC-5 5.2.2.4), so a drive that can do this
+ * reports Current=0 with a finished disc in the tray and Current=1 with a
+ * blank. Measured on the PX-716A 2026-08-27: byte12=0x7F (BUF=1 SAO=1 RawMS=1
+ * Raw=1 TestWrite=1) with Current=0 against a burnt disc. Reading the two as
+ * one question would refuse BURN-Proof on every burn. */
+int adsc_probe_cd_mastering(struct accudisc_device *dev,
+                            accudisc_features *f)
+{
+    uint8_t buf[64] = {0};
+
+    if (adsc_mmc_get_configuration(dev, ADSC_FEATURE_CD_MASTERING, buf,
+                                   sizeof(buf)) != ACCUDISC_OK)
+        return -1;
+    if ((((unsigned)buf[8] << 8) | buf[9]) != ADSC_FEATURE_CD_MASTERING)
+        return -1;   /* absent: CDEmu answers exactly this way */
+    f->mastering_present = 1;
+    f->mastering_current = buf[10] & 0x01;
+    f->buf_claimed  = (buf[12] >> 6) & 1;
+    f->sao_claimed  = (buf[12] >> 5) & 1;
+    f->test_write_claimed = (buf[12] >> 2) & 1;
     return 0;
 }
 
@@ -107,6 +146,10 @@ int accudisc_probe_features(accudisc_device *dev, accudisc_features *out)
     memset(out, 0, sizeof(*out));
 
     int have_feat = cd_read_feature(dev, out);
+
+    /* Write capability. Its absence is not an error — CDEmu returns no CD
+     * Mastering descriptor at all and burns perfectly well through it. */
+    (void)adsc_probe_cd_mastering(dev, out);
 
     out->ok_c2 = (uint8_t)combo_smoke(dev, ADSC_C2_294, ADSC_SUB_NONE);
 

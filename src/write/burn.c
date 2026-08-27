@@ -103,6 +103,12 @@ struct write_flow {
      * not happen. A real buffer cannot hold one value across a whole burn. */
     int      cap_varied;
     uint32_t first_total, first_blank;
+
+    /* Whether anything is behind the host if it falls behind. Recorded rather
+     * than only acted on, because the same burn log has to explain WHY an
+     * underrun was survived or was fatal. */
+    uint8_t  burnproof_claimed;   /* the drive's CD Mastering BUF bit */
+    uint8_t  burnproof_on;        /* what we actually asked MODE SELECT for */
 };
 
 /* Below this the drive is close to running dry. Not a threshold anything acts
@@ -282,8 +288,53 @@ int adsc_write_run(struct accudisc_device *dev,
      * data block type 3 (raw + P-W, 2448) to enable P-W lead-in writing. */
     struct adsc_write_params wp = {0};
     wp.simulate = opts->simulate;
-    wp.burnproof = 1;
     wp.cdtext = have_cdtext;
+
+    /* BURN-PROOF, AND WHETHER A FAILOVER EXISTS AT ALL.
+     *
+     * Until 0.26.0 this was `wp.burnproof = 1`, unconditionally — asking every
+     * drive for a feature many do not have, and leaving the engine unable to
+     * answer the one question that decides what to do when the host cannot
+     * keep up: is there something behind us?
+     *
+     * With a failover, an underrun costs a link and the burn continues. With
+     * none, it costs the disc. Those want opposite responses, so the engine has
+     * to KNOW which it is rather than hope.
+     *
+     * The claim is taken on faith, deliberately and as an exception to this
+     * project's usual gate order. Everywhere else a feature bit is smoke-tested
+     * because firmware lies; BUF cannot be, because the test is to starve a
+     * real burn and inspect the disc — one blank per drive, destroyed. So it is
+     * acted on, reported as CLAIMED rather than verified, and never printed as
+     * a fact we established. */
+    {
+        accudisc_features caps;
+        int claimed;
+
+        memset(&caps, 0, sizeof caps);
+        claimed = (adsc_probe_cd_mastering(dev, &caps) == 0) && caps.buf_claimed;
+        fl.burnproof_claimed = (uint8_t)claimed;
+
+        switch (opts->burnproof) {
+        case ACCUDISC_BURNPROOF_OFF: wp.burnproof = 0; break;
+        case ACCUDISC_BURNPROOF_ON:  wp.burnproof = 1; break;
+        default:                     wp.burnproof = claimed; break;
+        }
+        fl.burnproof_on = (uint8_t)wp.burnproof;
+
+        if (wp.burnproof && !claimed)
+            adsc_dev_log(dev, "write: BURN-Proof FORCED on a drive that does not "
+                              "claim it (CD Mastering BUF=0 or absent); MODE "
+                              "SELECT may simply refuse");
+        else if (wp.burnproof)
+            adsc_dev_log(dev, "write: BURN-Proof enabled — CLAIMED by the drive, "
+                              "not verified here");
+        else
+            adsc_dev_log(dev, "write: BURN-Proof OFF (%s) — there is no failover "
+                              "behind the host",
+                         claimed ? "disabled by the caller"
+                                 : "not claimed by the drive");
+    }
     if ((ret = adsc_write_set_params(dev, &wp)) != ACCUDISC_OK)
         return ret;
 

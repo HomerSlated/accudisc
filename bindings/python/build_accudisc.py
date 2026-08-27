@@ -295,6 +295,9 @@ void accudisc_set_log(accudisc_device *dev,
 
 /* ---- recording (DAO write) --------------------------------------------- */
 #define ACCUDISC_WROTE_WITH_CAVEATS ...
+#define ACCUDISC_BURNPROOF_AUTO ...
+#define ACCUDISC_BURNPROOF_OFF ...
+#define ACCUDISC_BURNPROOF_ON ...
 
 /* IN struct, guarded by `size` since 0.3.0 — the library reads past the end of
  * a shorter one otherwise, and this is the only non-idempotent entry point in
@@ -305,6 +308,7 @@ typedef struct accudisc_write_opts {
     int byteswap;
     int speed;
     const char *cdtext_path;
+    int burnproof;
     ...;
 } accudisc_write_opts;
 
@@ -502,6 +506,11 @@ typedef struct accudisc_features {
     uint8_t ok_c2_sub_raw;
     uint8_t ok_c2_sub_q;
     uint8_t c2_verdict;
+    uint8_t mastering_present;
+    uint8_t mastering_current;
+    uint8_t buf_claimed;
+    uint8_t sao_claimed;
+    uint8_t test_write_claimed;
     ...;
 } accudisc_features;
 

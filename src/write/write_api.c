@@ -169,7 +169,17 @@ int accudisc_write(accudisc_device *dev, const char *toc_path,
         return ACCUDISC_ERR_OPEN;
     }
 
-    struct adsc_burn_opts bo = { opts->simulate, opts->byteswap, opts->speed };
+    /* DESIGNATED, not positional. The positional form silently reassigns every
+     * field when one is inserted, and this struct decides whether a laser
+     * fires. `burnproof` reaches here as 0 (AUTO) for any caller whose struct
+     * predates it — adsc_abi_import above zero-extends — which is the intended
+     * default rather than an accident of layout. */
+    struct adsc_burn_opts bo = {
+        .simulate  = opts->simulate,
+        .byteswap  = opts->byteswap,
+        .speed     = opts->speed,
+        .burnproof = opts->burnproof,
+    };
     rc = adsc_write_run(dev, toc, bin, &bo, progress, user);
 
     close(bin);

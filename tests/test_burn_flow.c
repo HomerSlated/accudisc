@@ -40,11 +40,17 @@ static struct {
     char     gave_up_log[512]; /* the "giving up" line, if it appeared */
     char     flow_log[512];    /* the end-of-burn tally line */
     char     buf_log[512];     /* the buffer-fill line, whichever it is */
+    char     bp_log[512];      /* the BURN-Proof decision line */
 
     /* READ BUFFER CAPACITY behaviour. `cap_refuse` makes the drive reject it
      * outright — the case a real drive without Real-time Streaming presents,
      * and the one no device here can produce (CDEmu answers it and so does the
      * PX-716A), which is exactly why it has to be stubbed. */
+    /* CD Mastering (002Eh). `mastering_absent` is CDEmu's real behaviour —
+     * measured 2026-08-27, it returns no descriptor at all — and it is the
+     * case that decides whether a failover exists behind the host. */
+    int      mastering_absent;
+    int      buf_claimed;
     int      cap_refuse;
     uint32_t cap_total;
     uint32_t cap_blank;        /* what the next poll reports as free */
@@ -92,6 +98,19 @@ int adsc_mmc_send_opc(struct accudisc_device *d, int a)
 int adsc_mmc_sync_cache(struct accudisc_device *d)
 { (void)d; return ACCUDISC_OK; }
 
+int adsc_probe_cd_mastering(struct accudisc_device *d, accudisc_features *f)
+{
+    (void)d;
+    if (fake.mastering_absent)
+        return -1;
+    f->mastering_present = 1;
+    f->mastering_current = 1;
+    f->buf_claimed = (uint8_t)fake.buf_claimed;
+    f->sao_claimed = 1;
+    f->test_write_claimed = 1;
+    return 0;
+}
+
 int adsc_mmc_read_buffer_capacity(struct accudisc_device *d,
                                   uint32_t *total, uint32_t *blank)
 {
@@ -128,6 +147,8 @@ void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...)
         snprintf(fake.gave_up_log, sizeof fake.gave_up_log, "%s", fake.last_log);
     if (strstr(fake.last_log, "flow —"))
         snprintf(fake.flow_log, sizeof fake.flow_log, "%s", fake.last_log);
+    if (strstr(fake.last_log, "BURN-Proof"))
+        snprintf(fake.bp_log, sizeof fake.bp_log, "%s", fake.last_log);
     if (strstr(fake.last_log, "drive buffer"))
         snprintf(fake.buf_log, sizeof fake.buf_log, "%s", fake.last_log);
 }
@@ -181,6 +202,9 @@ static void reset(void)
      * about the buffer override these. */
     fake.cap_total = 4u * 1024u * 1024u;
     fake.cap_blank = 64u * 1024u;
+    /* A drive that claims BURN-Proof, like the PX-716A. Tests that care about
+     * the failover override it. */
+    fake.buf_claimed = 1;
 }
 
 /* ---- tests --------------------------------------------------------------- */
@@ -250,6 +274,84 @@ static void test_the_sense_survives_the_refusal(void)
     assert(dev->last_sense.key == 0x02);
     assert(dev->last_sense.asc == 0x04);
     assert(dev->last_sense.ascq == 0x08);
+}
+
+/* ---- BURN-Proof: does a failover exist behind the host? ------------------- */
+
+static void test_burnproof_follows_the_drive_by_default(void)
+{
+    reset();
+    fake.buf_claimed = 1;
+    assert(run() == ACCUDISC_OK);
+    assert(strstr(fake.bp_log, "enabled"));
+    /* CLAIMED, never "verified". Every other capability in this project is
+     * cross-checked against a functional probe; BUF cannot be, because the
+     * test destroys a blank. The word in the log is the whole distinction. */
+    assert(strstr(fake.bp_log, "CLAIMED"));
+    assert(strstr(fake.bp_log, "not verified here"));
+}
+
+static void test_a_drive_that_does_not_claim_it_does_not_get_it(void)
+{
+    reset();
+    fake.mastering_absent = 1;      /* CDEmu's real behaviour, measured */
+
+    assert(run() == ACCUDISC_OK && "an absent feature is not an error");
+    /* THE DEFECT THIS FIXES. Until 0.26.0 the engine asked EVERY drive for
+     * BURN-Proof unconditionally, so it could not tell a drive with a failover
+     * from one without — and those want opposite responses to an underrun. */
+    assert(strstr(fake.bp_log, "OFF"));
+    assert(strstr(fake.bp_log, "not claimed by the drive"));
+    assert(strstr(fake.bp_log, "no failover behind the host"));
+}
+
+static void test_the_caller_can_refuse_the_failover(void)
+{
+    struct adsc_write_toc toc;
+    struct adsc_burn_opts opts;
+    int fd;
+
+    reset();
+    fake.buf_claimed = 1;           /* the drive HAS it ... */
+    memset(&toc, 0, sizeof toc);
+    memset(&opts, 0, sizeof opts);
+    toc.ntracks = 1;
+    toc.leadout_lba = TRACK_SECTORS;
+    toc.track[0].audio = 1;
+    toc.track[0].sectors = TRACK_SECTORS;
+    opts.simulate = 1;
+    opts.burnproof = ACCUDISC_BURNPROOF_OFF;   /* ... and the caller says no */
+
+    fd = bin_fd_n(TRACK_SECTORS);
+    assert(adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL) == ACCUDISC_OK);
+    close(fd);
+    assert(strstr(fake.bp_log, "OFF"));
+    assert(strstr(fake.bp_log, "disabled by the caller"));
+}
+
+static void test_forcing_it_on_an_unclaiming_drive_says_so(void)
+{
+    struct adsc_write_toc toc;
+    struct adsc_burn_opts opts;
+    int fd;
+
+    reset();
+    fake.mastering_absent = 1;
+    memset(&toc, 0, sizeof toc);
+    memset(&opts, 0, sizeof opts);
+    toc.ntracks = 1;
+    toc.leadout_lba = TRACK_SECTORS;
+    toc.track[0].audio = 1;
+    toc.track[0].sectors = TRACK_SECTORS;
+    opts.simulate = 1;
+    opts.burnproof = ACCUDISC_BURNPROOF_ON;
+
+    fd = bin_fd_n(TRACK_SECTORS);
+    assert(adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL) == ACCUDISC_OK);
+    close(fd);
+    /* Allowed — firmware can under-report — but never silently. MODE SELECT
+     * may refuse, and that refusal is the drive's answer rather than ours. */
+    assert(strstr(fake.bp_log, "FORCED"));
 }
 
 /* ---- drive-buffer fill --------------------------------------------------- */
@@ -370,6 +472,10 @@ int main(void)
     test_transient_buffer_full_is_survived_and_counted();
     test_a_wedged_drive_is_given_up_on();
     test_the_sense_survives_the_refusal();
+    test_burnproof_follows_the_drive_by_default();
+    test_a_drive_that_does_not_claim_it_does_not_get_it();
+    test_the_caller_can_refuse_the_failover();
+    test_forcing_it_on_an_unclaiming_drive_says_so();
     test_a_refusing_drive_reports_UNKNOWN_not_zero();
     test_a_healthy_drive_reports_a_high_minimum();
     test_a_draining_drive_is_seen_going_low();
