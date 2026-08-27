@@ -183,6 +183,27 @@ CD-DA/DAO focus); cdrecord is the tie-breaker for drive-specific behaviour.
    (cdrdao `GenericMMC::bigEndianSamples()==0`), so an s16be BIN needs
    `--byteswap`; net raw read/write offset is 0 on the PX-716A. Still open:
    CD-Text lead-in, and per-track verify by track.
+
+   **2026-08-27, the write offset measured END TO END for the first time.**
+   One Taiyo Yuden blank: `write_offset_signal` -> `accudisc write` -> whole-disc
+   read-back -> `write_offset_locate`. 50625 sectors (75 s signal + 10 min
+   seeded filler), burnt in 61 s, read back in 47 s with **0 hard errors and 0
+   C2-flagged sectors**, and the round trip is **byte-exact over 119,070,000
+   bytes** (md5 `9f6bc177…` both sides, no `--byteswap`) — which re-establishes
+   the net-zero claim above by construction rather than by inference.
+
+   `write_offset -30`, both pulses agreeing (`offset_a`/`offset_b` -30,
+   `inconsistent` false), pulses found at 44070 and 2645970 against expected
+   44100 and 2646000. **Those are the same numbers cdda2img measured on a disc
+   burnt by THEIR tool**, so AccuDisc's write path introduces no shift of its
+   own — the offset is the drive's, not the software's.
+
+   Read that figure with its dependency: `W = (W+R) - R` and `R = +30` came from
+   the offset table, so a `-30` here agrees with cdda2img on a SHARED input
+   rather than confirming it independently. The independent anchor for `+30`
+   remains AccurateRip verification on pressed discs.
+
+   Raw run notes: `private/research/incoming/2026-08-27-write-offset-hardware-run.md`.
 3. **Full TOC** — multi-track, pregaps/indices, MCN/ISRC, CD-Text lead-in,
    P/Q/R–W synthesis; verify subchannel with the read path.
 4. **`--sub` passthrough** — caller-supplied raw P–W for exact reproduction.
