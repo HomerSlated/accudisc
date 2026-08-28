@@ -244,6 +244,26 @@ CD-DA/DAO focus); cdrecord is the tie-breaker for drive-specific behaviour.
       out. Now tracked only while the source has data: the same run reports
       `low-water 110/111`.
 
+   **2026-08-28, the stall anomaly resolved — and it was our report, not the
+   drive.** Every burn and simulate reported "326 buffer-full stalls, worst
+   single hold-off 13040 ms", reproducing to the retry across runs a day apart.
+   Instrumenting the LBA settled it in one run: **ONE chunk stalled, at LBA
+   -150** — the first WRITE(10) of the burn, immediately after SEND CUE SHEET.
+   The drive simply will not accept data for ~13 s while it prepares to record.
+
+   So the count was real and its referent was wrong: 329 forty-millisecond
+   retries of a single write, reported as 329 events. The harm was not that it
+   looked alarming — it is that a burn with 326 GENUINE stalls spread across the
+   disc printed the *same headline*, so the report could not separate the case
+   worth acting on from the one that happens every time. The summary now counts
+   distinct hold-offs, names the LBA, and states the retry count separately.
+
+   Simulate holds off for 13.2 s where a real burn holds off for 8.2 s.
+   HYPOTHESIS, untested: `burn.c` skips SEND OPC in simulate, so a real burn
+   does its power calibration before the first write while a simulate does not.
+   Consistent with the figures; testing it costs a blank and the question is
+   idle. Notes: `private/research/incoming/2026-08-28-stall-anomaly.md`.
+
    **Still not exercised on hardware:** a genuine starvation. `slowdisk` sets
    `io.max wbps` only (`/usr/local/sbin/slowdisk:152`), so it throttles WRITES —
    and the write FIFO starves on the source READ. Starving it on real hardware

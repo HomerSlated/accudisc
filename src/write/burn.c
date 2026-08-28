@@ -82,6 +82,13 @@ struct write_flow {
     uint64_t stalls;        /* retries across the whole burn */
     uint64_t stall_ms;      /* total time spent waiting for room */
     uint32_t worst_ms;      /* longest single hold-off */
+    int32_t  worst_lba;     /* ... and where. A duration with no position
+                             * cannot tell "the drive settled once at the
+                             * start" from "it struggled throughout". */
+    uint32_t stalling_chunks; /* DISTINCT chunks that had to wait at all —
+                               * the number `stalls` cannot give, because 326
+                               * retries of ONE chunk and 326 chunks waiting
+                               * once each are the same figure. */
 
     /* Drive-buffer fill, from READ BUFFER CAPACITY (0x5C). `live` is 0 until
      * the first successful poll and goes back to 0 permanently on the first
@@ -187,8 +194,12 @@ static int write_chunk(struct accudisc_device *dev, int32_t lba,
     for (;;) {
         int rc = adsc_mmc_write10(dev, lba, nblocks, buf, block_bytes);
         if (rc == ACCUDISC_OK) {
-            if (waited_ms > fl->worst_ms)
+            if (waited_ms)
+                fl->stalling_chunks++;
+            if (waited_ms > fl->worst_ms) {
                 fl->worst_ms = waited_ms;
+                fl->worst_lba = lba;
+            }
             return ACCUDISC_OK;
         }
         if (rc == ACCUDISC_ERR_SENSE && dev->last_sense.key == 0x02 &&
@@ -552,10 +563,34 @@ done:
      * struct write_flow: stalls are the drive holding US off, which is the safe
      * direction. Zero stalls does NOT mean an underrun occurred; it means the
      * host never got ahead, and nothing here can see the other side of that. */
-    adsc_dev_log(dev, "write: flow — %llu buffer-full stalls, %llu ms waited, "
-                      "worst single hold-off %u ms",
-                 (unsigned long long)fl.stalls,
-                 (unsigned long long)fl.stall_ms, fl.worst_ms);
+    /* REPORT THE NUMBER OF EVENTS, NOT THE NUMBER OF RETRIES.
+     *
+     * `stalls` counts 40 ms waits, and until 0.28.0 it was the headline. On
+     * this drive every burn reported "326 buffer-full stalls, worst hold-off
+     * 13040 ms", which reads as sustained flow-control pressure with one bad
+     * moment. Measured 2026-08-28: it is ONE moment. 329 retries of a SINGLE
+     * WRITE(10) at LBA -150 — the first write of the burn — which the drive
+     * would not accept for 13.2 s while it prepared to record. Normal, safe,
+     * and nothing like what the line said.
+     *
+     * The danger of the old wording is not that it was alarming. It is that a
+     * burn with 326 GENUINE stalls spread across the disc printed the same
+     * headline as this one, so the report could not distinguish the case worth
+     * acting on from the case that happens every time. */
+    if (fl.stalling_chunks == 1)
+        adsc_dev_log(dev, "write: flow — ONE hold-off, %u ms at LBA %d "
+                          "(%llu retries of a single write, not %llu events). "
+                          "A drive settling before its first write looks like "
+                          "this.",
+                     fl.worst_ms, fl.worst_lba,
+                     (unsigned long long)fl.stalls,
+                     (unsigned long long)fl.stalls);
+    else
+        adsc_dev_log(dev, "write: flow — %u chunks held off, %llu ms total, "
+                          "worst %u ms at LBA %d (%llu retries)",
+                     fl.stalling_chunks, (unsigned long long)fl.stall_ms,
+                     fl.worst_ms, fl.worst_lba,
+                     (unsigned long long)fl.stalls);
     if (fl.polls > 1 && !fl.cap_varied)
         /* The device answered, and answered the SAME thing every time. That is
          * not a fill measurement, whatever number it contains — so no number is

@@ -36,6 +36,10 @@ static struct {
     unsigned write_calls;      /* WRITE(10) attempts the engine made */
     unsigned busy_left;        /* answer "buffer full" this many more times */
     int      busy_forever;     /* ... or never stop answering it */
+    int      busy_every;       /* refuse the FIRST attempt of every chunk:
+                                * genuine pressure spread across the burn,
+                                * as opposed to one long settle at the start */
+    int      busy_last_ok;
     unsigned log_lines;
     char     last_log[512];
     char     gave_up_log[512]; /* the "giving up" line, if it appeared */
@@ -86,6 +90,13 @@ int adsc_mmc_write10(struct accudisc_device *dev, int32_t lba, uint32_t nblocks,
     fake.write_calls++;
     if (fake.busy_forever)
         return busy(dev);
+    if (fake.busy_every) {
+        /* Alternate: refuse, then accept. Every chunk waits exactly once. */
+        fake.busy_last_ok = !fake.busy_last_ok;
+        if (!fake.busy_last_ok)
+            return busy(dev);
+        return ACCUDISC_OK;
+    }
     if (fake.busy_left) {
         fake.busy_left--;
         return busy(dev);
@@ -223,8 +234,8 @@ static void test_a_clean_burn_never_stalls(void)
     assert(fake.write_calls > 0 && "the engine did write something");
     /* The control. Everything below asserts that stalls were COUNTED, which
      * proves nothing unless a burn without them reports none. */
-    assert(strstr(fake.flow_log, "0 buffer-full stalls")
-           && "a clean burn reports no stalls");
+    assert(strstr(fake.flow_log, "0 chunks held off")
+           && "a clean burn reports no hold-offs");
 }
 
 static void test_transient_buffer_full_is_survived_and_counted(void)
@@ -232,11 +243,48 @@ static void test_transient_buffer_full_is_survived_and_counted(void)
     reset();
     fake.busy_left = 5;            /* five refusals, then it takes the data */
     assert(run() == ACCUDISC_OK && "a busy drive must not fail the burn");
-    assert(strstr(fake.flow_log, "5 buffer-full stalls")
-           && "every retry was counted");
+    /* Five retries, ONE chunk — so the report must say one event and name the
+     * retry count separately. Conflating them is what made every burn on this
+     * drive look like sustained pressure. */
+    assert(strstr(fake.flow_log, "ONE hold-off") && "five retries of one write");
+    assert(strstr(fake.flow_log, "not 5 events"));
     /* The retries went to the SAME chunk rather than skipping it: the engine
      * made five extra WRITE(10) calls, not five fewer sectors. */
     assert(fake.write_calls > 5);
+}
+
+static void test_one_long_holdoff_is_reported_as_ONE_event(void)
+{
+    reset();
+    fake.busy_left = 30;    /* thirty refusals, all of the SAME first write */
+
+    assert(run() == ACCUDISC_OK);
+    /* THE DEFECT THIS REPLACES. `stalls` counts 40 ms retries, and as the
+     * headline it said "326 buffer-full stalls, worst hold-off 13040 ms" on
+     * every burn this drive did — which reads as sustained pressure with one
+     * bad moment. Measured on the PX-716A 2026-08-28: ONE moment. 329 retries
+     * of a single WRITE(10) at LBA -150, the first write of the burn, which
+     * the drive would not accept for 13.2 s while it prepared to record.
+     *
+     * The harm is not that it was alarming. It is that a burn with 326 GENUINE
+     * stalls across the disc printed the SAME headline, so the report could not
+     * separate the case worth acting on from the one that happens every time. */
+    assert(strstr(fake.flow_log, "ONE hold-off"));
+    assert(strstr(fake.flow_log, "not 30 events"));
+    assert(strstr(fake.flow_log, "LBA -150") && "and where it happened");
+}
+
+static void test_stalls_at_several_places_are_NOT_reported_as_one(void)
+{
+    reset();
+    /* The other side of the same coin: the single-event wording must not
+     * swallow genuine, spread-out pressure. Refuse once per chunk, many
+     * chunks — the shape that actually warrants attention. */
+    fake.busy_every = 1;
+
+    assert(run() == ACCUDISC_OK);
+    assert(!strstr(fake.flow_log, "ONE hold-off"));
+    assert(strstr(fake.flow_log, "chunks held off"));
 }
 
 static void test_a_wedged_drive_is_given_up_on(void)
@@ -619,6 +667,8 @@ int main(void)
 {
     test_a_clean_burn_never_stalls();
     test_transient_buffer_full_is_survived_and_counted();
+    test_one_long_holdoff_is_reported_as_ONE_event();
+    test_stalls_at_several_places_are_NOT_reported_as_one();
     test_a_wedged_drive_is_given_up_on();
     test_the_sense_survives_the_refusal();
     test_the_fifo_delivers_every_sector();
