@@ -45,6 +45,7 @@ __all__ = [
     "DriveOffset",
     "offset_for",
     "WriteOffset", "write_offset_signal", "write_offset_locate",
+    "fifo_bytes_for",
     "WOFF_SAMPLES", "WOFF_PULSE_A", "WOFF_PULSE_B", "WOFF_PULSE_LEN",
     "AccuDiscError", "InvalidArgument", "OutOfMemory", "OpenFailed", "IOFailed",
     "SenseError", "ShortResponse", "Unsupported", "NotBlank", "Cancelled", "CrcError",
@@ -2125,6 +2126,8 @@ class Device:
         byteswap: bool = False,
         speed: int = 0,
         cdtext_path: str | None = None,
+        burnproof: bool | None = None,
+        fifo: float | int | None = None,
         progress: Callable[[int, int], None] | None = None,
     ) -> WriteResult:
         """Burn one audio session Disc-At-Once. **This destroys a blank disc.**
@@ -2134,6 +2137,20 @@ class Device:
         as :meth:`read_cdtext_raw` emits it, laid into the lead-in verbatim.
 
         Requires a blank disc and a device opened with ``rdwr=True``.
+
+        ``fifo`` sizes the memory-locked ring between the source file and the
+        drive. A **float is seconds** of ride-through (converted against
+        ``speed``, or 8x when you leave the drive's setting); an **int is
+        bytes**; ``False`` runs without one; ``None`` takes the default. The
+        two types mean different things deliberately — the useful unit is time,
+        because the same byte count is 3.4 s at CD 8x and under 0.2 s at BD
+        speeds, but the honest unit is bytes.
+
+        ``burnproof`` is ``None`` (auto — on where the drive claims it),
+        ``True`` (force) or ``False``. **``False`` does more than turn off a
+        convenience**: with no failover behind the host, a starved FIFO stops
+        the burn rather than being absorbed, because the disc is already spoilt
+        and continuing would only hide that.
 
         Returns :class:`WriteResult` — and read what that class says about the
         four CLI tokens, because the split is the contract. In short: a return
@@ -2158,6 +2175,27 @@ class Device:
         opts.simulate = 1 if simulate else 0
         opts.byteswap = 1 if byteswap else 0
         opts.speed = int(speed)
+        # None = AUTO: on where the drive claims the capability, off where it
+        # does not. True FORCES it on a drive that does not claim it (firmware
+        # can under-report; MODE SELECT may refuse and that is reported).
+        # False removes the failover — which is what makes a buffer underrun
+        # fatal rather than survivable, and is the point of passing it.
+        opts.burnproof = (lib.ACCUDISC_BURNPROOF_AUTO if burnproof is None
+                          else lib.ACCUDISC_BURNPROOF_ON if burnproof
+                          else lib.ACCUDISC_BURNPROOF_OFF)
+        # float -> SECONDS of ride-through, converted against the write rate;
+        # int -> bytes; False -> no FIFO; None -> the default. A float and an
+        # int mean different things on purpose, because the useful unit is time
+        # and the honest unit is bytes.
+        if fifo is None:
+            opts.fifo_bytes = 0
+        elif fifo is False:
+            opts.fifo_bytes = lib.ACCUDISC_FIFO_NONE
+        elif isinstance(fifo, float):
+            opts.fifo_bytes = lib.accudisc_fifo_bytes_for(
+                fifo, speed if speed > 0 else 8)
+        else:
+            opts.fifo_bytes = min(int(fifo), lib.ACCUDISC_FIFO_MAX_BYTES)
         # Kept alive for the duration of the call: cffi frees an unreferenced
         # new_allocator result, and opts.cdtext_path would then dangle into a
         # burn. Assigning it to a local is load-bearing, not tidiness.
@@ -2814,6 +2852,20 @@ class WriteOffset:
     def usable(self) -> bool:
         """True when this is a drive measurement fit to store."""
         return self.write_offset is not None
+
+
+def fifo_bytes_for(seconds: float, speed_x: int = 8) -> int:
+    """Bytes for `seconds` of CD audio at `speed_x`, clamped to the ceiling.
+
+    Exposed so a caller sizing a buffer in time uses the same arithmetic the
+    engine does, rather than a second implementation of one rule.
+
+    `speed_x` is the speed you intend to REQUEST. It cannot be read back from
+    the drive: mode page 2A reports the speed requested rather than delivered,
+    and its fields describe reading. Pass what you will ask for, or the drive's
+    maximum for a conservative size.
+    """
+    return int(lib.accudisc_fifo_bytes_for(float(seconds), int(speed_x)))
 
 
 def write_offset_signal(out=None) -> bytes | memoryview:

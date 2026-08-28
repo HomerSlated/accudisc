@@ -204,6 +204,52 @@ CD-DA/DAO focus); cdrecord is the tie-breaker for drive-specific behaviour.
    remains AccurateRip verification on pressed discs.
 
    Raw run notes: `private/research/incoming/2026-08-27-write-offset-hardware-run.md`.
+
+   **2026-08-28, the buffers (0.26.0 / 0.27.0).** Both are now ON by default.
+
+   `BURN-Proof` is no longer forced on every drive. It is probed from CD
+   Mastering (002Eh) — the write type this library uses — and its BUF bit.
+   Measured on the PX-716A: `byte12=0x7F` (BUF/SAO/RawMS/Raw/TestWrite all set),
+   `current=0` with a finished disc in the tray and `current=1` with a blank,
+   which is why capability and currency are separate fields. CDEmu returns **no
+   002Eh descriptor at all** and burns through it fine, so the absent case has a
+   real device behind it.
+
+   **The claim is acted on and cannot be verified**, deliberately and as an
+   exception to this project's usual gate order: proving BUF works means
+   starving a real burn and inspecting the disc, one blank per drive,
+   destroyed. It is reported as *claimed*, never as tested.
+
+   The **write FIFO** is a memory-locked ring between the source and the drive,
+   sized in seconds (default 5 s) or bytes. Verified on the PX-716A by
+   `--simulate` across three configurations, blank re-checked untouched after
+   each:
+
+   ```
+   FIFO 7048944 bytes in 111 slots of 27 sectors, memory LOCKED
+   FIFO primed 111/111 slots before the first sector
+   FIFO — 0 starvations, low-water 110/111 slots, producer waited 1766 times
+   ```
+
+   **Two defects the hardware found that the unit tests could not**, both worth
+   remembering because both were well-formed numbers with the wrong referent:
+
+   1. `FIFO empty at sector 0`, every run — the opening pop reading an empty
+      ring. Harmless with BURN-Proof; on a drive *without* one the underrun
+      policy would have stopped every burn at sector 0, so a buffer added to
+      protect unprotected drives would have made burning impossible on
+      precisely those drives. Fixed by priming before the first sector.
+   2. `low-water 1/111` on a run where the producer was blocked on a **full**
+      ring 1766 times — the ring emptying at end of stream because the file ran
+      out. Now tracked only while the source has data: the same run reports
+      `low-water 110/111`.
+
+   **Still not exercised on hardware:** a genuine starvation. `slowdisk` sets
+   `io.max wbps` only (`/usr/local/sbin/slowdisk:152`), so it throttles WRITES —
+   and the write FIFO starves on the source READ. Starving it on real hardware
+   needs an `rbps` cap, or a slow source by some other means. The policy itself
+   is covered device-free in both directions (identical starvation, opposite
+   outcome, the only difference being whether a failover exists).
 3. **Full TOC** — multi-track, pregaps/indices, MCN/ISRC, CD-Text lead-in,
    P/Q/R–W synthesis; verify subchannel with the read path.
 4. **`--sub` passthrough** — caller-supplied raw P–W for exact reproduction.

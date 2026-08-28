@@ -1751,6 +1751,64 @@ def test_a_short_read_back_is_refused():
         raise AssertionError("a short read-back must be refused")
 
 
+def test_fifo_sizing_is_one_rule_shared_with_the_engine():
+    """A float is seconds, an int is bytes, and the cap is real.
+
+    The two types mean different things on purpose. The useful unit is TIME —
+    the same byte count is 3.4 s at CD 8x and under 0.2 s at BD speeds — but
+    the honest unit is bytes, so both are offered and neither is guessed at.
+    """
+    assert ad.fifo_bytes_for(1.0, 1) == 176_400          # 1 s of CD audio
+    assert ad.fifo_bytes_for(1.0, 8) == 1_411_200
+    # 5 s at 48x would be ~42 MB of LOCKED memory, which on a small board is a
+    # refusal to start rather than a buffer.
+    assert ad.fifo_bytes_for(5.0, 48) == lib.ACCUDISC_FIFO_MAX_BYTES
+    assert ad.fifo_bytes_for(0.0, 8) == 0
+
+
+def test_write_marshals_the_buffer_and_failover_options():
+    """Device-free: a NULL device fails before the burn, after marshalling.
+
+    What this checks is that the three states of each option are DISTINCT and
+    reach the library — a binding that collapsed `burnproof=False` into the
+    default would silently restore the failover the caller asked to remove,
+    and the caller would learn that from a coaster.
+    """
+    opts = ffi.new("accudisc_write_opts*")
+    opts.size = ffi.sizeof("accudisc_write_opts")
+    assert lib.ACCUDISC_BURNPROOF_AUTO == 0        # what a zero-init caller gets
+    assert lib.ACCUDISC_BURNPROOF_OFF != lib.ACCUDISC_BURNPROOF_AUTO
+    assert lib.ACCUDISC_BURNPROOF_ON != lib.ACCUDISC_BURNPROOF_AUTO
+    # 0 means DEFAULT, not off — a zero-init caller must be protected rather
+    # than unprotected by accident. Off is a distinct sentinel.
+    assert lib.ACCUDISC_FIFO_NONE != 0
+    assert lib.ACCUDISC_BUFFER_NONE != 0
+
+
+def test_features_reports_write_capability_as_a_claim():
+    """The write flags exist and default False on a zero struct.
+
+    They are CLAIMS: unlike every functional flag beside them, nothing
+    cross-checks BUF against behaviour, because the check would destroy a
+    blank per drive.
+    """
+    f = ad.Features(
+        feature_present=True, current=True, dap=False, c2_claimed=True,
+        cdtext_claimed=True, ok_c2=True, ok_sub_raw=True, ok_sub_q=True,
+        ok_c2_sub_raw=True, ok_c2_sub_q=True, c2_verdict=ad.C2Verdict(0),
+    )
+    # Appended with defaults, so a construction predating them still works.
+    assert f.buf_claimed is False
+    assert f.burnproof_available is False
+
+    g = dataclasses.replace(f, mastering_present=True, buf_claimed=True)
+    assert g.burnproof_available is True
+    # Present but not claiming is NOT availability — the two are separate
+    # questions and folding them would enable a failover that is not there.
+    h = dataclasses.replace(f, mastering_present=True, buf_claimed=False)
+    assert h.burnproof_available is False
+
+
 # ---------------------------------------------------------------------------
 # standalone runner (no pytest required)
 #
