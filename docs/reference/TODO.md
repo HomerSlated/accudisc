@@ -5346,7 +5346,44 @@ is genuinely inside the same window, and the window is closing.
   PLAN §9 phases 3–5 (`--sub` passthrough, vendor write features) are genuinely
   not started.
 
-## `accudisc speed 0` resets the WRITE speed and does not say so
+## `accudisc speed N` sets the WRITE speed too, for every N — not just 0
+
+Found 2026-08-28 restoring the drive after the 0.29.0 ladder; **cause corrected
+the same afternoon** by the speed-persistence matrix
+(`private/research/incoming/2026-08-28-speed-persistence.md`).
+
+THE MECHANISM IS OURS. `adsc_cdb_set_streaming_desc` (`src/mmc/cdb.c`) writes
+`Write Size = read_size` into the SET STREAMING performance descriptor, with the
+comment "(mirror; unused for read)". Measured: the drive USES it.
+
+    SET STREAMING 8x       -> READ 8x  AND WRITE 8x
+    SET CD SPEED r=8 w=4   -> READ 8x      WRITE 4x   (only write moves)
+
+So SET STREAMING overrides SET CD SPEED, not the reverse, and `accudisc speed N`
+— a READ-speed command in the help, the header and the man page — silently
+retunes the write speed at every N. The `speed 0` case below is one instance of
+it, not a separate bug.
+
+**Consequences, all measured:**
+
+- A restore must be **SET STREAMING first, then SET CD SPEED**. The other order
+  loses the write speed, because streaming overwrites both fields.
+- A restore must replay the **kB/s the drive reported**, not the Nx requested.
+  The ladders differ — READ admits {4,8,24,32,40}, WRITE {4,8,16,32,48} — so
+  `accudisc_set_speed`, which takes Nx, cannot round-trip an off-ladder value.
+  (Those are ACCEPTANCE ladders from page 2A. Per §4a above, acceptance is not
+  delivery — a 48x write rung means the field took the value, and no burn in
+  that matrix ran at 48x to test it.)
+- A burn does NOT disturb the read speed (0.29.0 reads it back and passes it
+  through), so the leak is one-directional: reading disturbs writing.
+
+Fix options, in the order I would take them: (a) stop mirroring the rate into
+Write Size and re-measure what the drive then does with a zero there; (b) if the
+field cannot be left alone, read the current write speed first and mirror THAT;
+(c) failing both, document the side effect loudly. (a) is a one-line change and
+a hardware run.
+
+### The original filing, kept because its second half still stands
 
 Found 2026-08-28 while restoring the drive after the 0.29.0 write-speed ladder.
 
@@ -5357,18 +5394,25 @@ Measured on the PX-716A:
 
 Two separate things, both worth closing:
 
-1. **SET STREAMING's RDD bit is refused by this drive.** `accudisc_set_speed(dev,
+1. **SET STREAMING's RDD bit is refused by this drive.** (Still true and still
+   worth its own line.) `accudisc_set_speed(dev,
    0)` sets desc[0] = 0x04 ("restore drive defaults") and the drive rejects it;
    `src/device.c` latches streaming off and falls back to CDROM_SELECT_SPEED. The
    only mechanism we have that is *named* restore-defaults does not work on the
    one drive we test on. Do not assume it works elsewhere either — it is
    currently evidenced nowhere.
 
-2. **The fallback resets the write speed as a side effect.** `speed` is
-   documented as a READ-speed command throughout (help text, header, man page).
-   The likely mechanism is the kernel issuing SET CD SPEED with 0xFFFF in both
-   fields for speed 0, i.e. "maximum each" rather than "defaults". Either
-   document the side effect or narrow the command so it only touches reading.
+2. ~~**The fallback resets the write speed as a side effect.**~~ **SUPERSEDED
+   — the guess here was wrong.** I attributed the write-speed movement to the
+   kernel's CDROM_SELECT_SPEED fallback issuing 0xFFFF in both fields. That
+   explains only the `speed 0` case, where the RDD bit is refused and the
+   fallback runs at all. The general cause is our own descriptor mirroring the
+   rate into Write Size, above — which moves the write speed at EVERY N, on the
+   SET STREAMING path, with no fallback involved.
+
+   Recorded rather than deleted because the error is instructive: a candidate
+   that fits the one case in front of you is not thereby the cause, and I filed
+   it without testing any other N.
 
 Now that 0.29.0 sets a write speed deliberately, this matters more than it did:
 a burn leaves the drive at the burn's speed (consistent with `speed`'s documented
