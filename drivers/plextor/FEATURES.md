@@ -100,7 +100,8 @@ SpeedRead verified off.
 | `0xEE` | **Drive reset / reboot** (no data) | Do **not** send casually — resets the drive. |
 | `0xD4` / `0xD5` | GET_AUTH / SEND_AUTH | SecuRec + PX-755/760 auth handshake. |
 | `0xE3` | PlexEraser | Destructive media erase. Never probe live. |
-| `0xEB` | PoweRec transfer-rate / recommended speed readout | Read-only status. |
+| `0xEB` | Speed LIST readout (cdrecord `get_speeds_plextor`) | Read-only status. **Not POWEREC** — see 0xED. This row previously said "PoweRec transfer-rate / recommended speed readout", which conflated two commands; corrected 2026-08-28 when the governor was implemented. |
+| `0xED` | "Drive mode 2" — 8-byte state block, mode code 0 = **POWEREC**, the automatic WRITE-speed governor. GET is data-IN 8 B (`resp[2]` bit 0 = on, `resp[4..5]` = recommended kB/s BE); SET carries one bit in CDB byte 1 (`0x10` off / `0x11` on) with the mode code at byte 2 and NO data transfer. | Implemented 0.32.0, verified both directions on a PX-716A. A wrong CDB layout is refused 5/24 rather than silently ignored. |
 | `0xF1` | EEPROM read (TLA etc.) | PX-716 reportedly rejects the TLA form. |
 | `0xF3` / `0xF5` | FE/TE (focus/tracking error) scan + readout | Diagnostic. |
 | `0xD8` | READ CD-DA (classic raw audio) | Not needed; all five `0xBE` combos work in the core. |

@@ -85,7 +85,12 @@ behaviors, command layouts, and hardware quirks we relied on:
   *unchanged*; and the climb by one 1x rung when a drive refuses a speed below
   its own minimum with ILLEGAL REQUEST / ASC 0x24 instead of rounding up
   (`drv_mmc.c` `speed_select_mmc` / `mmc_set_speed`, `scsi_cdr.c`
-  `scsi_set_speed`).
+  `scsi_set_speed`); and the **POWEREC write-speed governor** — vendor opcode
+  0xED "drive mode 2", the 8-byte state block's layout, and the unusual SET form
+  that carries its one-bit payload in CDB byte 1 rather than a data buffer
+  (`drv_mmc.c` `drivemode2_plextor` / `powerrec_plextor` /
+  `check_powerrec_plextor`, with the bitfield offsets from
+  `libscg/scg/scsicdb.h`).
 - **cdrdao** — mode page 2A speed-field offsets, DAO writing model
   (write path, upcoming).
 - **libcdio-paranoia / cd-paranoia** — verification and reread strategy

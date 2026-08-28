@@ -44,6 +44,13 @@ static void usage(FILE *to)
         "                 [--start L --count N] REQUESTS that range (a perf hint;\n"
         "                 locality is drive-dependent — whole-disc on all drives\n"
         "                 tested so far). A standalone set persists (not restored)\n"
+        "  write-governor [on|off]\n"
+        "                 report or set the vendor WRITE-speed governor\n"
+        "                 (Plextor POWEREC) — needs --driver; persistent\n"
+        "                 drive state. With it ON the DRIVE picks the\n"
+        "                 write rate and a requested speed is an upper\n"
+        "                 bound at best. No argument = report only.\n"
+        "                 Nothing in the burn path changes it\n"
         "  speed-uncap [on|off]\n"
         "                 report or set the vendor read-speed uncap\n"
         "                 (Plextor: SpeedRead) — needs --driver; persistent\n"
@@ -1264,6 +1271,59 @@ static int cmd_speed_uncap(accudisc_device *dev, int argc, char **argv)
     return 0;
 }
 
+/* Report the write-speed governor, or set it. The recommended rate is printed
+ * because it is what the drive intends — and labelled, because it is not what
+ * the medium gets: measured recommending 48x on a disc that then took 25x. */
+static int cmd_write_governor(accudisc_device *dev, int argc, char **argv)
+{
+    uint32_t rec = 0;
+    int on = 0, err;
+
+    if (argc > 1) {
+        usage(stderr);
+        return 1;
+    }
+    if (argc == 1) {
+        if (!strcmp(argv[0], "on"))
+            on = 1;
+        else if (strcmp(argv[0], "off") != 0) {
+            usage(stderr);
+            return 1;
+        }
+        err = accudisc_write_governor_set(dev, on);
+        if (err == ACCUDISC_ERR_UNSUPPORTED) {
+            fprintf(stderr, "accudisc: write-speed governor unsupported via "
+                            "%s — a vendor driver is required "
+                            "(--driver auto)\n",
+                    accudisc_access_method(dev));
+            return 2;
+        }
+        if (err != ACCUDISC_OK)
+            return fail_dev(dev, "write-governor set", err);
+    }
+
+    err = accudisc_write_governor_get(dev, &on, &rec);
+    if (err == ACCUDISC_ERR_UNSUPPORTED) {
+        fprintf(stderr, "accudisc: write-speed governor unsupported via %s — "
+                        "a vendor driver is required (--driver auto)\n",
+                accudisc_access_method(dev));
+        return 2;
+    }
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "write-governor get", err);
+
+    printf("write-governor %s\n", on ? "on" : "off");
+    /* No silent "recommended 0": a governor reporting nothing is a different
+     * state from one recommending 1x, and 0.0x would be a number where there
+     * is no measurement. */
+    if (rec)
+        printf("recommended %u kB/s (%.1fx) — the drive's INTENTION, not a "
+               "delivered rate\n", rec, rec / 176.4);
+    else
+        printf("recommended none reported\n");
+    return 0;
+}
+
 static int cmd_media(accudisc_device *dev)
 {
     accudisc_atip atip;
@@ -2464,6 +2524,8 @@ int main(int argc, char **argv)
         rc = cmd_speed(dev, nrest, rest);
     else if (!strcmp(command, "speed-uncap"))
         rc = cmd_speed_uncap(dev, nrest, rest);
+    else if (!strcmp(command, "write-governor"))
+        rc = cmd_write_governor(dev, nrest, rest);
     else if (!strcmp(command, "media"))
         rc = cmd_media(dev);
     else if (!strcmp(command, "write"))

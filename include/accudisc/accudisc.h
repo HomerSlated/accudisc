@@ -27,7 +27,30 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 31 /* 0.31.0: SETTING THE READ SPEED NO LONGER
+#define ACCUDISC_VERSION_MINOR 32 /* 0.32.0: THE WRITE-SPEED GOVERNOR
+                                  * (Plextor POWEREC) IS REACHABLE. New
+                                  * accudisc_write_governor_get/_set, a
+                                  * DRIVER ABI BUMP (2 -> 3, two appended
+                                  * slots), and accudisc_features grew 16 -> 24
+                                  * with governor_known/_on/_recommended_kbps.
+                                  * That struct has no size field, so this
+                                  * version bump is the ONLY signal a consumer
+                                  * gets that it moved.
+                                  * The governor decides whether the DRIVE
+                                  * overrides the write speed the host asked
+                                  * for; with it on, a request is an upper
+                                  * bound at best. cdrecord turns it off when
+                                  * forcing a speed (drv_mmc.c
+                                  * speed_select_mmc).
+                                  * NOTHING IN THE WRITE PATH TOUCHES IT.
+                                  * Whether a burn should force it off is open
+                                  * and needs a live burn to settle
+                                  * (docs/reference/LIVE_BURN_QUEUE.md); until
+                                  * then a burn leaves it as the caller left it.
+                                  * governor_recommended_kbps is STATUS, NOT A
+                                  * RATE — measured recommending 48x on media
+                                  * that then took 25x.
+                                  * 0.31.0: SETTING THE READ SPEED NO LONGER
                                   * RETUNES THE WRITE SPEED. No ABI change and
                                   * no signature change in the public header —
                                   * accudisc_set_speed and _set_speed_range are
@@ -1265,6 +1288,31 @@ ACCUDISC_API int accudisc_counter_census(accudisc_device *dev,
 ACCUDISC_API int accudisc_speed_uncap_get(accudisc_device *dev, int *on);
 ACCUDISC_API int accudisc_speed_uncap_set(accudisc_device *dev, int on);
 
+/* The drive's automatic WRITE-speed governor (Plextor POWEREC). Needs an
+ * attached vendor driver; ACCUDISC_ERR_UNSUPPORTED without one.
+ *
+ * With the governor ON the drive picks its own write rate from a running
+ * assessment of the medium, and the speed the host requests becomes an upper
+ * bound at best. Turning it OFF is what cdrecord does when it is forcing a
+ * speed (drv_mmc.c speed_select_mmc).
+ *
+ * `recommended_kbps` (may be NULL) is the rate the governor currently
+ * recommends. STATUS, NOT A RATE — see accudisc_features.
+ *
+ * PERSISTENT DRIVE STATE, like the read uncap: whatever you set outlives the
+ * handle. There is no push/pop pair for it yet, deliberately — the read
+ * uncap's exists because a *read* transparently needs the cap lifted and put
+ * back, whereas changing the write governor is something a caller does on
+ * purpose. If a burn ever changes it internally, it needs a push/pop first.
+ *
+ * NOTHING IN THE WRITE PATH TOUCHES THIS. Whether a burn should force the
+ * governor off is open and needs a live burn to settle — see
+ * docs/reference/LIVE_BURN_QUEUE.md. Until then a burn leaves it exactly as
+ * the caller left it. */
+ACCUDISC_API int accudisc_write_governor_get(accudisc_device *dev, int *on,
+                                             uint32_t *recommended_kbps);
+ACCUDISC_API int accudisc_write_governor_set(accudisc_device *dev, int on);
+
 /* Whether the uncap's state is KNOWN. Every value here is now authoritative or
  * absent; there is no hedged one.
  *
@@ -1959,6 +2007,26 @@ typedef struct accudisc_features {
     uint8_t buf_claimed;         /* BUF: zero-loss linking (BURN-Proof) */
     uint8_t sao_claimed;         /* SAO: Session-At-Once, our write type */
     uint8_t test_write_claimed;  /* the drive can --simulate */
+
+    /* ---- WRITE-SPEED GOVERNOR (Plextor POWEREC) — appended 0.32.0.
+     *
+     * VENDOR, so this is the one group here that depends on a driver being
+     * attached, and its absence means "we could not ask" rather than "the
+     * drive has no governor". governor_known distinguishes those; without it a
+     * zero in governor_on would be read as "off", which is the answer a caller
+     * would act on.
+     *
+     * The governor decides whether the DRIVE overrides the write speed the
+     * host asked for. With it on, a requested rate is an upper bound at best.
+     *
+     * governor_recommended_kbps is STATUS AND NOT A RATE. Measured on a
+     * PX-716A 2026-08-28: it recommended 48x while cdrecord's dummy run on the
+     * same medium delivered 25x. It says what the drive intends, which is a
+     * different question from what the medium gets — see
+     * docs/reference/TODO.md on the phantom 48x. */
+    uint8_t governor_known;      /* a driver answered; 0 = not asked/no driver */
+    uint8_t governor_on;         /* meaningful only when governor_known */
+    uint32_t governor_recommended_kbps; /* 0 = not reported */
 } accudisc_features;
 
 ACCUDISC_API int accudisc_probe_features(accudisc_device *dev,

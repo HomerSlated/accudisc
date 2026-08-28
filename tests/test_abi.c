@@ -81,11 +81,19 @@ _Static_assert(offsetof(accudisc_write_opts, fifo_bytes) == 28,
                "write_opts: fifo_bytes moved");
 
 /* accudisc_features has NO size field, so the version bump is the only signal a
- * consumer gets that it grew — 11 -> 16 bytes in 0.26.0, five write-capability
- * flags appended. Pinned because "always bump the version" is a load-bearing
+ * consumer gets that it grew — 11 -> 16 bytes in 0.26.0 (five write-capability
+ * flags), 16 -> 24 in 0.32.0 (the vendor write-speed governor: two flags plus a
+ * uint32, which the alignment of that uint32 makes an 8-byte step rather than a
+ * 6-byte one). Pinned because "always bump the version" is a load-bearing
  * invariant for size-less structs rather than a habit, and cdda2img found the
  * case where it was not kept (their §113.2). */
-_Static_assert(sizeof(accudisc_features) == 16, "features grew — bump the version");
+_Static_assert(sizeof(accudisc_features) == 24, "features grew — bump the version");
+_Static_assert(offsetof(accudisc_features, governor_known) == 16,
+               "features: the governor fields were supposed to APPEND");
+/* The uint32 must stay LAST of the group: putting it before the two uint8s
+ * would pad differently and silently relocate them for a 0.31.0 consumer. */
+_Static_assert(offsetof(accudisc_features, governor_recommended_kbps) == 20,
+               "features: governor_recommended_kbps moved");
 _Static_assert(offsetof(accudisc_features, c2_verdict) == 10,
                "features: c2_verdict moved, breaking every 0.25.0 consumer");
 _Static_assert(offsetof(accudisc_features, buf_claimed) == 13,

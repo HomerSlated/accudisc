@@ -169,6 +169,21 @@ int accudisc_probe_features(accudisc_device *dev, accudisc_features *out)
     out->ok_c2_sub_raw = (uint8_t)combo_smoke(dev, ADSC_C2_294, ADSC_SUB_RAW);
     out->ok_c2_sub_q = (uint8_t)combo_smoke(dev, ADSC_C2_294, ADSC_SUB_Q);
 
+    /* Vendor write-speed governor, if a driver is attached to answer. The
+     * ERR_UNSUPPORTED case (no driver, or a driver without the slot) leaves
+     * governor_known 0 — "we could not ask", which a caller must not read as
+     * "the drive has no governor". */
+    {
+        int gon = 0;
+        uint32_t grec = 0;
+
+        if (accudisc_write_governor_get(dev, &gon, &grec) == ACCUDISC_OK) {
+            out->governor_known = 1;
+            out->governor_on = (uint8_t)(gon ? 1 : 0);
+            out->governor_recommended_kbps = grec;
+        }
+    }
+
     if (no_medium)
         out->c2_verdict = ACCUDISC_C2_UNVERIFIED; /* can't smoke-test empty */
     else if (!out->ok_c2)

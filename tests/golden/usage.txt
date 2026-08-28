@@ -26,6 +26,13 @@ commands:
                  [--start L --count N] REQUESTS that range (a perf hint;
                  locality is drive-dependent — whole-disc on all drives
                  tested so far). A standalone set persists (not restored)
+  write-governor [on|off]
+                 report or set the vendor WRITE-speed governor
+                 (Plextor POWEREC) — needs --driver; persistent
+                 drive state. With it ON the DRIVE picks the
+                 write rate and a requested speed is an upper
+                 bound at best. No argument = report only.
+                 Nothing in the burn path changes it
   speed-uncap [on|off]
                  report or set the vendor read-speed uncap
                  (Plextor: SpeedRead) — needs --driver; persistent

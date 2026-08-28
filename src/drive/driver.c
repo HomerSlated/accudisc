@@ -242,6 +242,29 @@ int accudisc_speed_uncap_get(accudisc_device *dev, int *on)
     return dev->drv->speed_uncap_get(&dev->host, on);
 }
 
+int accudisc_write_governor_get(accudisc_device *dev, int *on,
+                                uint32_t *recommended_kbps)
+{
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+    if (!dev->drv || !dev->drv->write_governor_get)
+        return ACCUDISC_ERR_UNSUPPORTED;
+    return dev->drv->write_governor_get(&dev->host, on, recommended_kbps);
+}
+
+int accudisc_write_governor_set(accudisc_device *dev, int on)
+{
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+    if (!dev->drv || !dev->drv->write_governor_set)
+        return ACCUDISC_ERR_UNSUPPORTED;
+    /* No dev-side memo of what we set, unlike the read uncap. That memo exists
+     * so accudisc_speed_uncap_probe can answer for a handle whose driver has
+     * since detached; the governor has no probe with that contract and adding
+     * a half-used cache would be a second source of truth for the same bit. */
+    return dev->drv->write_governor_set(&dev->host, on ? 1 : 0);
+}
+
 int accudisc_speed_uncap_set(accudisc_device *dev, int on)
 {
     int rc;

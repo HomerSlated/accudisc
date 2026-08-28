@@ -35,7 +35,7 @@ extern "C" {
 
 /* Bumped on any incompatible change to this file; the library refuses
  * drivers built against a different ABI. */
-#define ACCUDISC_DRIVER_ABI 2
+#define ACCUDISC_DRIVER_ABI 3
 
 typedef enum accudisc_host_dir {
     ACCUDISC_HOST_NONE = 0,
@@ -85,6 +85,33 @@ typedef struct accudisc_driver {
      * generic MMC path (accudisc_set_speed); this only raises the ceiling. */
     int (*speed_uncap_get)(const accudisc_host *host, int *on);
     int (*speed_uncap_set)(const accudisc_host *host, int on);
+
+    /* Capability: the drive's automatic WRITE-speed governor (Plextor
+     * POWEREC). Appended in ABI 3.
+     *
+     * Distinct from speed_uncap above in both direction and kind: that one
+     * raises a READ ceiling, this one decides whether the DRIVE overrides the
+     * write speed the host asked for. With it on, the drive picks a rate from
+     * its own running assessment of the medium; the host's request becomes an
+     * upper bound at best.
+     *
+     * `recommended_kbps` (get, may be NULL) is the rate the governor currently
+     * recommends, in kB/s — READ-ONLY STATUS, and it is what the drive intends
+     * rather than what it will achieve. Measured on a PX-716A 2026-08-28: with
+     * POWEREC on it recommended 48x and cdrecord's dummy run then delivered
+     * 25x. Never present it as a rate.
+     *
+     * set() must verify by re-reading, like speed_uncap_set. The setting is
+     * persistent drive state.
+     *
+     * NOT wired into the burn path. cdrecord turns POWEREC off when it is
+     * forcing a speed (drv_mmc.c speed_select_mmc), and whether we should do
+     * the same is an open question that needs a live burn to answer — see
+     * docs/reference/LIVE_BURN_QUEUE.md. Until then this is a probe and an
+     * explicit caller action, never something a burn does behind the caller. */
+    int (*write_governor_get)(const accudisc_host *host, int *on,
+                              uint32_t *recommended_kbps);
+    int (*write_governor_set)(const accudisc_host *host, int on);
 } accudisc_driver;
 
 /* The symbol every driver .so must export. */
