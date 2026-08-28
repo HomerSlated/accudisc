@@ -2690,9 +2690,15 @@ on single-extent drives). Revisit the ranged feature in a future session.
   `cli-machine-interface.md` declares this format *stable* and is the authority
   a binding is written against, so the authority is currently behind the code.
   Fix both, and add the three `subq_*` counter meanings to the existing table.
-- **`ATTRIBUTION.md:25` still calls the DAO write path "upcoming". [P3]** — it
-  shipped and was hardware-verified. Stale in a file the man page's new CREDITS
-  section now mirrors.
+  **HALF DONE 2026-08-28.** `cli-machine-interface.md` was brought current
+  during the 0.30.0 work (all twelve keys plus the new `error write` token) and
+  the usage text now lists them too. What REMAINS: the doc's per-counter meaning
+  list still stops at `slips` — `buffer_peak`/`buffer_stalls` are described in
+  the AccuBuffer prose but not in the summary-token table where a binding author
+  would look.
+- ~~**`ATTRIBUTION.md:25` still calls the DAO write path "upcoming". [P3]**~~ —
+  **DONE 2026-08-28.** Now records it as shipped in 0.20.0 and hardware-verified
+  (burned DAO, read back bit-exact, CD-Text included).
 - Logical type must be gated on a CD profile. [P2]
 - `accudisc_eject`/`accudisc_load` header comments describe START STOP UNIT
   (LoEj), but the implementation uses block-layer CDROMEJECT/CDROMCLOSETRAY
@@ -3073,6 +3079,91 @@ read-only open, not a speed matter.
       render it".
   Note: CD-Text does NOT affect the Disc ID (pure TOC) — content fidelity,
   separate from the pregap item below.
+- **THE WRITE PROGRESS SURFACE — `accudisc_write_stats`. [P2], PLAN, agreed
+  with Keith 2026-08-28.** Research and the full spec survey are in
+  `private/research/incoming/2026-08-28-write-progress-surface.md`; this is the
+  execution plan.
+
+  **The gap.** A read hands the caller `accudisc_read_stats` — ~20 fields
+  driving both a progress bar and a disc map. A burn hands back
+  `void (*)(void *user, uint32_t done, uint32_t total)`. Two integers. There is
+  no write-side stats struct at all.
+
+  **And most of it is already measured.** `struct write_flow` (`src/write/burn.c`)
+  carries, for the whole burn: `stalls`, `stall_ms`, `worst_ms`, `worst_lba`,
+  `stalling_chunks`, and the drive-buffer `cap_total` / `min_fill_pct` / `polls`
+  / `low_samples` / `cap_varied`. The FIFO separately counts `starved`, the
+  low-water slot count and producer waits. **All of it goes to log lines and
+  none of it reaches the caller.** So step 1 is export, not measurement.
+
+  **What the SPEC adds beyond bytes/sectors/time** (MMC-5, surveyed 2026-08-28):
+
+  - **NEXT WRITABLE ADDRESS, READ TRACK INFORMATION (0x52) — the one genuinely
+    new signal.** MMC-5 §6.27.3.14: when streaming, NWA is *the next user data
+    block the Drive expects to receive*. That is the DRIVE'S position, against
+    our host-side `done`, which counts what we handed to its BUFFER. The gap
+    between them is the burn's true in-flight depth — precisely the quantity a
+    progress bar over a buffered pipeline gets wrong. One 0x52 per existing poll
+    interval, so no new spin or seek behaviour.
+    **Validity is conditional** (Table 509, RT/Blank/Packet/FP bits): it must
+    report UNKNOWN where those say so, on the same principle as `cap_live` — a
+    drive that will not answer must never read as "at sector 0".
+  - **GET PERFORMANCE type 03h (Write Speed descriptors)** — the drive's ladder
+    of admitted write speeds for the mounted medium. Belongs beside
+    `accudisc_probe_speed_ladder`, NOT in burn stats: it is a choosing aid, and
+    today's work shows it is an ACCEPTANCE list, not a delivery one.
+
+  **What is NOT available, recorded so nobody hunts for it:**
+  - **No write-side C2 or error count.** Correction is *generated* on write, not
+    detected. The only way to know a burn was good is to read it back — which is
+    why `LIVE_BURN_QUEUE.md` B1 exists.
+  - **No per-sector write status.** MMC gives no write counterpart to the read
+    engine's frame-accurate map: the drive accepts a WRITE(10) or refuses it. A
+    write "map" could only record what the host sent and what was refused —
+    worth building, worth not overselling as the read map's equal.
+  - **No delivered-rate field.** Established repeatedly on 2026-08-28: page 2A
+    echoes the REQUEST. Elapsed time is the only instrument for a rate.
+
+  **Build order (each step independently shippable):**
+  1. `accudisc_write_stats` carrying ONLY what is already measured. No new
+     commands, no new risk on the burn path, and it closes most of the gap.
+  2. Buffer fill into the progress callback, so a bar can show it LIVE rather
+     than only in the end-of-burn tally. This is the single most useful thing a
+     burn bar can show beyond percentage — a buffer trending empty is the early
+     warning, minutes before an underrun.
+  3. NWA last, because it is the only part that adds a command to the burn path,
+     and the burn path is where this project has found its sharpest defects.
+
+  **Two API constraints, both learned the hard way this week:**
+  - **The struct needs a `size` field from its FIRST version.**
+    `accudisc_features` has none, so 0.32.0 had to lean on the version macro as
+    the sole signal that it grew 16 -> 24 bytes. `accudisc_read_req` and
+    `accudisc_write_opts` carry `size` and negotiate properly. Be born with it.
+  - **Changing `adsc_burn_progress`'s signature is an ABI break** for anything
+    using it, and the Python binding wraps it. Either add a second callback type
+    and keep the old one, or take the break at a minor bump and say so loudly —
+    the project has done the latter (0.26.0, 0.27.0) without harm because the
+    consumers are known. Decide deliberately; do not discover it.
+
+    **AND IT COLLIDES WITH 8TRAX'S TOP ASK — do these two together.** Their
+    request (§"Consumer requests — 8trax", item 1) is a read-path progress
+    callback with the *identical* signature to the write one, because the whole
+    value to them is the two paths becoming interchangeable behind one
+    abstraction. So step 2 here (adding buffer fill to the write callback)
+    would, if done alone, move the write signature AWAY from the read one we
+    have not yet added — creating the divergence their request exists to
+    prevent, and doing it in the window before they can notice.
+
+    Resolution: settle ONE callback shape that serves both paths before
+    changing either. Their `done`-counts-ATTEMPTED rule (a bar fed from
+    `sectors_read` stalls short of 100% on a damaged disc) applies to the burn
+    equally: whatever an unwritable sector is, it still advances `done`.
+
+  **Step 3 is gated on a live burn.** NWA during `--simulate` may track the
+  buffer, or be frozen, rather than meaning what it means during a real burn —
+  queued as `LIVE_BURN_QUEUE.md` A4. Do not ship an NWA-derived depth whose only
+  validation is a laser-off run.
+
 - **Disc-ID round-trip mismatch = pregap/TOC, upstream (cdda2img).** Root cause
   pinned via 3-way compare: original disc track 1 @ LBA 33 with a 33-frame
   pregap, lead-out 347208; cdda2img's RBI + our burn both track 1 @ 0, lead-out

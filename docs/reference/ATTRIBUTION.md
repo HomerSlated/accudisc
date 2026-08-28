@@ -92,7 +92,8 @@ behaviors, command layouts, and hardware quirks we relied on:
   `check_powerrec_plextor`, with the bitfield offsets from
   `libscg/scg/scsicdb.h`).
 - **cdrdao** — mode page 2A speed-field offsets, DAO writing model
-  (write path, upcoming).
+  (write path — SHIPPED 0.20.0 and hardware-verified on a PX-716A: an image
+  burned DAO and read back bit-exact, CD-Text included).
 - **libcdio-paranoia / cd-paranoia** — verification and reread strategy
   background.
 - **BinaryObjectScanner** by Matt Nadareski (MIT) — a preservation-community

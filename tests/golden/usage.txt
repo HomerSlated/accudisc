@@ -138,7 +138,12 @@ read options:
   --progress-fd N  machine progress on fd N, newline-delimited:
                  'progress <done> <total>' lines, then a final
                  'summary hard= c2= recovered= suspect= rereads=
-                 slips=' line (stable format; -q does not mute it)
+                 slips= subq_total= subq_ok= subq_bad=
+                 subq_misposition= buffer_peak= buffer_stalls='
+                 line, or 'error write <lane> <errno>' if an output
+                 file could not be written (stable format; -q does
+                 not mute it). Full key list:
+                 docs/reference/cli-machine-interface.md
   -q             quiet: no human progress line
 
 exit codes (all commands):
