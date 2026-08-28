@@ -5320,3 +5320,36 @@ is genuinely inside the same window, and the window is closing.
   do not extend the write path without direction — still stands, and RECORDING_
   PLAN §9 phases 3–5 (`--sub` passthrough, vendor write features) are genuinely
   not started.
+
+## `accudisc speed 0` resets the WRITE speed and does not say so
+
+Found 2026-08-28 while restoring the drive after the 0.29.0 write-speed ladder.
+
+Measured on the PX-716A:
+
+    before   WRITE 2822 kB/s (16.0x)   READ 7056 kB/s (40.0x)
+    after    WRITE 8467 kB/s (48.0x)   READ 7056 kB/s (40.0x)
+
+Two separate things, both worth closing:
+
+1. **SET STREAMING's RDD bit is refused by this drive.** `accudisc_set_speed(dev,
+   0)` sets desc[0] = 0x04 ("restore drive defaults") and the drive rejects it;
+   `src/device.c` latches streaming off and falls back to CDROM_SELECT_SPEED. The
+   only mechanism we have that is *named* restore-defaults does not work on the
+   one drive we test on. Do not assume it works elsewhere either — it is
+   currently evidenced nowhere.
+
+2. **The fallback resets the write speed as a side effect.** `speed` is
+   documented as a READ-speed command throughout (help text, header, man page).
+   The likely mechanism is the kernel issuing SET CD SPEED with 0xFFFF in both
+   fields for speed 0, i.e. "maximum each" rather than "defaults". Either
+   document the side effect or narrow the command so it only touches reading.
+
+Now that 0.29.0 sets a write speed deliberately, this matters more than it did:
+a burn leaves the drive at the burn's speed (consistent with `speed`'s documented
+"a standalone set persists (not restored)", and with cdrecord), and the obvious
+way to undo that quietly moves a second setting.
+
+There is also no CLI command that REPORTS the current write speed — `speed` shows
+page 2A's read fields only. Diagnosing the above needed a throwaway probe.
+`adsc_write_cur_write_kbps()` exists internally as of 0.29.0.
