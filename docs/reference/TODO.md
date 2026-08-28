@@ -5377,11 +5377,30 @@ it, not a separate bug.
 - A burn does NOT disturb the read speed (0.29.0 reads it back and passes it
   through), so the leak is one-directional: reading disturbs writing.
 
-Fix options, in the order I would take them: (a) stop mirroring the rate into
-Write Size and re-measure what the drive then does with a zero there; (b) if the
-field cannot be left alone, read the current write speed first and mirror THAT;
-(c) failing both, document the side effect loudly. (a) is a one-line change and
-a hardware run.
+**FIX CHOSEN ON EVIDENCE, 2026-08-28 15:50 — it is (b), and (a) is WORSE than
+the bug.** Measured by sending the descriptor directly, start READ 24x /
+WRITE 8x, then `SET STREAMING 32x` three ways
+(`private/research/incoming/2026-08-28-speed-leak-and-48x.md` §1):
+
+    Write Size = read_size (SHIPPING)  -> READ 32x  WRITE 32x   leaked
+    Write Size = 0         (fix a)     -> READ 32x  WRITE 48x   WORSE
+    Write Size = cur_write (fix b)     -> READ 32x  WRITE  8x   EXACT
+
+There is NO "leave alone" encoding for this field: zero reads as **maximum**,
+exactly as 0xFFFF does in SET CD SPEED. So (a) — which I listed first as the
+obvious one-line fix — silently jumps the write speed to the drive's top rung,
+replacing a visible leak with an invisible one.
+
+TO DO: mirror the CURRENT write speed instead. `adsc_write_cur_write_kbps()`
+already exists (0.29.0). Note it must be read BEFORE the streaming call and the
+descriptor takes kB/s, so no Nx round-trip is involved — which also sidesteps
+the differing-ladders problem below.
+
+**And the leak escapes the uncap, which is the sharpest form of it.** With
+SpeedRead OFF (`max_x 40`), `SET STREAMING 48x` gives READ 40x — clamped
+correctly — and WRITE 48x, not clamped. The leak does not merely move a setting
+the caller did not ask about; it moves it PAST a limit the caller deliberately
+left in place.
 
 ### The original filing, kept because its second half still stands
 
@@ -5422,3 +5441,38 @@ way to undo that quietly moves a second setting.
 There is also no CLI command that REPORTS the current write speed — `speed` shows
 page 2A's read fields only. Diagnosing the above needed a throwaway probe.
 `adsc_write_cur_write_kbps()` exists internally as of 0.29.0.
+
+## The write-speed ladder saturates at 32x, and 48x CD-DA is accepted (2026-08-28)
+
+Measured, simulate only, 2400 sectors, engine-reported lead-in settle
+subtracted, best of 2 (full table and cautions in
+`private/research/incoming/2026-08-28-speed-leak-and-48x.md` §3):
+
+    ask   payload ms      ask   payload ms
+     4x     38958         24x     10021   <- same as 16x
+     8x     19659         32x      7690
+    16x     10039         40x      7711   <- same as 32x
+                          48x      7683   <- same as 32x
+
+Repeatability 0.04% over three runs each at 32x and 48x, so the collapse is far
+outside the noise. **A 48x CD-DA write is ACCEPTED, not refused**, and page 2A
+echoes 48.0x — the phantom-48x trap of §4a, now confirmed in the WRITE field as
+well as the read one.
+
+Two cautions that must travel with those numbers:
+
+- They are NOT medium write rates. `--simulate` runs the path with the laser
+  off; the figures are ~5x below the request and the SETTLE also scales with
+  requested speed (32.3 s at 4x, 8.1 s at 32x), which is what pacing the whole
+  operation would look like. Comparator between rungs only.
+- Short burn, fixed radius. A CAV drive writes outer tracks faster, so a
+  full-disc burn may separate rungs this cannot — §4b's confound.
+
+The SpeedRead uncap raises the advertised ceiling (`max_x` 40 -> 48) and changes
+the write payload times not at all (7690/7711/7683 off vs 7860/7685/7681 on).
+It is a read uncap and behaves as one.
+
+**Not testable here:** a Mode 1 data write at any speed. `src/write/tocparse.c:234`
+refuses a non-`TRACK AUDIO` track ("this is an audio-only writer"), which is
+CLAUDE.md scope rather than a defect. Verified against a real CD_ROM/MODE1 toc
+over an ISO: refused, exit 2.
