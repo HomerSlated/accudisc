@@ -2616,7 +2616,13 @@ on single-extent drives). Revisit the ranged feature in a future session.
   Verified on hardware through the binding: `asked 16x -> requested=16
   honoured=8 quantized=True`, `asked 8x -> honoured=8 quantized=False`, `asked
   none -> 0/0 quantized=False`. Drive restored to 40x.
-- **`cdtext` with no FILE reports itself as an unknown command. [P2]** —
+- ~~**`cdtext` with no FILE reports itself as an unknown command. [P2]**~~ —
+  **DONE 2026-08-28.** Dispatches on the name, validates inside, and emits
+  `accudisc: cdtext: FILE argument is required` plus usage, still exit 1. The
+  ambiguous usage line is reworded too: FILE is stated as required, and the
+  disc-carries-no-CD-Text case (writes nothing, exit 3) is named separately and
+  left untouched. The rule is in the code comment so it is not reintroduced.
+  Original analysis:
   Keith 2026-07-26: *"If a value is mandatory but not provided, and you continue
   anyway, that's a silent failure."* `cli/main.c:1686` dispatches on
   `!strcmp(command, "cdtext") && nrest > 0`, so a missing argument makes the
@@ -2641,8 +2647,38 @@ on single-extent drives). Revisit the ranged feature in a future session.
   and exits 3 (data absent). While there, disambiguate the usage text at
   `cli/main.c:25` — "(no file if absent)" reads as if it might mean the FILE
   argument; it means the disc's CD-Text.
-- **A value-taking option given no value silently consumes the NEXT FLAG as its
-  value. [P1]** — Raised by Keith 2026-07-26 from the man page. Every option in
+- ~~**A value-taking option given no value silently consumes the NEXT FLAG as
+  its value. [P1]**~~ — **DONE 2026-08-28.** One helper, `opt_val()`, replaces
+  all 46 `&& i + 1 < argc` guards across all 8 parser loops; a missing or
+  flag-shaped value now names the option and exits 1.
+
+  **The scope in the original note was too narrow — it said `cmd_read`, and it
+  was every command.** 46 sites, 8 loops: `offset`, `cxscan`, `speeds`,
+  `c2lag`, `speed`, `write-offset`, `write`, `read`, plus `main()`'s global
+  flags. Confirmed by running the malformed form against each.
+
+  Three things found while fixing it, none of which the note predicted:
+  - **`--driver --help` exited 0.** The complaint printed, then `--help` was
+    re-parsed as its own request and succeeded. `main()` now checks the bad-flag
+    before honouring a later `--version`/`--help`.
+  - **`--track`/`--tracks` share one value**, so it needed two `opt_val` calls
+    ORed rather than the mechanical conversion (safe: a non-matching call
+    touches neither `i` nor the value).
+  - **`cmd_features` takes only bare flags**, so it gets no helper at all —
+    there is no value for a next argument to be eaten as.
+
+  A lone `-` is deliberately NOT treated as flag-shaped: it is the conventional
+  stdin/stdout filename. Pinned in both directions in `tests/cli_surface.sh`
+  (24 checks; reverting the fix fails them), which is the right home because
+  the rejection happens before any device is opened.
+
+  **The test had the same bug it was testing.** `grep -qF "$opt requires..."`
+  with `$opt` starting `--` was read by grep as an option, so eight checks
+  failed against output that matched. Fixed with `grep -qF --`. And the first
+  draft used a nonexistent device, which short-circuits in `main()` before the
+  per-command parser runs — it would have passed while checking nothing.
+
+  Original analysis: Every option in
   `cmd_read`'s parser (`cli/main.c:1102-1194`) tests
   `!strcmp(a, "--chunk") && i + 1 < argc`, so:
   1. **Trailing** (`read --chunk`): the guard fails, control falls to the final
@@ -2667,7 +2703,10 @@ on single-extent drives). Revisit the ranged feature in a future session.
   `cmd_write`, `cmd_speeds`, `cmd_c2lag`, `cmd_cxscan` and `cmd_features` for
   the same shape.
 - **The man page says `--chunk`/`--retries` are "off by default"; they are
-  always in effect. [P2]** — `docs/man/accudisc.1`, "Accuracy and recovery":
+  always in effect. [P2] — DONE 2026-08-28.** The section now says these tune a
+  single-pass capture, names the four that are genuinely off unless set, and
+  states that `--chunk`/`--retries` cannot be off because their 0 means *use the
+  default*. Original analysis: `docs/man/accudisc.1`, "Accuracy and recovery":
   *"All of these are off by default"* is true for `--c2-retries` (0 = off),
   `--verify` (1 = off), `--overlap` (0 = off) and `--ladder` (unset), but
   **false for `--chunk` and `--retries`**, whose 0 means *use the default*
@@ -2676,7 +2715,14 @@ on single-extent drives). Revisit the ranged feature in a future session.
   single-pass streaming capture; the last four are off unless set". Keith
   2026-07-26: as written it reads as a contradiction — a default value on a
   flag that is simultaneously off.
-- **`cxscan`'s options are undiscoverable. [P3]** — `cmd_cxscan` accepts
+- ~~**`cxscan`'s options are undiscoverable. [P3]**~~ — **DONE 2026-08-28.**
+  The usage text now lists `[--start LBA] [--speed X]` and the output shape.
+  The man page already documented both — and carried a note saying the usage
+  text did not, which was itself the stale half; that note is gone. Worth
+  recording that the man page also USED `--speed` in an example while the usage
+  text denied it existed, which is worse than silence: a reader cannot tell
+  whether the example is wrong or the option is undocumented.
+  Original analysis: `cmd_cxscan` accepts
   `--start` and `--speed` (`cli/main.c:189-199`), but the usage line
   (`cli/main.c:61`) documents none, and any argument it does not recognise falls
   to `usage(stderr)` + exit 1. So the two supported options exist only in the
@@ -3566,9 +3612,15 @@ agreeing on the MSF→LBA arithmetic, track slotting and extents.
   `ACCUDISC_ERR_UNSUPPORTED` is returned and the caller must name tracks. Legal
   on the wire, unit-tested, never observed on real media.
 
-- **[P3]** Bindings (`bindings/python`, `bindings/rust`) do not yet expose
-  `accudisc_read_toc_src` or `accudisc_probe_disc`; they are generated against
-  the public header, so both are additive whenever next regenerated.
+- ~~**[P3]** Bindings do not yet expose `accudisc_read_toc_src` or
+  `accudisc_probe_disc`~~ — **CLOSED 2026-08-28, and it was wrong in BOTH
+  directions.** Python exposes both and has for some time:
+  `Device.probe_disc` (`__init__.py:1931`), `Device.read_toc_src` (`:2269`),
+  with the cdefs at `build_accudisc.py:385,489` and `read_toc_src` documented in
+  the binding README. And `bindings/rust/` contains a README and **no Rust
+  source at all** — there is nothing there for a function to be missing from.
+  The item described a gap in a binding that does not exist yet and a gap in one
+  that had already closed it. Verified by reading both trees, 2026-08-28.
 
 ## Formats and specs
 

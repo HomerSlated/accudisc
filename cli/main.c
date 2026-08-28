@@ -29,7 +29,9 @@ static void usage(FILE *to)
         "  toc            list tracks (LBA); prefers the full TOC and degrades\n"
         "                 to format 0 on an unreadable lead-in, reporting which\n"
         "  fulltoc [FILE] parsed session structure, or raw dump to FILE\n"
-        "  cdtext FILE    dump raw CD-Text packs to FILE (no file if absent)\n"
+        "  cdtext FILE    dump raw CD-Text packs to FILE. FILE is required;\n"
+        "                 if the DISC carries no CD-Text, none is written\n"
+        "                 and the exit is 3\n"
         "  text           decode and print CD-Text (block 0)\n"
         "  scan           MCN and per-track ISRCs from the Q subchannel\n"
         "  pregaps        per-track index/pregap map from Q (CRC-gated);\n"
@@ -88,6 +90,8 @@ static void usage(FILE *to)
         "                 missing, or if the two disagree (a defective\n"
         "                 disc — never averaged)\n"
         "  cxscan         hardware C1/C2/CU error census (needs --driver)\n"
+        "                 [--start LBA] [--speed X]; one 'cx <lba> <c1>\n"
+        "                 <c2> <cu>' line per sample, 75 sectors apart\n"
         "  version        print the library version\n"
         "\n"
         "driver options (vendor features are OFF unless requested):\n"
@@ -172,6 +176,64 @@ static void usage(FILE *to)
         "     read finished with hard/suspect/C2-flagged sectors, or a burn\n"
         "     whose CD-Text SIZE_INFO disagreed with the .toc (written as given)\n"
         "  (exception: 'features' keeps its frozen 0-iff-C2-usable contract)\n");
+}
+
+/* Does `argv[i]` take a value, and is there a real one after it?
+ *
+ * THE DEFECT THIS EXISTS FOR. Every value-taking option was written
+ *
+ *     if (opt_val(argv, argc, &i, "--chunk", &optv, &optbad))  o.chunk = strtol(optv);
+ *
+ * which fails in two directions and neither is loud:
+ *
+ *   TRAILING  `read --chunk` — the guard is false, control falls to the final
+ *             `else`, and the whole usage text is dumped WITHOUT naming the
+ *             offending argument.
+ *   MID-LINE  `read --chunk --map` — `i + 1 < argc` is TRUE, so "--map" is
+ *             consumed as the value. strtol("--map") is 0, and 0 is the
+ *             sentinel for "use the default", so the command runs, EXITS 0,
+ *             applies no chunk and renders no map. Worst case
+ *             `--progress-fd --map` yields fd 0 — machine tokens written to
+ *             STDIN.
+ *
+ * That second one is the house failure mode exactly: a sentinel meaning
+ * "default" makes a parse failure indistinguishable from an unset option, and
+ * nothing downstream can catch it because the run looks clean.
+ *
+ * Returns 1 when the option matches AND a usable value follows; then *vp is
+ * the value and *ip has advanced past it. Returns 0 when the option does not
+ * match. On a match with a MISSING or FLAG-SHAPED value it prints the reason,
+ * sets *bad, and returns 0 — the caller's chain then falls through to its own
+ * `else`, which exits 1 as it always did, but now after a message that names
+ * the option.
+ *
+ * "Flag-shaped" is `-` followed by anything: no option in this CLI takes a
+ * value that legitimately starts with `-`. A NEGATIVE value would, so if one is
+ * ever added this rule needs an exception rather than a workaround. Note "-"
+ * alone is NOT rejected: it is a conventional stdin/stdout filename and
+ * `--pcm -` should keep working if it ever means that. */
+static int opt_val(char **argv, int argc, int *ip, const char *name,
+                   const char **vp, int *bad)
+{
+    int i = *ip;
+
+    if (strcmp(argv[i], name) != 0)
+        return 0;
+    if (i + 1 >= argc) {
+        fprintf(stderr, "accudisc: %s requires a value\n", name);
+        *bad = 1;
+        return 0;
+    }
+    if (argv[i + 1][0] == '-' && argv[i + 1][1] != '\0') {
+        fprintf(stderr, "accudisc: %s requires a value, but the next argument "
+                        "is '%s' — did you mean to give %s a value?\n",
+                name, argv[i + 1], name);
+        *bad = 1;
+        return 0;
+    }
+    *vp = argv[i + 1];
+    *ip = i + 1;
+    return 1;
 }
 
 static int fail_dev(accudisc_device *dev, const char *what, int err)
@@ -326,14 +388,18 @@ static int offset_args(int argc, char **argv, const char **vendor,
                        const char **product)
 {
     *vendor = *product = NULL;
+    const char *optv = NULL;
+    int optbad = 0;
     for (int i = 0; i < argc; i++) {
-        if (!strcmp(argv[i], "--vendor") && i + 1 < argc)
-            *vendor = argv[++i];
-        else if (!strcmp(argv[i], "--product") && i + 1 < argc)
-            *product = argv[++i];
+        if (opt_val(argv, argc, &i, "--vendor", &optv, &optbad))
+            *vendor = optv;
+        else if (opt_val(argv, argc, &i, "--product", &optv, &optbad))
+            *product = optv;
         else
             return -1;
     }
+    if (optbad)
+        return 1;
     if (*product) {
         if (!*vendor)
             *vendor = "";
@@ -403,16 +469,20 @@ static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
     long start = 0;
     unsigned speed = 0;
 
+    const char *optv = NULL;
+    int optbad = 0;
     for (int i = 0; i < argc; i++) {
-        if (!strcmp(argv[i], "--start") && i + 1 < argc)
-            start = strtol(argv[++i], NULL, 0);
-        else if (!strcmp(argv[i], "--speed") && i + 1 < argc)
-            speed = (unsigned)strtol(argv[++i], NULL, 0);
+        if (opt_val(argv, argc, &i, "--start", &optv, &optbad))
+            start = strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--speed", &optv, &optbad))
+            speed = (unsigned)strtol(optv, NULL, 0);
         else {
             usage(stderr);
             return 1;
         }
     }
+    if (optbad)
+        return 1;
 
     /* Read the TOC before arming, not after. The old order armed the counters
      * first, so the lead-in traffic of the TOC read landed in the first
@@ -797,6 +867,8 @@ static int cmd_features(accudisc_device *dev, int argc, char **argv)
 {
     int c2 = 0, stream = 0, rotation = 0, all = 0;
 
+    /* No optv/optbad here: every `features` option is a bare flag, so there is
+     * no value for the next argument to be eaten as. */
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--c2")) c2 = 1;
         else if (!strcmp(argv[i], "--stream")) stream = 1;
@@ -886,9 +958,11 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
     int quick = 0;
     int asked_sweep = 0;
 
+    const char *optv = NULL;
+    int optbad = 0;
     for (int i = 0; i < argc; i++) {
-        if (!strcmp(argv[i], "--start") && i + 1 < argc)
-            start = strtol(argv[++i], NULL, 0);
+        if (opt_val(argv, argc, &i, "--start", &optv, &optbad))
+            start = strtol(optv, NULL, 0);
         else if (!strcmp(argv[i], "--quick"))
             quick = 1;
         else if (!strcmp(argv[i], "--sweep"))
@@ -899,8 +973,8 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
              * having asked for it explicitly changes what happens when the
              * span turns out to be too small. */
             asked_sweep = 1;
-        else if (!strcmp(argv[i], "--ladder") && i + 1 < argc) {
-            char *p = argv[++i];
+        else if (opt_val(argv, argc, &i, "--ladder", &optv, &optbad)) {
+            char *p = (char *)optv;
             while (*p && ncand < 16) {
                 cand[ncand++] = (uint16_t)strtol(p, &p, 10);
                 if (*p == ',')
@@ -913,6 +987,8 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
             return 1;
         }
     }
+    if (optbad)
+        return 1;
 
     accudisc_toc toc;
     int err = accudisc_read_toc(dev, &toc);
@@ -1078,18 +1154,22 @@ static int cmd_c2lag(accudisc_device *dev, int argc, char **argv)
     long start = 0, count = -1;
     unsigned speed = 0;
 
+    const char *optv = NULL;
+    int optbad = 0;
     for (int i = 0; i < argc; i++) {
-        if (!strcmp(argv[i], "--start") && i + 1 < argc)
-            start = strtol(argv[++i], NULL, 0);
-        else if (!strcmp(argv[i], "--count") && i + 1 < argc)
-            count = strtol(argv[++i], NULL, 0);
-        else if (!strcmp(argv[i], "--speed") && i + 1 < argc)
-            speed = (unsigned)strtol(argv[++i], NULL, 0);
+        if (opt_val(argv, argc, &i, "--start", &optv, &optbad))
+            start = strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--count", &optv, &optbad))
+            count = strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--speed", &optv, &optbad))
+            speed = (unsigned)strtol(optv, NULL, 0);
         else {
             usage(stderr);
             return 1;
         }
     }
+    if (optbad)
+        return 1;
     if (count < 0) {
         accudisc_toc toc;
         int err = accudisc_read_toc(dev, &toc);
@@ -1140,13 +1220,15 @@ static int cmd_speed(accudisc_device *dev, int argc, char **argv)
     long want_x = -1, start = -1, count = -1;
     int exact = 0;
 
+    const char *optv = NULL;
+    int optbad = 0;
     for (int i = 0; i < argc; i++) {
         if (!strcmp(argv[i], "--exact"))
             exact = 1;
-        else if (!strcmp(argv[i], "--start") && i + 1 < argc)
-            start = strtol(argv[++i], NULL, 0);
-        else if (!strcmp(argv[i], "--count") && i + 1 < argc)
-            count = strtol(argv[++i], NULL, 0);
+        else if (opt_val(argv, argc, &i, "--start", &optv, &optbad))
+            start = strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--count", &optv, &optbad))
+            count = strtol(optv, NULL, 0);
         else if (argv[i][0] != '-' && want_x < 0)
             want_x = strtol(argv[i], NULL, 0);
         else {
@@ -1154,6 +1236,8 @@ static int cmd_speed(accudisc_device *dev, int argc, char **argv)
             return 1;
         }
     }
+    if (optbad)
+        return 1;
 
     int ranged = (start >= 0 || count >= 0 || exact);
     if (ranged && want_x < 0) {
@@ -1396,21 +1480,25 @@ static int cmd_write_offset(int argc, char **argv)
     FILE *f;
     size_t n;
     int i, rc;
+    const char *optv = NULL;
+    int optbad = 0;
 
     for (i = 0; i < argc; i++) {
-        if (!strcmp(argv[i], "--signal") && i + 1 < argc)
-            sig_path = argv[++i];
-        else if (!strcmp(argv[i], "--toc") && i + 1 < argc)
-            toc_path = argv[++i];
-        else if (!strcmp(argv[i], "--measure") && i + 1 < argc)
-            meas_path = argv[++i];
-        else if (!strcmp(argv[i], "--read-offset") && i + 1 < argc)
-            ro_arg = argv[++i];
+        if (opt_val(argv, argc, &i, "--signal", &optv, &optbad))
+            sig_path = optv;
+        else if (opt_val(argv, argc, &i, "--toc", &optv, &optbad))
+            toc_path = optv;
+        else if (opt_val(argv, argc, &i, "--measure", &optv, &optbad))
+            meas_path = optv;
+        else if (opt_val(argv, argc, &i, "--read-offset", &optv, &optbad))
+            ro_arg = optv;
         else {
             usage(stderr);
             return 1;
         }
     }
+    if (optbad)
+        return 1;
     if (!sig_path == !meas_path) {
         fprintf(stderr, "accudisc: write-offset needs exactly one of "
                         "--signal or --measure\n");
@@ -1544,13 +1632,15 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
     double fifo_secs = -1.0;   /* >=0 when the user gave a duration */
     struct write_prog wp = { -1, 0, 0 };
 
+    const char *optv = NULL;
+    int optbad = 0;
     for (int i = 0; i < argc; i++) {
-        if (!strcmp(argv[i], "--toc") && i + 1 < argc)
-            toc = argv[++i];
-        else if (!strcmp(argv[i], "--bin") && i + 1 < argc)
-            bin = argv[++i];
-        else if (!strcmp(argv[i], "--cdtext") && i + 1 < argc)
-            o.cdtext_path = argv[++i];
+        if (opt_val(argv, argc, &i, "--toc", &optv, &optbad))
+            toc = optv;
+        else if (opt_val(argv, argc, &i, "--bin", &optv, &optbad))
+            bin = optv;
+        else if (opt_val(argv, argc, &i, "--cdtext", &optv, &optbad))
+            o.cdtext_path = optv;
         else if (!strcmp(argv[i], "--simulate"))
             o.simulate = 1;
         else if (!strcmp(argv[i], "--byteswap"))
@@ -1565,9 +1655,9 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
             o.burnproof = ACCUDISC_BURNPROOF_OFF;
         else if (!strcmp(argv[i], "--no-fifo"))
             o.fifo_bytes = ACCUDISC_FIFO_NONE;
-        else if (!strcmp(argv[i], "--fifo") && i + 1 < argc) {
+        else if (opt_val(argv, argc, &i, "--fifo", &optv, &optbad)) {
             double secs; unsigned long long b;
-            if (parse_capacity(argv[++i], &secs, &b) != 0) {
+            if (parse_capacity(optv, &secs, &b) != 0) {
                 fprintf(stderr, "accudisc: bad --fifo '%s' "
                                 "(try 5s, 8m, 512k, or a byte count)\n", argv[i]);
                 return 1;
@@ -1581,15 +1671,17 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
                 ? accudisc_fifo_bytes_for(secs, o.speed > 0 ? (unsigned)o.speed : 8u)
                 : (uint32_t)(b > ACCUDISC_FIFO_MAX_BYTES ? ACCUDISC_FIFO_MAX_BYTES : b);
         }
-        else if (!strcmp(argv[i], "--speed") && i + 1 < argc)
-            o.speed = (int)strtol(argv[++i], NULL, 0);
-        else if (!strcmp(argv[i], "--progress-fd") && i + 1 < argc)
-            wp.prog_fd = (int)strtol(argv[++i], NULL, 0);
+        else if (opt_val(argv, argc, &i, "--speed", &optv, &optbad))
+            o.speed = (int)strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--progress-fd", &optv, &optbad))
+            wp.prog_fd = (int)strtol(optv, NULL, 0);
         else {
             usage(stderr);
             return 1;
         }
     }
+    if (optbad)
+        return 1;
     if (!toc || !bin) {
         fprintf(stderr, "accudisc: write needs --toc FILE and --bin FILE\n");
         return 1;
@@ -1847,19 +1939,23 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
 
     ctx.prog_fd = -1;
     req.c2 = ACCUDISC_C2_PTRS;
+    const char *optv = NULL;
+    int optbad = 0;
     for (int i = 0; i < argc; i++) {
         const char *a = argv[i];
 
-        if (!strcmp(a, "--start") && i + 1 < argc) {
-            start = strtol(argv[++i], NULL, 0);
+        if (opt_val(argv, argc, &i, "--start", &optv, &optbad)) {
+            start = strtol(optv, NULL, 0);
             have_start = 1;
-        } else if (!strcmp(a, "--session") && i + 1 < argc)
-            want_session = (int)strtol(argv[++i], NULL, 0);
-        else if ((!strcmp(a, "--track") || !strcmp(a, "--tracks")) &&
-                 i + 1 < argc) {
+        } else if (opt_val(argv, argc, &i, "--session", &optv, &optbad))
+            want_session = (int)strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--track", &optv, &optbad) ||
+                 opt_val(argv, argc, &i, "--tracks", &optv, &optbad)) {
             /* "N" or "A-B". One spelling accepts both so --track 3 and
-             * --tracks 2-11 both read naturally. */
-            const char *v = argv[++i];
+             * --tracks 2-11 both read naturally. Two opt_val calls rather than
+             * one strcmp pair: the helper takes a single name, and || is safe
+             * here because a non-matching call touches neither i nor optv. */
+            const char *v = optv;
             char *end = NULL;
             long f = strtol(v, &end, 10);
 
@@ -1874,14 +1970,14 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                         v);
                 return 1;
             }
-        } else if (!strcmp(a, "--count") && i + 1 < argc)
-            count = strtol(argv[++i], NULL, 0);
+        } else if (opt_val(argv, argc, &i, "--count", &optv, &optbad))
+            count = strtol(optv, NULL, 0);
         else if (!strcmp(a, "--no-c2"))
             req.c2 = ACCUDISC_C2_NONE;
         else if (!strcmp(a, "--c2beb"))
             req.c2 = ACCUDISC_C2_PTRS_BEB;
-        else if (!strcmp(a, "--sub") && i + 1 < argc) {
-            const char *m = argv[++i];
+        else if (opt_val(argv, argc, &i, "--sub", &optv, &optbad)) {
+            const char *m = optv;
             if (!strcmp(m, "raw"))
                 req.sub = ACCUDISC_SUB_RAW;
             else if (!strcmp(m, "q"))
@@ -1894,23 +1990,23 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             req.any_type = 1;
         else if (!strcmp(a, "--force"))
             force = 1;
-        else if (!strcmp(a, "--fulltoc") && i + 1 < argc)
-            fulltoc_path = argv[++i];
-        else if (!strcmp(a, "--cdtext") && i + 1 < argc)
-            cdtext_path = argv[++i];
-        else if (!strcmp(a, "--pcm") && i + 1 < argc)
-            pcm_path = argv[++i];
-        else if (!strcmp(a, "--c2f") && i + 1 < argc)
-            c2_path = argv[++i];
-        else if (!strcmp(a, "--cdg") && i + 1 < argc)
-            cdg_path = argv[++i];
-        else if (!strcmp(a, "--subf") && i + 1 < argc)
-            sub_path = argv[++i];
+        else if (opt_val(argv, argc, &i, "--fulltoc", &optv, &optbad))
+            fulltoc_path = optv;
+        else if (opt_val(argv, argc, &i, "--cdtext", &optv, &optbad))
+            cdtext_path = optv;
+        else if (opt_val(argv, argc, &i, "--pcm", &optv, &optbad))
+            pcm_path = optv;
+        else if (opt_val(argv, argc, &i, "--c2f", &optv, &optbad))
+            c2_path = optv;
+        else if (opt_val(argv, argc, &i, "--cdg", &optv, &optbad))
+            cdg_path = optv;
+        else if (opt_val(argv, argc, &i, "--subf", &optv, &optbad))
+            sub_path = optv;
         else if (!strcmp(a, "--no-buffer"))
             req.buffer_bytes = ACCUDISC_BUFFER_NONE;
-        else if (!strcmp(a, "--buffer") && i + 1 < argc) {
+        else if (opt_val(argv, argc, &i, "--buffer", &optv, &optbad)) {
             double secs; unsigned long long b;
-            if (parse_capacity(argv[++i], &secs, &b) != 0) {
+            if (parse_capacity(optv, &secs, &b) != 0) {
                 fprintf(stderr, "accudisc: bad --buffer '%s' "
                                 "(try 3s, 8m, 512k, or a byte count)\n", argv[i]);
                 return 1;
@@ -1919,18 +2015,18 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                 ? accudisc_fifo_bytes_for(secs, req.speed_x ? req.speed_x : 8u)
                 : (uint32_t)(b > ACCUDISC_FIFO_MAX_BYTES ? ACCUDISC_FIFO_MAX_BYTES : b);
         }
-        else if (!strcmp(a, "--chunk") && i + 1 < argc)
-            req.chunk_sectors = (uint16_t)strtol(argv[++i], NULL, 0);
-        else if (!strcmp(a, "--retries") && i + 1 < argc)
-            req.retries = (uint8_t)strtol(argv[++i], NULL, 0);
-        else if (!strcmp(a, "--c2-retries") && i + 1 < argc)
-            req.c2_retries = (uint8_t)strtol(argv[++i], NULL, 0);
-        else if (!strcmp(a, "--verify") && i + 1 < argc)
-            req.verify_passes = (uint8_t)strtol(argv[++i], NULL, 0);
-        else if (!strcmp(a, "--overlap") && i + 1 < argc)
-            req.overlap_sectors = (uint8_t)strtol(argv[++i], NULL, 0);
-        else if (!strcmp(a, "--ladder") && i + 1 < argc) {
-            char *p = argv[++i];
+        else if (opt_val(argv, argc, &i, "--chunk", &optv, &optbad))
+            req.chunk_sectors = (uint16_t)strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--retries", &optv, &optbad))
+            req.retries = (uint8_t)strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--c2-retries", &optv, &optbad))
+            req.c2_retries = (uint8_t)strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--verify", &optv, &optbad))
+            req.verify_passes = (uint8_t)strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--overlap", &optv, &optbad))
+            req.overlap_sectors = (uint8_t)strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--ladder", &optv, &optbad)) {
+            char *p = (char *)optv;
             while (*p && req.ladder_len < 8) {
                 ladder[req.ladder_len++] = (uint16_t)strtol(p, &p, 10);
                 if (*p == ',')
@@ -1940,18 +2036,18 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             }
             req.speed_ladder = ladder;
         }
-        else if (!strcmp(a, "--speed") && i + 1 < argc)
-            req.speed_x = (uint16_t)strtol(argv[++i], NULL, 0);
+        else if (opt_val(argv, argc, &i, "--speed", &optv, &optbad))
+            req.speed_x = (uint16_t)strtol(optv, NULL, 0);
         else if (!strcmp(a, "--uncap"))
             uncap = 1;
         else if (!strcmp(a, "--map"))
             want_map = 1;
-        else if (!strcmp(a, "--map-file") && i + 1 < argc)
-            map_path = argv[++i];
-        else if (!strcmp(a, "--subq-map-file") && i + 1 < argc)
-            subq_path = argv[++i];
-        else if (!strcmp(a, "--progress-fd") && i + 1 < argc)
-            ctx.prog_fd = (int)strtol(argv[++i], NULL, 0);
+        else if (opt_val(argv, argc, &i, "--map-file", &optv, &optbad))
+            map_path = optv;
+        else if (opt_val(argv, argc, &i, "--subq-map-file", &optv, &optbad))
+            subq_path = optv;
+        else if (opt_val(argv, argc, &i, "--progress-fd", &optv, &optbad))
+            ctx.prog_fd = (int)strtol(optv, NULL, 0);
         else if (!strcmp(a, "-q"))
             ctx.quiet = 1;
         else {
@@ -1959,6 +2055,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             return 1;
         }
     }
+    if (optbad)
+        return 1;
     if (cdg_path && req.sub != ACCUDISC_SUB_RAW) {
         /* CD+G lives in R-W, which only the raw 96-byte form carries; the
          * deinterleaved Q form has thrown those channels away already. */
@@ -2429,19 +2527,30 @@ int main(int argc, char **argv)
 
     /* Global flags are accepted anywhere on the line; the first bare word
      * is the command, everything else is handed to it. */
+    const char *optv = NULL;
+    int optbad = 0;
+
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
 
-        if (!strcmp(a, "--device") && i + 1 < argc)
-            device = argv[++i];
-        else if (!strcmp(a, "--driver") && i + 1 < argc)
-            driver = argv[++i];
-        else if (!strcmp(a, "--drivers-dir") && i + 1 < argc)
-            drivers_dir = argv[++i];
+        if (opt_val(argv, argc, &i, "--device", &optv, &optbad))
+            device = optv;
+        else if (opt_val(argv, argc, &i, "--driver", &optv, &optbad))
+            driver = optv;
+        else if (opt_val(argv, argc, &i, "--drivers-dir", &optv, &optbad))
+            drivers_dir = optv;
         else if (!strcmp(a, "--version") || !strcmp(a, "-V")) {
+            /* A bad option already reported means the line was malformed; do
+             * not let a LATER --version/--help turn that into a success.
+             * `--driver --help` printed the complaint and then exited 0,
+             * because --help was re-parsed as its own request. */
+            if (optbad)
+                return 1;
             printf("accudisc %s\n", accudisc_version_string());
             return 0;
         } else if (!strcmp(a, "--help") || !strcmp(a, "-h")) {
+            if (optbad)
+                return 1;
             usage(stdout);
             return 0;
         } else if (!command)
@@ -2515,8 +2624,24 @@ int main(int argc, char **argv)
         rc = nrest > 0 ? dump_blob(dev, rest[0], "full TOC",
                                    accudisc_read_full_toc)
                        : cmd_fulltoc_parsed(dev);
-    else if (!strcmp(command, "cdtext") && nrest > 0)
-        rc = dump_blob(dev, rest[0], "CD-Text", accudisc_read_cdtext);
+    else if (!strcmp(command, "cdtext")) {
+        /* Dispatch on the NAME, validate the argument INSIDE. Guarding the
+         * branch on `nrest > 0` made a missing FILE fall through the whole
+         * chain to the catch-all, which printed "unknown command 'cdtext'" —
+         * a known command reported as unknown, so anyone debugging it hunts
+         * for a typo or a version mismatch rather than a missing argument.
+         * (The exit code was already right; the diagnostic was not.)
+         *
+         * THE RULE, so it is not reintroduced: never fold "missing mandatory
+         * argument" into "unknown command". */
+        if (nrest < 1) {
+            fprintf(stderr, "accudisc: cdtext: FILE argument is required\n");
+            usage(stderr);
+            rc = 1;
+        } else {
+            rc = dump_blob(dev, rest[0], "CD-Text", accudisc_read_cdtext);
+        }
+    }
     else if (!strcmp(command, "text"))
         rc = cmd_text(dev);
     else if (!strcmp(command, "pregaps"))

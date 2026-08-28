@@ -742,12 +742,6 @@ First sector. Default 0. The scan always runs to the lead-out.
 .BI \-\-speed " X"
 Set the read speed before scanning.
 .RE
-.PP
-Note that
-.B \-\-start
-and
-.B \-\-speed
-are accepted here although the built-in usage text does not list them.
 .SS version
 Print the library version and exit 0.
 .SH READ OPTIONS
@@ -855,9 +849,25 @@ SUB 0), so all outputs stay exactly
 .I count
 sectors and never desync.
 .SS Accuracy and recovery
-All of these are off by default; with none of them set,
+These tune a single-pass streaming capture, which is what
 .B read
-is a single-pass streaming capture.
+does with none of them set.
+.PP
+.BR \-\-c2\-retries ,
+.BR \-\-verify ,
+.B \-\-overlap
+and
+.B \-\-ladder
+are genuinely
+.IR off " unless set."
+.B \-\-chunk
+and
+.B \-\-retries
+are not, and cannot be: their 0 means
+.I use the default
+rather than
+.IR disable ,
+so there is no state in which chunking or per-sector retries do not happen.
 .TP
 .BI \-\-chunk " N"
 Sectors per READ CD command. Default: the maximum that fits under 64 KiB.

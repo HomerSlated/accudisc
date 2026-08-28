@@ -11,7 +11,9 @@ commands:
   toc            list tracks (LBA); prefers the full TOC and degrades
                  to format 0 on an unreadable lead-in, reporting which
   fulltoc [FILE] parsed session structure, or raw dump to FILE
-  cdtext FILE    dump raw CD-Text packs to FILE (no file if absent)
+  cdtext FILE    dump raw CD-Text packs to FILE. FILE is required;
+                 if the DISC carries no CD-Text, none is written
+                 and the exit is 3
   text           decode and print CD-Text (block 0)
   scan           MCN and per-track ISRCs from the Q subchannel
   pregaps        per-track index/pregap map from Q (CRC-gated);
@@ -70,6 +72,8 @@ commands:
                  missing, or if the two disagree (a defective
                  disc — never averaged)
   cxscan         hardware C1/C2/CU error census (needs --driver)
+                 [--start LBA] [--speed X]; one 'cx <lba> <c1>
+                 <c2> <cu>' line per sample, 75 sectors apart
   version        print the library version
 
 driver options (vendor features are OFF unless requested):

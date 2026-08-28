@@ -97,6 +97,50 @@ fi
 run "unknown command (no device)" 2 -- --device /nonexistent/zz not-a-command
 ok "unknown command exits 2 without a device (documented wart)"
 
+# --- a value-taking option given no value ------------------------------------
+# THE DEFECT (fixed 2026-08-28): every option was guarded `&& i + 1 < argc`, so
+#   TRAILING  `read --chunk`        dumped usage without naming the argument;
+#   MID-LINE  `read --chunk --map`  consumed "--map" AS THE VALUE. strtol gives
+#                                   0, 0 is the sentinel for "use the default",
+#                                   so it ran, EXITED 0, applied no chunk and
+#                                   rendered no map. `--progress-fd --map` gave
+#                                   fd 0 — machine tokens written to STDIN.
+# NOTE THE DEVICE: /dev/null, which OPENS. main() opens the device before it
+# dispatches to a command (the wart pinned above), so a nonexistent device
+# short-circuits before the per-command parser is ever reached — a test using
+# one would pass while checking nothing. Found by writing it that way first. Exit 1 is the usage/argument code and was already
+# correct for the trailing form; the mid-line form is the one that used to
+# exit 0.
+for opt in --chunk --progress-fd --start --count --retries --verify --ladder --pcm; do
+	run "value-taking $opt trailing" 1 -- --device /dev/null read "$opt"
+	# `--` before the pattern: $opt starts with "--" and grep would otherwise
+	# read it as an option ("grep: unrecognized option '--chunk requires a
+	# value'"). The same class of bug as the one under test, in its own test.
+	if grep -qF -- "$opt requires a value" "$TMP/err"; then
+		ok "$opt trailing names the option"
+	else
+		bad "$opt trailing" "stderr: $(head -1 "$TMP/err")"
+	fi
+
+	run "value-taking $opt eats next flag" 1 -- --device /dev/null read "$opt" --map
+	if grep -qF -- "the next argument is '--map'" "$TMP/err"; then
+		ok "$opt does not swallow the next flag"
+	else
+		bad "$opt mid-line" "stderr: $(head -1 "$TMP/err")"
+	fi
+done
+
+# A LONE "-" IS NOT FLAG-SHAPED and must still be accepted as a value: it is the
+# conventional stdin/stdout filename. Falsifies the guard in the other
+# direction — a check that rejected everything starting with "-" would pass the
+# cases above and break this one. Exit 2 = it got past parsing to the device.
+run "a lone - is a value, not a flag" 2 -- --device /nonexistent/zz read --pcm -
+
+# Global options are parsed by main(), a different loop from the per-command
+# ones. Covered so the fix is not half-applied.
+run "global --device with no value" 1 -- --device
+run "global --driver eats next flag" 1 -- --device /dev/null --driver --help
+
 if [ "$fails" -gt 0 ]; then
 	printf 'cli_surface: %d failure(s)\n' "$fails"
 	exit 1
