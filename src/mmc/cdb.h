@@ -24,7 +24,15 @@
 #define ADSC_OP_MODE_SENSE10  0x5A
 #define ADSC_OP_GET_PERFORMANCE 0xAC
 #define ADSC_OP_SET_STREAMING 0xB6
+#define ADSC_OP_SET_CD_SPEED  0xBB
 #define ADSC_OP_READ_CD       0xBE
+
+/* SET CD SPEED (0xBB) rotational control, CDB byte 1 bits 1-0. cdrecord uses
+ * CLV for every CD write (drv_mmc.c speed_select_mmc) and CAV only when it is
+ * asking about read speed; a CAV request is a *ceiling* the drive may run
+ * under, which is not the same thing as writing at a rate. */
+#define ADSC_ROTCTL_CLV 0x00 /* CLV or PCAV — what a CD write wants */
+#define ADSC_ROTCTL_CAV 0x01 /* true CAV */
 
 /* GET PERFORMANCE data types (CDB byte 10) */
 #define ADSC_PERF_TYPE_NOMINAL 0x00 /* nominal read/write performance curve */
@@ -114,6 +122,23 @@ void adsc_cdb_set_streaming(uint8_t cdb[12], uint16_t param_len);
 void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
                                  uint32_t start_lba, uint32_t end_lba,
                                  unsigned exact);
+
+/* SET CD SPEED (0xBB). Speeds are in kB/s, NOT Nx — the single most likely
+ * way to get this command wrong. 0xFFFF means "leave alone / maximum" in
+ * either field. rotctl is ADSC_ROTCTL_*. Non-data command, 12-byte CDB.
+ *
+ * Use adsc_cd_speed_kbps() for the conversion; do not open-code speed_x * 176. */
+void adsc_cdb_set_cd_speed(uint8_t cdb[12], uint16_t read_kbps,
+                           uint16_t write_kbps, unsigned rotctl);
+
+/* Nx -> kB/s for SET CD SPEED, deliberately rounding the way the drives do.
+ * 1x CD is 176.4 kB/s, so the arithmetically right answer is speed_x*1764/10.
+ * cdrecord uses speed_x*177 and says why (drv_mmc.c, above the conversion):
+ * "the standard is rounding the wrong way. Fortunately rounding down is
+ * guaranteed." A drive given 176 for 1x can read it as slightly under 1x and
+ * refuse; given 177 it rounds down to the rung it owns. We follow the
+ * reference rather than the arithmetic, because the drives followed it first. */
+uint16_t adsc_cd_speed_kbps(unsigned speed_x);
 
 /* Always sets include-user-data (byte 9 bit 4); c2 = ADSC_C2_*,
  * sub = ADSC_SUB_*, sector_type = ADSC_SECTOR_*. */

@@ -280,6 +280,70 @@ out:
     return ret;
 }
 
+/* Ask the drive to WRITE at speed_x, and report what it then says it is set to.
+ *
+ * Until 0.29.0 nothing here existed: adsc_burn_opts.speed was carried all the
+ * way from the CLI and then read by nobody, so `--speed 4` constrained nothing
+ * and the drive wrote at whatever it liked (measured 19.4x on a PX-716A while
+ * 4x was requested). Worse than the speed being wrong: the FIFO is sized in
+ * SECONDS against that number, so a ring reported as 5 s of protection was
+ * 1.02 s of it.
+ *
+ * The command is SET CD SPEED (0xBB) with CLV, not SET STREAMING. cdrecord
+ * reaches for SET STREAMING only on DVD (scsi_mmc.c speed_select_mdvd); every
+ * CD write goes through 0xBB (drv_mmc.c speed_select_mmc). Credited in
+ * docs/reference/ATTRIBUTION.md.
+ *
+ * The climb is cdrecord's too (drv_mmc.c mmc_set_speed): a drive whose minimum
+ * write speed is above the request answers ILLEGAL REQUEST / ASC 0x24 rather
+ * than rounding up, so step by one 1x rung and retry. ONLY that sense climbs —
+ * any other failure is real and climbing would bury it.
+ *
+ * *out_kbps is what mode page 2A reports afterwards, which is the drive
+ * ACCEPTING the request and is NOT evidence about the medium. Elapsed time is
+ * the only instrument for a delivered rate. */
+#define SPEED_CLIMB_MAX 8
+
+static int set_write_speed(struct accudisc_device *dev, unsigned speed_x,
+                           unsigned *out_kbps)
+{
+    unsigned want = adsc_cd_speed_kbps(speed_x);
+    unsigned kbps = want;
+    unsigned read_kbps = 0xFFFFu, cur = 0;
+    int climbed = 0;
+    int rc;
+
+    /* Preserve the READ speed. 0xFFFF in that field is not "leave alone", it
+     * is "use your maximum" — so passing it would silently retune the drive's
+     * read speed as a side effect of a burn, and the setting persists after we
+     * exit. cdrecord reads it back for the same reason (mmc_set_speed). */
+    if (accudisc_get_speed(dev, NULL, &cur) == ACCUDISC_OK && cur > 0)
+        read_kbps = cur;
+
+    for (;;) {
+        rc = adsc_mmc_set_cd_speed(dev, (uint16_t)read_kbps, (uint16_t)kbps,
+                                   ADSC_ROTCTL_CLV);
+        if (rc == ACCUDISC_OK)
+            break;
+        if (!(rc == ACCUDISC_ERR_SENSE && dev->last_sense.key == 0x05 &&
+              dev->last_sense.asc == 0x24))
+            return rc;
+        if (climbed >= SPEED_CLIMB_MAX || kbps + 177u > 0xFFFFu)
+            return rc;
+        kbps += 177u;
+        climbed++;
+    }
+    if (climbed)
+        adsc_dev_log(dev, "write: speed — the drive refused %u kB/s (%ux) with "
+                          "INVALID FIELD IN CDB and accepted %u kB/s after %d "
+                          "step(s); it cannot write that slowly",
+                     want, speed_x, kbps, climbed);
+
+    if (adsc_write_cur_write_kbps(dev, &cur) == ACCUDISC_OK && cur > 0)
+        *out_kbps = cur;
+    return ACCUDISC_OK;
+}
+
 int adsc_write_run(struct accudisc_device *dev,
                    const struct adsc_write_toc *toc, int bin_fd,
                    const struct adsc_burn_opts *opts,
@@ -296,6 +360,10 @@ int adsc_write_run(struct accudisc_device *dev,
     int burn_started = 0;   /* ... and we got far enough for the tally to mean
                              * something. Distinct from session_open, which is
                              * cleared by a clean close. */
+    unsigned speed_kbps = 0; /* what the drive says its write speed is; 0 =
+                              * it would not say, so any duration computed from
+                              * it must be labelled as assumed rather than
+                              * printed as fact. */
     int ret;
 
     if (!dev || !toc || !opts || bin_fd < 0)
@@ -359,6 +427,38 @@ int adsc_write_run(struct accudisc_device *dev,
     }
     if ((ret = adsc_write_set_params(dev, &wp)) != ACCUDISC_OK)
         goto done;
+
+    /* 1b. WRITE SPEED. After the write parameters and before anything touches
+     * the disc, matching cdrecord's order (it programs page 0x05 first, then
+     * sets the speed, in the same function).
+     *
+     * A failure here is NOT fatal: the burn can proceed at the drive's own
+     * rate, and refusing would turn "you did not get the speed you asked for"
+     * into "you got no disc". It is said out loud instead, because the FIFO's
+     * seconds-of-protection are computed against the rate. */
+    if (opts->speed > 0) {
+        int srate = set_write_speed(dev, (unsigned)opts->speed, &speed_kbps);
+        if (srate != ACCUDISC_OK)
+            adsc_dev_log(dev, "write: speed — SET CD SPEED for %ux FAILED "
+                              "(rc %d); the drive keeps its own write speed and "
+                              "the FIFO below is sized for a rate we did not get",
+                         (unsigned)opts->speed, srate);
+    } else {
+        /* Not setting it is not a reason to stay ignorant of it: the FIFO's
+         * duration is meaningless without a rate either way. */
+        (void)adsc_write_cur_write_kbps(dev, &speed_kbps);
+    }
+    if (speed_kbps > 0)
+        adsc_dev_log(dev, "write: speed — drive reports %u kB/s (%.1fx)%s. "
+                          "PAGE 2A ECHOES THE REQUEST: this is the drive "
+                          "accepting, not the medium delivering — only elapsed "
+                          "time measures that",
+                     speed_kbps, (double)speed_kbps / 176.4,
+                     opts->speed > 0 ? "" : ", which we did not set");
+    else
+        adsc_dev_log(dev, "write: speed — the drive would not report a write "
+                          "speed; the FIFO duration below is against an ASSUMED "
+                          "rate");
 
     /* 2. Refuse anything but a blank disc. */
     struct adsc_disc_info di;
@@ -465,6 +565,32 @@ int adsc_write_run(struct accudisc_device *dev,
                      fifo.locked ? "LOCKED"
                                  : "NOT locked (mlock refused; it can be paged "
                                    "out under the pressure it exists to absorb)");
+        /* THE RING IN SECONDS, AGAINST THE RATE THE DRIVE ADMITS TO.
+         *
+         * The caller sized this in seconds against the speed it REQUESTED. If
+         * the drive is at a different rate the byte count is unchanged and the
+         * protection is not, and that discrepancy is exactly what went unseen
+         * before 0.29.0: 3492720 bytes reported as "5.0 s at 4x" was 1.02 s,
+         * because the request never reached the drive. Page 2A is in kB/s with
+         * k = 1000, so 1x reads as 176 against a true 176400 B/s — a 0.23%
+         * understatement of the rate, which we let stand rather than
+         * second-guess the drive's own units. */
+        if (speed_kbps > 0) {
+            unsigned got_x = (speed_kbps * 10u + 882u) / 1764u;
+            double secs = (double)fifo.arena_bytes / ((double)speed_kbps * 1000.0);
+
+            adsc_dev_log(dev, "write: FIFO = %.2f s of ride-through at the "
+                              "drive's stated %.1fx%s",
+                         secs, (double)speed_kbps / 176.4,
+                         (opts->speed > 0 && got_x != (unsigned)opts->speed)
+                             ? " — NOT the duration the requested speed implies;"
+                               " the ring was sized for a rate the drive is not at"
+                             : "");
+        } else {
+            adsc_dev_log(dev, "write: FIFO duration UNKNOWN — the drive would "
+                              "not state a write speed, so the seconds this "
+                              "ring buys cannot be computed");
+        }
         /* Fill it BEFORE the first write. Without this the opening pop reads
          * an empty ring and scores a starvation, which on a drive with no
          * failover stops the burn at sector 0 — every time. And a burn that

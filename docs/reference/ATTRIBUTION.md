@@ -73,8 +73,19 @@ behaviors, command layouts, and hardware quirks we relied on:
 - **redumper** — READ CD CDB layout details, DATA_C2_SUB sector ordering,
   full-TOC session semantics.
 - **cdrtools (readcd/cdrecord)** by Jörg Schilling — cache-defeat reread
-  pattern, mode page 01 error-recovery handling, and the original
-  documentation of the Plextor C1/C2/CU scan opcodes.
+  pattern, mode page 01 error-recovery handling, the original
+  documentation of the Plextor C1/C2/CU scan opcodes, the DAO abort
+  (`scsi_flush_cache`, which is the whole of its generic-MMC abort path), and
+  the **CD write-speed procedure**: that a CD write uses SET CD SPEED (0xBB)
+  with CLV rather than SET STREAMING (which cdrecord reaches for only on DVD,
+  `speed_select_mdvd`); that the field units are kB/s with the deliberate
+  `speed_x * 177` rounding rather than the arithmetically correct 176.4,
+  because drives round down; that the read-speed field must be read back and
+  passed through rather than left 0xFFFF, which means *maximum* and not
+  *unchanged*; and the climb by one 1x rung when a drive refuses a speed below
+  its own minimum with ILLEGAL REQUEST / ASC 0x24 instead of rounding up
+  (`drv_mmc.c` `speed_select_mmc` / `mmc_set_speed`, `scsi_cdr.c`
+  `scsi_set_speed`).
 - **cdrdao** — mode page 2A speed-field offsets, DAO writing model
   (write path, upcoming).
 - **libcdio-paranoia / cd-paranoia** — verification and reread strategy

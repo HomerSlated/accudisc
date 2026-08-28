@@ -29,6 +29,8 @@
 #include "internal.h"
 #include "write/write.h"
 #include "write/fifo.h"
+#include "mmc/cdb.h"  /* ADSC_ROTCTL_* — the speed tests assert the CDB's
+                     * rotational-control selector, not a copy of it */
 
 /* ---- the fake drive ------------------------------------------------------ */
 
@@ -67,6 +69,22 @@ static struct {
     uint32_t cap_blank;        /* what the next poll reports as free */
     uint32_t cap_blank_step;   /* added to cap_blank each poll: a draining drive */
     unsigned cap_polls;
+
+    /* WRITE SPEED (0.29.0). `min_write_kbps` is a drive that refuses anything
+     * slower than itself with ILLEGAL REQUEST / ASC 0x24 instead of rounding
+     * up — the behaviour cdrecord's climb exists for, and one no device here
+     * can be made to produce on demand. */
+    unsigned set_speed_calls;
+    uint16_t last_write_kbps;  /* what the last SET CD SPEED asked for */
+    uint16_t last_read_kbps;   /* ... and what it did to the READ speed */
+    unsigned last_rotctl;
+    unsigned min_write_kbps;   /* 0 = accept anything */
+    int      set_speed_hard_fail; /* a non-0x24 failure: must NOT be climbed */
+    unsigned report_write_kbps;   /* what page 2A answers; 0 = refuse to say */
+    int      report_write_fail;
+    unsigned cur_read_kbps;    /* what accudisc_get_speed reports */
+    char     speed_log[512];   /* the speed line */
+    char     fifo_secs_log[512]; /* the FIFO ride-through line */
 } fake;
 
 static struct accudisc_device *fake_dev(void)
@@ -146,6 +164,48 @@ int adsc_write_set_params(struct accudisc_device *d, const struct adsc_write_par
 { (void)d; (void)w; return ACCUDISC_OK; }
 int adsc_write_read_disc_info(struct accudisc_device *d, struct adsc_disc_info *di)
 { (void)d; memset(di, 0, sizeof *di); di->status = 0; di->leadin_len = 0; return ACCUDISC_OK; }
+int adsc_mmc_set_cd_speed(struct accudisc_device *d, uint16_t read_kbps,
+                          uint16_t write_kbps, unsigned rotctl)
+{
+    (void)d;
+    fake.set_speed_calls++;
+    fake.last_read_kbps = read_kbps;
+    fake.last_write_kbps = write_kbps;
+    fake.last_rotctl = rotctl;
+    if (fake.set_speed_hard_fail) {
+        d->last_sense.valid = 1;
+        d->last_sense.key = 0x03;   /* MEDIUM ERROR: nothing to do with speed */
+        d->last_sense.asc = 0x11;
+        return ACCUDISC_ERR_SENSE;
+    }
+    if (fake.min_write_kbps && write_kbps < fake.min_write_kbps) {
+        d->last_sense.valid = 1;
+        d->last_sense.key = 0x05;   /* ILLEGAL REQUEST */
+        d->last_sense.asc = 0x24;   /* INVALID FIELD IN CDB */
+        return ACCUDISC_ERR_SENSE;
+    }
+    return ACCUDISC_OK;
+}
+
+int adsc_write_cur_write_kbps(struct accudisc_device *d, unsigned *kbps)
+{
+    (void)d;
+    if (fake.report_write_fail)
+        return ACCUDISC_ERR_SHORT;
+    *kbps = fake.report_write_kbps;
+    return ACCUDISC_OK;
+}
+
+int accudisc_get_speed(accudisc_device *d, unsigned *max_kbps, unsigned *cur_kbps)
+{
+    (void)d;
+    if (max_kbps)
+        *max_kbps = 0;
+    if (cur_kbps)
+        *cur_kbps = fake.cur_read_kbps;
+    return fake.cur_read_kbps ? ACCUDISC_OK : ACCUDISC_ERR_SHORT;
+}
+
 int adsc_cdtext_blob_validate(const uint8_t *b, uint32_t n, uint32_t *packs)
 { (void)b; (void)n; (void)packs; return ACCUDISC_ERR_INVAL; }
 int adsc_cdtext_encode_rw(const uint8_t *p, uint32_t n, uint8_t *out)
@@ -175,6 +235,21 @@ void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...)
         snprintf(fake.bp_log, sizeof fake.bp_log, "%s", fake.last_log);
     if (strstr(fake.last_log, "drive buffer"))
         snprintf(fake.buf_log, sizeof fake.buf_log, "%s", fake.last_log);
+    /* ACCUMULATES rather than replaces. The engine emits up to two speed lines
+     * (a climb/failure note, then the summary) and both match; replacing meant
+     * the second silently ate the first, so a test asserting on the note read
+     * as a failure of the note rather than of the capture. */
+    if (strstr(fake.last_log, "speed —")) {
+        size_t used = strlen(fake.speed_log);
+        snprintf(fake.speed_log + used, sizeof fake.speed_log - used, "%s%s",
+                 used ? " || " : "", fake.last_log);
+    }
+    if (strstr(fake.last_log, "FIFO ="))
+        snprintf(fake.fifo_secs_log, sizeof fake.fifo_secs_log, "%s",
+                 fake.last_log);
+    if (strstr(fake.last_log, "FIFO duration UNKNOWN"))
+        snprintf(fake.fifo_secs_log, sizeof fake.fifo_secs_log, "%s",
+                 fake.last_log);
 }
 
 /* ---- a minimal one-track burn -------------------------------------------- */
@@ -197,6 +272,13 @@ static int bin_fd_n(uint32_t sectors)
 
 static int bin_fd(void) { return bin_fd_n(TRACK_SECTORS); }
 
+/* The speed run_n() asks for. A separate global rather than another run_*
+ * variant: every existing test must keep running at 0 (= leave the drive
+ * alone), which is also the pre-0.29.0 behaviour. */
+static int opt_speed;
+/* And the FIFO run_n() asks for. 0 = the engine's default. */
+static uint32_t opt_fifo;
+
 static int run_n(uint32_t sectors)
 {
     struct adsc_write_toc toc;
@@ -211,6 +293,8 @@ static int run_n(uint32_t sectors)
     toc.track[0].sectors = sectors;
     toc.track[0].file_offset = 0;
     opts.simulate = 1;
+    opts.speed = opt_speed;
+    opts.fifo_bytes = opt_fifo;
 
     rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
     close(fd);
@@ -222,6 +306,8 @@ static int run(void) { return run_n(TRACK_SECTORS); }
 static void reset(void)
 {
     memset(&fake, 0, sizeof fake);
+    opt_speed = 0;
+    opt_fifo = 0;
     /* A healthy drive by default: 4 MiB buffer, nearly full. Tests that care
      * about the buffer override these. */
     fake.cap_total = 4u * 1024u * 1024u;
@@ -543,6 +629,7 @@ static int run_fifo(uint32_t sectors, uint32_t fifo_bytes)
     toc.track[0].sectors = sectors;
     opts.simulate = 1;
     opts.fifo_bytes = fifo_bytes;
+    opts.speed = opt_speed;
 
     rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
     close(fd);
@@ -731,6 +818,118 @@ static void test_sizing_converts_duration_and_clamps(void)
     assert(accudisc_fifo_bytes_for(0.0, 8) == 0);
 }
 
+
+/* ---- write speed (0.29.0) ------------------------------------------------ */
+
+/* THE DEFECT THIS SUITE MISSED FOR THREE VERSIONS. adsc_burn_opts.speed was
+ * carried from the CLI to the engine and read by nobody: `--speed 4` sent no
+ * command at all, and the drive wrote at whatever it liked (19.4x measured on
+ * a PX-716A). Nothing here could see it, because nothing here asserted that a
+ * command was SENT — the burn succeeded either way, which is precisely the
+ * shape of defect that survives a green suite. */
+static void test_the_requested_speed_reaches_the_drive_at_all(void)
+{
+    reset();
+    opt_speed = 4;
+    fake.report_write_kbps = 708;
+    assert(run() == ACCUDISC_OK);
+    assert(fake.set_speed_calls == 1 && "SET CD SPEED was actually issued");
+    /* 4 * 177, not 4 * 176.4: the reference rounds up per rung deliberately
+     * because drives round down. */
+    assert(fake.last_write_kbps == 708);
+    assert(fake.last_rotctl == ADSC_ROTCTL_CLV && "a CD write is CLV, not a "
+                                                  "CAV ceiling");
+}
+
+static void test_asking_for_no_speed_sends_no_command(void)
+{
+    reset();
+    opt_speed = 0;
+    assert(run() == ACCUDISC_OK);
+    assert(fake.set_speed_calls == 0 && "0 means leave the drive alone");
+}
+
+/* The READ speed is a bystander and must stay one. 0xFFFF in that CDB field is
+ * not "unchanged", it is "use your maximum" — so a burn would silently retune
+ * the drive's read speed, and the setting outlives us. */
+static void test_the_read_speed_is_preserved_not_maximised(void)
+{
+    reset();
+    opt_speed = 4;
+    fake.cur_read_kbps = 1764;          /* the drive is reading at 10x */
+    assert(run() == ACCUDISC_OK);
+    assert(fake.last_read_kbps == 1764 && "the read speed was handed back "
+                                          "unchanged");
+
+    /* ...and when the drive will not say, 0xFFFF is the only honest answer. */
+    reset();
+    opt_speed = 4;
+    fake.cur_read_kbps = 0;             /* accudisc_get_speed fails */
+    assert(run() == ACCUDISC_OK);
+    assert(fake.last_read_kbps == 0xFFFF);
+}
+
+/* cdrecord's climb: a drive whose minimum write speed is above the request
+ * answers ILLEGAL REQUEST / INVALID FIELD IN CDB instead of rounding up. */
+static void test_a_drive_that_cannot_write_that_slowly_is_climbed(void)
+{
+    reset();
+    opt_speed = 1;                      /* 177 kB/s */
+    fake.min_write_kbps = 1000;         /* ...but it will not go below 1000 */
+    assert(run() == ACCUDISC_OK);
+    /* 177, 354, 531, 708, 885, 1062 */
+    assert(fake.set_speed_calls == 6);
+    assert(fake.last_write_kbps == 1062);
+    assert(strstr(fake.speed_log, "cannot write that slowly"));
+}
+
+/* ...and the climb must be for THAT sense only. Climbing on any failure would
+ * turn one real error into nine and then report success. */
+static void test_a_failure_that_is_not_about_speed_is_not_climbed(void)
+{
+    reset();
+    opt_speed = 4;
+    fake.set_speed_hard_fail = 1;       /* MEDIUM ERROR, not 5/24 */
+    assert(run() == ACCUDISC_OK && "a speed failure must not cost the burn");
+    assert(fake.set_speed_calls == 1 && "tried once, did not climb");
+    assert(strstr(fake.speed_log, "FAILED"));
+}
+
+/* THE HEADLINE. The FIFO is sized in SECONDS against the speed the caller
+ * REQUESTED. If the drive is at another rate the byte count is unchanged and
+ * the protection is not — 3492720 bytes reported as "5.0 s at 4x" was 1.02 s
+ * of real ride-through, and nothing said so. */
+static void test_the_ride_through_is_reported_against_the_DRIVES_rate(void)
+{
+    reset();
+    opt_speed = 4;
+    fake.report_write_kbps = 3422;      /* the drive is really at 19.4x */
+    assert(run_fifo(LONG_SECTORS, 3492720u) == ACCUDISC_OK);
+    assert(strstr(fake.fifo_secs_log, "NOT the duration the requested speed "
+                                      "implies"));
+
+    /* and it must NOT cry wolf when the drive is where it was asked to be */
+    reset();
+    opt_speed = 4;
+    fake.report_write_kbps = 708;
+    assert(run_fifo(LONG_SECTORS, 3492720u) == ACCUDISC_OK);
+    assert(fake.fifo_secs_log[0] && "the duration is still reported");
+    assert(!strstr(fake.fifo_secs_log, "NOT the duration"));
+}
+
+/* A drive that will not state a speed leaves the duration UNCOMPUTABLE, and
+ * saying so is the whole point: the previous code printed a confident "5.0 s"
+ * derived from an assumption it never checked. */
+static void test_an_unstated_speed_is_UNKNOWN_rather_than_assumed(void)
+{
+    reset();
+    opt_speed = 0;
+    fake.report_write_fail = 1;
+    assert(run_fifo(LONG_SECTORS, 3492720u) == ACCUDISC_OK);
+    assert(strstr(fake.fifo_secs_log, "FIFO duration UNKNOWN"));
+    assert(strstr(fake.speed_log, "would not report a write speed"));
+}
+
 int main(void)
 {
     test_a_clean_burn_never_stalls();
@@ -758,6 +957,13 @@ int main(void)
     test_a_constant_answer_is_not_a_measurement();
     test_a_drive_whose_buffer_MOVES_is_still_reported();
     test_the_poll_is_not_issued_for_every_chunk();
+    test_the_requested_speed_reaches_the_drive_at_all();
+    test_asking_for_no_speed_sends_no_command();
+    test_the_read_speed_is_preserved_not_maximised();
+    test_a_drive_that_cannot_write_that_slowly_is_climbed();
+    test_a_failure_that_is_not_about_speed_is_not_climbed();
+    test_the_ride_through_is_reported_against_the_DRIVES_rate();
+    test_an_unstated_speed_is_UNKNOWN_rather_than_assumed();
     printf("ok test_burn_flow\n");
     return 0;
 }

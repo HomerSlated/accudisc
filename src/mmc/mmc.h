@@ -119,6 +119,21 @@ int adsc_mmc_send_opc(struct accudisc_device *dev);
 int adsc_mmc_set_streaming(struct accudisc_device *dev, unsigned speed_x,
                            uint32_t start_lba, uint32_t end_lba, unsigned exact);
 
+/* SET CD SPEED (0xBB). Speeds in kB/s (use adsc_cd_speed_kbps for Nx), 0xFFFF
+ * = leave alone. rotctl is ADSC_ROTCTL_*.
+ *
+ * THIS, NOT SET STREAMING, IS THE WRITE-SPEED PATH. cdrecord reaches for
+ * SET STREAMING only on DVD (speed_select_mdvd); every CD write goes through
+ * 0xBB with CLV (drv_mmc.c speed_select_mmc). SET STREAMING's descriptor does
+ * carry Write Size/Write Time fields, but the flags we send with it request a
+ * CAV *ceiling*, which is a different request from "write at this rate".
+ *
+ * A drive may refuse a speed below its own minimum with ILLEGAL REQUEST /
+ * ASC 0x24 rather than rounding up; the caller is expected to climb (see
+ * adsc_write_set_speed). Non-data command. */
+int adsc_mmc_set_cd_speed(struct accudisc_device *dev, uint16_t read_kbps,
+                          uint16_t write_kbps, unsigned rotctl);
+
 /* GET PERFORMANCE (0xAC), nominal-performance curve. Fills buf with the raw
  * response (8-byte header + N x 16-byte descriptors), sets *len to bytes
  * returned. max_desc bounds the request; caller sizes buf as 8 + max_desc*16. */

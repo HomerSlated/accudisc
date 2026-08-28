@@ -289,6 +289,18 @@ int adsc_mmc_set_streaming(struct accudisc_device *dev, unsigned speed_x,
     return adsc_dev_exec(dev, &cmd);
 }
 
+int adsc_mmc_set_cd_speed(struct accudisc_device *dev, uint16_t read_kbps,
+                          uint16_t write_kbps, unsigned rotctl)
+{
+    adsc_cmd cmd = {0};
+
+    adsc_cdb_set_cd_speed(cmd.cdb, read_kbps, write_kbps, rotctl);
+    cmd.cdb_len = 12;
+    cmd.dir = ADSC_XFER_NONE;
+    cmd.timeout_ms = ADSC_TIMEOUT_CTRL_MS;
+    return adsc_dev_exec(dev, &cmd);
+}
+
 int adsc_mmc_get_performance(struct accudisc_device *dev, uint32_t start_lba,
                              uint16_t max_desc, uint8_t *buf, uint32_t cap,
                              uint32_t *len)

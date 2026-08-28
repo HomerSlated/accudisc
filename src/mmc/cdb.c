@@ -157,6 +157,37 @@ void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
     put_be32(desc + 8, end_lba);
 }
 
+uint16_t adsc_cd_speed_kbps(unsigned speed_x)
+{
+    /* 177, not 176.4 — see the header. Clamp at 0xFFFF, which is also the
+     * "leave alone" sentinel, so a caller asking for an absurd speed gets
+     * "maximum" rather than a wrapped 16-bit value. */
+    unsigned kbps = speed_x * 177u;
+
+    return kbps > 0xFFFFu ? (uint16_t)0xFFFFu : (uint16_t)kbps;
+}
+
+void adsc_cdb_set_cd_speed(uint8_t cdb[12], uint16_t read_kbps,
+                           uint16_t write_kbps, unsigned rotctl)
+{
+    /* CDB layout (MMC SET CD SPEED):
+     *   [0]     opcode BBh
+     *   [1]     bits 1-0 rotational control
+     *   [2..3]  Logical Unit Read Speed  (kB/s, big endian)
+     *   [4..5]  Logical Unit Write Speed (kB/s, big endian)
+     *   [6..11] reserved / control
+     * Verified against cdrecord scsi_cdr.c:520, which writes the read speed at
+     * g5_cdb.addr[0] (= CDB byte 2) and the write speed at addr[2] (= byte 4),
+     * and ORs rotctl into cmd_cdb[1]. */
+    memset(cdb, 0, 12);
+    cdb[0] = ADSC_OP_SET_CD_SPEED;
+    cdb[1] = (uint8_t)(rotctl & 0x03);
+    cdb[2] = (uint8_t)(read_kbps >> 8);
+    cdb[3] = (uint8_t)(read_kbps & 0xff);
+    cdb[4] = (uint8_t)(write_kbps >> 8);
+    cdb[5] = (uint8_t)(write_kbps & 0xff);
+}
+
 void adsc_cdb_get_configuration(uint8_t cdb[10], unsigned rt,
                                 uint16_t feature, uint16_t alloc)
 {

@@ -27,7 +27,29 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 28 /* 0.28.0: A FAILED BURN NOW RELEASES THE
+#define ACCUDISC_VERSION_MINOR 29 /* 0.29.0: THE REQUESTED WRITE SPEED NOW
+                                  * REACHES THE DRIVE. accudisc_write_opts.speed
+                                  * was documented "0 = leave the drive's
+                                  * current write speed" and was read by NOBODY
+                                  * below the API boundary: no SET CD SPEED, no
+                                  * SET STREAMING, nothing. `--speed 4`
+                                  * constrained the drive not at all — measured
+                                  * 19.4x delivered on a PX-716A while 4x was
+                                  * asked for, 2026-08-28.
+                                  * It is worse than a wrong rate. The write
+                                  * FIFO is sized in SECONDS against that
+                                  * number, so a ring the CLI reported as
+                                  * "5.0 s at 4x" was 1.02 s of real
+                                  * ride-through. The reassuring figure was the
+                                  * wrong one, while the alarming signals
+                                  * (0% buffer fill) were correct.
+                                  * The command is SET CD SPEED (0xBB) with
+                                  * CLV, per cdrecord's speed_select_mmc — NOT
+                                  * SET STREAMING, which it uses only on DVD.
+                                  * Includes cdrecord's climb for drives that
+                                  * refuse a speed below their minimum with
+                                  * 5/24 rather than rounding up. No ABI change.
+                                  * 0.28.0: A FAILED BURN NOW RELEASES THE
                                   * DRIVE. No ABI change; the behaviour change
                                   * is that accudisc_write returning an error
                                   * leaves the drive usable. Before this, an

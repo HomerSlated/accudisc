@@ -1528,7 +1528,9 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
         unsigned x = o.speed > 0 ? (unsigned)o.speed : 8u;
         double got = (double)o.fifo_bytes / (2352.0 * 75.0 * x);
 
-        fprintf(stderr, "accudisc: fifo %u bytes = %.1f s at %ux (assumed%s)%s\n",
+        fprintf(stderr, "accudisc: fifo %u bytes = %.1f s at %ux (assumed%s)%s"
+                        " — the engine reports the rate the DRIVE is actually "
+                        "set to, and this ring's real duration, below\n",
                 o.fifo_bytes, got, x, o.speed > 0 ? "" : ", drive default",
                 o.fifo_bytes >= ACCUDISC_FIFO_MAX_BYTES
                     ? " — CAPPED, you asked for more" : "");

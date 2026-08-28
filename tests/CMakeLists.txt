@@ -89,11 +89,14 @@ add_test(NAME test_offsets_ambiguous COMMAND test_offsets_ambiguous)
 # 400 ms / 10 ms keeps the ratio (40 waits) while costing under a second.
 # cuesheet.c is linked for real rather than stubbed: it is pure layout
 # arithmetic with no device in it, so a stub would only be a second thing to
-# keep in step with the first.
+# keep in step with the first. cdb.c is here for the same reason and one more:
+# adsc_cd_speed_kbps is the Nx -> kB/s conversion the speed tests are ABOUT, so
+# a stub would test the stub.
 add_executable(test_burn_flow test_burn_flow.c
                ${PROJECT_SOURCE_DIR}/src/write/burn.c
                ${PROJECT_SOURCE_DIR}/src/write/cuesheet.c
-               ${PROJECT_SOURCE_DIR}/src/write/fifo.c)
+               ${PROJECT_SOURCE_DIR}/src/write/fifo.c
+               ${PROJECT_SOURCE_DIR}/src/mmc/cdb.c)
 target_include_directories(test_burn_flow PRIVATE
                            ${PROJECT_SOURCE_DIR}/include
                            ${PROJECT_SOURCE_DIR}/src)
