@@ -1,4 +1,4 @@
-add_executable(accudisc_cli main.c format.c)
+add_executable(accudisc_cli main.c format.c sink.c)
 set_target_properties(accudisc_cli PROPERTIES OUTPUT_NAME accudisc)
 target_link_libraries(accudisc_cli PRIVATE accudisc)
 

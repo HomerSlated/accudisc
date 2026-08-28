@@ -1169,7 +1169,7 @@ The measurement must run **end-to-end in the API**, in RAM, with no files:
 This overrules the mechanism-only design that shipped in 0.20.0 (library
 supplies signal + locator, caller orchestrates the burn and read-back).
 
-### 4. A silent-truncation path found while diagnosing the above — `[P2]`, OUR DEFECT
+### 4. A silent-truncation path found while diagnosing the above — `[P2]`, OUR DEFECT — **DONE 2026-08-28 (0.30.0)**
 
 `read_sink` in `cli/main.c` makes **five `fwrite` calls and checks none of
 them** (audio, C2, subchannel, CD+G packs). `ferror` is never consulted either,
@@ -1187,6 +1187,31 @@ have `cmd_read` fail loudly. The sink's only current signal back to the engine
 is a non-zero return, which the engine maps to `ACCUDISC_ERR_CANCELLED` — the
 wrong name for an I/O error, so the exit-code mapping in
 `docs/reference/cli-machine-interface.md` needs a look at the same time.
+
+**DONE.** The write/close checking moved to `cli/sink.c` + `sink.h`, split out
+of `main.c` for the reason `format.c` was — so `/dev/full` can stand in for a
+full filesystem and the truncation path is testable with no drive and no disc
+(`tests/test_cli_sink.c`, 8 cases, mutation-tested).
+
+The count was five, not four: the fifth is `dump_to_file`, which serves
+`fulltoc FILE` and `cdtext FILE` and announced `N bytes -> path` over a write
+and a close it had never checked. Fixing only `read_sink` would have left it.
+
+`cmd_read` keeps the device's own message for a real device error but reports
+the latched write error where the engine merely relayed our sink saying stop —
+`ERR_CANCELLED` names the messenger, not the cause. Exit 2, plus an
+`error write <lane> <strerror>` token on `--progress-fd`; both documented.
+
+Two findings worth keeping from doing it:
+
+- The first version of the report was guarded on `ret != 1`, meaning "argument
+  validation already owns the exit code". But `cmd_read` INITIALISES `ret = 1`,
+  so the guard was true on exactly the path it existed for: `--pcm /dev/full`
+  gave a **silent exit 1**. Well-formed condition, wrong referent. Only the
+  end-to-end run found it — the unit test does not exercise `main.c`.
+- `cli_sink_close` must set `errno` even when handed no latch, because
+  `dump_to_file` has `strerror(errno)` as its only way to say why. Without it
+  the message read `writing /dev/full FAILED: Success`.
 
 ## OFFSET DICTIONARY — REDUMP is AccurateRip, frozen in 2022 (2026-08-22) — DONE
 

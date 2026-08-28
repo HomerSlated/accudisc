@@ -105,6 +105,14 @@ target_compile_definitions(test_burn_flow PRIVATE
 target_link_libraries(test_burn_flow PRIVATE Threads::Threads)
 add_test(NAME test_burn_flow COMMAND test_burn_flow)
 
+# The CLI's checked output writing. Compiles cli/sink.c directly — the point of
+# splitting it out of main.c is that /dev/full can stand in for a full
+# filesystem, so the truncation path is testable with no drive and no disc.
+add_executable(test_cli_sink test_cli_sink.c
+               ${PROJECT_SOURCE_DIR}/cli/sink.c)
+target_include_directories(test_cli_sink PRIVATE ${PROJECT_SOURCE_DIR}/cli)
+add_test(NAME test_cli_sink COMMAND test_cli_sink)
+
 # Golden test for the CLI machine interface. Compiles cli/format.c directly:
 # it asserts the bytes the *binary* emits, so it must exercise the binary's own
 # formatter, not a copy. Run the executable with --dump to regenerate a golden

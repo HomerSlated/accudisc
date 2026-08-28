@@ -1,14 +1,17 @@
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <accudisc/accudisc.h>
 
 #include "format.h"
+#include "sink.h"
 
 static void usage(FILE *to)
 {
@@ -525,9 +528,19 @@ static int dump_blob(accudisc_device *dev, const char *path, const char *what,
         accudisc_free(buf);
         return 1;
     }
-    fwrite(buf, 1, len, fp);
-    fclose(fp);
+    /* CHECKED, all three stages. This used to write and close blind and then
+     * announce a byte count it had not verified — "N bytes -> path" and exit 0
+     * over a file that could be empty. A claim with a number in it is the worst
+     * kind to make without looking. */
+    int wrote = (len == 0 || fwrite(buf, 1, len, fp) == len);
+    int closed = cli_sink_close(fp, path, NULL) == 0;
+
     accudisc_free(buf);
+    if (!wrote || !closed) {
+        fprintf(stderr, "accudisc: %s: writing %s FAILED: %s — the file is "
+                        "incomplete\n", what, path, strerror(errno));
+        return 2;
+    }
     fprintf(stderr, "accudisc: %s: %u bytes -> %s\n", what, len, path);
     return 0;
 }
@@ -1591,6 +1604,11 @@ struct read_ctx {
     int prog_fd; /* -1 = off; machine 'progress <done> <total>' lines */
     double last_prog;
     const uint8_t *map;
+    /* FIRST output-write failure, latched. 0 = none. The engine can only be
+     * told "stop" by a non-zero sink return, which it reports as
+     * ACCUDISC_ERR_CANCELLED — the wrong name for a full disk — so the real
+     * cause is kept here and reported instead of the engine's word for it. */
+    struct cli_wfail wf;
 };
 
 static double mono_now(void)
@@ -1608,12 +1626,20 @@ static int read_sink(void *user, const accudisc_chunk *c)
     for (uint32_t s = 0; s < c->nsec; s++) {
         const uint8_t *sec = c->data + (size_t)s * c->sector_len;
 
-        if (ctx->pcm)
-            fwrite(sec, 1, c->audio_len, ctx->pcm);
-        if (ctx->c2f && c->c2_len)
-            fwrite(sec + c->audio_len, 1, c->c2_len, ctx->c2f);
-        if (ctx->subf && c->sub_len)
-            fwrite(sec + c->audio_len + c->c2_len, 1, c->sub_len, ctx->subf);
+        /* STOP on the first failure rather than writing the rest of the
+         * disc into a filesystem that has already refused. */
+        if (ctx->pcm &&
+            cli_sink_write(ctx->pcm, "--pcm", sec, c->audio_len, &ctx->wf))
+            return -1;
+        if (ctx->c2f && c->c2_len &&
+            cli_sink_write(ctx->c2f, "--c2f", sec + c->audio_len, c->c2_len,
+                           &ctx->wf))
+            return -1;
+        if (ctx->subf && c->sub_len &&
+            cli_sink_write(ctx->subf, "--subf",
+                           sec + c->audio_len + c->c2_len, c->sub_len,
+                           &ctx->wf))
+            return -1;
         /* CD+G: de-interleave and RS-correct the R-W stream into 24-byte
          * packs. Streamed rather than buffered — the decoder carries the
          * 8-pack window it needs, so a whole-disc rip costs no extra memory. */
@@ -1625,8 +1651,9 @@ static int read_sink(void *user, const accudisc_chunk *c)
                                  sec + c->audio_len + c->c2_len, pk,
                                  ACCUDISC_RW_PACKS_PER_SEC, &got) == ACCUDISC_OK)
                 for (unsigned p = 0; p < got; p++)
-                    fwrite(pk[p].symbol, 1, ACCUDISC_RW_PACK_SYMBOLS,
-                           ctx->cdgf);
+                    if (cli_sink_write(ctx->cdgf, "--cdg", pk[p].symbol,
+                                       ACCUDISC_RW_PACK_SYMBOLS, &ctx->wf))
+                        return -1;
         }
     }
     ctx->done += c->nsec;
@@ -2154,10 +2181,17 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                 "the read ran at the lower rate\n",
                 st.speed_requested_x, st.speed_honoured_x);
 
-    if (err != ACCUDISC_OK) {
+    /* A device error still gets the device's own message — UNLESS the engine
+     * merely relayed our own sink saying stop, in which case "cancelled" names
+     * the messenger rather than the cause. `out:` owns the reporting and the
+     * exit code for the write failure, so both paths land there. */
+    if (err != ACCUDISC_OK &&
+        !(ctx.wf.err && err == ACCUDISC_ERR_CANCELLED)) {
         ret = fail_dev(dev, "read", err);
         goto out;
     }
+    if (ctx.wf.err)
+        goto out;
 
     fprintf(stderr, "accudisc read summary\n");
     fprintf(stderr, "  sectors read     : %llu (%.1f s, %.1f sectors/s)\n",
@@ -2239,12 +2273,16 @@ out:
      * nothing, so every exit path restores without testing whether it got far
      * enough to need to. Leave the drive as found. */
     accudisc_speed_uncap_pop(dev, uncap_prior);
-    if (ctx.pcm)
-        fclose(ctx.pcm);
-    if (ctx.c2f)
-        fclose(ctx.c2f);
-    if (ctx.subf)
-        fclose(ctx.subf);
+    /* CLOSED BEFORE THE EXIT CODE IS FINAL, and checked. A buffered ENOSPC can
+     * surface for the first time at fflush or fclose, so a close that happens
+     * after the verdict — or whose return is discarded — is a verdict passed
+     * on a file whose last bytes may never have landed. */
+    cli_sink_close(ctx.pcm, "--pcm", &ctx.wf);
+    ctx.pcm = NULL;
+    cli_sink_close(ctx.c2f, "--c2f", &ctx.wf);
+    ctx.c2f = NULL;
+    cli_sink_close(ctx.subf, "--subf", &ctx.wf);
+    ctx.subf = NULL;
     if (ctx.rw) {
         accudisc_rw_stats rs;
 
@@ -2274,8 +2312,34 @@ out:
         }
         accudisc_rw_close(ctx.rw);
     }
-    if (ctx.cdgf)
-        fclose(ctx.cdgf);
+    cli_sink_close(ctx.cdgf, "--cdg", &ctx.wf);
+    ctx.cdgf = NULL;
+    /* The output is INCOMPLETE and saying so is the whole point of this change.
+     * Exit 2 (fatal: the command could not complete), not 3 (delivered but
+     * degraded) — 3 means the audio is there and needs gating, and here it is
+     * not there.
+     *
+     * UNCONDITIONAL. This first read `ret != 1`, meaning "argument validation
+     * already owns the exit code" — but `ret` is INITIALISED to 1 (this
+     * function defaults to failure), so the guard was true on exactly the path
+     * it existed for and the whole report was suppressed: /dev/full gave a
+     * silent exit 1. The condition was well-formed and tested the wrong thing.
+     *
+     * No guard is needed. wf.err can only be set by a write or a close on a
+     * lane that was successfully opened, which cannot happen before argument
+     * validation has passed. */
+    if (ctx.wf.err) {
+        fprintf(stderr, "accudisc: read: writing %s FAILED: %s\n"
+                        "accudisc: read: THE OUTPUT FILE IS INCOMPLETE — "
+                        "%u of %u sectors were written\n",
+                ctx.wf.lane ? ctx.wf.lane : "output", strerror(ctx.wf.err),
+                ctx.done, ctx.total);
+        if (ctx.prog_fd >= 0)
+            dprintf(ctx.prog_fd, "error write %s %s\n",
+                    ctx.wf.lane ? ctx.wf.lane : "output",
+                    strerror(ctx.wf.err));
+        ret = 2;
+    }
     lane_free(map, map_path, req.count);
     lane_free(subq, subq_path, req.count);
     return ret;

@@ -110,6 +110,8 @@ Every row below was read out of `cli/main.c`, not inferred from this document.
 | 3 | `media` | `accudisc_read_atip` → `ERR_NOTFOUND` |
 | 3 | `write` | `accudisc_write` returned `ACCUDISC_WROTE_WITH_CAVEATS` (a **positive** return, not an error) |
 | 2 | any | any negative `accudisc_err` from a device call. The CLI adds no judgement here — it prints and exits |
+| 2 | `read` | **an output file could not be written** (`--pcm`/`--c2f`/`--subf`/`--cdg`): any short `fwrite`, or a failing `fflush`/`fsync`/`fclose`. **No library equivalent** — the library hands chunks to a sink and never opens a file, so an in-process caller sees its own `write()` error instead. Reported as `read: writing <lane> FAILED: <strerror>` plus `THE OUTPUT FILE IS INCOMPLETE — N of M sectors were written`. 2 and not 3: 3 means the audio is present and needs gating, and here it is not present |
+| 2 | `fulltoc F` / `cdtext F` | same, for the single dumped blob. The success line `<what>: N bytes -> <path>` is now printed only after the write AND the close have both been checked |
 | 1 | any | **no library equivalent.** Argument and local-file validation happen before any device call; in-process that is the caller's own code |
 | 0 | any | none of the above |
 
@@ -272,8 +274,15 @@ progress <done> <total>
 summary hard=<n> c2=<n> recovered=<n> suspect=<n> rereads=<n> slips=<n>
         subq_total=<n> subq_ok=<n> subq_bad=<n> subq_misposition=<n>
         buffer_peak=<n> buffer_stalls=<n>
+error write <lane> <strerror>
 ```
-(one physical line; wrapped here only to fit)
+(the `summary` line is one physical line; wrapped here only to fit)
+
+`error write` is emitted instead of `summary` when an output file could not be
+written — `<lane>` is the option that named it (`--pcm`, `--c2f`, `--subf`,
+`--cdg`). Exit is 2 and **the output file on disk is short**. A consumer that
+keys only on the absence of `summary` will also catch this, but the token
+carries which lane and why.
 
 `progress` lines are throttled (roughly 4/s); the final one always reports
 `<total> <total>`. `summary` is emitted exactly once, after a completed read

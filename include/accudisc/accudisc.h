@@ -27,7 +27,27 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 29 /* 0.29.0: THE REQUESTED WRITE SPEED NOW
+#define ACCUDISC_VERSION_MINOR 30 /* 0.30.0: THE CLI NO LONGER REPORTS A
+                                  * TRUNCATED RIP AS A SUCCESS. Library
+                                  * UNCHANGED — this is entirely a cli/ fix, and
+                                  * it is recorded at the package version
+                                  * because the CLI's exit codes are a
+                                  * documented interface (see
+                                  * docs/reference/cli-machine-interface.md).
+                                  * `read_sink` issued four fwrite calls and
+                                  * checked none, never consulted ferror, and
+                                  * always returned 0; `dump_to_file` wrote and
+                                  * closed blind and then printed a byte count
+                                  * it had not verified. A full filesystem
+                                  * therefore produced a SHORT output file and
+                                  * exit 0. Now every write, flush, fsync and
+                                  * close is checked, the rip stops at the first
+                                  * failure, and `read` exits 2 saying which
+                                  * lane failed and how many sectors landed.
+                                  * An in-process caller was never affected:
+                                  * the library hands chunks to a sink and
+                                  * never opens a file.
+                                  * 0.29.0: THE REQUESTED WRITE SPEED NOW
                                   * REACHES THE DRIVE. accudisc_write_opts.speed
                                   * was documented "0 = leave the drive's
                                   * current write speed" and was read by NOBODY
