@@ -292,6 +292,10 @@ int adsc_write_run(struct accudisc_device *dev,
     struct adsc_wfifo_seg seg[99];
     int fifo_live = 0;
     struct write_flow fl = {0};
+    int session_open = 0;   /* the DRIVE holds a DAO session: must be released */
+    int burn_started = 0;   /* ... and we got far enough for the tally to mean
+                             * something. Distinct from session_open, which is
+                             * cleared by a clean close. */
     int ret;
 
     if (!dev || !toc || !opts || bin_fd < 0)
@@ -354,14 +358,16 @@ int adsc_write_run(struct accudisc_device *dev,
                                  : "not claimed by the drive");
     }
     if ((ret = adsc_write_set_params(dev, &wp)) != ACCUDISC_OK)
-        return ret;
+        goto done;
 
     /* 2. Refuse anything but a blank disc. */
     struct adsc_disc_info di;
     if ((ret = adsc_write_read_disc_info(dev, &di)) != ACCUDISC_OK)
-        return ret;
-    if (di.status != 0)
-        return ACCUDISC_ERR_NOT_BLANK;
+        goto done;
+    if (di.status != 0) {
+        ret = ACCUDISC_ERR_NOT_BLANK;
+        goto done;
+    }
 
     /* 3. Power calibration for a real burn (fires the laser at the PCA).
      * Skipped in simulate. A drive that reports "invalid command" (SK 5 /
@@ -372,7 +378,7 @@ int adsc_write_run(struct accudisc_device *dev,
             dev->last_sense.asc == 0x20)
             ret = ACCUDISC_OK;
         if (ret != ACCUDISC_OK)
-            return ret;
+            goto done;
     }
 
     /* 4. SEND CUE SHEET — the whole-disc DAO layout. With CD-Text this also
@@ -380,16 +386,23 @@ int adsc_write_run(struct accudisc_device *dev,
      * lead-in start MSF, so di must be read before it. */
     if ((ret = adsc_cuesheet_build(toc, &di, cue, sizeof cue, &cuelen)) !=
         ACCUDISC_OK)
-        return ret;
+        goto done;
     if ((ret = adsc_mmc_send_cue_sheet(dev, cue, cuelen)) != ACCUDISC_OK)
-        return ret;
+        goto done;
+    /* From here the DRIVE holds an open DAO session and is waiting for the
+     * rest of the data. Every exit below must reach `done:` so the session
+     * is aborted; a bare return leaves the drive live and refusing almost
+     * everything (measured 2026-08-28: READ DISC INFORMATION and READ ATIP
+     * both answer 5/2C/00 COMMAND SEQUENCE ERROR until it is released). */
+    session_open = 1;
+    burn_started = 1;
 
     /* 4b. CD-Text lead-in, written BEFORE the gap: it occupies the lead-in
      * extent immediately preceding LBA -150 (cdrdao order: cue sheet ->
      * writeCdTextLeadIn -> gap -> audio). */
     if (have_cdtext) {
         if ((ret = write_cdtext_leadin(dev, toc, &di, &fl)) != ACCUDISC_OK)
-            return ret;
+            goto done;
     }
 
     chunk = malloc(CHUNK * SECTOR);
@@ -546,8 +559,35 @@ int adsc_write_run(struct accudisc_device *dev,
 
     /* 7. Flush / close. */
     ret = adsc_mmc_sync_cache(dev);
+    if (ret == ACCUDISC_OK)
+        session_open = 0;
 
 done:
+    /* ABORT THE SESSION IN THE DRIVE BEFORE ANYTHING ELSE.
+     *
+     * Returning an error is not enough: the drive is mid-DAO and waiting for
+     * data it will never get. Until 0.28.0 we simply exited, and the drive
+     * stayed live -- TEST UNIT READY still passed, so it did not look wedged,
+     * but READ DISC INFORMATION and READ ATIP answered 5/2C/00 COMMAND
+     * SEQUENCE ERROR and a tray cycle did not clear it. Measured on a
+     * PX-716A after a deliberate FIFO starvation, 2026-08-28.
+     *
+     * FLUSH CACHE (0x35) is the whole abort, and it is what both references
+     * do: cdrdao GenericMMC::abortDao() is a bare flushCache(), and
+     * cdrecord's generic-MMC cdr_abort_session slot is cmd_dummy (a no-op),
+     * leaving scsi_flush_cache() as its entire abort path. Verified here: one
+     * 0x35 and READ DISC INFORMATION/READ ATIP answered normally again.
+     *
+     * The result is deliberately IGNORED, as in both references -- the burn
+     * has already failed and its error is the one worth returning. What we do
+     * NOT do is claim the drive recovered: we sent the release, we did not
+     * verify it took. */
+    if (session_open) {
+        (void)adsc_mmc_sync_cache(dev);
+        adsc_dev_log(dev, "write: session aborted in the drive (FLUSH CACHE) "
+                          "-- without this it stays mid-DAO and refuses "
+                          "READ DISC INFORMATION until released");
+    }
     if (fifo_live) {
         int frc = adsc_wfifo_stop(&fifo, ret != ACCUDISC_OK);
         if (ret == ACCUDISC_OK && frc != ACCUDISC_OK)
@@ -558,6 +598,12 @@ done:
                      fifo.min_count, fifo.nslots,
                      (unsigned long long)fifo.producer_waits);
     }
+    /* Nothing below describes a burn that never started: a refused blank or a
+     * rejected cue sheet would otherwise print "0 chunks held off" and
+     * "buffer fill UNKNOWN", which read as findings about a burn rather than
+     * as the absence of one. */
+    if (!burn_started)
+        goto cleanup;
     /* The tally, logged whatever the outcome — a failed burn is exactly when
      * knowing how the flow behaved is worth most. Read it as described at
      * struct write_flow: stalls are the drive holding US off, which is the safe
@@ -608,6 +654,7 @@ done:
     else
         adsc_dev_log(dev, "write: drive buffer fill UNKNOWN — the drive does not "
                           "report it. This is not a reading of zero.");
+cleanup:
     free(chunk);
     free(zero);
     return ret;

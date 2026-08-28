@@ -58,6 +58,10 @@ static struct {
      * case that decides whether a failover exists behind the host. */
     int      mastering_absent;
     int      buf_claimed;
+    int      cue_fail;         /* SEND CUE SHEET refuses: the session never
+                                * opens, so there is nothing to abort */
+    unsigned sync_calls;       /* FLUSH CACHE (0x35) the engine sent */
+    char     abort_log[512];   /* the session-abort line, if it appeared */
     int      cap_refuse;
     uint32_t cap_total;
     uint32_t cap_blank;        /* what the next poll reports as free */
@@ -106,11 +110,11 @@ int adsc_mmc_write10(struct accudisc_device *dev, int32_t lba, uint32_t nblocks,
 
 /* Everything else the burn path calls, succeeding quietly. */
 int adsc_mmc_send_cue_sheet(struct accudisc_device *d, const uint8_t *c, uint32_t n)
-{ (void)d; (void)c; (void)n; return ACCUDISC_OK; }
+{ (void)d; (void)c; (void)n; return fake.cue_fail ? ACCUDISC_ERR_IO : ACCUDISC_OK; }
 int adsc_mmc_send_opc(struct accudisc_device *d, int a)
 { (void)d; (void)a; return ACCUDISC_OK; }
 int adsc_mmc_sync_cache(struct accudisc_device *d)
-{ (void)d; return ACCUDISC_OK; }
+{ (void)d; fake.sync_calls++; return ACCUDISC_OK; }
 
 int adsc_probe_cd_mastering(struct accudisc_device *d, accudisc_features *f)
 {
@@ -165,6 +169,8 @@ void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...)
         snprintf(fake.fifo_log, sizeof fake.fifo_log, "%s", fake.last_log);
     if (strstr(fake.last_log, "primed"))
         snprintf(fake.prime_log, sizeof fake.prime_log, "%s", fake.last_log);
+    if (strstr(fake.last_log, "session aborted"))
+        snprintf(fake.abort_log, sizeof fake.abort_log, "%s", fake.last_log);
     if (strstr(fake.last_log, "BURN-Proof"))
         snprintf(fake.bp_log, sizeof fake.bp_log, "%s", fake.last_log);
     if (strstr(fake.last_log, "drive buffer"))
@@ -651,6 +657,68 @@ static void test_no_fifo_still_burns(void)
     assert(!fake.fifo_log[0] && "no FIFO line when there is no FIFO");
 }
 
+/* The drive holds an open DAO session from SEND CUE SHEET onward. Returning an
+ * error without releasing it leaves the drive live and refusing READ DISC
+ * INFORMATION / READ ATIP with 5/2C/00 -- measured on a PX-716A on 2026-08-28
+ * after a real starvation, and a tray cycle did not clear it. A single FLUSH
+ * CACHE did. */
+static void test_a_FAILED_burn_releases_the_session_in_the_drive(void)
+{
+    struct adsc_write_toc toc;
+    struct adsc_burn_opts opts;
+    int fd, rc;
+
+    reset();
+    fake.mastering_absent = 1;      /* no failover, so starvation stops the burn */
+    memset(&toc, 0, sizeof toc);
+    memset(&opts, 0, sizeof opts);
+    toc.ntracks = 1;
+    toc.leadout_lba = LONG_SECTORS;
+    toc.track[0].audio = 1;
+    toc.track[0].sectors = LONG_SECTORS;
+    opts.simulate = 1;
+    opts.fifo_bytes = 1;            /* clamped to the 2-slot floor: it WILL dry */
+
+    fd = bin_fd_n(LONG_SECTORS);
+    rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
+    close(fd);
+
+    assert(rc == ACCUDISC_ERR_IO && "the burn must still fail");
+    /* The point of the test: it failed AND it let the drive go. */
+    assert(fake.sync_calls >= 1 && "a failed burn must abort the session (0x35)");
+    assert(strstr(fake.abort_log, "FLUSH CACHE"));
+}
+
+/* The other half, and the reason the flag is a flag rather than an
+ * unconditional flush: if SEND CUE SHEET is refused there is no session, and
+ * firing an abort at a drive that never opened one is a command we cannot
+ * justify. Without this the test above passes on `always flush`, which is a
+ * different behaviour that happens to satisfy it. */
+static void test_a_failure_BEFORE_the_cue_sheet_aborts_nothing(void)
+{
+    struct adsc_write_toc toc;
+    struct adsc_burn_opts opts;
+    int fd, rc;
+
+    reset();
+    fake.cue_fail = 1;
+    memset(&toc, 0, sizeof toc);
+    memset(&opts, 0, sizeof opts);
+    toc.ntracks = 1;
+    toc.leadout_lba = TRACK_SECTORS;
+    toc.track[0].audio = 1;
+    toc.track[0].sectors = TRACK_SECTORS;
+    opts.simulate = 1;
+
+    fd = bin_fd_n(TRACK_SECTORS);
+    rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
+    close(fd);
+
+    assert(rc != ACCUDISC_OK && "a refused cue sheet must fail the burn");
+    assert(fake.sync_calls == 0 && "no session was opened, so nothing to abort");
+    assert(fake.abort_log[0] == 0);
+}
+
 static void test_sizing_converts_duration_and_clamps(void)
 {
     /* One rule, used by both the flag parser and the engine. 1 s of CD audio
@@ -677,6 +745,8 @@ int main(void)
     test_a_starving_ring_STOPS_a_drive_with_no_failover();
     test_the_same_starvation_is_SURVIVED_with_a_failover();
     test_no_fifo_still_burns();
+    test_a_FAILED_burn_releases_the_session_in_the_drive();
+    test_a_failure_BEFORE_the_cue_sheet_aborts_nothing();
     test_sizing_converts_duration_and_clamps();
     test_burnproof_follows_the_drive_by_default();
     test_a_drive_that_does_not_claim_it_does_not_get_it();

@@ -27,7 +27,24 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 27 /* 0.27.0: THE WRITE FIFO. accudisc_write_opts
+#define ACCUDISC_VERSION_MINOR 28 /* 0.28.0: A FAILED BURN NOW RELEASES THE
+                                  * DRIVE. No ABI change; the behaviour change
+                                  * is that accudisc_write returning an error
+                                  * leaves the drive usable. Before this, an
+                                  * error unwound the host and left the DEVICE
+                                  * holding the DAO session opened by SEND CUE
+                                  * SHEET — still answering TEST UNIT READY, so
+                                  * not visibly wedged, but refusing READ DISC
+                                  * INFORMATION and READ ATIP with 5/2C/00
+                                  * COMMAND SEQUENCE ERROR, and a tray cycle did
+                                  * not clear it. Measured on a PX-716A after a
+                                  * deliberate FIFO starvation, 2026-08-28. The
+                                  * release is one FLUSH CACHE (0x35), which is
+                                  * cdrdao's entire abortDao() and cdrecord's
+                                  * entire generic-MMC abort. Callers that
+                                  * treated an error as "the drive may need a
+                                  * power cycle" no longer need to.
+                                  * 0.27.0: THE WRITE FIFO. accudisc_write_opts
                                   * gained `fifo_bytes` — and it landed in what
                                   * 0.26.0 left as TAIL PADDING, so sizeof is 32
                                   * either way and the `size` field CANNOT tell
