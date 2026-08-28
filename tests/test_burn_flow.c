@@ -187,7 +187,7 @@ int adsc_mmc_set_cd_speed(struct accudisc_device *d, uint16_t read_kbps,
     return ACCUDISC_OK;
 }
 
-int adsc_write_cur_write_kbps(struct accudisc_device *d, unsigned *kbps)
+int adsc_dev_cur_write_kbps(struct accudisc_device *d, unsigned *kbps)
 {
     (void)d;
     if (fake.report_write_fail)

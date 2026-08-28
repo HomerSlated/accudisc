@@ -123,7 +123,7 @@ static void put_be32(uint8_t *p, uint32_t v)
 
 void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
                                  uint32_t start_lba, uint32_t end_lba,
-                                 unsigned exact)
+                                 unsigned exact, uint32_t write_kbps)
 {
     /* Descriptor layout:
      *   [0]      flags       [4..7]   Start LBA   [8..11]  End LBA
@@ -150,7 +150,11 @@ void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
         desc[0] = exact ? 0x02 : 0x00; /* Exact -> CLV; clear -> CAV allowed */
         put_be32(desc + 12, read_size); /* Read Size (kB) */
         put_be32(desc + 16, 1000);      /* Read Time (ms) */
-        put_be32(desc + 20, read_size); /* Write Size (mirror; unused for read) */
+        /* Write Size: the drive's CURRENT write rate, so a read-speed change
+         * leaves writing where it was. Emphatically NOT the read rate (that
+         * was the leak) and NOT zero (which means MAXIMUM here, the same way
+         * 0xFFFF does in SET CD SPEED). See the header for the measurements. */
+        put_be32(desc + 20, write_kbps);
         put_be32(desc + 24, 1000);      /* Write Time (ms) */
     }
     put_be32(desc + 4, start_lba);

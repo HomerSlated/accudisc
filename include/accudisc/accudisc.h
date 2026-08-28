@@ -27,7 +27,30 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 30 /* 0.30.0: THE CLI NO LONGER REPORTS A
+#define ACCUDISC_VERSION_MINOR 31 /* 0.31.0: SETTING THE READ SPEED NO LONGER
+                                  * RETUNES THE WRITE SPEED. No ABI change and
+                                  * no signature change in the public header —
+                                  * accudisc_set_speed and _set_speed_range are
+                                  * as they were; the fix is inside them.
+                                  * The SET STREAMING performance descriptor
+                                  * carries a Write Size field which we filled
+                                  * with the READ rate, commented "mirror;
+                                  * unused for read". The drive uses it. So
+                                  * every accudisc_set_speed — a READ-speed
+                                  * call — silently retuned writing, and did it
+                                  * PAST a ceiling the caller had left in place:
+                                  * with the Plextor SpeedRead uncap off (max
+                                  * 40x), asking for 48x correctly clamped the
+                                  * read field to 40x and set the WRITE field
+                                  * to 48x. Measured on a PX-716A 2026-08-28.
+                                  * The field has NO "leave alone" encoding: 0
+                                  * means MAXIMUM, exactly as 0xFFFF does in
+                                  * SET CD SPEED — so the obvious one-line fix
+                                  * (stop mirroring, write zero) was measured
+                                  * WORSE than the bug. It now carries the
+                                  * drive's CURRENT write speed, read from page
+                                  * 2A immediately before the command.
+                                  * 0.30.0: THE CLI NO LONGER REPORTS A
                                   * TRUNCATED RIP AS A SUCCESS. Library
                                   * UNCHANGED — this is entirely a cli/ fix, and
                                   * it is recorded at the package version

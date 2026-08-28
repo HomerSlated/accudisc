@@ -137,11 +137,6 @@ int adsc_write_load_model(const char *toc_path, const char *cdtext_path,
                           struct adsc_cdtext_info *info,
                           char *err, size_t errcap);
 
-/* Current write speed in kB/s from mode page 2A (v3 field where the page is
- * long enough, else the MMC-1 one). Reports what the DRIVE SAYS it is set to,
- * which on this hardware echoes the request — never a delivered rate. */
-int adsc_write_cur_write_kbps(struct accudisc_device *dev, unsigned *kbps);
-
 /* ------------------------------------------------------------------ */
 /* DAO burn orchestration                                             */
 

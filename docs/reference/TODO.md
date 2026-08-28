@@ -5346,7 +5346,22 @@ is genuinely inside the same window, and the window is closing.
   PLAN §9 phases 3–5 (`--sub` passthrough, vendor write features) are genuinely
   not started.
 
-## `accudisc speed N` sets the WRITE speed too, for every N — not just 0
+## `accudisc speed N` sets the WRITE speed too, for every N — not just 0 — **FIXED 0.31.0**
+
+**Fixed 2026-08-28.** `adsc_cdb_set_streaming_desc` takes `write_kbps` and puts
+it in Write Size; `accudisc_set_speed`/`_set_speed_range` read the drive's
+current write speed from page 2A immediately before building the descriptor.
+Public header unchanged. Verified on the PX-716A from READ 24x / WRITE 8x:
+`speed 32` -> READ 32x WRITE **8x**, and `speed 48` with SpeedRead OFF ->
+READ 40x (clamped) WRITE **8x** — the case that used to escape the ceiling.
+
+**A test gap stated rather than implied:** deleting the current-write-speed read
+in `accudisc_set_speed` leaves all 47 tests green, because no device-free test
+can observe a page-2A round trip. The descriptor is pinned; the wiring rests on
+the hardware runs. Noted in `tests/test_cdb.c` beside the assertions.
+
+The analysis below is kept as the record of how it was found.
+
 
 Found 2026-08-28 restoring the drive after the 0.29.0 ladder; **cause corrected
 the same afternoon** by the speed-persistence matrix
@@ -5476,3 +5491,35 @@ It is a read uncap and behaves as one.
 refuses a non-`TRACK AUDIO` track ("this is an audio-only writer"), which is
 CLAUDE.md scope rather than a defect. Verified against a real CD_ROM/MODE1 toc
 over an ISO: refused, exit 2.
+
+## cdrecord confirms phantom-48x on the WRITE path, and shows CAV doing it (2026-08-28)
+
+Independent check on kgr's instruction, using cdrecord in dummy mode over a
+93 MB ISO because the subject is the drive rather than our software.
+`cdrecord dev=/dev/sr0 -dummy -v speed=48`, CD-R blank:
+
+    Power-Rec write speed:     48x (recommended)     [Forcespeed OFF, SpeedRead OFF]
+    running rate:              20.8x -> 26.7x, climbing monotonically
+    Average write speed        15.8x
+    Last selected write speed: 48x
+    Max media write speed:     48x
+    Last actual write speed:   25x
+
+**Accepted at 48x, reported 48x everywhere, delivered 25x** — §4a's pattern
+stated by the reference tool, which prints `Last actual` as a separate field
+precisely because `Last selected` cannot be trusted. Agrees with our own
+saturation finding (32/40/48 indistinguishable) from a different direction.
+
+Two things cdrecord shows that our harness cannot:
+
+- the rate **climbs monotonically across the disc** (20.8x -> 26.7x) — CAV,
+  outer tracks faster, so a single "delivered rate" is a fiction for this drive.
+  §4b's radius confound, visible directly rather than argued.
+- **POWEREC was active and recommended the full 48x.** So the Plextor
+  power-calibration override I flagged this morning as a candidate reason a
+  requested speed might not hold is NOT what capped this run.
+
+One cdrecord line to distrust: it printed `Profile: DVD-RW restricted overwrite`
+for a CD-R. Ours reads `profile=0x0009 kind=BLANK` with ATIP `type=CD-R
+manufacturer=Taiyo Yuden`, which is correct. Do not use that line as a
+cross-check of media identity on this drive.

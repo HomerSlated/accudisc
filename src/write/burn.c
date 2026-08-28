@@ -339,7 +339,7 @@ static int set_write_speed(struct accudisc_device *dev, unsigned speed_x,
                           "step(s); it cannot write that slowly",
                      want, speed_x, kbps, climbed);
 
-    if (adsc_write_cur_write_kbps(dev, &cur) == ACCUDISC_OK && cur > 0)
+    if (adsc_dev_cur_write_kbps(dev, &cur) == ACCUDISC_OK && cur > 0)
         *out_kbps = cur;
     return ACCUDISC_OK;
 }
@@ -446,7 +446,7 @@ int adsc_write_run(struct accudisc_device *dev,
     } else {
         /* Not setting it is not a reason to stay ignorant of it: the FIFO's
          * duration is meaningless without a rate either way. */
-        (void)adsc_write_cur_write_kbps(dev, &speed_kbps);
+        (void)adsc_dev_cur_write_kbps(dev, &speed_kbps);
     }
     if (speed_kbps > 0)
         adsc_dev_log(dev, "write: speed — drive reports %u kB/s (%.1fx)%s. "

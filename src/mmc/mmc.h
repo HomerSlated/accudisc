@@ -115,9 +115,15 @@ int adsc_mmc_send_opc(struct accudisc_device *dev);
  * the drive runs CAV under this ceiling. speed_x == 0 restores drive defaults
  * (RDD). start/end are absolute LBAs; end == 0xFFFFFFFF means "to end of disc".
  * exact != 0 sets the Exact bit (pin the rate = CLV). Data-OUT; may require
- * CAP_SYS_RAWIO (see the setcap build target). */
+ * CAP_SYS_RAWIO (see the setcap build target).
+ *
+ * write_kbps must be the drive's CURRENT write speed — the descriptor carries a
+ * Write Size field with no "unchanged" encoding, and the drive obeys it. See
+ * adsc_cdb_set_streaming_desc for the measurements; 0 means MAXIMUM, not
+ * "leave alone". */
 int adsc_mmc_set_streaming(struct accudisc_device *dev, unsigned speed_x,
-                           uint32_t start_lba, uint32_t end_lba, unsigned exact);
+                           uint32_t start_lba, uint32_t end_lba, unsigned exact,
+                           uint32_t write_kbps);
 
 /* SET CD SPEED (0xBB). Speeds in kB/s (use adsc_cd_speed_kbps for Nx), 0xFFFF
  * = leave alone. rotctl is ADSC_ROTCTL_*.

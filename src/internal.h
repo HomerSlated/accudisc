@@ -135,4 +135,10 @@ int adsc_abi_export(uint32_t want, size_t have, size_t *n_out);
  * reports no CD Mastering descriptor and burns through it fine). */
 int adsc_probe_cd_mastering(struct accudisc_device *dev, accudisc_features *f);
 
+/* Current WRITE speed in kB/s from mode page 2A. Device property (device.c),
+ * needed by the write path AND by accudisc_set_speed — the SET STREAMING
+ * descriptor cannot leave the write speed alone, so a read-speed call has to
+ * carry it through by hand. */
+int adsc_dev_cur_write_kbps(struct accudisc_device *dev, unsigned *kbps);
+
 #endif /* ADSC_INTERNAL_H */

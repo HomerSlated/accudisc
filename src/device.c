@@ -199,7 +199,16 @@ int accudisc_set_speed(accudisc_device *dev, unsigned speed_x)
      * this handle (unsupported opcode, or blocked because we lack
      * CAP_SYS_RAWIO), stop retrying it and use the block-layer path. */
     if (dev->streaming >= 0) {
-        int rc = adsc_mmc_set_streaming(dev, speed_x, 0, 0xFFFFFFFFu, 0);
+        /* THE WRITE SPEED MUST BE CARRIED THROUGH BY HAND. The descriptor's
+         * Write Size field has no "unchanged" encoding and the drive obeys it,
+         * so a read-speed call that did not do this would retune writing — it
+         * did, until 0.31.0. A drive that will not report one leaves this 0,
+         * which the descriptor reads as MAXIMUM; that is the pre-0.31.0
+         * behaviour and the best available when the drive will not say. */
+        unsigned wkbps = 0;
+        (void)adsc_dev_cur_write_kbps(dev, &wkbps);
+
+        int rc = adsc_mmc_set_streaming(dev, speed_x, 0, 0xFFFFFFFFu, 0, wkbps);
         if (rc == ACCUDISC_OK) {
             dev->streaming = 1;
             return ACCUDISC_OK;
@@ -232,8 +241,11 @@ int accudisc_set_speed_range(accudisc_device *dev, unsigned speed_x,
      * the command's error back for the caller to report, not a silent downgrade
      * that would ignore the requested range. */
     unsigned exact = (flags & ACCUDISC_SPEED_EXACT) ? 1u : 0u;
+    unsigned wkbps = 0;
+
+    (void)adsc_dev_cur_write_kbps(dev, &wkbps); /* see accudisc_set_speed */
     return adsc_mmc_set_streaming(dev, speed_x, (uint32_t)start_lba,
-                                  (uint32_t)end_lba, exact);
+                                  (uint32_t)end_lba, exact, wkbps);
 }
 
 /* Page 2A read speeds, the fields cdrdao drive-info reports (max at page
@@ -258,6 +270,54 @@ int accudisc_get_speed(accudisc_device *dev, unsigned *max_kbps,
     if (cur_kbps)
         *cur_kbps = ((unsigned)buf[off + 14] << 8) | buf[off + 15];
     return ACCUDISC_OK;
+}
+
+/* Current WRITE speed in kB/s from mode page 2A.
+ *
+ * Beside accudisc_get_speed rather than in src/write/, because it is a property
+ * of the DEVICE that the write path merely needed first — and because
+ * accudisc_set_speed, a read-speed call, now depends on it (the SET STREAMING
+ * descriptor has no "leave the write speed alone" encoding).
+ *
+ * Two fields carry it and the page length decides which is authoritative:
+ * `cur_write_speed` at page offset 20 (MMC-1/2) and `v3_cur_write_speed` at
+ * offset 28 (MMC-3+). cdrecord picks by `p_len >= 28` (scsi_cdr.c
+ * scsi_get_speed) and so do we; a drive that reports both can disagree between
+ * them, and the v3 field is the one that tracks SET CD SPEED.
+ *
+ * THIS IS A REPORT OF WHAT THE DRIVE SAYS, NOT OF WHAT IT WILL DO. Page 2A
+ * echoes the request on this hardware (measured repeatedly on the PX-716A),
+ * so a value read back here is evidence the command was ACCEPTED and is not
+ * evidence the medium will be written at that rate. The only instrument for
+ * the latter is elapsed time. Callers must not present this as a delivered
+ * rate. */
+int adsc_dev_cur_write_kbps(struct accudisc_device *dev, unsigned *kbps)
+{
+    uint8_t buf[256];
+    uint32_t len = 0, po = 0;
+    int rc;
+
+    if (!dev || !kbps)
+        return ACCUDISC_ERR_INVAL;
+    *kbps = 0;
+
+    rc = adsc_mmc_mode_sense10(dev, 0x2a, buf, sizeof(buf), &len, &po);
+    if (rc != ACCUDISC_OK)
+        return rc;
+    if (po + 2 > len || (buf[po] & 0x3f) != 0x2a)
+        return ACCUDISC_ERR_SHORT;
+
+    unsigned p_len = buf[po + 1];
+
+    if (p_len >= 28 && po + 30 <= len) {
+        *kbps = ((unsigned)buf[po + 28] << 8) | buf[po + 29];
+        return ACCUDISC_OK;
+    }
+    if (po + 22 <= len) {
+        *kbps = ((unsigned)buf[po + 20] << 8) | buf[po + 21];
+        return ACCUDISC_OK;
+    }
+    return ACCUDISC_ERR_SHORT;
 }
 
 int accudisc_get_performance(accudisc_device *dev, accudisc_perf_desc *out,

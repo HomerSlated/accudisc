@@ -133,29 +133,34 @@ static void test_set_streaming(void)
     /* 40x whole-disc ceiling: flags 0x00 (all clear: RA/Exact/RDD=0), start 0,
      * end all-FF, Read Size 7056 kB/s (= 40 * 176.4, the drive's page-2A max),
      * Read Time 1000 ms. */
-    adsc_cdb_set_streaming_desc(desc, 40, 0, 0xFFFFFFFFu, 0);
+    adsc_cdb_set_streaming_desc(desc, 40, 0, 0xFFFFFFFFu, 0, 1411);
     const uint8_t want40[28] = {
         0x00, 0x00, 0x00, 0x00,             /* flags (Exact clear -> CAV ok) */
         0x00, 0x00, 0x00, 0x00,             /* start LBA 0 */
         0xFF, 0xFF, 0xFF, 0xFF,             /* end LBA = whole disc */
         0x00, 0x00, 0x1B, 0x90,             /* read size 7056 */
         0x00, 0x00, 0x03, 0xE8,             /* read time 1000 */
-        0x00, 0x00, 0x1B, 0x90,             /* write size 7056 */
+        0x00, 0x00, 0x05, 0x83,             /* write size 1411 = what was PASSED,
+                                             * NOT the 7056 read rate. Mirroring
+                                             * the read rate here is the leak
+                                             * fixed in 0.31.0: the drive obeys
+                                             * this field, so a read-speed
+                                             * change retuned writing. */
         0x00, 0x00, 0x03, 0xE8,             /* write time 1000 */
     };
     assert(memcmp(desc, want40, 28) == 0);
 
     /* 48x (SpeedRead rung) => 8467 kB/s = 0x2113. */
-    adsc_cdb_set_streaming_desc(desc, 48, 0, 0xFFFFFFFFu, 0);
+    adsc_cdb_set_streaming_desc(desc, 48, 0, 0xFFFFFFFFu, 0, 1411);
     assert(desc[12] == 0x00 && desc[13] == 0x00 &&
            desc[14] == 0x21 && desc[15] == 0x13);
 
     /* exact != 0 sets the Exact bit (0x02) = pin the rate / force CLV. */
-    adsc_cdb_set_streaming_desc(desc, 8, 0, 0xFFFFFFFFu, 1);
+    adsc_cdb_set_streaming_desc(desc, 8, 0, 0xFFFFFFFFu, 1, 1411);
     assert(desc[0] == 0x02);
 
     /* LBA-scoped: a slow 8x pass over a damaged span [1000, 2000). */
-    adsc_cdb_set_streaming_desc(desc, 8, 1000, 2000, 0);
+    adsc_cdb_set_streaming_desc(desc, 8, 1000, 2000, 0, 1411);
     assert(desc[0] == 0x00);
     assert(desc[4] == 0x00 && desc[5] == 0x00 &&
            desc[6] == 0x03 && desc[7] == 0xE8);   /* start 1000 */
@@ -164,11 +169,45 @@ static void test_set_streaming(void)
     assert(desc[14] == 0x05 && desc[15] == 0x83); /* 8 * 1764 / 10 = 1411 = 0x0583 */
 
     /* speed 0 => restore defaults: real RDD flag (0x04, bit2), zero rate.
-     * RDD wins even if exact is requested. */
-    adsc_cdb_set_streaming_desc(desc, 0, 0, 0xFFFFFFFFu, 1);
+     * RDD wins even if exact is requested — and it zeroes the write fields too,
+     * so write_kbps is deliberately ignored on this path. */
+    adsc_cdb_set_streaming_desc(desc, 0, 0, 0xFFFFFFFFu, 1, 1411);
     assert(desc[0] == 0x04);
     for (int i = 12; i < 28; i++)
         assert(desc[i] == 0x00);
+
+    /* THE 0.31.0 LEAK, pinned in both directions.
+     *
+     * Write Size must be the value PASSED, never the read rate. Mirroring the
+     * read rate is what made `accudisc speed N` — a read-speed command —
+     * retune the write speed at every N; and it did so past a ceiling the
+     * caller had left in place (SpeedRead off, max 40x: the read field clamped
+     * to 40x and the write field went to 48x).
+     *
+     * Distinct values throughout so a mirror cannot pass by coincidence:
+     * read 32x = 5644, write asked 1411 (8x). */
+    adsc_cdb_set_streaming_desc(desc, 32, 0, 0xFFFFFFFFu, 0, 1411);
+    assert(desc[14] == 0x16 && desc[15] == 0x0C);   /* read  5644 */
+    assert(desc[22] == 0x05 && desc[23] == 0x83);   /* write 1411, NOT 5644 */
+
+    /* ...and 0 is NOT a safe "leave alone": the drive reads it as MAXIMUM
+     * (measured, PX-716A: Write Size 0 sent the write speed to 48x). So a
+     * caller that has no write speed to report gets the old behaviour, which
+     * is the honest floor rather than a silent improvement. */
+    adsc_cdb_set_streaming_desc(desc, 32, 0, 0xFFFFFFFFu, 0, 0);
+    assert(desc[20] == 0 && desc[21] == 0 && desc[22] == 0 && desc[23] == 0);
+
+    /* WHAT THIS CANNOT REACH, so nobody reads it as full cover. These pin the
+     * DESCRIPTOR. They say nothing about accudisc_set_speed actually READING
+     * the current write speed before it builds one — deleting that call leaves
+     * the whole suite green (mutation-tested 2026-08-28), because no
+     * device-free test can observe a page-2A round trip.
+     *
+     * That half is verified on hardware instead, PX-716A, and the result is in
+     * TODO.md: from READ 24x / WRITE 8x, `accudisc speed 32` left the write
+     * speed at 8x, and `speed 48` with the uncap off quantized the read to 40x
+     * while still leaving the write speed at 8x — the case that used to escape
+     * the ceiling entirely. */
 }
 
 int main(void)

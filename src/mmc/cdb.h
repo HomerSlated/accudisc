@@ -118,10 +118,30 @@ void adsc_cdb_set_streaming(uint8_t cdb[12], uint16_t param_len);
  * speed_x (Nx, 1x = 176.4 kB/s) over LBAs [start, end]; end 0xFFFFFFFF = whole
  * disc. speed_x == 0 restores drive defaults (RDD). exact != 0 sets the Exact
  * bit (pin the exact rate = CLV); clear leaves the drive free to run CAV under
- * the ceiling. Pure layout (unit-testable). */
+ * the ceiling. Pure layout (unit-testable).
+ *
+ * `write_kbps` IS THE DRIVE'S CURRENT WRITE SPEED IN kB/s, and it is not
+ * optional. The descriptor's Write Size field has no "leave alone" encoding —
+ * measured on a PX-716A, 2026-08-28:
+ *
+ *     Write Size = the read rate  -> the write speed becomes the read speed
+ *     Write Size = 0              -> the write speed jumps to the drive's MAX
+ *     Write Size = cur write rate -> the write speed is preserved
+ *
+ * Until 0.31.0 this mirrored the read rate, commented "unused for read". The
+ * drive uses it, so `accudisc speed N` — a READ-speed command in the help, the
+ * header and the man page — silently retuned the write speed at every N, and
+ * did so PAST a ceiling the caller had deliberately left in place: with the
+ * SpeedRead uncap off (max 40x), asking for 48x correctly clamped the read
+ * field to 40x and set the write field to 48x.
+ *
+ * Zero is not a safe default here, it is the WORST value. Pass what the drive
+ * reports (adsc_write_cur_write_kbps); pass 0 only to mean "actually set the
+ * write speed to maximum", which no caller in this tree wants. Ignored when
+ * speed_x == 0, where RDD zeroes every rate field. */
 void adsc_cdb_set_streaming_desc(uint8_t desc[28], unsigned speed_x,
                                  uint32_t start_lba, uint32_t end_lba,
-                                 unsigned exact);
+                                 unsigned exact, uint32_t write_kbps);
 
 /* SET CD SPEED (0xBB). Speeds are in kB/s, NOT Nx — the single most likely
  * way to get this command wrong. 0xFFFF means "leave alone / maximum" in
