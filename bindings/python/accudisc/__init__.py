@@ -120,6 +120,12 @@ features = frozenset({
     # well-behaved CAV rung, a caller cannot detect the difference from the
     # values, only from this name.
     "speed_bands",
+    # Device.get_write_governor/set_write_governor exist, and Features carries
+    # governor_on/governor_recommended_kbps. Absent means the wrapper predates
+    # 0.32.0's governor surface — which `library_version()` CANNOT tell you,
+    # because the .so it names may well be 0.32.0 while this file is older.
+    # That gap is exactly how this one was found.
+    "write_governor",
 })
 
 
@@ -979,6 +985,23 @@ class Features:
     buf_claimed: bool = False
     sao_claimed: bool = False
     test_write_claimed: bool = False
+
+    # ---- the drive's automatic WRITE-speed governor (POWEREC), since 0.32.0.
+    #
+    # The C struct spends THREE fields on this and the first is a validity bit:
+    # `governor_known` is 0 when no driver answered, and `governor_on` is
+    # meaningless then. Collapsing that into ``None`` is deliberate, and is the
+    # rule :class:`SpeedRung` already applies to an unmeasured gradient — a
+    # plain ``False`` here would report "the governor is off" for "we never
+    # asked", which is a well-formed answer to a question nobody put.
+    #
+    # Needs an attached vendor driver; without one both stay ``None``.
+    #: ``True``/``False`` once a driver has answered; ``None`` = not known.
+    governor_on: bool | None = None
+    #: The rate the governor currently recommends, kB/s. **STATUS, NOT A
+    #: RATE** — what the drive would aim for, never what a burn delivered.
+    #: ``None`` when not known, or when the drive reports none (the C 0).
+    governor_recommended_kbps: int | None = None
 
     @property
     def burnproof_available(self) -> bool:
@@ -1885,6 +1908,44 @@ class Device:
     def load(self) -> None:
         _check(lib.accudisc_load(self._handle), self)
 
+    def get_write_governor(self) -> tuple[bool, int | None]:
+        """``(on, recommended_kbps)`` for the drive's write-speed governor.
+
+        Plextor calls it POWEREC. With it ON the drive picks its own write
+        rate from a running assessment of the medium, and the speed the host
+        asked for becomes an upper bound at best; cdrecord turns it off
+        whenever it is forcing a speed.
+
+        ``recommended_kbps`` is ``None`` when the drive reports none. **It is
+        status, not a delivered rate** — the same distinction mode page 2A
+        invites you to get wrong on the read side.
+
+        Raises :class:`Unsupported` when no vendor driver is attached; call
+        :meth:`attach_driver` first. :meth:`probe_features` answers the same
+        question without raising, via :attr:`Features.governor_on`.
+        """
+        on = ffi.new("int*")
+        kbps = ffi.new("uint32_t*")
+        _check(lib.accudisc_write_governor_get(self._handle, on, kbps), self)
+        return (bool(on[0]), kbps[0] or None)
+
+    def set_write_governor(self, on: bool) -> None:
+        """Turn the drive's write-speed governor on or off.
+
+        **PERSISTENT DRIVE STATE**, like the read uncap: what you set here
+        outlives this handle and survives the close, until it is changed again
+        or the drive is power-cycled. There is deliberately no push/pop pair —
+        read the prior value with :meth:`get_write_governor` and restore it
+        yourself.
+
+        Nothing in AccuDisc's write path touches this: a burn leaves the
+        governor exactly as you left it.
+
+        Raises :class:`Unsupported` when no vendor driver is attached.
+        """
+        _check(lib.accudisc_write_governor_set(self._handle, 1 if on else 0),
+               self)
+
     def park_spindle(self) -> None:
         """Stop the spindle. Best-effort; a drive that refuses is not an error."""
         rc = lib.accudisc_spindle_stop(self._handle)
@@ -1898,24 +1959,7 @@ class Device:
         """What the drive claims vs what it does. Needs a disc loaded."""
         out = ffi.new("accudisc_features*")
         _check(lib.accudisc_probe_features(self._handle, out), self)
-        return Features(
-            feature_present=bool(out.feature_present),
-            current=bool(out.current),
-            dap=bool(out.dap),
-            c2_claimed=bool(out.c2_claimed),
-            cdtext_claimed=bool(out.cdtext_claimed),
-            ok_c2=bool(out.ok_c2),
-            ok_sub_raw=bool(out.ok_sub_raw),
-            ok_sub_q=bool(out.ok_sub_q),
-            ok_c2_sub_raw=bool(out.ok_c2_sub_raw),
-            ok_c2_sub_q=bool(out.ok_c2_sub_q),
-            c2_verdict=C2Verdict(out.c2_verdict),
-            mastering_present=bool(out.mastering_present),
-            mastering_current=bool(out.mastering_current),
-            buf_claimed=bool(out.buf_claimed),
-            sao_claimed=bool(out.sao_claimed),
-            test_write_claimed=bool(out.test_write_claimed),
-        )
+        return _features_from_c(out)
 
     def probe_accurate_stream(self, lba: int = 5000) -> bool:
         """Does this drive read audio positionally deterministically?
@@ -3082,6 +3126,43 @@ def _ctdb_repair_from_c(c, out, rc: int) -> CtdbRepair:
         corrections=c.corrections,
         crc32_before=c.crc32_before,
         crc32_after=c.crc32_after,
+    )
+
+
+def _features_from_c(c) -> Features:
+    """One C features struct.
+
+    A free function rather than inline in :meth:`Device.probe_features` so the
+    governor's tri-state is reachable without a drive: the ``known``/``on``
+    pair is exactly the kind of mapping that reads correctly and means the
+    wrong thing, and a marshalling rule only tested through hardware is a rule
+    tested on whatever the one drive here happens to report.
+    """
+    known = bool(c.governor_known)
+    return Features(
+        feature_present=bool(c.feature_present),
+        current=bool(c.current),
+        dap=bool(c.dap),
+        c2_claimed=bool(c.c2_claimed),
+        cdtext_claimed=bool(c.cdtext_claimed),
+        ok_c2=bool(c.ok_c2),
+        ok_sub_raw=bool(c.ok_sub_raw),
+        ok_sub_q=bool(c.ok_sub_q),
+        ok_c2_sub_raw=bool(c.ok_c2_sub_raw),
+        ok_c2_sub_q=bool(c.ok_c2_sub_q),
+        c2_verdict=C2Verdict(c.c2_verdict),
+        mastering_present=bool(c.mastering_present),
+        mastering_current=bool(c.mastering_current),
+        buf_claimed=bool(c.buf_claimed),
+        sao_claimed=bool(c.sao_claimed),
+        test_write_claimed=bool(c.test_write_claimed),
+        governor_on=bool(c.governor_on) if known else None,
+        # Gated on `known` as well as on the 0: unknown and "reports none" are
+        # both None, but a driver-less probe must not leak a stale figure from
+        # the struct's tail either.
+        governor_recommended_kbps=(c.governor_recommended_kbps or None)
+        if known
+        else None,
     )
 
 

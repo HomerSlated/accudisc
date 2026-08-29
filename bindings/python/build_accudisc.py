@@ -280,6 +280,10 @@ int accudisc_driver_attach(accudisc_device *dev, const char *name,
 void accudisc_driver_detach(accudisc_device *dev);
 const char *accudisc_access_method(accudisc_device *dev);
 
+int accudisc_write_governor_get(accudisc_device *dev, int *on,
+                                uint32_t *recommended_kbps);
+int accudisc_write_governor_set(accudisc_device *dev, int on);
+
 int accudisc_set_speed(accudisc_device *dev, unsigned speed_x);
 /* NOTE the order and the units: max first, current second, both kB/s. */
 int accudisc_get_speed(accudisc_device *dev, unsigned *max_kbps,
@@ -516,6 +520,9 @@ typedef struct accudisc_features {
     uint8_t buf_claimed;
     uint8_t sao_claimed;
     uint8_t test_write_claimed;
+    uint8_t governor_known;
+    uint8_t governor_on;
+    uint32_t governor_recommended_kbps;
     ...;
 } accudisc_features;
 

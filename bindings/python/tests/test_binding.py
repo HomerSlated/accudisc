@@ -143,6 +143,12 @@ def test_struct_sizes_match_api_plan():
     # against this exact number.
     assert ffi.offsetof("accudisc_offset_info", "values") == 16
     assert ffi.offsetof("accudisc_offset_info", "ar_acc_ok") == 36
+    # accudisc_features has NO `size` field — it was born without one — so a
+    # sizeof pin is the only guard available on its growth. Added after 0.32.0
+    # grew it 16 -> 24 and the cdef did not follow for a day: with `...;` the
+    # compiler resolved the true size here while the three new fields stayed
+    # unnameable in Python, so every existing assertion passed.
+    assert ffi.sizeof("accudisc_features") == 24     # 16 -> 24 in 0.32.0
 
 
 def test_error_codes_are_the_headers():
@@ -482,6 +488,18 @@ def test_public_dataclass_field_names_are_pinned():
         "lba", "nsec", "data", "sector_len", "audio_len", "c2_len", "sub_len",
     }
 
+    # Added after the C struct grew and this dataclass did not. Set equality is
+    # what makes that visible: the sizeof pin above catches the C side moving,
+    # and this catches the wrapper failing to follow it.
+    assert {f.name for f in dataclasses.fields(ad.Features)} == {
+        "feature_present", "current", "dap", "c2_claimed", "cdtext_claimed",
+        "ok_c2", "ok_sub_raw", "ok_sub_q", "ok_c2_sub_raw", "ok_c2_sub_q",
+        "c2_verdict",
+        "mastering_present", "mastering_current", "buf_claimed",
+        "sao_claimed", "test_write_claimed",
+        "governor_on", "governor_recommended_kbps",
+    }
+
     # Enum MEMBER names, which consumers write as MapState.HARD and which no
     # value assertion elsewhere would catch being renamed.
     assert {m.name for m in ad.MapState} == {
@@ -508,7 +526,52 @@ def test_features_names_what_the_version_cannot():
     assert "caller_map_buffers" in ad.features
     assert "subq_map" in ad.features
     assert "speed_honoured" in ad.features
+    assert "write_governor" in ad.features
     assert "no_such_capability" not in ad.features
+
+
+def _features(known=0, on=0, kbps=0):
+    """A C features struct with only the governor triple set."""
+    f = ffi.new("accudisc_features*")
+    f.governor_known = known
+    f.governor_on = on
+    f.governor_recommended_kbps = kbps
+    return f
+
+
+def test_governor_not_known_is_none_not_off():
+    """The named hazard: `known == 0` is "we never asked", not "it is off".
+
+    A driver-less probe zero-fills the whole triple, so a wrapper reporting
+    `governor_on` as a plain bool says False — indistinguishable from a drive
+    that answered and said off. Same shape as an unmeasured gradient reading
+    as a stalled rung.
+    """
+    f = ad._features_from_c(_features(known=0, on=1, kbps=4234))
+    assert f.governor_on is None, "unknown must not collapse to a bool"
+    assert f.governor_recommended_kbps is None, \
+        "a rate must not survive a probe that never happened"
+
+
+def test_a_known_governor_survives():
+    """The complement — without it, always returning None also passes."""
+    on = ad._features_from_c(_features(known=1, on=1, kbps=4234))
+    assert on.governor_on is True and on.governor_recommended_kbps == 4234
+
+    off = ad._features_from_c(_features(known=1, on=0, kbps=0))
+    assert off.governor_on is False, "known-and-off is False, NOT None"
+    assert off.governor_recommended_kbps is None, "0 kB/s means not reported"
+
+
+def test_governor_is_reachable_through_the_library():
+    """The two calls exist and refuse a NULL device rather than being absent.
+
+    ERR_INVAL, not a crash and not AttributeError: the whole defect this
+    replaces was `hasattr(lib, ...)` being False while the .so had the symbol.
+    """
+    assert lib.accudisc_write_governor_get(ffi.NULL, ffi.NULL, ffi.NULL) \
+        == lib.ACCUDISC_ERR_INVAL
+    assert lib.accudisc_write_governor_set(ffi.NULL, 1) == lib.ACCUDISC_ERR_INVAL
 
 
 def test_speed_quantized_needs_a_nonzero_honoured_speed():

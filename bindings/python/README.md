@@ -337,6 +337,31 @@ Both previously-absent calls are now bound (2026-07-29):
   and `WriteResult.CAVEATS` is a completed burn that needs surfacing rather
   than a failure.
 
+### The write-speed governor — bound 2026-08-29, feature name `write_governor`
+
+`Device.get_write_governor()` / `set_write_governor()`, plus
+`Features.governor_on` and `Features.governor_recommended_kbps`.
+
+**Both `Features` fields are `bool | None` and `int | None`, and the `None` is
+load-bearing.** The C struct spends a third field, `governor_known`, saying
+whether a driver answered at all; this wrapper folds that into `None` rather
+than surfacing it, because a plain `False` would report *"the governor is off"*
+for *"nobody asked"*. Those two are not the same claim and a consumer acting on
+the first would force a speed the drive is still overriding.
+
+`get_write_governor()` raises `Unsupported` — **and raises it identically
+whether no vendor driver was requested, or one was requested and did not
+attach.** The second case is the common one and is not an error: driver attach
+runs a selftest that issues the vendor opcode, so it needs `CAP_SYS_RAWIO`, and
+a plain `python3` does not have it the way the installed `accudisc` binary
+does. A binding consumer that wants the governor must arrange that capability
+for its own interpreter; without it the library correctly falls back to generic
+MMC and every governor call is `Unsupported`. Prefer `probe_features()` when
+you want the answer without an exception — it reports `None` in both cases.
+
+The setting is **persistent drive state** that outlives the handle, and there
+is no push/pop pair. Read it before you change it, and put it back yourself.
+
 ### What the write binding has been run against
 
 Both paths, on a device:
