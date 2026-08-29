@@ -44,17 +44,39 @@ separates those, and it needs per-frame data.
   q_within ~ q_across < 1.0           -> fixed-speed re-reads SHOULD work, and
                                           the old null is a defect somewhere.
 
-THE GATE (cdda2img §181 §5.3, adopted)
---------------------------------------
-Record `speed_requested_x` and `speed_honoured_x` per pass, and DROP any rung
-whose honoured speed duplicates another's. Without that a "different speeds"
-comparison can quietly become a comparison of a thing with itself. This is not
-hypothetical here: the PX-716A snaps a request of 16x down to 8x, so a naive
-{16, 8} pair measures one speed twice.
+THE GATE (cdda2img §181 §5.3, adopted — then CORRECTED, see below)
+------------------------------------------------------------------
+Record what the drive actually did per pass, and DROP any rung that duplicates
+another. Without that, a "different speeds" comparison quietly becomes a
+comparison of a thing with itself. Not hypothetical: the PX-716A snaps a
+request of 16x down to 8x, so a naive {16, 8} pair measures one speed twice.
 
-Speeds are NEVER inferred from the request. Every pass records what the drive
-said it adopted, and `analyse` refuses to compare two rungs whose honoured
-speeds are equal.
+**THREE quantities, and only the third settles it** (Keith, 2026-08-29):
+
+  1. the REQUEST            — `speed_x`. Never evidence of anything.
+  2. the ACCEPTED CEILING   — `speed_honoured_x`, i.e. mode page 2A. This is
+     what the drive will ALLOW, not what it delivers.
+  3. the DELIVERED RATE     — measured, and on a CAV rung it is a rate AT A
+     RADIUS, so a single sample is not comparable across rungs.
+
+The first version of this gate used (2) alone, which is wrong in both
+directions. It would have called 40x and 32x distinct rungs (page 2A says 40
+and 32) when a one-band timing made them look identical, and a one-band timing
+is itself untrustworthy: `speeds --quick` reported 40x at 17.88 and 32x at
+18.22 — 1.9% apart, apparently duplicates. The three-band probe shows them
+13-21% apart at EVERY radius:
+
+    req  inner  middle  outer
+     40  16.56   23.00  27.67
+     32  14.62   19.18  22.77
+     24  11.64   14.89  17.48
+      8   8.00    8.00   8.00   <- CLV, flat, unaffected
+      4   4.01    4.01   4.01
+
+So `--quick` compared two PLACES, not two speeds. Rungs are therefore declared
+duplicates only when their per-band curves coincide, and `bands_x` is recorded
+with every pass so the judgement can be re-made from the data rather than
+trusted from a summary.
 """
 
 from __future__ import annotations
@@ -115,7 +137,15 @@ def capture(dev_path: str, speed_x: int, out: pathlib.Path,
 
     rec = {
         "speed_requested_x": st.speed_requested_x,
+        # Page 2A: the ACCEPTED CEILING, not a delivered rate. Kept because a
+        # request that fails to arrive shows up here, but never used alone to
+        # decide whether two rungs are the same — see the gate in the module
+        # docstring.
         "speed_honoured_x": st.speed_honoured_x,
+        # The delivered rate for this pass, whole-disc: sectors / seconds / 75.
+        # Immune to the CAV-radius trap that defeats a one-band sample, because
+        # a whole-disc pass integrates over every radius by construction.
+        "delivered_x": round(count / elapsed / 75.0, 2),
         "elapsed_s": round(elapsed, 1),
         "subq_total": st.subq_total,
         "subq_ok": st.subq_ok,
@@ -150,41 +180,73 @@ def q_from_pair(a: set, b: set) -> float | None:
     return 2 * j / (1 + j)
 
 
+# Two whole-disc passes are the SAME RUNG when their delivered rates agree to
+# within this fraction. Set from measurement, not taste: three passes at a
+# genuinely identical setting (8x) landed within 0.7% of each other, while the
+# closest genuinely-distinct pair on this drive (40x vs 32x) differs by 13% at
+# the tightest radius. Anything in between would be ambiguous, and the gap is
+# wide enough that no threshold in it changes the grouping.
+SAME_RUNG_TOL = 0.04
+
+
+def rung_key(records: list[dict], r: dict) -> float:
+    """The delivered rate this pass belongs to, rounded to its cluster.
+
+    Grouping by DELIVERED rate rather than by page 2A is the whole correction.
+    Page 2A reports the accepted ceiling, so it calls two rungs distinct that
+    deliver the same thing, and a single-band timing calls two rungs identical
+    that differ at every radius. A whole-disc pass integrates over all radii,
+    so its rate is comparable across rungs in a way neither of those is.
+    """
+    d = r.get("delivered_x")
+    if d is None:                       # a pass captured before this existed
+        return float(r["speed_honoured_x"])
+    for other in records:
+        o = other.get("delivered_x")
+        if o is None or o >= d:
+            continue
+        if abs(d - o) / max(d, o) <= SAME_RUNG_TOL:
+            return o                    # cluster onto the lower member
+    return d
+
+
 def analyse(records: list[dict]) -> None:
-    by_speed: dict[int, list[dict]] = {}
+    by_speed: dict[float, list[dict]] = {}
     for r in records:
-        by_speed.setdefault(r["speed_honoured_x"], []).append(r)
+        by_speed.setdefault(rung_key(records, r), []).append(r)
 
     print("PASSES")
-    print(f"  {'req':>4} {'honoured':>8} {'bad':>7} {'total':>7} {'secs':>6}")
+    print(f"  {'req':>4} {'page2A':>7} {'delivered':>10} {'bad':>7} "
+          f"{'total':>7} {'secs':>6}")
     for r in records:
         flag = "  <-- DECODE MISMATCH" if "DECODE_MISMATCH" in r else ""
-        print(f"  {r['speed_requested_x']:>4} {r['speed_honoured_x']:>8} "
+        d = r.get("delivered_x")
+        ds = f"{d:>10.2f}" if d is not None else f"{'n/a':>10}"
+        print(f"  {r['speed_requested_x']:>4} {r['speed_honoured_x']:>7} {ds} "
               f"{r['subq_bad']:>7} {r['subq_total']:>7} "
               f"{r['elapsed_s']:>6.0f}{flag}")
 
-    # THE GATE. A requested speed is not a speed.
-    dupes = {s: [r["speed_requested_x"] for r in rs]
-             for s, rs in by_speed.items()
-             if len({r["speed_requested_x"] for r in rs}) > 1}
-    if dupes:
-        print("\n  NOTE: distinct REQUESTS collapsed onto one honoured speed:")
-        for s, reqs in dupes.items():
-            print(f"    honoured {s}x <- requested {sorted(set(reqs))}")
-        print("    They are the same rung. Treated as within-speed.")
+    # THE GATE. Neither the request nor page 2A is a speed.
+    for k, rs in sorted(by_speed.items()):
+        reqs = sorted({r["speed_requested_x"] for r in rs})
+        p2a = sorted({r["speed_honoured_x"] for r in rs})
+        if len(reqs) > 1 or len(p2a) > 1:
+            print(f"\n  NOTE: requests {reqs} / page2A {p2a} all deliver "
+                  f"~{k:.2f}x")
+            print("    Same rung by delivered rate. Treated as within-speed.")
 
     print("\nq_WITHIN  (same honoured speed — tests the R6 hypothesis)")
     within = []
     for s, rs in sorted(by_speed.items()):
         if len(rs) < 2:
-            print(f"  {s:>3}x: only {len(rs)} pass, no pair")
+            print(f"  {s:>6.2f}x: only {len(rs)} pass, no pair")
             continue
         for i in range(len(rs)):
             for j in range(i + 1, len(rs)):
                 q = q_from_pair(set(rs[i]["bad"]), set(rs[j]["bad"]))
                 if q is not None:
                     within.append(q)
-                    print(f"  {s:>3}x: pass{i} vs pass{j}  "
+                    print(f"  {s:>6.2f}x: pass{i} vs pass{j}  "
                           f"|A|={len(rs[i]['bad'])} |B|={len(rs[j]['bad'])} "
                           f"|A&B|={len(set(rs[i]['bad']) & set(rs[j]['bad']))}"
                           f"  q={q:.4f}")
@@ -198,7 +260,7 @@ def analyse(records: list[dict]) -> None:
             q = q_from_pair(set(a["bad"]), set(b["bad"]))
             if q is not None:
                 across.append(q)
-                print(f"  {speeds[i]:>3}x vs {speeds[j]:>3}x  "
+                print(f"  {speeds[i]:>6.2f}x vs {speeds[j]:>6.2f}x  "
                       f"|A|={len(a['bad'])} |B|={len(b['bad'])} "
                       f"|A&B|={len(set(a['bad']) & set(b['bad']))}  q={q:.4f}")
 
