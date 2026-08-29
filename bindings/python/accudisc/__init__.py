@@ -3833,6 +3833,17 @@ def _stats_from_c(s) -> ReadStats:
         subq_ok=s.subq_ok,
         speed_requested_x=s.speed_requested_x,
         speed_honoured_x=s.speed_honoured_x,
+        # These three were declared on ReadStats and never passed here, so
+        # EVERY call to read() with a sink raised TypeError before returning.
+        # It survived because the suite exercises _stats_from_c only through
+        # synthetic structs and read_span, and because the three properties
+        # built on them (positional_fault, buffer_starved) are tested on
+        # hand-built ReadStats objects rather than on one this function made.
+        # Found 2026-08-29 by tools/q_retest.py, the first caller to take the
+        # sink path with a real drive.
+        subq_misposition=s.subq_misposition,
+        buffer_peak_chunks=s.buffer_peak_chunks,
+        buffer_stalls=s.buffer_stalls,
     )
 
 

@@ -254,6 +254,45 @@ def test_the_withheld_surface_is_exactly_what_we_declare():
             f"{name} is withheld with no justification in the module docstring"
 
 
+def test_stats_conversion_fills_every_dataclass_field():
+    """_stats_from_c must construct a ReadStats, not raise TypeError.
+
+    It did raise, from 0.21.0 until 2026-08-29: `subq_misposition`,
+    `buffer_peak_chunks` and `buffer_stalls` were declared on the dataclass and
+    never passed, so EVERY read() with a sink died after the drive work was
+    done. Nothing caught it because the suite reached _stats_from_c only via
+    read_span, and tested the properties built on those fields against
+    hand-built ReadStats objects — never against one this function produced.
+
+    So the check is deliberately end-to-end over the conversion: build the C
+    struct, convert it, and assert every field arrived. A field-name list would
+    have to be kept in step with the dataclass, which is the same class of
+    staleness.
+    """
+    c = ffi.new("accudisc_read_stats*")
+    c.size = ffi.sizeof("accudisc_read_stats")
+    # Distinct nonzero values: a field wired to the WRONG source still lands a
+    # plausible int, and only distinct values can catch that.
+    c.subq_misposition = 11
+    c.buffer_peak_chunks = 22
+    c.buffer_stalls = 33
+    c.subq_total = 44
+    c.speed_honoured_x = 8
+
+    st = ad._stats_from_c(c)          # must not raise
+
+    assert st.subq_misposition == 11
+    assert st.buffer_peak_chunks == 22
+    assert st.buffer_stalls == 33
+    assert st.subq_total == 44
+    assert st.speed_honoured_x == 8
+
+    # Every declared field must have been supplied by the conversion, so a
+    # field added to the dataclass without a line here fails immediately.
+    for f in dataclasses.fields(ad.ReadStats):
+        assert hasattr(st, f.name), f"{f.name} missing from _stats_from_c"
+
+
 def test_error_codes_are_the_headers():
     assert lib.ACCUDISC_ERR_INVAL == -1
     assert lib.ACCUDISC_ERR_NOTFOUND == -10
