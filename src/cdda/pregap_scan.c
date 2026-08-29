@@ -71,8 +71,15 @@ int accudisc_scan_pregaps(accudisc_device *dev, const accudisc_toc *toc,
         *n_out = 0;
     if (!dev || !toc || !out || max == 0 || !n_out)
         return ACCUDISC_ERR_INVAL;
-    if (opts)
-        o = *opts;
+    /* A NULL `opts` stays legal and means all defaults — only a struct the
+     * caller DOES pass has to declare its size. */
+    if (opts) {
+        int abi = adsc_abi_import(&o, sizeof o, opts, opts->size);
+        if (abi != ACCUDISC_OK)
+            return abi;
+    } else {
+        o.size = (uint32_t)sizeof o;
+    }
 
     window = o.window ? o.window : ACCUDISC_PREGAP_WINDOW;
     tail = o.tail ? o.tail : ACCUDISC_PREGAP_TAIL;

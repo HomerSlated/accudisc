@@ -464,7 +464,7 @@ static int cxscan_sample(const accudisc_census_sample *s, void *user)
 
 static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
 {
-    accudisc_census_opts opts = {0};
+    accudisc_census_opts opts = ACCUDISC_CENSUS_OPTS_INIT;
     accudisc_census_stats st;
     long start = 0;
     unsigned speed = 0;
@@ -2099,6 +2099,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         if (err != ACCUDISC_OK)
             return fail_dev(dev, "read toc", err);
 
+        spec.size = (uint32_t)sizeof spec;
         spec.session = want_session;
         spec.first_track = want_first_track ? want_first_track : -1;
         spec.last_track = want_last_track;

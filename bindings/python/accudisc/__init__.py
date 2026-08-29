@@ -1,5 +1,21 @@
 """accudisc — Python binding for libaccudisc.
 
+Deliberately unbound
+--------------------
+Keith's ruling (2026-08-29): *"if it's in the library, it needs to be in the
+binding, and the only exceptions are those with a documented justification for
+withholding it."* The default is bound. What follows is the complete list of
+exceptions and the reason for each; ``tests/test_binding.py`` pins it, so a
+function cannot drift out of the binding unnoticed the way three already have.
+
+``accudisc_rw_open`` / ``_rw_feed`` / ``_rw_close`` / ``_rw_get_stats``
+    The CD+G R-W subcode decoder. ``rw_feed`` is a **per-sector** call taking
+    one 96-byte buffer, and the library has no whole-disc call above it yet.
+    Binding the primitive alone invites a consumer to write a 350 000-iteration
+    Python loop per disc — slower than useless, and it would read as our defect
+    rather than as a missing altitude. The honest statement is that the library
+    owes a call at the right level first; when it exists, this binds with it.
+
 Built against ``include/accudisc/accudisc.h`` only, never ``src/`` internals
 (CLAUDE.md, "the public header is the contract"). The C library moves bits and
 nothing else; this binding adds Python types and lifetime enforcement, and no
@@ -34,6 +50,7 @@ Error convention, from ``cli-machine-interface.md``:
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import os
 from dataclasses import dataclass, field
@@ -60,7 +77,16 @@ __all__ = [
     "version", "library_version", "map_state", "map_severity", "subq_state",
     "anomaly_token",
     "msf_to_lba", "lba_to_msf", "parse_q", "extract_q",
-    "MAX_SPAN_BYTES", "UNTRUSTED_GEOMETRY", "features",
+    "MAX_SPAN_BYTES", "UNTRUSTED_GEOMETRY", "features", "withheld",
+    # the acquisition strategies (API_PLAN §5) and the rest of the surface,
+    # bound 2026-08-29 under Keith's "library implies binding" ruling
+    "PlanReason", "RangePlan", "RangeCheck", "plan_read_range",
+    "PregapState", "IndexMap", "index_map_decode",
+    "FullToc", "FullTocEntry", "parse_full_toc",
+    "Atip", "atip_manufacturer",
+    "CdText", "CdTextStrings", "decode_cdtext",
+    "UncapState", "Rotation", "PerfDesc", "classify_rotation",
+    "Counters", "CensusSample", "CensusStats",
 ]
 
 # ---------------------------------------------------------------------------
@@ -100,6 +126,19 @@ version = (
 #:
 #: Names are added, never removed or repurposed. A name present always means
 #: the same thing.
+#: The public library functions this binding deliberately does NOT expose.
+#:
+#: Keith's ruling 2026-08-29 makes `bound` the default, so this set is the
+#: complete list of exceptions and every member needs a justification in the
+#: module docstring. It is a CONSTANT rather than prose because
+#: tests/test_binding.py asserts it equals the actual unbound set — scraping
+#: the docstring made the test agree with whatever the docstring said, which
+#: is the failure mode the test exists to prevent.
+withheld = frozenset({
+    "accudisc_rw_open", "accudisc_rw_feed",
+    "accudisc_rw_close", "accudisc_rw_get_stats",
+})
+
 features = frozenset({
     # status_map= / subq_map= accept a caller-allocated writable buffer, which
     # the engine fills as the read proceeds — the only shape observable while
@@ -126,6 +165,12 @@ features = frozenset({
     # because the .so it names may well be 0.32.0 while this file is older.
     # That gap is exactly how this one was found.
     "write_governor",
+    # The API_PLAN §5 acquisition strategies and the rest of the surface:
+    # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
+    # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
+    # performance_curve/rotation, and the counter scan + census. Bound under
+    # Keith's "library implies binding" ruling; `withheld` names what is not.
+    "acquisition_strategies",
 })
 
 
@@ -1726,6 +1771,234 @@ def _lane_buffer(name: str, value, count: int, keepalive: list):
 
 
 # ---------------------------------------------------------------------------
+# the acquisition strategies (API_PLAN §5) and the rest of the surface
+# ---------------------------------------------------------------------------
+
+
+class PlanReason(enum.IntEnum):
+    """Why a read range resolved the way it did — including why it refused."""
+
+    OK = lib.ACCUDISC_PLAN_OK
+    TRACKS_NOT_FOUND = lib.ACCUDISC_PLAN_TRACKS_NOT_FOUND
+    TRACKS_CROSS_SESSION = lib.ACCUDISC_PLAN_TRACKS_CROSS_SESSION
+    TRACKS_NO_EXTENT = lib.ACCUDISC_PLAN_TRACKS_NO_EXTENT
+    MULTIPLE_AUDIO_SESSIONS = lib.ACCUDISC_PLAN_MULTIPLE_AUDIO_SESSIONS
+    NO_AUDIO_SESSION = lib.ACCUDISC_PLAN_NO_AUDIO_SESSION
+    SESSION_SPLIT_BY_DATA = lib.ACCUDISC_PLAN_SESSION_SPLIT_BY_DATA
+    SESSION_NOT_FOUND = lib.ACCUDISC_PLAN_SESSION_NOT_FOUND
+    START_PAST_LEADOUT = lib.ACCUDISC_PLAN_START_PAST_LEADOUT
+    EMPTY_RANGE = lib.ACCUDISC_PLAN_EMPTY_RANGE
+    GUARD_REFUSED = lib.ACCUDISC_PLAN_GUARD_REFUSED
+    BAD_ARGUMENT = lib.ACCUDISC_PLAN_BAD_ARGUMENT
+
+    @property
+    def token(self) -> str:
+        return ffi.string(lib.accudisc_plan_reason_str(int(self))).decode()
+
+
+class PregapState(enum.IntEnum):
+    """What a boundary scan concluded about one track's pre-gap.
+
+    ``NO_DATA`` and ``UNKNOWN`` are **not** ``NONE``. The first means the scan
+    never covered this boundary, the second that it covered it and the Q was
+    too damaged to tell. Reporting either as "gapless" would invent a fact.
+    """
+
+    NO_DATA = lib.ACCUDISC_PREGAP_NO_DATA
+    NONE = lib.ACCUDISC_PREGAP_NONE
+    PRESENT = lib.ACCUDISC_PREGAP_PRESENT
+    UNKNOWN = lib.ACCUDISC_PREGAP_UNKNOWN
+
+
+class UncapState(enum.IntEnum):
+    """The vendor read-speed uncap, as a state that can be UNKNOWN.
+
+    **2 is retired and must never be reused** — it was ``LIKELY_ON``, a value
+    inferred from an advertised speed, removed in 0.8.0 when the inference was
+    shown false. The numbering gap is deliberate.
+    """
+
+    OFF = lib.ACCUDISC_UNCAP_OFF
+    ON = lib.ACCUDISC_UNCAP_ON
+    UNKNOWN = lib.ACCUDISC_UNCAP_UNKNOWN
+
+
+class Rotation(enum.IntEnum):
+    """The shape of the drive's nominal read-speed curve.
+
+    ``UNKNOWN`` means the drive rejected GET PERFORMANCE or returned no
+    descriptors. The shape is **never inferred** from anything else.
+    """
+
+    UNKNOWN = lib.ACCUDISC_ROTATION_UNKNOWN
+    CLV = lib.ACCUDISC_ROTATION_CLV
+    CAV = lib.ACCUDISC_ROTATION_CAV
+    PCAV = lib.ACCUDISC_ROTATION_PCAV
+    ZCLV = lib.ACCUDISC_ROTATION_ZCLV
+
+
+@dataclass(frozen=True, slots=True)
+class RangePlan:
+    """A resolved read extent, or a stated refusal to resolve one.
+
+    **A refusal is a RESULT, not an exception** — the same rule
+    :meth:`Device.probe_disc` follows. Check :attr:`ok` first; when it is
+    ``False``, :attr:`lba` and :attr:`count` are ``None`` rather than 0,
+    because a zero extent and an unresolved one are different claims and only
+    one of them is safe to pass to a read.
+    """
+
+    ok: bool
+    reason: PlanReason
+    lba: int | None
+    count: int | None
+    #: The count BEFORE narrowing to uint32, signed and wide. Negative or zero
+    #: here is why :attr:`reason` is ``EMPTY_RANGE`` — it is kept so the caller
+    #: can see by how much, which a clamped 0 would destroy.
+    resolved_count: int
+    session: int
+    #: Populated only when the audio-range guard refused (``GUARD_REFUSED``).
+    check: "RangeCheck | None"
+
+
+@dataclass(frozen=True, slots=True)
+class IndexMap:
+    """One track boundary, as reconstructed from the Q stream."""
+
+    track: int
+    pregap_state: PregapState
+    max_index: int
+    #: Where INDEX 01 actually starts, from the scan.
+    index1_lba: int | None
+    #: Where the Q stream SAID it starts. Differs from :attr:`index1_lba` when
+    #: the TOC and the subchannel disagree — which is the interesting case.
+    q_index1_lba: int | None
+    index0_lba: int | None
+    #: ``None`` unless :attr:`pregap_state` is ``PRESENT`` — a pre-gap length
+    #: of 0 frames and "no pre-gap observed" must not read alike.
+    pregap_frames: int | None
+    crc_ok: int
+    crc_bad: int
+
+    @property
+    def crc_total(self) -> int:
+        return self.crc_ok + self.crc_bad
+
+
+@dataclass(frozen=True, slots=True)
+class FullTocEntry:
+    """One raw lead-in Q entry. Fixed by Red Book; 9 bytes, cannot grow."""
+
+    session: int
+    adr_ctrl: int
+    point: int
+    msf: tuple[int, int, int]
+    pmsf: tuple[int, int, int]
+
+    @property
+    def adr(self) -> int:
+        return (self.adr_ctrl >> 4) & 0x0F
+
+    @property
+    def control(self) -> int:
+        return self.adr_ctrl & 0x0F
+
+
+@dataclass(frozen=True, slots=True)
+class FullToc:
+    """The lead-in's session structure, decoded."""
+
+    first_session: int
+    last_session: int
+    entries: tuple[FullTocEntry, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class Atip:
+    """Absolute Time In Pre-groove — a recordable disc's factory identity.
+
+    Present on CD-R/RW only. A pressed disc has no ATIP and
+    :meth:`Device.read_atip` returns ``None`` for it, which is absence rather
+    than failure.
+    """
+
+    lead_in: tuple[int, int, int]
+    lead_out: tuple[int, int, int]
+    erasable: bool
+    #: Manufacturer from the public ATIP code table, or ``None`` when the code
+    #: is not one we carry. ``None`` is "not in our table", NOT "no vendor".
+    manufacturer: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CdTextStrings:
+    """The four CD-Text fields for one album or track. Empty string = absent."""
+
+    title: str
+    performer: str
+    songwriter: str
+    #: UPC/EAN on the album entry, ISRC on a track entry.
+    code: str
+
+
+@dataclass(frozen=True, slots=True)
+class CdText:
+    album: CdTextStrings
+    #: Indexed by TRACK NUMBER: ``tracks[1]`` is track 1. Index 0 is unused and
+    #: present only so the numbering matches the disc.
+    tracks: tuple[CdTextStrings, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class PerfDesc:
+    """One segment of the drive's nominal read-speed curve, in kB/s."""
+
+    start_lba: int
+    start_kbps: int
+    end_lba: int
+    end_kbps: int
+
+
+@dataclass(frozen=True, slots=True)
+class Counters:
+    """One reading of the drive's C1/C2/CU error counters.
+
+    **CU is the one that matters**: C1 and C2 are corrected errors, CU is
+    uncorrectable. A disc with high C1 and zero CU is reading perfectly.
+    """
+
+    c1: int
+    c2: int
+    cu: int
+
+
+@dataclass(frozen=True, slots=True)
+class CensusSample:
+    """One cadence sample from a counter census."""
+
+    lba: int
+    count: int
+    counters: Counters
+    #: ``None`` when the sample read cleanly; otherwise the library error code.
+    #: A sample with a read error still carries whatever counters were armed.
+    read_err: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class CensusStats:
+    """Totals and peaks across a counter census."""
+
+    c1: int
+    c2: int
+    cu: int
+    peak_c1: int
+    peak_c2: int
+    peak_cu: int
+    samples: int
+    read_errors: int
+
+
+# ---------------------------------------------------------------------------
 # device
 # ---------------------------------------------------------------------------
 
@@ -1945,6 +2218,225 @@ class Device:
         """
         _check(lib.accudisc_write_governor_set(self._handle, 1 if on else 0),
                self)
+
+    def set_speed_range(self, speed_x: int, start_lba: int = -1,
+                        end_lba: int = -1, *, exact: bool = False) -> None:
+        """Read-speed ceiling scoped to an LBA range, and/or pinned exact.
+
+        **SET STREAMING (0xB6) only** — SET CD SPEED cannot express a range or
+        Exact, so unlike :meth:`set_speed` there is **no block-layer
+        fallback**: a drive or handle that cannot honour this raises rather
+        than quietly doing something else.
+
+        ``exact=True`` pins the rate and forces CLV; a CAV-only drive may
+        refuse. ``-1`` for either LBA means the whole disc.
+        """
+        flags = lib.ACCUDISC_SPEED_EXACT if exact else 0
+        _check(lib.accudisc_set_speed_range(self._handle, speed_x,
+                                            start_lba, end_lba, flags), self)
+
+    # -- vendor read-speed uncap -------------------------------------------
+
+    def speed_uncap_probe(self) -> tuple[UncapState, int | None]:
+        """``(state, max_x)`` for the vendor read-speed uncap.
+
+        ``UncapState.UNKNOWN`` means **nobody who can answer has** — no driver
+        attached — and is not a third setting. ``max_x`` is the drive's own
+        advertised ceiling, handed back verbatim, or ``None`` when unreported.
+
+        Do **not** infer the uncap from ``max_x``: that inference was built,
+        shipped and removed in 0.8.0 because it was false. This call is the
+        only authority.
+        """
+        state = ffi.new("accudisc_uncap_state*")
+        max_x = ffi.new("unsigned*")
+        _check(lib.accudisc_speed_uncap_probe(self._handle, state, max_x), self)
+        return (UncapState(state[0]), max_x[0] or None)
+
+    def get_speed_uncap(self) -> bool:
+        """Whether the vendor read-speed uncap is on. Needs a vendor driver."""
+        on = ffi.new("int*")
+        _check(lib.accudisc_speed_uncap_get(self._handle, on), self)
+        return bool(on[0])
+
+    def set_speed_uncap(self, on: bool) -> None:
+        """Set the uncap. **PERSISTENT DRIVE STATE** — it outlives the handle.
+
+        Prefer :meth:`speed_uncap_scope`, which restores the prior value.
+        """
+        _check(lib.accudisc_speed_uncap_set(self._handle, 1 if on else 0), self)
+
+    @contextlib.contextmanager
+    def speed_uncap_scope(self, on: bool):
+        """Set the uncap for the duration of a block, then put it back.
+
+        This is the push/pop pair, and the pairing is the point: the uncap is
+        drive state that survives the process, so a caller who sets it and
+        crashes leaves the next program's reads running at a speed it never
+        asked for. Restoration happens on the exception path too.
+
+            with dev.speed_uncap_scope(True):
+                data = dev.read_span(lba, count)
+        """
+        prior = ffi.new("int*")
+        _check(lib.accudisc_speed_uncap_push(self._handle, 1 if on else 0,
+                                             prior), self)
+        try:
+            yield
+        finally:
+            _check(lib.accudisc_speed_uncap_pop(self._handle, prior[0]), self)
+
+    # -- the drive's nominal performance curve ------------------------------
+
+    def performance_curve(self, max_out: int = 64) -> list[PerfDesc]:
+        """The drive's nominal read-speed curve (GET PERFORMANCE, 0xAC).
+
+        **An empty list is a valid answer**, not a failure: a drive that
+        rejects the command yields no descriptors, which classifies as
+        :attr:`Rotation.UNKNOWN`. The shape is never inferred from anything
+        else.
+        """
+        out = ffi.new("accudisc_perf_desc[]", max_out)
+        count = ffi.new("uint32_t*")
+        _check(lib.accudisc_get_performance(self._handle, out, max_out, count),
+               self)
+        return [_perf_from_c(out[i]) for i in range(count[0])]
+
+    def rotation(self) -> Rotation:
+        """Classify this drive's curve: CLV, CAV, PCAV, ZCLV or UNKNOWN."""
+        return classify_rotation(self.performance_curve())
+
+    # -- recordable-media identity ------------------------------------------
+
+    def read_atip(self) -> Atip | None:
+        """ATIP for a recordable disc, or ``None`` for a pressed one.
+
+        ``None`` is **absence, not failure** — a pressed CD has no ATIP, which
+        is a fact about the disc rather than an error to handle.
+        """
+        out = ffi.new("accudisc_atip*")
+        rc = lib.accudisc_read_atip(self._handle, out)
+        # NOTFOUND only. ERR_UNSUPPORTED means the DRIVE cannot read ATIP,
+        # which is a different fact from "this disc has none" — folding both
+        # into None would report a pressed disc and a drive that cannot answer
+        # as the same thing, and a caller deciding whether a blank is writable
+        # would act on it.
+        if rc == lib.ACCUDISC_ERR_NOTFOUND:
+            return None
+        _check(rc, self)
+        return _atip_from_c(out)
+
+    # -- pregap / index scan (API_PLAN §5.1) --------------------------------
+
+    def scan_pregaps(self, toc: Toc, *, window: int = 0, tail: int = 0,
+                     speed_x: int = 0, cancel: "Cancel | None" = None,
+                     max_tracks: int = 100) -> list[IndexMap]:
+        """Scan each track boundary and reconstruct its pre-gap and indices.
+
+        This is a **measurement, not a TOC read**: it re-reads ``window``
+        sectors before each boundary and ``tail`` after, **one read per
+        boundary specifically to defeat the drive cache**, then decodes the Q
+        stream. Deriving pre-gaps from an existing rip's subchannel is a
+        different (and cheaper) operation that can be answered from cache;
+        where the two disagree, this one is the one designed not to be.
+
+        Defaults are the library's (``window`` 400, ``tail`` 4) — pass 0 for
+        either to get them. ``speed_x=0`` leaves the drive's speed alone, and
+        any speed set here is restored on every exit path.
+
+        **Entries decoded before a failure are still returned.** On a damaged
+        disc the boundaries that did decode are the useful part of the answer,
+        and discarding them to report the error throws that away.
+        """
+        opts = ffi.new("accudisc_pregap_scan_opts*")
+        opts.size = ffi.sizeof("accudisc_pregap_scan_opts")
+        opts.window = window
+        opts.tail = tail
+        opts.speed_x = speed_x
+        keepalive: list = []
+        opts.cancel = _cancel_ptr(cancel, keepalive)
+        out = ffi.new("accudisc_index_map[]", max_tracks)
+        n = ffi.new("uint8_t*")
+        rc = lib.accudisc_scan_pregaps(self._handle, _toc_to_c(toc), opts,
+                                       out, max_tracks, n)
+        maps = [_index_map_from_c(out[i]) for i in range(n[0])]
+        if rc != lib.ACCUDISC_OK and not maps:
+            _check(rc, self)
+        return maps
+
+    # -- C1/C2/CU error counters (API_PLAN §5.3) ----------------------------
+
+    @contextlib.contextmanager
+    def counter_scan(self):
+        """Arm the drive's error counters for the duration of a block.
+
+        Yields a zero-argument callable returning :class:`Counters`. The
+        context manager exists because arming is drive state that must be
+        disarmed — "must end what you begin" becomes structural rather than a
+        line in a docstring:
+
+            with dev.counter_scan() as sample:
+                dev.read_span(lba, 100)
+                print(sample().cu)
+
+        Needs a vendor driver; raises :class:`Unsupported` without one.
+        """
+        _check(lib.accudisc_counter_scan_begin(self._handle), self)
+        try:
+            def sample() -> Counters:
+                out = ffi.new("accudisc_counters*")
+                _check(lib.accudisc_counter_scan_read(self._handle, out), self)
+                return Counters(c1=out.c1, c2=out.c2, cu=out.cu)
+            yield sample
+        finally:
+            _check(lib.accudisc_counter_scan_end(self._handle), self)
+
+    def counter_census(self, start: int, end: int, *, cadence: int = 0,
+                       speed_x: int = 0, cancel: "Cancel | None" = None,
+                       on_sample: "Callable[[CensusSample], bool] | None" = None
+                       ) -> CensusStats:
+        """Read a span with the counters armed, sampling every ``cadence``.
+
+        The whole arm/read/sample/disarm cycle as one call, so a consumer does
+        not rebuild it. ``cadence=0`` uses the library default (75 sectors,
+        one second of audio).
+
+        ``on_sample`` is called per sample and returns ``True`` to continue,
+        ``False`` to stop. **Returning nothing means stop** — Python's implicit
+        ``None`` is falsey, and a callback that forgets to return is far more
+        likely to be a bug than a request to scan the whole disc.
+
+        The drive is armed **last**, after every argument check, so a rejected
+        call never leaves it armed.
+        """
+        opts = ffi.new("accudisc_census_opts*")
+        opts.size = ffi.sizeof("accudisc_census_opts")
+        opts.start = start
+        opts.end = end
+        opts.cadence = cadence
+        opts.speed_x = speed_x
+        keepalive: list = []
+        opts.cancel = _cancel_ptr(cancel, keepalive)
+        stats = ffi.new("accudisc_census_stats*")
+
+        err: list = []
+
+        @ffi.callback("int(const accudisc_census_sample*, void*)")
+        def trampoline(sample, _user):
+            try:
+                if on_sample is None:
+                    return 1
+                return 1 if on_sample(_census_sample_from_c(sample)) else 0
+            except BaseException as exc:  # noqa: BLE001 - re-raised below
+                err.append(exc)
+                return 0
+
+        rc = lib.accudisc_counter_census(self._handle, opts, trampoline,
+                                         ffi.NULL, stats)
+        if err:
+            raise err[0]
+        _check(rc, self)
+        return _census_stats_from_c(stats)
 
     def park_spindle(self) -> None:
         """Stop the spindle. Best-effort; a drive that refuses is not an error."""
@@ -3166,6 +3658,117 @@ def _features_from_c(c) -> Features:
     )
 
 
+def _range_check_from_c(c) -> "RangeCheck":
+    return RangeCheck(
+        ok=bool(c.ok),
+        reason=ffi.string(lib.accudisc_range_reason_str(c.reason)).decode(),
+        session=c.session,
+        track=c.track,
+        first_bad_lba=c.first_bad_lba,
+    )
+
+
+def _cancel_ptr(cancel, keepalive: list):
+    """A `const volatile int *` for an opts struct, or NULL.
+
+    The keepalive list is the whole point: the flag must outlive the C call,
+    and an opts struct holding a pointer to a freed cffi object is a use-after-
+    free that shows up as a wrong answer rather than a crash.
+    """
+    if cancel is None:
+        return ffi.NULL
+    keepalive.append(cancel._flag)
+    return cancel._flag
+
+
+def _perf_from_c(c) -> PerfDesc:
+    return PerfDesc(start_lba=c.start_lba, start_kbps=c.start_kbps,
+                    end_lba=c.end_lba, end_kbps=c.end_kbps)
+
+
+def _atip_from_c(c) -> Atip:
+    mfr = None if c.manufacturer == ffi.NULL else ffi.string(c.manufacturer).decode()
+    return Atip(
+        lead_in=(c.lead_in_min, c.lead_in_sec, c.lead_in_frame),
+        lead_out=(c.lead_out_min, c.lead_out_sec, c.lead_out_frame),
+        erasable=bool(c.erasable),
+        manufacturer=mfr,
+    )
+
+
+def _index_map_from_c(c) -> IndexMap:
+    """One boundary, with the library's sentinels turned into None.
+
+    Three separate sentinels collapse here, and each would otherwise be a
+    plausible number: a negative LBA means "not observed" rather than a
+    position before the lead-in, and `pregap_frames` is only meaningful when
+    the state is PRESENT — a 0 for any other state is "not measured", which a
+    caller would read as a zero-length gap.
+    """
+    state = PregapState(c.pregap_state)
+    return IndexMap(
+        track=c.track,
+        pregap_state=state,
+        max_index=c.max_index,
+        index1_lba=c.index1_lba if c.index1_lba >= 0 else None,
+        q_index1_lba=c.q_index1_lba if c.q_index1_lba >= 0 else None,
+        index0_lba=c.index0_lba if c.index0_lba >= 0 else None,
+        pregap_frames=(c.pregap_frames
+                       if state is PregapState.PRESENT else None),
+        crc_ok=c.crc_ok,
+        crc_bad=c.crc_bad,
+    )
+
+
+def _fulltoc_entry_from_c(c) -> FullTocEntry:
+    return FullTocEntry(session=c.session, adr_ctrl=c.adr_ctrl, point=c.point,
+                        msf=(c.min, c.sec, c.frame),
+                        pmsf=(c.pmin, c.psec, c.pframe))
+
+
+def _cdtext_strings_from_c(c) -> CdTextStrings:
+    d = lambda f: ffi.string(f).decode("utf-8", "replace")  # noqa: E731
+    return CdTextStrings(title=d(c.title), performer=d(c.performer),
+                         songwriter=d(c.songwriter), code=d(c.code))
+
+
+def _counters_from_c(c) -> Counters:
+    return Counters(c1=c.c1, c2=c.c2, cu=c.cu)
+
+
+def _census_sample_from_c(c) -> CensusSample:
+    return CensusSample(lba=c.lba, count=c.count,
+                        counters=_counters_from_c(c.counters),
+                        read_err=c.read_err or None)
+
+
+def _census_stats_from_c(c) -> CensusStats:
+    return CensusStats(c1=c.c1, c2=c.c2, cu=c.cu,
+                       peak_c1=c.peak_c1, peak_c2=c.peak_c2, peak_cu=c.peak_cu,
+                       samples=c.samples, read_errors=c.read_errors)
+
+
+def _range_plan_from_c(c, rc: int) -> RangePlan:
+    """A plan, or a stated refusal.
+
+    `ok` is driven by the RETURN CODE, not by `plan_reason == OK`, because the
+    two answer different questions and only the return code knows whether the
+    library filled the extent. On a refusal `lba`/`count` become None so a
+    caller cannot pass an unresolved extent to a read and get 0 sectors.
+    """
+    ok = rc == lib.ACCUDISC_OK
+    return RangePlan(
+        ok=ok,
+        reason=PlanReason(c.plan_reason),
+        lba=c.lba if ok else None,
+        count=c.count if ok else None,
+        resolved_count=c.resolved_count,
+        session=c.session,
+        check=(_range_check_from_c(c.check)
+               if c.plan_reason == lib.ACCUDISC_PLAN_GUARD_REFUSED else None),
+    )
+
+
 def _disc_probe_from_c(c) -> DiscProbe:
     """One C disc-probe struct.
 
@@ -3231,3 +3834,139 @@ def _stats_from_c(s) -> ReadStats:
         speed_requested_x=s.speed_requested_x,
         speed_honoured_x=s.speed_honoured_x,
     )
+
+
+# ---------------------------------------------------------------------------
+# pure functions — no device, no I/O
+#
+# The reason this section is worth having at all: every one of these was
+# reachable only through a drive until the library promoted it (API_PLAN §5),
+# so the branches they cover — HTOA pregaps, mixed-mode splits, multi-session
+# ambiguity, a degraded lead-in — were testable only by owning the right
+# physical disc. Here they are testable against synthetic input.
+# ---------------------------------------------------------------------------
+
+
+def plan_read_range(toc: Toc, *, session: int = -1, first_track: int = -1,
+                    last_track: int = 0, start: int = -1, count: int = -1,
+                    force: bool = False) -> RangePlan:
+    """Resolve what to read from a TOC. **Pure — no device.**
+
+    This is the whole of AccuDisc's read-range policy as one call: session →
+    audio range → whole-disc default, then the audio-range guard. Every
+    consumer would otherwise rebuild it differently, which is the defect
+    API_PLAN §5 exists to close.
+
+    **A refusal is a RESULT.** Check :attr:`RangePlan.ok`; the reason is always
+    populated and :meth:`PlanReason.token` gives the CLI's spelling of it, so a
+    disagreement with another implementation is a stated policy difference
+    rather than an inferred one.
+
+    ``-1`` means *unspecified* for ``session``, ``first_track``, ``start`` and
+    ``count``. Anything below ``-1`` is a caller error and raises — mapping
+    every negative to "unspecified" would turn ``start=-5`` from a refusal into
+    a silent whole-disc read.
+
+    ``force=True`` skips the audio-range guard. It does **not** skip
+    resolution: those are separate questions.
+    """
+    spec = ffi.new("accudisc_range_spec*")
+    spec.size = ffi.sizeof("accudisc_range_spec")
+    spec.session = session
+    spec.first_track = first_track
+    spec.last_track = last_track
+    spec.start = start
+    spec.count = count
+    spec.force = 1 if force else 0
+    out = ffi.new("accudisc_range_plan*")
+    rc = lib.accudisc_plan_read_range(_toc_to_c(toc), spec, out)
+    if rc == lib.ACCUDISC_ERR_INVAL or rc == lib.ACCUDISC_ERR_ABI:
+        _raise(rc)
+    return _range_plan_from_c(out, rc)
+
+
+def index_map_decode(raw: bytes, base_lba: int, toc: Toc,
+                     max_tracks: int = 100) -> list[IndexMap]:
+    """Decode index/pregap structure from raw subchannel already in hand.
+
+    ``raw`` is ``count * 96`` bytes of ACCUDISC_SUB_RAW starting at
+    ``base_lba``. Use this when you already have a subchannel capture;
+    :meth:`Device.scan_pregaps` is the version that goes and gets one, and the
+    two are **different measurements** — this one answers from whatever the
+    drive gave you, including from its cache.
+    """
+    if len(raw) % 96:
+        raise InvalidArgument(
+            f"raw subchannel must be a multiple of 96 bytes, got {len(raw)}")
+    count = len(raw) // 96
+    out = ffi.new("accudisc_index_map[]", max_tracks)
+    n = lib.accudisc_index_map_decode(raw, base_lba, count, _toc_to_c(toc),
+                                      out, max_tracks)
+    return [_index_map_from_c(out[i]) for i in range(n)]
+
+
+def parse_full_toc(raw: bytes) -> FullToc:
+    """Decode READ TOC format 2 bytes into a session structure. **Pure.**
+
+    ``raw`` is what :meth:`Device.read_full_toc_raw` returns — the raw
+    Q-channel of the lead-in, including its leading 2-byte length field.
+    """
+    out = ffi.new("accudisc_fulltoc*")
+    _check(lib.accudisc_fulltoc_parse(raw, len(raw), out))
+    return FullToc(
+        first_session=out.first_session,
+        last_session=out.last_session,
+        entries=tuple(_fulltoc_entry_from_c(out.entries[i])
+                      for i in range(out.entry_count)),
+    )
+
+
+def decode_cdtext(raw: bytes) -> CdText:
+    """Decode raw CD-Text packs (READ TOC format 5) into strings. **Pure.**
+
+    Raises :class:`CrcError` when a pack fails its checksum, and
+    :class:`NotFound` when the blob carries no CD-Text at all — absence, which
+    most discs exhibit and which is not a defect.
+    """
+    out = ffi.new("accudisc_cdtext**")
+    _check(lib.accudisc_cdtext_decode(raw, len(raw), out))
+    try:
+        c = out[0]
+        return CdText(
+            album=_cdtext_strings_from_c(c.album),
+            tracks=tuple(_cdtext_strings_from_c(c.track[i])
+                         for i in range(100)),
+        )
+    finally:
+        # Library-allocated, so the free is ours to make and must happen on the
+        # exception path too — a decode that raises mid-way still allocated.
+        lib.accudisc_free(out[0])
+
+
+def atip_manufacturer(min_: int, sec: int, frame: int) -> str | None:
+    """Manufacturer for an ATIP code, or ``None`` if not in our table.
+
+    Matches on ``min:sec`` — the manufacturer key. ``frame`` is a per-media
+    variant and is accepted for completeness. ``None`` means **not in the
+    table**, never "no manufacturer".
+    """
+    p = lib.accudisc_atip_manufacturer(min_, sec, frame)
+    return None if p == ffi.NULL else ffi.string(p).decode()
+
+
+def classify_rotation(descs: "Sequence[PerfDesc]") -> Rotation:
+    """Classify a performance curve's shape. **Pure.**
+
+    An empty sequence is ``Rotation.UNKNOWN`` — the shape of a curve nobody
+    reported is not inferred, it is unknown.
+    """
+    n = len(descs)
+    if n == 0:
+        return Rotation.UNKNOWN
+    arr = ffi.new("accudisc_perf_desc[]", n)
+    for i, d in enumerate(descs):
+        arr[i].start_lba = d.start_lba
+        arr[i].start_kbps = d.start_kbps
+        arr[i].end_lba = d.end_lba
+        arr[i].end_kbps = d.end_kbps
+    return Rotation(lib.accudisc_classify_rotation(arr, n))

@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "../internal.h"
+
 #include "accudisc/accudisc.h"
 #include "internal.h"
 
@@ -42,6 +44,19 @@ int accudisc_plan_read_range(const accudisc_toc *toc,
     out->plan_reason = ACCUDISC_PLAN_BAD_ARGUMENT;
     if (!toc || !spec)
         return ACCUDISC_ERR_INVAL;
+
+    /* API_PLAN §7.1, and it earns its place here more than in most callers:
+     * this function's whole purpose is to stop a wrong EXTENT being read
+     * silently, so reading `start`/`count` past the end of a short caller's
+     * struct would produce exactly the defect it exists to prevent — a
+     * plausible span, from uninitialised bytes, with no error anywhere. */
+    accudisc_range_spec local;
+    {
+        int abi = adsc_abi_import(&local, sizeof local, spec, spec->size);
+        if (abi != ACCUDISC_OK)
+            return abi;
+        spec = &local;
+    }
 
     /* EXACTLY -1 means "unspecified". Anything below it is a caller error, not
      * a second way of saying the same thing: mapping every negative to

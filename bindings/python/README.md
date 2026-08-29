@@ -9,7 +9,7 @@ The C library must be built first; the binding links it.
 ```sh
 cmake -B build && cmake --build build          # from the repo root
 cd bindings/python && python3 build_accudisc.py
-PYTHONPATH=. python3 tests/test_binding.py      # 55 tests, no drive needed
+PYTHONPATH=. python3 tests/test_binding.py     # 109 tests, no drive needed
 ```
 
 `ctest -R python_binding` does all of that as part of the normal test run, and
@@ -361,6 +361,49 @@ you want the answer without an exception — it reports `None` in both cases.
 
 The setting is **persistent drive state** that outlives the handle, and there
 is no push/pop pair. Read it before you change it, and put it back yourself.
+
+### The acquisition strategies, and everything else — bound 2026-08-29
+
+Feature name `acquisition_strategies`. **76 of the library's 80 public
+functions are now reachable from Python**, under Keith's ruling that the
+binding is the default and every exception needs a written justification.
+
+The four that are not are in `accudisc.withheld`, a frozenset the test suite
+asserts equals the *actual* unbound set in both directions — so a function
+cannot quietly leave the binding, and the list cannot quietly rot.
+
+Two of the new calls are **context managers, and that is the API rather than a
+convenience**:
+
+```python
+with dev.counter_scan() as sample:      # arms the drive's C1/C2/CU counters
+    dev.read_span(lba, 100)
+    print(sample().cu)                  # CU is the one that matters
+
+with dev.speed_uncap_scope(True):       # push/pop, restored on the error path
+    data = dev.read_span(lba, count)
+```
+
+Both wrap **drive state that outlives the process**. A caller who arms the
+counters or lifts the uncap and then crashes leaves the *next* program running
+against a drive it never configured; the `with` makes "put it back" structural
+instead of a line in a docstring.
+
+The pure functions — `plan_read_range`, `index_map_decode`, `parse_full_toc`,
+`decode_cdtext`, `atip_manufacturer`, `classify_rotation` — need no device.
+`plan_read_range` is the one worth knowing about: it is AccuDisc's entire
+read-range policy (session → audio range → whole-disc default, then the
+audio-range guard) as one call over a TOC, and **a refusal is a result rather
+than an exception** — check `.ok`, and `.reason.token` gives the CLI's spelling
+so a disagreement with another implementation is a stated policy difference
+instead of an inferred one.
+
+On why this binding is API mode rather than a hand-transcribed one, cdda2img
+put it better than we had:
+
+> *"a boundary that forwards **questions** survives a layout change that a
+> boundary forwarding **memory** does not."*
+> — cdda2img, 2026-08-29
 
 ### What the write binding has been run against
 

@@ -150,6 +150,109 @@ def test_struct_sizes_match_api_plan():
     # unnameable in Python, so every existing assertion passed.
     assert ffi.sizeof("accudisc_features") == 24     # 16 -> 24 in 0.32.0
 
+    # Every struct bound in 0.33.0. cdda2img (§182.5) argued for a `size` field
+    # on OUT structs too. They are right about the HAZARD and wrong about the
+    # remedy: for an OUT ARRAY the library's write stride IS sizeof(elem), so a
+    # per-element `size` would have the library trust N separate caller claims
+    # about a stride it has already used. The defence that works is a
+    # compile-time-resolved sizeof pinned here, so a stale extension fails at
+    # import rather than having its buffer overrun with row 0 still correct.
+    # index_map and perf_desc are the two OUT ARRAYS among these.
+    assert ffi.sizeof("accudisc_range_spec") == 40        # IN, carries size
+    assert ffi.sizeof("accudisc_range_plan") == 32
+    assert ffi.sizeof("accudisc_pregap_scan_opts") == 24  # IN, carries size
+    assert ffi.sizeof("accudisc_index_map") == 28         # OUT ARRAY
+    assert ffi.sizeof("accudisc_perf_desc") == 16         # OUT ARRAY
+    assert ffi.sizeof("accudisc_fulltoc_entry") == 9      # fixed by Red Book
+    assert ffi.sizeof("accudisc_counters") == 12
+    assert ffi.sizeof("accudisc_census_opts") == 32       # IN, carries size
+    assert ffi.sizeof("accudisc_census_sample") == 24
+    assert ffi.sizeof("accudisc_census_stats") == 48
+    assert ffi.sizeof("accudisc_cdtext_strings") == 640
+    assert ffi.sizeof("accudisc_atip") == 24
+
+
+def test_every_IN_struct_declares_a_leading_size_field():
+    """The rule Keith settled, as a property rather than a convention.
+
+    IN structs (caller fills, library reads) carry `size`; OUT structs do not
+    and are pinned by sizeof above. Offset 0 is not cosmetic — adsc_abi_import
+    reads the declared size from the front of the caller's allocation, so a
+    `size` anywhere else makes it read a different field and believe it.
+    """
+    for name in ("accudisc_read_req", "accudisc_write_opts",
+                 "accudisc_range_spec", "accudisc_pregap_scan_opts",
+                 "accudisc_census_opts"):
+        assert ffi.offsetof(name, "size") == 0, \
+            f"{name}: `size` must be the LEADING field or abi_import lies"
+
+
+def test_cdef_declares_every_field_the_header_does():
+    """The CLASS of the 0.32.0 defect, not the instance.
+
+    A struct in BOTH header and cdef must agree field-for-field. cffi API mode
+    resolves layout from the compiler, so a field the cdef omits is not a wrong
+    offset — it is a field with no NAME in Python, and every other assertion in
+    this file still passes. That is how `accudisc_features` sat a release
+    behind for a day with a green suite.
+
+    Deliberately NOT asserting that every header struct appears in the cdef:
+    that is the withhold list, checked separately below.
+    """
+    import re
+    root = pathlib.Path(__file__).resolve().parents[3]
+    hdr = (root / "include/accudisc/accudisc.h").read_text()
+    cdef_src = (root / "bindings/python/build_accudisc.py").read_text()
+    cdef = re.search(r'ffibuilder\.cdef\(\s*r?"""(.*?)"""', cdef_src, re.S).group(1)
+
+    def structs(text):
+        text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+        out = {}
+        for m in re.finditer(
+                r'typedef\s+struct\s+(\w+)\s*\{(.*?)\}\s*\w+\s*;', text, re.S):
+            fields = []
+            for line in m.group(2).split(';'):
+                line = re.sub(r'\[[^\]]*\]', '', line).strip()
+                if not line or line == '...' or ' ' not in line:
+                    continue
+                for part in line.split(None, 1)[1].split(','):
+                    ids = re.findall(r'[A-Za-z_]\w*', part)
+                    if ids:
+                        fields.append(ids[-1])
+            out[m.group(1)] = fields
+        return out
+
+    H, C = structs(hdr), structs(cdef)
+    assert len(C) > 20, f"parity check found only {len(C)} cdef structs — regex rot"
+    missing = {n: [f for f in H[n] if f not in cf]
+               for n, cf in C.items() if n in H and [f for f in H[n] if f not in cf]}
+    assert not missing, f"cdef is behind the header: {missing}"
+
+
+def test_the_withheld_surface_is_exactly_what_we_declare():
+    """Keith's ruling: library implies binding, exceptions must be justified.
+
+    Both halves against `ad.withheld`, so a function cannot quietly leave the
+    binding (unbound and not in the set) and the set cannot quietly rot (names
+    something that is bound). Scraping the module docstring was tried and
+    rejected: it made the test agree with whatever the prose said.
+    """
+    import re
+    root = pathlib.Path(__file__).resolve().parents[3]
+    hdr = (root / "include/accudisc/accudisc.h").read_text()
+    public = set(re.findall(r'\baccudisc_[a-z0-9_]+(?=\s*\()',
+                            re.sub(r'/\*.*?\*/', '', hdr, flags=re.S)))
+    assert len(public) > 60, f"only {len(public)} public fns found — regex rot"
+    unbound = {n for n in public if not hasattr(lib, n)}
+
+    assert unbound == set(ad.withheld), (
+        f"unbound but not declared: {sorted(unbound - set(ad.withheld))}; "
+        f"declared but actually bound: {sorted(set(ad.withheld) - unbound)}")
+
+    for name in ad.withheld:
+        assert name.replace("accudisc", "").lstrip("_") in (ad.__doc__ or ""), \
+            f"{name} is withheld with no justification in the module docstring"
+
 
 def test_error_codes_are_the_headers():
     assert lib.ACCUDISC_ERR_INVAL == -1
@@ -527,6 +630,7 @@ def test_features_names_what_the_version_cannot():
     assert "subq_map" in ad.features
     assert "speed_honoured" in ad.features
     assert "write_governor" in ad.features
+    assert "acquisition_strategies" in ad.features
     assert "no_such_capability" not in ad.features
 
 

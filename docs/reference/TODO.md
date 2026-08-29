@@ -3913,6 +3913,75 @@ Headline items, for grep:
   `build/cli/accudisc` again, so §8 is a *live* obligation: write the ledger row
   before the commit, not at the end of a phase.
 
+## Consumer requests — cdda2img, recorded 2026-08-29
+
+### 1. `accudisc_measure_write_offset` — the WORK, not the tools — `[P2]`
+
+Keith's ruling, relayed in cdda2img §182 §2: *"If there's something you need
+where AccuDisc should be doing the work but isn't, ask them to do it, don't ask
+for the tools to do it yourself."*
+
+cdda2img withdrew their own §178 framing on the strength of it. They had asked
+us to expose `write_offset_signal` and `_locate` so **they** could orchestrate
+generate → burn → read back → locate. That is asking for the tools, and it
+contradicts the architecture Keith had already given them (*"we call AccuDisc,
+you perform the test, you return the value"*) — which they had quoted to us
+three paragraphs above the ask.
+
+```c
+ACCUDISC_API int accudisc_measure_write_offset(accudisc_device *dev,
+                                               int32_t read_offset,
+                                               int32_t *out);
+```
+
+One call in, `W` or `ACCUDISC_ERR_AMBIGUOUS` out. We generate the signal, burn
+it, read it back, locate the pulses, return the offset.
+
+**This resurrects a name this header already had and deleted.** `0.20.0` removed
+`accudisc_measure_write_offset` as a PHANTOM — the header and `gen_offsets.py`
+both cited it as though it shipped, and it never existed: a name for work not yet
+done, leaked into the contract. Deleting it was right. The ruling says the work
+should now exist, so the name comes back *behind an implementation* this time.
+
+The three primitives stay public and bound — cdda2img still uses `_locate`
+alone for the no-blank cross-check in their §179. What changes is that the
+DEFAULT path is one call, and the orchestration lives once here rather than once
+in cdda2img, once in 8trax, and once in the next front end.
+
+**Blocked on media, not on design**: it burns, so it cannot be developed against
+`--simulate`. Goes in `docs/reference/LIVE_BURN_QUEUE.md` when the blanks
+arrive. Not urgent — cdda2img is explicit that it is not a blocker and they are
+not burning.
+
+### 2. The ladder driver: sweep-then-gate, NOT a caller predicate — `[P2]`
+
+Settled with cdda2img across §181 §4 / §182 §1, and worth recording because the
+losing option is the one that looks more efficient.
+
+They proposed a ladder driver taking a **caller-supplied per-rung predicate** —
+we own the sweep, they answer one boolean per attempt (their AccurateRip
+verdict). Rejected, and they accepted the rejection: a predicate invoked from
+inside our sweep does not put the lookup in their code, it puts a **blocking
+network round-trip inside our read loop with the drive spinning**, which is what
+`CLAUDE.md`'s "no lookups, no network" boundary exists to prevent.
+`accudisc_ctdb_repair` is the model — the caller fetches, chooses and gates; the
+library is handed bytes and hands back samples, and never reaches out.
+
+**Shape: we run the whole sweep and return per-rung results; they gate
+afterwards.** Cost, stated honestly: we cannot stop early on the rung that would
+have satisfied them, so a sweep does strictly more drive work than an
+oracle-guided one. Bought with it: the sweep's behaviour stops depending on a
+remote service that can time out — their own run2 log shows recurring
+`AccurateRip https fetch failed: read timed out` during re-gates, and a sweep
+whose control flow depends on that produces null results nobody can reproduce.
+
+### 3. The track-1 pre-gap rule is OURS — Keith's ruling — `[P2]`
+
+Their cuesheet convention (INDEX 01 at LBA > 0 becomes track 1's pre-gap,
+`start_frame=0`) is a range-and-geometry decision that `accudisc_plan_read_range`
+does not express. Keith ruled it moves to us rather than staying a consumer
+policy. See cdda2img §182 §3.
+
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 
 8trax is the third correspondent and the first **GUI** consumer. Keith's ruling

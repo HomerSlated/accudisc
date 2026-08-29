@@ -126,7 +126,8 @@ int main(void)
      * "session 0, tracks 0, start 0, count 0", which is not the unspecified
      * state and would quietly test something else. */
 #define SPEC(se, ft, lt, st, cn, fo) \
-    (s.session = (se), s.first_track = (ft), s.last_track = (lt), \
+    (s.size = (uint32_t)sizeof s, \
+     s.session = (se), s.first_track = (ft), s.last_track = (lt), \
      s.start = (st), s.count = (cn), s.force = (fo))
 
     /* ---- the happy paths -------------------------------------------- */

@@ -27,7 +27,21 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 32 /* 0.32.0: THE WRITE-SPEED GOVERNOR
+#define ACCUDISC_VERSION_MINOR 33 /* 0.33.0: THE BINDING SURFACE IS A POLICY.
+                                  * Keith's ruling: if it is in the library it
+                                  * is in the binding, and every exception
+                                  * carries a written justification. The three
+                                  * IN structs the newly-bound calls take —
+                                  * accudisc_range_spec, _pregap_scan_opts and
+                                  * _census_opts — gained a leading `size`
+                                  * BEFORE being bound, because binding a
+                                  * struct is what freezes it (API_PLAN §7.1).
+                                  * ABI BREAK: callers of accudisc_plan_read_
+                                  * range, _scan_pregaps and _counter_census
+                                  * must set .size, or use the new
+                                  * ACCUDISC_*_INIT macros.
+                                  *
+                                  * 0.32.0: THE WRITE-SPEED GOVERNOR
                                   * (Plextor POWEREC) IS REACHABLE. New
                                   * accudisc_write_governor_get/_set, a
                                   * DRIVER ABI BUMP (2 -> 3, two appended
@@ -1252,6 +1266,9 @@ typedef int (*accudisc_census_fn)(const accudisc_census_sample *sample,
                                   void *user);
 
 typedef struct accudisc_census_opts {
+    uint32_t size;     /* = sizeof(accudisc_census_opts). NOT optional; see
+                        * accudisc_range_spec above for why these three got a
+                        * size field and the OUT structs beside them did not. */
     uint32_t start;    /* first sector */
     uint32_t end;      /* one past the last — normally toc.leadout_lba */
     uint32_t cadence;  /* sectors per sample; 0 = ACCUDISC_CENSUS_CADENCE */
@@ -1853,7 +1870,21 @@ typedef enum {
     ACCUDISC_PLAN_BAD_ARGUMENT             /* NULL, or out of representable range */
 } accudisc_plan_reason;
 
+/* IN structs, so API_PLAN §7.1's asymmetric rule applies: a short struct is
+ * zero-extended (an older caller gets older behaviour), a long one is accepted
+ * only when every byte past our end is zero. Added in 0.33.0, BEFORE these
+ * three were bound to Python — binding a struct is what freezes it, and §7.1's
+ * argument that the break is free rests on nothing outside this repo linking
+ * the library. accudisc_features is the counter-example: born without a size
+ * field, grew 16 -> 24 bytes in 0.32.0, and nothing in either language could
+ * notice. These three are opts/spec structs, which is the shape that grows. */
+#define ACCUDISC_RANGE_SPEC_INIT { .size = sizeof(accudisc_range_spec) }
+#define ACCUDISC_PREGAP_SCAN_OPTS_INIT \
+    { .size = sizeof(accudisc_pregap_scan_opts) }
+#define ACCUDISC_CENSUS_OPTS_INIT { .size = sizeof(accudisc_census_opts) }
+
 typedef struct accudisc_range_spec {
+    uint32_t size;       /* = sizeof(accudisc_range_spec). NOT optional */
     int32_t session;     /* -1 = unspecified */
     int32_t first_track; /* -1 or 0 = unspecified */
     int32_t last_track;
@@ -2935,6 +2966,9 @@ ACCUDISC_API uint32_t accudisc_index_map_decode(const uint8_t *raw,
 #define ACCUDISC_PREGAP_TAIL   4u   /* and after, to catch index 01 itself */
 
 typedef struct accudisc_pregap_scan_opts {
+    uint32_t size;    /* = sizeof(accudisc_pregap_scan_opts). NOT optional.
+                       * A NULL `opts` is still legal and means all defaults —
+                       * only a struct you DO pass must declare its size. */
     uint32_t window;  /* 0 = ACCUDISC_PREGAP_WINDOW */
     uint32_t tail;    /* 0 = ACCUDISC_PREGAP_TAIL */
     uint16_t speed_x; /* 0 = leave the drive's speed alone. When set, the prior

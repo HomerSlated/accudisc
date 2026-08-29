@@ -32,6 +32,17 @@ int accudisc_counter_census(accudisc_device *dev,
 
     if (!dev || !opts || !fn)
         return ACCUDISC_ERR_INVAL;
+
+    /* Before the span check, so a stale binding is diagnosed as ERR_ABI
+     * ("rebuild") rather than ERR_INVAL ("fix your arguments"). */
+    accudisc_census_opts local;
+    {
+        int abi = adsc_abi_import(&local, sizeof local, opts, opts->size);
+        if (abi != ACCUDISC_OK)
+            return abi;
+        opts = &local;
+    }
+
     if (opts->end <= opts->start)
         return ACCUDISC_ERR_INVAL; /* empty span: nothing to arm for */
 

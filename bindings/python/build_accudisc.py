@@ -693,6 +693,242 @@ int accudisc_q_parse(const uint8_t q[12], accudisc_q *out);
 /* ---- metadata ---------------------------------------------------------- */
 int accudisc_scan_mcn(accudisc_device *dev, uint32_t lba, char mcn[14]);
 int accudisc_scan_isrc(accudisc_device *dev, uint32_t lba, char isrc[13]);
+
+/* =========================================================================
+ * The acquisition strategies (API_PLAN §5) and the rest of the surface.
+ *
+ * Bound 2026-08-29 under Keith's ruling: "if it's in the library, it needs to
+ * be in the binding, and the only exceptions are those with a documented
+ * justification for withholding it." What is STILL withheld, and why, is in
+ * the module docstring of accudisc/__init__.py under "Deliberately unbound" —
+ * a list, not an accident. tests/test_binding.py pins that list so a function
+ * cannot drift out of the binding unnoticed.
+ * ========================================================================= */
+
+/* ---- read-range resolution (§5.2) -------------------------------------- */
+#define ACCUDISC_PLAN_OK ...
+#define ACCUDISC_PLAN_TRACKS_NOT_FOUND ...
+#define ACCUDISC_PLAN_TRACKS_CROSS_SESSION ...
+#define ACCUDISC_PLAN_TRACKS_NO_EXTENT ...
+#define ACCUDISC_PLAN_MULTIPLE_AUDIO_SESSIONS ...
+#define ACCUDISC_PLAN_NO_AUDIO_SESSION ...
+#define ACCUDISC_PLAN_SESSION_SPLIT_BY_DATA ...
+#define ACCUDISC_PLAN_SESSION_NOT_FOUND ...
+#define ACCUDISC_PLAN_START_PAST_LEADOUT ...
+#define ACCUDISC_PLAN_EMPTY_RANGE ...
+#define ACCUDISC_PLAN_GUARD_REFUSED ...
+#define ACCUDISC_PLAN_BAD_ARGUMENT ...
+
+/* IN struct: carries `size`, added in 0.33.0 before this was bound. */
+typedef struct accudisc_range_spec {
+    uint32_t size;
+    int32_t session;
+    int32_t first_track;
+    int32_t last_track;
+    int64_t start;
+    int64_t count;
+    uint8_t force;
+    ...;
+} accudisc_range_spec;
+
+typedef struct accudisc_range_plan {
+    uint32_t lba;
+    uint32_t count;
+    int64_t resolved_count;
+    uint8_t session;
+    uint8_t plan_reason;
+    accudisc_range_check check;
+    ...;
+} accudisc_range_plan;
+
+int accudisc_plan_read_range(const accudisc_toc *toc,
+                             const accudisc_range_spec *spec,
+                             accudisc_range_plan *out);
+const char *accudisc_plan_reason_str(unsigned plan_reason);
+
+/* ---- pregap / index scan (§5.1) ---------------------------------------- */
+#define ACCUDISC_PREGAP_WINDOW ...
+#define ACCUDISC_PREGAP_TAIL ...
+#define ACCUDISC_PREGAP_NO_DATA ...
+#define ACCUDISC_PREGAP_NONE ...
+#define ACCUDISC_PREGAP_PRESENT ...
+#define ACCUDISC_PREGAP_UNKNOWN ...
+
+typedef struct accudisc_pregap_scan_opts {
+    uint32_t size;
+    uint32_t window;
+    uint32_t tail;
+    uint16_t speed_x;
+    const volatile int *cancel;
+    ...;
+} accudisc_pregap_scan_opts;
+
+typedef struct accudisc_index_map {
+    uint8_t  track;
+    uint8_t  pregap_state;
+    uint8_t  max_index;
+    int32_t  index1_lba;
+    int32_t  q_index1_lba;
+    int32_t  index0_lba;
+    uint32_t pregap_frames;
+    uint32_t crc_ok;
+    uint32_t crc_bad;
+    ...;
+} accudisc_index_map;
+
+int accudisc_scan_pregaps(accudisc_device *dev, const accudisc_toc *toc,
+                          const accudisc_pregap_scan_opts *opts,
+                          accudisc_index_map *out, uint8_t max, uint8_t *n_out);
+uint32_t accudisc_index_map_decode(const uint8_t *raw, int32_t base_lba,
+                                   uint32_t count, const accudisc_toc *toc,
+                                   accudisc_index_map *out, uint8_t max);
+
+/* ---- full TOC (session structure, decoded) ----------------------------- */
+typedef struct accudisc_fulltoc_entry {
+    uint8_t session;
+    uint8_t adr_ctrl;
+    uint8_t point;
+    uint8_t min, sec, frame;
+    uint8_t pmin, psec, pframe;
+    ...;
+} accudisc_fulltoc_entry;
+
+typedef struct accudisc_fulltoc {
+    uint8_t first_session;
+    uint8_t last_session;
+    uint16_t entry_count;
+    accudisc_fulltoc_entry entries[136];
+    ...;
+} accudisc_fulltoc;
+
+int accudisc_fulltoc_parse(const uint8_t *raw, uint32_t len,
+                           accudisc_fulltoc *out);
+
+/* ---- ATIP (recordable media identity) ---------------------------------- */
+typedef struct accudisc_atip {
+    uint8_t lead_in_min, lead_in_sec, lead_in_frame;
+    uint8_t lead_out_min, lead_out_sec, lead_out_frame;
+    int erasable;
+    const char *manufacturer;
+    ...;
+} accudisc_atip;
+
+int accudisc_read_atip(accudisc_device *dev, accudisc_atip *out);
+const char *accudisc_atip_manufacturer(uint8_t min, uint8_t sec, uint8_t frame);
+
+/* ---- CD-Text decode (raw packs -> strings) ----------------------------- */
+#define ACCUDISC_TEXT_MAX ...
+
+typedef struct accudisc_cdtext_strings {
+    char title[160];
+    char performer[160];
+    char songwriter[160];
+    char code[160];
+    ...;
+} accudisc_cdtext_strings;
+
+typedef struct accudisc_cdtext {
+    accudisc_cdtext_strings album;
+    accudisc_cdtext_strings track[100];
+    ...;
+} accudisc_cdtext;
+
+int accudisc_cdtext_decode(const uint8_t *raw, uint32_t len,
+                           accudisc_cdtext **out);
+
+/* ---- speed: ranged ceiling, and the vendor read-speed uncap ------------ */
+#define ACCUDISC_SPEED_EXACT ...
+
+int accudisc_set_speed_range(accudisc_device *dev, unsigned speed_x,
+                             int32_t start_lba, int32_t end_lba,
+                             unsigned flags);
+
+/* 2 is RETIRED and must never be reused — it was LIKELY_ON, an inferred value
+ * that 0.8.0 removed. The gap is deliberate; do not renumber. */
+typedef enum accudisc_uncap_state {
+    ACCUDISC_UNCAP_OFF,
+    ACCUDISC_UNCAP_ON,
+    ACCUDISC_UNCAP_UNKNOWN,
+    ...
+} accudisc_uncap_state;
+
+int accudisc_speed_uncap_probe(accudisc_device *dev,
+                               accudisc_uncap_state *state, unsigned *max_x);
+int accudisc_speed_uncap_get(accudisc_device *dev, int *on);
+int accudisc_speed_uncap_set(accudisc_device *dev, int on);
+int accudisc_speed_uncap_push(accudisc_device *dev, int on, int *prior_out);
+int accudisc_speed_uncap_pop(accudisc_device *dev, int prior);
+
+/* ---- the drive's nominal performance curve, and its shape -------------- */
+typedef enum {
+    ACCUDISC_ROTATION_UNKNOWN,
+    ACCUDISC_ROTATION_CLV,
+    ACCUDISC_ROTATION_CAV,
+    ACCUDISC_ROTATION_PCAV,
+    ACCUDISC_ROTATION_ZCLV,
+    ...
+} accudisc_rotation;
+
+typedef struct accudisc_perf_desc {
+    uint32_t start_lba;
+    uint32_t start_kbps;
+    uint32_t end_lba;
+    uint32_t end_kbps;
+    ...;
+} accudisc_perf_desc;
+
+int accudisc_get_performance(accudisc_device *dev, accudisc_perf_desc *out,
+                             uint32_t max_out, uint32_t *count);
+accudisc_rotation accudisc_classify_rotation(const accudisc_perf_desc *desc,
+                                             uint32_t count);
+
+/* ---- C1/C2/CU error counters, and the census built on them (§5.3) ------ */
+#define ACCUDISC_CENSUS_CADENCE ...
+
+typedef struct accudisc_counters {
+    uint32_t c1;
+    uint32_t c2;
+    uint32_t cu;
+    ...;
+} accudisc_counters;
+
+int accudisc_counter_scan_begin(accudisc_device *dev);
+int accudisc_counter_scan_read(accudisc_device *dev, accudisc_counters *out);
+int accudisc_counter_scan_end(accudisc_device *dev);
+
+typedef struct accudisc_census_sample {
+    uint32_t lba;
+    uint32_t count;
+    accudisc_counters counters;
+    int read_err;
+    ...;
+} accudisc_census_sample;
+
+typedef struct accudisc_census_stats {
+    uint64_t c1, c2, cu;
+    uint32_t peak_c1, peak_c2, peak_cu;
+    uint32_t samples;
+    uint32_t read_errors;
+    ...;
+} accudisc_census_stats;
+
+typedef struct accudisc_census_opts {
+    uint32_t size;
+    uint32_t start;
+    uint32_t end;
+    uint32_t cadence;
+    uint16_t speed_x;
+    const volatile int *cancel;
+    ...;
+} accudisc_census_opts;
+
+typedef int (*accudisc_census_fn)(const accudisc_census_sample *sample,
+                                  void *user);
+
+int accudisc_counter_census(accudisc_device *dev,
+                            const accudisc_census_opts *opts,
+                            accudisc_census_fn fn, void *user,
+                            accudisc_census_stats *stats);
 """
 )
 
