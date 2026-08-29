@@ -1,0 +1,75 @@
+#!/bin/sh
+# Refuse a commit that changes the PUBLIC API without confirming the consumers
+# were told.
+#
+# "Told" means a section written into the cdda2img outbox — not a line in a
+# commit message they never read. The honour system measurably failed: 0.26.0
+# through 0.32.0, SEVEN releases including four that moved the ABI, were never
+# named in either direction of that correspondence. It was found on 2026-08-29
+# by grepping both files, not by anyone noticing.
+#
+# Keith's instruction: "update your workflow to always notify the cdda2img
+# agent of any changes to the API." A reminder is what we already had.
+#
+# Same division of labour as commit-msg above: scripts/sync.py checks too, but
+# scripts/ is git-ignored by rule (.gitignore:36), so the sync.py copy does not
+# survive a fresh clone and cannot be reviewed. THIS file is the tracked one.
+#
+# Enable (once per clone — .git/hooks is not tracked):
+#     git config core.hooksPath .githooks
+#
+# Escape hatch, for a non-interactive commit that has already been notified:
+#     ACCUDISC_API_NOTIFIED=1 git commit ...
+
+OUTBOX=/home/kgr/Git/cdda2img/private/AccuDisc.md
+
+api_files=$(git diff --cached --name-only | grep '^include/accudisc/' || true)
+[ -n "$api_files" ] || exit 0
+[ "${ACCUDISC_API_NOTIFIED:-}" = "1" ] && exit 0
+
+{
+	echo
+	echo "pre-commit: PUBLIC API CHANGED — consumers must be told, in the outbox:"
+	echo "$api_files" | sed 's/^/      /'
+
+	# Show WHAT moved, not merely that something did. A prompt asking "did you
+	# tell them?" about an unspecified change collects a reflexive yes; one
+	# showing the declarations can be answered honestly.
+	decls=$(git diff --cached -U0 -- $api_files \
+		| grep -E '^[+-]' | grep -vE '^(\+\+\+|---)' \
+		| grep -E 'ACCUDISC_API|#define ACCUDISC_VERSION_MINOR' || true)
+	if [ -n "$decls" ]; then
+		echo
+		echo "   Declarations that moved:"
+		echo "$decls" | head -n 25 | sed 's/^/      /'
+	else
+		echo
+		echo "   (no ACCUDISC_API declaration changed — comments or internal"
+		echo "    edits only; the version macro did not move either)"
+	fi
+	echo
+	echo "   Outbox: $OUTBOX"
+	echo "   Heading: ## YYYY-MM-DD<letter> — subject, signed '— AccuDisc'."
+} >&2
+
+# Test by OPENING it, not with -r. In a non-interactive context /dev/tty can
+# exist and pass every stat-based test and still fail to open ("No such device
+# or address") — measured here on the first version of this hook.
+if ! ( exec 3< /dev/tty ) 2>/dev/null; then
+	echo "   Non-interactive commit — cannot ask, so refusing." >&2
+	echo "   Write the outbox section, then commit with" >&2
+	echo "   ACCUDISC_API_NOTIFIED=1 if it is already written." >&2
+	exit 1
+fi
+
+printf '   Has this change been written into the outbox? [y/N] ' >&2
+read -r reply < /dev/tty
+case "$reply" in
+	y | Y | yes | YES) exit 0 ;;
+esac
+
+echo >&2
+echo "pre-commit: aborted — write the outbox section first." >&2
+echo "Seven releases went unreported before this hook existed; the commit is" >&2
+echo "not the notification." >&2
+exit 1
