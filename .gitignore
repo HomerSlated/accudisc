@@ -55,3 +55,12 @@ bindings/python/uv.lock
 # scripts/backup.manifest instead, since git cannot restore it.
 .remember/
 .claude/
+
+# hardedit(1) backups. It writes dst.YYYYmmdd-HHMMSS.bak beside the file on
+# every edit and never removes them, so docs/reference/ accumulates one per
+# change to RECOVERY.md. Ignored rather than deleted: they are the documented
+# recovery path for a hardedit that fails after the truncate (exit 2), and
+# scripts/sync.py aborts on any untracked file, so without this every edit to
+# that document would block the next commit. cdda2img already ignores *.bak
+# (.gitignore:49).
+*.bak

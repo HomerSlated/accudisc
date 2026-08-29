@@ -123,18 +123,39 @@ Never `git add -f` anything under it.
 `cdda2img/docs/reference/RECOVERY.md` — one document, both repos. Git does not
 enforce the link: edit once, but commit on both sides.
 
-> **Editing it is fragile.** Any editor that saves atomically (write temp +
-> rename — most of them, including agent Edit tools) replaces the directory
-> entry with a *new inode* and silently severs the link, leaving the two repos
-> diverged. **`sed -i` does this too** — it renames, it does not edit in place,
-> despite the flag's name (measured: inode moves). Editing in place means a
-> *truncate-and-rewrite* of the existing inode:
+> **It is IMMUTABLE (`chattr +i`) since 2026-08-29, and the ordinary edit path
+> now fails with `EPERM`.** That is deliberate: every convention written here
+> before failed, because the severing was caused by the *tool* rather than by
+> the author. An agent Edit tool, `sed -i`, `mv`, `rm` and a plain `cat >` are
+> all refused by the kernel now, through either name.
+>
+> **The only way to change it — copy out, edit, put back, verify:**
 >
 > ```sh
-> sed 's/old/new/' RECOVERY.md > /tmp/x && cat /tmp/x > RECOVERY.md
+> cp docs/reference/RECOVERY.md /var/tmp/rec
+> # edit /var/tmp/rec by any means, including Edit/Write
+> doas /usr/local/bin/hardedit /var/tmp/rec docs/reference/RECOVERY.md
+> b3read docs/reference/RECOVERY.md
 > ```
 >
-> **Verify inode identity after every edit by either side — not link count:**
+> `hardedit(1)` is `mv` that preserves the destination **inode**: backup, clear
+> `+i`, truncate, rewrite in place, append a BLAKE3 trailer, restore `+i`, delete
+> the source. The directory entry is never touched, so both hardlinks see the new
+> content at once. **Use the absolute path** — the `doas` `nopass` rule matches
+> the command string as typed, so a bare `hardedit` prompts for a password and
+> fails. `-n` dry-runs. It is `nopass`, so run it yourself; never hand it back.
+>
+> **The file carries its own checksum.** `b3read(1)` verifies a fixed 72-byte
+> trailer covering the payload before it. So `cat RECOVERY.md` returns payload
+> **plus** trailer — use `b3read -p` where exact bytes matter, and expect git to
+> show the `Blake3 …` line as content. Exit **1 = corrupt**, **2 = never
+> stamped**; do not collapse them.
+>
+> `hardedit` leaves `RECOVERY.md.YYYYmmdd-HHMMSS.bak` beside the file every time
+> and never cleans up. `.gitignore` covers `*.bak`, because `scripts/sync.py`
+> aborts on untracked files and would otherwise block the next commit.
+>
+> **Verify inode identity, not link count**, if you check the link itself:
 >
 > ```sh
 > A=docs/reference/RECOVERY.md; B=../cdda2img/docs/reference/RECOVERY.md
@@ -146,12 +167,13 @@ enforce the link: edit once, but commit on both sides.
 > `links == 2` is the *wrong property* — it counts names rather than testing
 > whether these two names are the same file, so a backup made with `ln` or a
 > third repo taking the document makes a correct link report as severed. Never
-> pin a literal inode number either; it moves on every edit.
+> pin a literal inode number either; it moves if the file is ever recreated.
 >
-> **To repair, do not `rm A && ln B A`** — that silently destroys whatever was at
-> `A`, which may be the other project's unmerged work. Diff first, merge anything
-> unique, then relink and re-verify. cdda2img's `tools/relink_recovery_md.sh`
-> does exactly this and refuses by default.
+> **If it is ever severed anyway**, do not `rm A && ln B A` — that silently
+> destroys whatever was at `A`, which may be the other project's unmerged work.
+> cdda2img's `tools/relink_recovery_md.sh` diffs first, refuses by default, and
+> re-verifies afterwards. (It was needed as recently as 2026-08-29, for a
+> severing that had gone unnoticed since 2026-08-09.)
 
 ## Build
 
