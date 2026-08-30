@@ -1087,11 +1087,25 @@ rests on.
 > **To change it:**
 >
 > ```sh
-> cp docs/reference/RECOVERY.md /tmp/rec           # 1. copy out
-> $EDITOR /tmp/rec                                 # 2. edit however you like
-> doas /usr/local/bin/hardedit /tmp/rec docs/reference/RECOVERY.md   # 3. put back
-> b3read docs/reference/RECOVERY.md                # 4. verify
+> b3read -p docs/reference/RECOVERY.md > /var/tmp/rec  # 1. extract payload
+> $EDITOR /var/tmp/rec                                 # 2. edit however you like
+> doas /usr/local/bin/hardedit /var/tmp/rec docs/reference/RECOVERY.md  # 3. put back
+> b3read docs/reference/RECOVERY.md                    # 4. verify
 > ```
+>
+> **Extract with `b3read -p`, never `cp`.** `cp` copies the trailer too, and
+> both repos' `.editorconfig` sets `insert_final_newline = true` with no
+> `*.md` override — any EditorConfig-aware save appends one byte, which shifts
+> the trailer outside `hardedit`'s fixed-offset detection window. `hardedit`
+> then can't recognise it, swallows the old trailer into the new payload, and
+> stamps a fresh trailer over the polluted result — and **`b3read` still
+> reports `OK`**, because it only checks the new trailer against whatever
+> payload is in front of it, not whether the payload/trailer boundary was
+> found correctly. Found by cdda2img 2026-08-29, confirmed by reproduction on
+> a throwaway file: `cp` + one appended newline → `b3read` says `OK`, but
+> `b3read -p` returns a payload with the *previous* trailer line embedded in
+> it. `b3read -p` output already ends in a newline, so `insert_final_newline`
+> is satisfied and changes nothing on a clean extract.
 >
 > `hardedit(1)` is `mv` that preserves the destination **inode**: it backs the
 > file up, clears `+i`, truncates and rewrites in place, appends a BLAKE3
@@ -1936,4 +1950,4 @@ That set lets a future reader distinguish "we never checked" from "we checked
 thoroughly and this disc cannot be verified" — which is the only useful thing
 left to say about it.
 
-Blake3 d5a4a9ae8eb6b6f421b2f9f47c6007b44eb29c9899290964e10a2fbd700e9519
+Blake3 e5041f565699cb56796412d2f46c0f49b42106d97257186e7365a4d17cf917e2

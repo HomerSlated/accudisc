@@ -129,14 +129,28 @@ enforce the link: edit once, but commit on both sides.
 > the author. An agent Edit tool, `sed -i`, `mv`, `rm` and a plain `cat >` are
 > all refused by the kernel now, through either name.
 >
-> **The only way to change it — copy out, edit, put back, verify:**
+> **The only way to change it — extract the payload, edit, put back, verify:**
 >
 > ```sh
-> cp docs/reference/RECOVERY.md /var/tmp/rec
+> b3read -p docs/reference/RECOVERY.md > /var/tmp/rec
 > # edit /var/tmp/rec by any means, including Edit/Write
 > doas /usr/local/bin/hardedit /var/tmp/rec docs/reference/RECOVERY.md
 > b3read docs/reference/RECOVERY.md
 > ```
+>
+> **Use `b3read -p`, never `cp`, to extract.** `cp` copies the trailer too, and
+> both repos' `.editorconfig` sets `insert_final_newline = true` with no `*.md`
+> override — any EditorConfig-aware save appends one byte, which shifts the
+> trailer outside `hardedit`'s fixed-offset detection window. `hardedit` then
+> can't recognise it, swallows the old trailer into the new payload, and stamps
+> a fresh trailer over the polluted result. **`b3read` reports `OK`** — it's
+> only checking the new trailer against whatever payload is in front of it, not
+> whether the payload/trailer boundary was found correctly. Found and confirmed
+> by cdda2img 2026-08-29 (correspondence §184.8), reproduced here on a throwaway
+> file before this note was written: `cp` + one appended newline → `b3read`
+> still `OK`, but `b3read -p` returns a payload with the *previous* trailer line
+> embedded in it. `b3read -p` already ends in a newline, so
+> `insert_final_newline` is satisfied and changes nothing.
 >
 > `hardedit(1)` is `mv` that preserves the destination **inode**: backup, clear
 > `+i`, truncate, rewrite in place, append a BLAKE3 trailer, restore `+i`, delete
