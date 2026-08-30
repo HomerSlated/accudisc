@@ -409,13 +409,61 @@ samples.** Despite selecting the 24-bit SLEIGH variant, only the classic
 mnemonic table in session notes). Either genuine far calls are rare enough not
 to have been hit yet, or this firmware doesn't use the 80251's extended-reach
 instructions at all and crosses page boundaries some other way (a bank-select
-SFR write is the classic 8051-with-banked-ROM pattern). **Lead, not
-confirmed:** immediately after the header's 0xFF padding tail, file offset
-`0x50` opens with a repeating `MOV 0xfd,r2` / `MOV 0xfe,r2` pair before
-falling into ordinary code — `0xfd`/`0xfe` are plausible SFR addresses, and a
-repeated *pair*-write right after reset is a plausible bank/page-select
-signature. Not chased further this session; the next person picking this up
-should start here rather than re-deriving it.
+SFR write is the classic 8051-with-banked-ROM pattern).
+
+**The `0x50` SFR-pair lead did not hold up — chased and retracted.** Read
+back from a raw hexdump alone, `0x50` looked like a clean repeating `MOV
+0xfd,r2` / `MOV 0xfe,r2` loop. A proper linear disassembly of the same bytes
+(`pd 60 @ 0x44`) shows it isn't: `MOV 0xfe,r2` recurs at 0x54, 0x58, 0x5c, and
+0x64 — four times in twenty bytes, at irregular strides, interleaved with
+`DEC r2`/`RR A`/`CJNE`/`MOVX` and one instruction (`MOV 0x8a,#0xfe`, direct-
+to-immediate) that doesn't fit an SFR-pair-write loop at all. That's the
+signature of decoding starting a few bytes off true instruction alignment —
+likely still padding/filler rather than a real bank-select routine — not a
+deliberate repeated write. **Retracting this lead**; the correct instinct
+(check a raw-hex read against the actual disassembly before trusting it) is
+what caught it, consistent with [[silent-narrowing]] in the AccuDisc memory
+index.
+
+**What chasing it turned up instead: a real, verified interrupt/dispatch
+landmark.** The same window contains `NOP` / `LJMP 0x1b1a` at file offset
+`0x8b`, and — checked against raw bytes, not just disassembly, since the
+prior lead's failure mode was exactly disassembly-without-byte-verification —
+the encoded 3-byte sequence is confirmed genuine: `02 1b 1a` (`LJMP` opcode +
+16-bit target). The same `NOP`/`LJMP 0x1b1a` shape recurs at roughly a dozen
+points through the rest of page 0 (`0x14e`, `0x165`, `0x17c`, `0x198`,
+`0x1b7`, `0x1d6`, `0x1f5`, `0x273`, `0x28c`, …, `0x35e`), at irregular but
+plausible-for-similarly-shaped-functions strides (17–195 bytes) rather than a
+rigid fixed-size table. **`0x1b1a` itself is real code, not a coincidence
+target:** `NOP` / `ORL 0x69,A` / `RETI` — a minimal "set a flag, return from
+interrupt" stub, exactly the shape of a shared default handler that several
+nearby dispatch routines fall through to.
+
+**Caution on how far this generalises — checked, and it doesn't.** A
+whole-file search for the literal byte triplet `02 1b 1a` returns 454 hits
+spread across every 64 KiB page sampled (page 0: 117, page 1: 43, … page
+0xa0000: 80). Tempting to read as "454 real calls into a shared cross-page
+handler," which would have been a strong data point for the base-address
+question — but the within-page offsets outside page 0 don't cluster the way
+page 0's do (page 1's hits sit at `0x15a9`, `0x40be`, `0x432c`, …; page 0xa's
+at `0x6cb`, `0xa1b7`, `0xbc06`, …, no local grouping at all). A 3-byte pattern
+recurs often enough in dense 8051 code by construction (`0x02` alone is a
+common encoding byte) that most of these are almost certainly coincidental
+matches at non-instruction boundaries, not real `LJMP` instructions. Only
+page 0's cluster — independently corroborated by the earlier `NOP`-padded
+trampoline pattern seen at session-5's very first sample — is trustworthy.
+**Do not cite the 454 figure as evidence of a cross-page handler**; it isn't
+one. This is recorded because it's the same trap Finding 2 above warns about
+in a different shape: a check whose positive result is guaranteed by
+coincidence rather than by the structure under test.
+
+**Net effect on the open question.** Doesn't resolve base address or the
+bank-crossing mechanism. It does add one more corroborating data point that
+page 0's early bytes are genuine, purposefully-structured code (a defensive
+dispatch pattern typical of what sits near a reset/init path), which is
+consistent with — though still short of proving — file offset 0 mapping
+directly onto the CPU's own low code space. No SFR-pair or other bank-select
+write was located; that mechanism is still unfound.
 
 **Finding 4 — the vector-table search is now confirmed negative, not just
 inconclusive.** Re-checked directly against raw bytes (not just disassembly):
@@ -436,10 +484,11 @@ mistaking them for masked/protected memory.
 
 **Stopping point.** Per the standing rule that RE threads with no committed
 consumer stay bounded: the entry point and true base address are still
-unknown, and finding them requires either locating the bank-select mechanism
-(Finding 3's lead) or a documented boot sequence Sanyo never published. This
-is queued as the next step, not being pursued further right now — the
-governor logic (§ below, "Next steps" item 5) stays blocked on it.
+unknown, and finding them requires either locating a genuine bank-select
+mechanism (the `0x50` SFR-pair candidate is retracted above; none found to
+replace it) or a documented boot sequence Sanyo never published. This is
+queued as the next step, not being pursued further right now — the governor
+logic (§ below, "Next steps" item 5) stays blocked on it.
 
 ## Next steps (session 4+)
 
@@ -448,10 +497,11 @@ governor logic (§ below, "Next steps" item 5) stays blocked on it.
 2. **PoweRec/QCheck detail** — 0xED and 0xEA sub-modes for reporting.
 3. ~~**Firmware correlation.**~~ CPU identified session 5: Intel 80251.
    Internal layout partially mapped session 5 (above) — code confirmed real
-   and coherent throughout the file; base address / entry point / the
-   bank-crossing mechanism remain open, with a concrete lead (the `0xfd`/
-   `0xfe` SFR-pair write at file offset `0x50`) recorded for whoever picks it
-   up next.
+   and coherent throughout the file, and page 0 has a verified interrupt
+   handler (`0x1b1a`: `NOP`/`ORL 0x69,A`/`RETI`) with a cluster of real
+   callers; base address / entry point / the bank-crossing mechanism remain
+   open — the `0x50` SFR-pair candidate for the latter was chased and
+   retracted, no replacement found.
 4. **Selftest design** per feature for the driver's attach gate — SpeedRead is
    the model (GET → SET → observe page 2A → restore).
 5. **Governor logic.** The read-side speed governor found in
