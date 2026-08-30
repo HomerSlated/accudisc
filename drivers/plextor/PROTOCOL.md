@@ -365,33 +365,98 @@ genuinely idiomatic 80251/8051-family code (accumulator-centric arithmetic —
 `ADD A,r6`, `MOV r0,A`; register-indirect addressing — `MOV @r1,A`) at every
 sampled location, no invalid opcodes in any sample checked.
 
-**Not yet done.** The update image's internal layout — entry point, interrupt
-vector table, and where the read-governor logic actually lives among ~950 KiB
-of unsymboled code — is unmapped. A direct check for 8051's characteristic
-vector table (jump instructions spaced exactly 8 bytes apart) failed at the
-file offset right after the ASCII header, which is expected rather than
-contradictory: a firmware *update* image commonly isn't a literal base-0
-memory dump, so the reset vector's true location relative to this file is
-still unknown. `PXFirm3.exe` sends the file via a standard SCSI WRITE BUFFER
-(0x3B) with no host-side transform (confirmed by disassembly of its file-read
-path), so the bytes in `rome_111.bin` should be at or very close to what
-actually lands in flash — this rules out transport encoding as the reason a
-naive vector-table search failed, but doesn't by itself explain the true base
-address.
+## Firmware internal layout — first pass (session 5, 2026-08-30)
+
+Picked up directly from the "not yet done" note above, same session. Goal:
+locate the entry point / vector table / true base address, as a prerequisite
+to finding the governor logic. Result: **partially mapped, base/entry point
+still unresolved** — recorded here as a real, sourced negative rather than
+left as a bare TODO, per this codebase's convention of writing up what a check
+ruled out and not just what it confirmed.
+
+**Method.** Sampled `rome_111.bin` at seven 64 KiB-aligned offsets spanning
+the file (`0x0`, `0x10000`, `0x40000`, `0x60000`, `0x90000`, `0xa0000`,
+`0xc0000`) under `rz-ghidra`'s `80251:BE:24:default` SLEIGH module, both
+spot-checking short windows and — to get a real opcode-frequency picture
+rather than another eyeballed sample — collecting ~1600 instructions across
+eight 400-instruction chunks starting at `0x40000`.
+
+**Finding 1 — the code is real and coherent throughout the file, not just at
+the handful of points checked previously.** All seven sampled regions decode
+as idiomatic 8051-family code (no invalid opcodes), and the frequency table
+from the ~1600-instruction sample is exactly what a real 8051 program's should
+look like: `MOV`/`ADDC`/`ADD`/`XRL`/`INC`/`DEC` dominate as expected for
+accumulator-centric arithmetic, and both `RET` (8) and `RETI` (2) appear —
+genuine subroutine and interrupt-handler structure, not decoder noise.
+
+**Finding 2 — every observed control-transfer target stays inside the 64 KiB
+page that issued it.** `LJMP`/`LCALL` (16-bit absolute) and `AJMP` (11-bit
+page-relative) targets sampled at each of the seven offsets consistently share
+the high byte of the *current* address — e.g. at `0x90040`, `LJMP 0x901bd` and
+`LJMP 0x90212`; at `0xc0040`, `LJMP 0xc0400`, `0xc014d`, `0xc0165`, `0xc0468`.
+This is expected from the instruction encoding alone (`LJMP`'s operand is only
+16 bits, so it cannot address outside a 64 KiB window regardless of how the
+file is laid out) — it does **not** by itself distinguish "one flat ~950 KiB
+image, code just never happens to jump across a page in the samples taken" from
+"N independently-based 64 KiB banks, each its own relocatable unit," which was
+the original question. **This point is genuinely unresolved**, not decided
+either way by what was checked.
+
+**Finding 3 — no 80251 "far" (24-bit-reach) instruction appeared in ~1600
+samples.** Despite selecting the 24-bit SLEIGH variant, only the classic
+8051-compatible near-instruction set was observed (`LJMP`/`LCALL`/`AJMP`/
+`ACALL`/`SJMP` plus the full arithmetic/logic/branch complement — see the raw
+mnemonic table in session notes). Either genuine far calls are rare enough not
+to have been hit yet, or this firmware doesn't use the 80251's extended-reach
+instructions at all and crosses page boundaries some other way (a bank-select
+SFR write is the classic 8051-with-banked-ROM pattern). **Lead, not
+confirmed:** immediately after the header's 0xFF padding tail, file offset
+`0x50` opens with a repeating `MOV 0xfd,r2` / `MOV 0xfe,r2` pair before
+falling into ordinary code — `0xfd`/`0xfe` are plausible SFR addresses, and a
+repeated *pair*-write right after reset is a plausible bank/page-select
+signature. Not chased further this session; the next person picking this up
+should start here rather than re-deriving it.
+
+**Finding 4 — the vector-table search is now confirmed negative, not just
+inconclusive.** Re-checked directly against raw bytes (not just disassembly):
+file offset `0x44`–`0x4f`, right after the ASCII header, is a literal run of
+`0xff` bytes — decoded as `MOV r7,A` only because `0xff` happens to encode
+that instruction, not because it *is* one. So "base = 0, image includes the
+header" is now ruled out on hard evidence, not just absence of a jump-table
+pattern; the true base/entry point relative to this file remains unknown.
+
+**Tooling caveat.** This machine's `rizin` build segfaults deterministically
+on some `pd`-then-large-batch and `s`-then-`pd` sequences against this file
+under the 80251 SLEIGH module (reproduced 3/3 at `pd 10 @ 0x90000` after a
+prior `s`, and on every `pd 3000`-in-one-call attempt) — a rizin/SLEIGH
+instability, not a finding about the firmware. Worked around with `pd N @
+addr` inline addressing and batches ≤400 instructions. Anyone re-running this
+should expect the same crashes and use the same workaround rather than
+mistaking them for masked/protected memory.
+
+**Stopping point.** Per the standing rule that RE threads with no committed
+consumer stay bounded: the entry point and true base address are still
+unknown, and finding them requires either locating the bank-select mechanism
+(Finding 3's lead) or a documented boot sequence Sanyo never published. This
+is queued as the next step, not being pursued further right now — the
+governor logic (§ below, "Next steps" item 5) stays blocked on it.
 
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
    verify by burning once the write/burn path resumes; SET framing is known.
 2. **PoweRec/QCheck detail** — 0xED and 0xEA sub-modes for reporting.
-3. ~~**Firmware correlation.**~~ CPU identified session 5 (above): Intel
-   80251. Remaining: locate the true base address / entry point, then
-   cross-check the opcode/page set against the dispatch table.
+3. ~~**Firmware correlation.**~~ CPU identified session 5: Intel 80251.
+   Internal layout partially mapped session 5 (above) — code confirmed real
+   and coherent throughout the file; base address / entry point / the
+   bank-crossing mechanism remain open, with a concrete lead (the `0xfd`/
+   `0xfe` SFR-pair write at file offset `0x50`) recorded for whoever picks it
+   up next.
 4. **Selftest design** per feature for the driver's attach gate — SpeedRead is
    the model (GET → SET → observe page 2A → restore).
 5. **Governor logic.** The read-side speed governor found in
    `docs/reference/RECOVERY.md` §12.10 has no library exposure and no located
    firmware routine yet — the reason this firmware RE thread was picked back
-   up. Needs the base-address problem above solved first.
+   up. Still blocked on item 3's base-address problem.
 
 Only the 0xEA Q-Check counters are implemented in `plextor.c` today.
