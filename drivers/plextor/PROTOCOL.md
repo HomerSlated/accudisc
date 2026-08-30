@@ -23,7 +23,14 @@ own drive. **Correction to session 2: GigaRec is 0xE9 page `0x04`, not `0x06`
   (PE32 x86, 8.6 MB, C++/RTTI). The application that builds and issues the
   vendor CDBs. Primary source.
 - `private/drives/firmware/plextor/716A_111/rome_111.bin` — PX-716A firmware
-  v1.11 (960 KiB). Not yet analysed (CPU/entry not yet identified).
+  v1.11 (960 KiB), for the drive's **Sanyo LC897496K** signal-processing LSI.
+  CPU core identified session 5 as an **Intel 80251** (see below); the
+  firmware's internal layout (entry point, vector table, governor logic) is
+  not yet mapped.
+- `private/drives/firmware/plextor/716A_111/PXFirm3.exe` — the Windows
+  flashing utility (PE32 x86, MFC, 2003). Confirms the update path: standard
+  SCSI WRITE BUFFER (0x3B) mode 5 ("download microcode and save"), no
+  host-side transform of the firmware bytes before they're sent.
 - `private/drives/Plextor/Plextor-716.pdf` — end-user install manual only; no
   SCSI content. Useful for feature naming, nothing else.
 
@@ -308,14 +315,83 @@ ceiling) is still not pinned to a descriptor bit, so only the CAV-ceiling form
 speed-scoped recovery pass. One quirk: a 16x request quantized to the drive's
 8x rung (page2a reported 8); the 4x/8x rungs are exact.
 
+## Firmware CPU identification (session 5, 2026-08-30)
+
+Investigating a silent, damage-reactive read-speed governor found during a
+joint AccuDisc/cdda2img recovery-ladder test (see `docs/reference/RECOVERY.md`
+§12.10) led to `rome_111.bin` — item 3 of the session-4 next-steps below,
+picked up here.
+
+**The chip.** The PX-716A's signal-processing LSI is the **Sanyo LC897496K**
+— confirmed via the `LC897390K` datasheet (a documented same-family sibling,
+`private/research/LC897390K.PDF`) and Sanyo's own 2005 DVD/CD LSI product
+brochure, which independently confirms the **LC897492** is used in the
+**Plextor PX-716AL** (the 716A's sibling model). "LC89" is Sanyo's DVD/CD
+signal-processing LSI prefix, distinct from the unrelated general-purpose
+"LC87" MCU family — worth stating because an unverified LLM claim (Google
+Gemini, relayed by the user) conflated the two, describing the core as "a
+highly modified, single-cycle clone of the 8051 instruction set" derived from
+LC87. That framing didn't survive contact with the one independent primary
+source available (jaycarlson.net's LC87 writeup, found in this session's own
+first search — it describes LC87 as "a fully orthogonal instruction set...
+3-cycle 8-bit MCU," inconsistent with 8051 timing or encoding, and never
+mentions LC897xxx). The LLM's one verifiable claim (the part number, and its
+use in the PX-716AL) held up under an independent check; the specific
+architecture claim did not — record kept as a caution for future sourcing,
+not a rule against consulting one.
+
+**The CPU core: Intel 80251, confirmed by primary source.** Sanyo's own 2005
+brochure (`2005_Sanyo_DVD_CD_LSI_Brochure.pdf`, fetched via Wayback since the
+origin host refused a direct fetch — see `ATTRIBUTION.md`), describing the
+direct sibling chips LC897491/LC897492, states plainly: *"Built-in
+CPU(80251)"* and *"Source code compatible with the Intel 8051, full
+compatibility with the Intel 80251."* The 80251 is Intel's documented,
+enhanced MCS-51-family core — a real superset, not an unofficial clone.
+
+**Empirical cross-check against the actual firmware.** Before the primary
+source was found, a multi-architecture SLEIGH opcode-density scan (`rz-ghidra`
+via `rizin`, ~30 candidate ISAs plausible for 2007 embedded hardware — ARM,
+MIPS, SH, PowerPC, z80, tricore, 8051, CR16, HC08/HCS08/HCS12, MCS96, and
+others) had already narrowed the field: fixed-width 4-byte ISAs (MIPS, PowerPC)
+showed 45-51% invalid-instruction rates over sampled 3000-instruction windows
+— clearly wrong — while 8051-family candidates sat under 1%. Two apparent
+"perfect" 0%-invalid results (`HCS12:BE:24`, `CR16AB:LE:16`) turned out to be
+broken SLEIGH modules echoing their own error text as fake instructions
+("Language ... is deprecated" / "No sleigh specification ..."), not real
+matches — caught by reading the actual decoded output rather than trusting
+the aggregate percentage. Once the primary source named the exact core,
+`80251:BE:24:default` was re-run directly and decodes `rome_111.bin` as
+genuinely idiomatic 80251/8051-family code (accumulator-centric arithmetic —
+`ADD A,r6`, `MOV r0,A`; register-indirect addressing — `MOV @r1,A`) at every
+sampled location, no invalid opcodes in any sample checked.
+
+**Not yet done.** The update image's internal layout — entry point, interrupt
+vector table, and where the read-governor logic actually lives among ~950 KiB
+of unsymboled code — is unmapped. A direct check for 8051's characteristic
+vector table (jump instructions spaced exactly 8 bytes apart) failed at the
+file offset right after the ASCII header, which is expected rather than
+contradictory: a firmware *update* image commonly isn't a literal base-0
+memory dump, so the reset vector's true location relative to this file is
+still unknown. `PXFirm3.exe` sends the file via a standard SCSI WRITE BUFFER
+(0x3B) with no host-side transform (confirmed by disassembly of its file-read
+path), so the bytes in `rome_111.bin` should be at or very close to what
+actually lands in flash — this rules out transport encoding as the reason a
+naive vector-table search failed, but doesn't by itself explain the true base
+address.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
    verify by burning once the write/burn path resumes; SET framing is known.
 2. **PoweRec/QCheck detail** — 0xED and 0xEA sub-modes for reporting.
-3. **Firmware correlation.** Identify the `rome_111.bin` CPU and cross-check
-   the opcode/page set against the dispatch table.
+3. ~~**Firmware correlation.**~~ CPU identified session 5 (above): Intel
+   80251. Remaining: locate the true base address / entry point, then
+   cross-check the opcode/page set against the dispatch table.
 4. **Selftest design** per feature for the driver's attach gate — SpeedRead is
    the model (GET → SET → observe page 2A → restore).
+5. **Governor logic.** The read-side speed governor found in
+   `docs/reference/RECOVERY.md` §12.10 has no library exposure and no located
+   firmware routine yet — the reason this firmware RE thread was picked back
+   up. Needs the base-address problem above solved first.
 
 Only the 0xEA Q-Check counters are implemented in `plextor.c` today.
