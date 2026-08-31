@@ -22,16 +22,26 @@ static int hexbyte(const char*s){return (int)strtol(s,0,16);}
 int main(int argc,char**argv){
     const char*dev="/dev/sr0";
     unsigned char cdb[16]={0}; int cdblen=0;
-    unsigned char dxfer[512]; int dxlen=0; int dir_out=0;
+    /* dxfer must be big enough for a raw 2352-byte sector; --in is clamped to
+     * it below.  It was 512 with no bound check, so `--in 2352` smashed the
+     * stack (hit 2026-08-31 timing CD-DA reads). */
+    unsigned char dxfer[65536]; int dxlen=0; int dir_out=0;
     unsigned char outbuf[512]={0}; int outlen=0;
     int ai=1;
     for(;ai<argc;ai++){
         if(!strcmp(argv[ai],"--dev")){dev=argv[++ai];}
-        else if(!strcmp(argv[ai],"--in")){dxlen=atoi(argv[++ai]);}
+        else if(!strcmp(argv[ai],"--in")){dxlen=atoi(argv[++ai]);
+            if(dxlen<0) dxlen=0;
+            if(dxlen>(int)sizeof dxfer){
+                fprintf(stderr,"--in %d clamped to %zu\n",dxlen,sizeof dxfer);
+                dxlen=(int)sizeof dxfer;}}
         else if(!strcmp(argv[ai],"--out")){dir_out=1;
             /* remaining args after --out ... but we take payload via --pl */}
         else if(!strcmp(argv[ai],"--pl")){ /* hex payload bytes follow until next -- */
-            while(ai+1<argc && strncmp(argv[ai+1],"--",2)) outbuf[outlen++]=hexbyte(argv[++ai]);
+            while(ai+1<argc && strncmp(argv[ai+1],"--",2)){
+                if(outlen>=(int)sizeof outbuf){
+                    fprintf(stderr,"--pl truncated at %zu bytes\n",sizeof outbuf); ++ai; continue;}
+                outbuf[outlen++]=hexbyte(argv[++ai]);}
             dir_out=1;}
         else if(!strncmp(argv[ai],"--",2)){fprintf(stderr,"unknown %s\n",argv[ai]);return 2;}
         else cdb[cdblen++]=hexbyte(argv[ai]);

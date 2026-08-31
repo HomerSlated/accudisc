@@ -1047,6 +1047,67 @@ progression), but individual **operand** renderings — register naming in
 `ECALL @DR4`, the exact widths above — should be re-derived before anything is
 built on them.
 
+## Timed delivered-rate experiment — the ladder confirmed on hardware (session 6, 2026-08-31)
+
+Measured, not inferred: page 2A reports the *request*, so the only honest figure
+is a timed read. Tool: `re-tools/mmcspeed.c` (+ `mmcquant.c` for the quantiser
+sweep). Same LBA range every trial so CAV radius is constant, 8 MiB buffer
+evicted before each trial, 11.8 MB read per trial so the buffer cannot serve it.
+Pressed audio CD, lead-out LBA 163404.
+
+### The quantiser has five steps for CD-DA, and all five are on the firmware ladder
+
+Sweeping `SET CD SPEED` and reading back page 2A's accepted value:
+
+| requested | accepted | |
+|---|---|---|
+| 100 kB/s (0.6x) | 706 (**4x**) | floor — will not go slower |
+| 1500 (8.5x) | 1411 (**8x**) | |
+| 4300 (24.4x) | 4234 (**24x**) | |
+| 5700 (32.3x) | 5645 (**32x**) | |
+| 7100 (40.2x) | 7056 (**40x**) | ceiling |
+
+**Every accepted value is a member of the 12-step ladder read out of the
+firmware at `0xF65B83`** (1 2 4 8 10 12 16 20 24 32 40 48x). Five quantiser
+outputs all landing inside a 12-element subset of the possible kB/s range is not
+coincidence — this is the static finding confirmed empirically. For CD-DA only
+5 of the 12 steps are offered; **1, 2, 10, 12, 16, 20 and 48x are never used**,
+which independently corroborates that the 48x SpeedRead band is Mode-1 only.
+
+### Delivered rate vs requested
+
+| requested | page 2A | delivered |
+|---|---|---|
+| max | 40.0x | **29.3x** (5168 kB/s) |
+| 24x (and 28.3x) | 24.0x | **15.3x** (2703 kB/s) |
+| 8x .. 21.5x | 8.0x | **6.7x** (1177 kB/s) |
+| 4x .. 5.7x | 4.0x | **3.5x** (614 kB/s) |
+
+Uncapped delivery of 29.3x at LBA 150000 is **the CAV curve, not a fault**.
+Taking nominal Red Book radii (program area 25-58 mm) and LBA proportional to
+area, LBA 150000 of a full-size disc sits at r ~ 42.0 mm = 0.725 of the outer
+radius, predicting 40x x 0.725 = **29.0x** against 29.3x measured — agreement
+within ~1%. At the capped settings the shortfall is command-turnaround overhead
+(26 sectors per `READ CD`), not a governor.
+
+### Both exposed levers work, and are equivalent
+
+`SET STREAMING` (0xB6) at 8x delivers 1177 kB/s — **identical to `SET CD SPEED`
+(0xBB) at 8x**. So the two exposed levers over read speed both function and land
+on the same quantised step.
+
+**A/B on the CDB, because this bug has bitten this project before:** the 0xB6
+parameter-list length lives at **CDB bytes 9-10**, not 8-9. Placing it at byte 9
+returns `4/1b/00` and looks exactly like "this drive does not support SET
+STREAMING"; placed correctly it returns good status. Reproduced deliberately
+here as a paired test so the failure signature is on record.
+
+### Tooling defect found and fixed
+
+`re-tools/sgsend.c` had a fixed 512-byte data-in buffer with **no bound check on
+`--in`**, so `--in 2352` (one raw CD sector) smashed the stack. Buffer raised to
+64 KiB and both `--in` and `--pl` now bounds-checked.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
