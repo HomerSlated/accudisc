@@ -1295,6 +1295,60 @@ which of its 8 values is correct. Repeat on media that has tracks — ideally a
 **pressed data CD-ROM**, which is the only medium that is both unwritable
 (so an executing `0xD9` is safe) and carries a data track.
 
+## Pressed data CD-ROM — a correction to "0xF4 requires recordable media" (session 6, 2026-08-31)
+
+Fourth medium: pressed CD-ROM (profile `0x0008`, no ATIP) **with a data track** —
+the only medium that is both unwritable and carries a data track, so `0xD9` can
+be swept safely even if it executes.
+
+### CORRECTION: 0xF4 does not simply require recordable media
+
+Published earlier in this document as "`0xF4` requires recordable media". **Too
+strong.** Byte 4 bit 7 is a *mode flag*, and the media requirement applies to
+only one of the two modes:
+
+| `0xF4` byte 4 | pressed CD-ROM | CD-R |
+|---|---|---|
+| `0x00` (bit7=0) | `5/24/00` rejected | **accepted** |
+| `0x80`-`0xff` (bit7=1) | **accepted** | **accepted** |
+
+So with bit 7 set the command is accepted on *any* medium. The earlier
+conclusion was drawn before byte 4 had been value-swept on pressed media — the
+field map only ever set it to `0x01`, which is rejected in both modes.
+
+### 0xF4 returns no data, ever
+
+With byte 4 = `0x80` and a **512-byte** allocation, `0xF4` returns **0 bytes**
+for the baseline and for `0x08` in every one of CDB bytes 1,2,3,5,6,7,8,9,10.
+It is therefore **not a data-returning read command** — it is a set / trigger /
+no-data command. This is a further, independent refutation of the LLM claim
+that `0xF4` is "Data In" and "returns RF signal quality metrics": it returns
+nothing.
+
+Also mapped: with bit 7 set, byte 1 rejects `0x02` and `0xff` but accepts
+`0x01`/`0x08`/`0x20`, so byte 1 bit 1 must be zero.
+
+**A test that was run and must NOT be counted as evidence:** the
+trigger-then-readout hypothesis (`0xF4` arms a measurement, `0xF3`/`0xF5` read
+it out) was tested by issuing `0xF5` before and after `0xF4`. Both returned 0
+bytes — but so did `0xF5` on its own, and `0xF5` is a *known* readout command
+(`PLEXTOR_FETE_READOUT`). Its own CDB must therefore also be wrong, so the test
+cannot distinguish "no change" from "my CDB is wrong". **The control did not
+work, so the result has no power.** Recorded so it is not later mistaken for a
+negative finding.
+
+### 0xD9 has now failed on every CD medium
+
+| medium | byte-1 sweep result |
+|---|---|
+| pressed CD-ROM, audio tracks | all 8 values → `5/64/00` |
+| CD-R, data track | all 8 values → `5/64/00` |
+| blank CD-R, no tracks | all 8 values → `5/64/00` |
+| **pressed CD-ROM, data track** | all 8 values → `5/64/00` |
+
+Identical field maps throughout. `0xD9` is satisfied by no CD medium of any
+type, and the only untested medium class left is **DVD**.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
