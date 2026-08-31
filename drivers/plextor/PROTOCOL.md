@@ -766,6 +766,95 @@ rather than an enumeration: whether 0xBB/0xB6 actually override the governor
 in practice. Per [[entropy-not-mystery]] that must measure the **delivered**
 rate; page 0x2A reports the request, and is in any case read-only to the host.
 
+## The SCSI command dispatcher — located (session 6, 2026-08-31)
+
+Phase 2: walk outward from the region-code anchor at `0xFADCE4` to the command
+dispatcher. Found — but not by any of the mechanisms first assumed, and the
+four failed searches are recorded because each is a real negative.
+
+### What the dispatcher is not
+
+| hypothesis | result |
+|---|---|
+| `CMP Rm,#opcode` compare chain | **no** — 90 sites image-wide, best cluster 2 distinct opcodes |
+| `EJMP addr24` jump table | **no** — exactly **one** stride-4 EJMP table exists in the image, the `0x50` vector table |
+| table of opcode *values* at constant stride | **no** — the one candidate (stride-8 run `42 43 …4b` at file `0x093742`) is **unrolled copy code**, `MOV DPTR,#0x2128 / MOVX A,@DPTR / MOV 0xf738,acc`; the "opcodes" were incrementing *destination addresses* |
+| opcode-*indexed* table of handler indices | **no** — 68 candidates from a constant-run prefilter, best scores 19/46 implemented vs 33/98 never-used, i.e. random |
+
+The third row is a caution worth keeping: **ascending byte runs are worthless as
+an opcode-table signal**, because incrementing addresses look exactly like
+ascending opcodes. That false positive survived two separate scans.
+
+### What it actually is
+
+**Subtract-and-branch chains.** The opcode is loaded from a memory-mapped
+register and walked down a chain of `ADD A,#-delta` / `JE`, with a trailing
+`SJMP` to the unsupported path:
+
+```
+0xfbffa4  7eb3b7e7   MOV acc,0xb7e7    ; the CDB opcode
+0xfbffa8  2400 6843  ADD A,#0x00 / JE  ; -> 0x00 TEST UNIT READY
+0xfbffac  24fd 683f  ADD A,#0xfd / JE  ; -> 0x03 REQUEST SENSE
+0xfbffb0  24f1 683b  ADD A,#0xf1 / JE  ; -> 0x12 INQUIRY
+   ...
+0xfbffcf  1bb1 681c  DEC acc,#2  / JE  ; -> 0x5a MODE SENSE(10)
+0xfbffe0  8000       SJMP              ; default: unsupported
+```
+
+Chain arms also use `INC A`, `DEC A` and `DEC acc,#Short` (`1b b0/b1/b2` =
+1/2/4), which is why a first detector that only knew `ADD A,#imm` under-counted
+this chain as 10 arms when it has 15.
+
+**Dispatch is split across at least 12 such chains**, not centralised. The one
+above contains exactly the commands legal with no media loaded
+(`00 03 12 1a 1b 1e 35 4a 52 58 5a 5b 5c`), and it is entered after a bit test
+on register `0xb878` — so the chains are almost certainly **per-drive-state
+command filters** rather than one dispatcher.
+
+Chains found (`*` = known vendor opcode, `?` = not in our opcode set):
+
+| address | arms | opcodes tested |
+|---|---|---|
+| `0xfda911` | 11 | `12 1b 46 4a 52 5c ac bf eb* f3* f5*` |
+| `0xfd4edc` | 11 | `12 1b 46 4a 5c ac bf e4* eb* f3* f5*` |
+| `0xfbffa8` | 15 | `00 03 12 1a 1b 1e 35 4a 52 58 5a 5b 5c f4? f5*` |
+| `0xfbd075` | 13 | `08 28 35 44 53 5b a8 aa b9 be d8* d9? df*` |
+| `0xfd3eca` | 18 | `08 0a 1b 28 2a 2e 35 4a 54 5b a1 a8 aa ad b9 be f2? 04` |
+
+Union over all 12 chains: **35 opcodes** — 29 MMC
+(`00 03 04 12 1a 1b 1e 28 2a 2e 35 44 46 4a 52 53 54 58 5a 5b 5c a1 a8 aa ac ad
+b9 be bf`) and 6 vendor (`d8 df e4 eb f3 f5`).
+
+### Three candidate vendor opcodes not in the PlexTools set
+
+**`0xD9`, `0xF2`, `0xF4`.** Each sits mid-chain immediately adjacent to a
+*known* vendor opcode (`d8`→`d9`, `f4`→`f5`), and a chain whose cumulative
+arithmetic were wrong would be unlikely to land on known vendor opcodes at all.
+The PlexTools RE could only ever find opcodes *PlexTools issues*; the firmware
+may implement more. **Unverified on hardware** — testing them is vendor-opcode
+probing and is gated on Keith's consent.
+
+`0x08`/`0x0A`/`0x04` also appear and are *not* discoveries — they are legacy
+`READ(6)`/`WRITE(6)`/`FORMAT UNIT`, absent from the opcode set used for scoring.
+
+### The harvest is partial — do not read the union as the command surface
+
+Two opcodes known to be implemented appear in **no** detected chain: `0x3C`
+READ BUFFER (used successfully against the live drive in the Phase 1 sweep
+above) and `0xE9` (the vendor MODE command, live-verified in session 3). So
+further dispatch sites exist that this detector does not match — most likely
+chains using compare forms it does not model, or handlers reached by other
+means. The 35-opcode union is a **floor on** the command surface, not the
+surface.
+
+### Call graph
+
+An `ECALL`-derived call graph (19009 edges over 2033 distinct entries; a
+function entry is simply an `ECALL` target) puts the region check inside the
+function at `0xfad888`, reached by a narrow funnel: one caller (`0xfcd060`),
+one caller (`0xf74bd6`), then widening to 2, 3, 12. That extraction is also the
+Ghidra seed set.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
