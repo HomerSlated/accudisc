@@ -855,6 +855,116 @@ function at `0xfad888`, reached by a narrow funnel: one caller (`0xfcd060`),
 one caller (`0xf74bd6`), then widening to 2, 3, 12. That extraction is also the
 Ghidra seed set.
 
+## Three new vendor opcodes, the speed ladder, and Ghidra source mode (session 6, 2026-08-31)
+
+### 0xD9, 0xF2, 0xF4 — predicted from firmware, CONFIRMED on hardware
+
+The three candidates from the dispatcher chains are all **implemented**. Probed
+on `/dev/sg3` under `flock`, 12-byte zeroed CDBs, with controls proving the
+discriminator can return either answer:
+
+| opcode | sense | reading |
+|---|---|---|
+| `0x12` INQUIRY (**positive control**) | good status | implemented |
+| `0xC1` unassigned (**negative control**) | `5/20/00` | INVALID COMMAND OPERATION CODE |
+| `0xC5` unassigned (**negative control**) | `5/20/00` | INVALID COMMAND OPERATION CODE |
+| `0xD8` known READ CD-DA | `4/00/00` | implemented |
+| **`0xD9`** | `5/64/00` | ILLEGAL MODE FOR THIS TRACK — parsed, rejected on *track mode*; a CD-DA read variant |
+| **`0xF2`** | `2/30/05` | CANNOT WRITE MEDIUM, INCOMPATIBLE FORMAT — a **write-side** command |
+| **`0xF4`** | `5/24/00` | INVALID FIELD IN CDB — parsed, rejected on a parameter |
+
+Drive healthy afterwards (INQUIRY unchanged). **What they *do* is still unknown**
+— only that they exist and parse. `FEATURES.md` should not gain entries until
+their semantics are established.
+
+**The safety step was load-bearing, not ceremony.** The tray held a disc and
+`START STOP UNIT` eject was refused (`5/53/02` MEDIUM REMOVAL PREVENTED). Rather
+than override the lock, the disc was shown to be **factory-pressed** — `READ
+DISC INFORMATION` gives Erasable=0/Complete, and `READ TOC` format 4 returns an
+**empty ATIP**, which exists only on recordable media. A pressed disc is
+physically unwritable, so probing was safe with it loaded and no drive state was
+disturbed. `0xF2` then answered "cannot write medium" — i.e. it *is* a write
+command, and the only reason it did nothing is that the medium could not be
+written. Against a CD-R, an all-zero CDB to an unknown write opcode is exactly
+the probe that silently destroys data. **Verify the medium is unwritable, or
+empty the tray, before probing unknown vendor opcodes.**
+
+### The read-speed quantisation ladder — located at 0xF65B83
+
+Mode page 2A is built at runtime (its byte pattern appears nowhere in the
+image), but the speed constants do. `MOV wr6,#0x1b90` (40x) and
+`MOV wr6,#0x2113` (48x) sit ten bytes apart — the SpeedRead pair. The
+surrounding structure is a switch of **eleven identical 10-byte arms** whose
+`SJMP` displacements form an exact arithmetic progression (`74 6a 60 56 4c 42
+38 2e 24 1a 10`, step −10) converging on one target:
+
+```
+7e 34 <speed16>    MOV wr6,#<speed>
+79 3f ff ff        (store; exact semantics not yet established)
+80 <rel>           SJMP common
+```
+
+Decoded against 176.4 kB/s = 1x, the table is the **complete read-speed ladder**:
+
+| `00b0` | `0161` | `02c2` | `0583` | `06e4` | `0845` | `0b06` | `0dc8` | `108a` | `160d` | `1b90` | `2113` |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1x | 2x | 4x | 8x | 10x | 12x | 16x | 20x | 24x | 32x | 40x | 48x |
+
+Twelve steps, exact. Ghidra places it inside the function at **`0xF65B36`**.
+This is the concrete form of "you request a speed and the governor tells you
+what you can have" — the quantiser's data. Note the arithmetic progression is
+what proves the parse: `srcdis.py` mis-decodes `79 3f ff ff 80` as one 5-byte
+instruction, and eleven displacements in exact progression could not survive
+that reading.
+
+### Ghidra source mode works — analyzeHeadless recipe
+
+`8051_main.sinc:234` defines `srcMode` as a context bit defaulting to 0. Setting
+it to 1 over the whole block makes Ghidra decode this firmware correctly:
+
+```sh
+analyzeHeadless <proj> px716 -import rome_111.bin \
+  -processor "80251:BE:24:default" -loader BinaryLoader -loader-baseAddr 0xF00000 \
+  -scriptPath <dir> -preScript SetSrcModeAndSeed.java -postScript Report251.java
+```
+
+The prescript sets `srcMode` via `getProgramContext().setValue(...)` over
+`getLoadedAndInitializedAddressSet()`, then disassembles the ECALL-derived
+seeds. Results:
+
+* `SRCMODE: set to 1 over [[RAM:f00000, RAM:feffff]]` — block placed exactly at
+  the derived base.
+* **`SEEDS: 2048/2048 disassembled`** — every ECALL target is a valid
+  instruction boundary. A wrong base or wrong mode would fail many.
+* **33.1% of the image resolved to code** from ECALL seeds alone.
+* Independent confirmation of the hand analysis: the dispatcher chain at
+  `0xfbffa8` lands inside function **`0xfbff8e`** — exactly where hand
+  disassembly found the `PUSH dr12` prologue — and `0xf00050` is correctly
+  *not* code.
+
+**Tooling trap:** Ghidra caches compiled scripts per directory and reports
+`"<scriptPath> hasn't changed, with 1 file failing in previous build(s)"`,
+re-showing a **stale** compiler error after the file is fixed. Rename the script
+or `touch` the directory to force a rebuild; re-run against the saved project
+with `-process <name> -noanalysis` rather than re-importing.
+
+### Command surface expanded to 42 opcodes — still a floor
+
+The dispatcher's default arm calls a common reject routine at **`0xFDE7C5`**
+(81 inbound references in Ghidra; 325 ECALL sites image-wide). Scanning
+backwards from those sites for a chain finds 38 dispatchers and raises the union
+to **42 opcodes**:
+
+* MMC: `00 01 03 04 08 0a 12 1a 1b 1e 28 2a 2e 35 3b 44 46 4a 52 53 54 58 5a 5b
+  5c a1 a8 aa ac ad b9 be bf`
+* vendor: `d8 d9 df e4 eb f2 f3 f4 f5`
+
+This independently recovers `d9`, `f2` and `f4` as dispatch arms, corroborating
+the hardware result by a second route. **Four known-implemented opcodes are
+still unlocated** — `0x3C` READ BUFFER, `0xB6` SET STREAMING, `0xBB` SET CD
+SPEED, `0xE9` vendor MODE — so at least one further dispatch idiom exists. Do
+not read 42 as the command surface.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
