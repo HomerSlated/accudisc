@@ -138,7 +138,9 @@ int main(int argc, char **argv)
 
     /* ---- baseline probes ---- */
     printf("\n=== BASELINE (all-zero 12-byte CDB, 64-byte data-in) ===\n");
-    int ops[3] = { 0xd9, 0xf2, 0xf4 };
+    /* 0xF2 runs LAST: it is the one that announced itself as write-side, so
+     * if it consumes the medium the other results are already banked. */
+    int ops[3] = { 0xd9, 0xf4, 0xf2 };
     for (int i = 0; i < 3; i++) {
         char lbl[32]; snprintf(lbl, sizeof lbl, "0x%02X", ops[i]);
         if (present && writable && !allow_write) {

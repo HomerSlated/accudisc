@@ -1242,6 +1242,59 @@ The affected disc was checked afterwards and shows no damage: TOC intact
 sampled LBAs read with good status. **Byte-identity cannot be proven** — there
 was no prior checksum — and that limitation is recorded rather than glossed.
 
+## Blank CD-R probe — 0xF2/0xF4 require writable media but WRITE NOTHING (session 6, 2026-08-31)
+
+Run against an expendable blank CD-R with `--allow-write-probe`, Keith
+consenting to lose the disc. Probe order changed so `0xF2` runs **last**, and a
+full disc-state snapshot was taken **before and after** — the measurement the
+previous phase could not make.
+
+| medium | `0xD9` | `0xF2` | `0xF4` |
+|---|---|---|---|
+| none | `2/3a/02` | `2/3a/02` | `2/3a/02` |
+| pressed CD-ROM (audio) | `5/64/00` | `2/30/05` | `5/24/00` |
+| CD-R, data track, appendable | `5/64/00` | *gated* | **accepted** |
+| **blank CD-R** | `5/64/00` | **accepted** | **accepted** |
+
+### The disc was not written to
+
+Before/after `READ DISC INFORMATION`, `READ TRACK INFORMATION` and ATIP are
+**byte-identical**: disc status `00` (empty), NWA `ffffff6a` (LBA −150), free
+blocks 359335. Twenty-two executions of `0xF2`/`0xF4` returning good status
+changed nothing observable, and the disc remains blank and usable.
+
+**So `0xF2` and `0xF4` require recordable/writable media but perform no write.**
+`0xF2`'s `2/30/05 CANNOT WRITE MEDIUM` on a pressed disc was a *write-class
+precondition check*, not evidence that it writes. "Requires recordable media,
+writes nothing" is the signature of a **calibration or measurement** command —
+OPC, test-write, or reading recordable-only structures such as the PCA.
+
+That partially rehabilitates the *spirit* of the refuted LLM claim (these are
+diagnostics) while leaving its specific assignments refuted: Q-Check is `0xEA`
+and the analogue FE/TE pair is `0xF3`/`0xF5`.
+
+**Hypothesis eliminated:** the blank has **no data track**, yet `0xF4` is still
+accepted — so `0xF4` needs recordable/writable media, *not* a data track.
+Recordable-media-type and writable-state remain unseparated; a **finalised**
+CD-R would separate them.
+
+### CDB structure recovered by value-sweeping
+
+| field | accepted values | structure |
+|---|---|---|
+| `0xD9` byte 1 | `00 20 40 60 80 a0 c0 e0` | **3-bit field at bits 7:5**; bits 4:0 must be 0 |
+| `0xD9` byte 2 | `00` only | reserved |
+| `0xF4` byte 4 | `00`, `80`–`ff` | **single flag at bit 7**; bits 6:0 must be 0 |
+
+### Limitation of the 0xD9 sweep, stated rather than buried
+
+That sweep ran on a **blank** disc, which has no tracks, so
+`ILLEGAL MODE FOR THIS TRACK` could not have passed for *any* byte-1 value.
+The result therefore establishes byte 1's **shape** but says nothing about
+which of its 8 values is correct. Repeat on media that has tracks — ideally a
+**pressed data CD-ROM**, which is the only medium that is both unwritable
+(so an executing `0xD9` is safe) and carries a data track.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
