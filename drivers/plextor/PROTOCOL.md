@@ -546,8 +546,17 @@ source mode the same bytes decode as ordinary firmware:
 
 * **Base address = `0xF00000`.** The image is 0xF0000 bytes = 1 MiB flash minus
   a 64 KiB top boot block (which the update file does not carry). `file_off =
-  addr − 0xF00000`. Confirmed, not assumed: every `ECALL`/`EJMP` target
-  observed maps inside the file *and* lands on a valid instruction boundary.
+  addr − 0xF00000`. Confirmed across the whole image, not inferred from a
+  sample: of 19890 `ECALL` (`0x9A`) sites, **95.6% carry a 24-bit operand
+  inside `0xF00000–0xFEFFFF`** against a **5.86%** random-chance baseline for
+  that window — a 16× enrichment spanning *all fifteen* high bytes `f0`–`fe`,
+  i.e. the entire image rather than the region first sampled. 2048 distinct
+  in-range targets; that set is also the Ghidra call-graph seed set.
+  **`EJMP` (`0x8A`) does not replicate this and must not be cited as if it
+  did** — only 3.4% of `0x8A` sites carry an in-range operand, *below* chance,
+  so most `0x8A` bytes are operand/data rather than opcodes. `EJMP` is
+  genuinely rare (vector table plus occasional tail jumps); the base-address
+  evidence rests on `ECALL` alone.
 * **There is no bank-select SFR, and the search for one was misconceived.**
   Bank crossing is `ECALL`/`EJMP` with **flat 24-bit addresses** —
   `A5 9A <addr24>` and `A5 8A <addr24>` in binary-mode bytes, i.e. `9A`/`8A`
@@ -590,6 +599,19 @@ against controls, on 1200-byte windows in four banks:
 | synthetic valid 8051 (positive control) | ~86% |
 | **`rome_111.bin` as 8051 / binary mode** | **77.7%** (n=103) |
 | **`rome_111.bin` as MCS-251 source mode** | **96.2%** (n=53) |
+
+**Read that table with its caveat.** The same run reported 6.9–61.7% of slots
+as *invalid* in source mode, partly a harness artifact (the probe drops a slot
+when `pd 2`'s output rows fail to pair) and partly real data regions. The
+sample sizes are small and selected by which windows produced enough
+conditional branches. It is directional support, **not** the load-bearing
+evidence — that is the RPC1 patch decode below, which is semantic and does not
+depend on any of these numbers. Do not cite 96.2% as a settled measurement.
+
+Reframed usefully: per-region source-mode invalid rate is a **code/data
+segmentation map**. Banks 6 and 12 score ~95% invalid in *both* modes (data
+tables); bank 9 scores 6.9% source vs 25.2% binary (code). That map is what
+stops a dispatcher search from stride-scanning data.
 
 Supporting, independently derived: `0x7E` is the most common byte in the image
 at 5.67% — absurd as 8051 `MOV R6,#imm`, exactly right as source-mode `MOV`;
