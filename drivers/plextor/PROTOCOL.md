@@ -1443,6 +1443,44 @@ Identifying *which* CDB triggers it is now possible — `mmcvendor.c` traces eve
 CDB to stderr unbuffered before issuing it — but costs another block-and-power-
 cycle and should not be done casually.
 
+### 0xF1 EEPROM read works — and gives us the baseline we lacked
+
+Keith noted that `0xF2` sits directly beside `0xF1` (`PLEXTOR_EEPROM_READ`).
+Adjacency is a hypothesis generator, not evidence — it has produced three
+retractions this session — **but unlike the earlier guesses this one is
+testable, because the sibling's CDB is documented in source we hold.**
+
+`pxfw` shows the PX-716-specific form. Plain `0xF1` fails on this drive and the
+code retries with a **sub-command selector in byte 1**:
+
+```
+F1 01 00 00 00 00 00 <block> <sz_hi> <sz_lo> 00 00     -> 256-byte read
+```
+(`console/pxfw/pxfw.cpp:149`, `lib/qpxplextor/plextor_features.cpp:45-60`,
+whose comment reads *"The Plextor PX-716 does not understand this command…"*)
+
+Verified live. The EEPROM is **4 blocks x 256 = 1024 bytes**; block 4 returns
+CHECK CONDITION, so that is the whole device. All four blocks are distinct and
+none is blank. Block 0 carries the drive identity string; block 3 contains a
+smooth monotonically-descending 16-bit sequence, consistent with a calibration
+or power table.
+
+**A dump is now stored at `private/drives/Plextor/eeprom/` as a durable
+baseline.** It stays in the git-ignored tree deliberately: it contains the
+drive's identity/serial data and must not enter the public repo, so no EEPROM
+contents are reproduced in this document. Tool: `re-tools/eedump.c`.
+
+The value is that the earlier `0xF2` incident could only be assessed against
+mode pages and the feature list. **Any future change to non-volatile drive
+state is now detectable by diffing against this dump** — which is exactly what
+was missing when it mattered.
+
+That byte-1 convention also sharpens the open question: `0x01` is the PX-716
+sub-command selector for `0xF1`, and `0x01` was among the first values the
+`0xF2` field map tried. The long silent operation was plausibly started by
+`F2 01 …`. Plausibly — the trace that would have proved it was lost to output
+buffering, which is why the tool now traces every CDB before issuing it.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
