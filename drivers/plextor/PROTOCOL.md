@@ -1147,6 +1147,48 @@ source on them — which makes the RE work the reference rather than a
 duplicate of one. Gaps not covered: dvd+rw-tools (host unreachable), PxScan /
 CDVDlib (closed source), and a dedicated MyCE/CDFreaks forum-archaeology pass.
 
+## An LLM attribution for 0xD9 / 0xF2 / 0xF4 — checked and REFUTED (session 6, 2026-08-31)
+
+A Gemini-sourced claim (relayed by Keith, explicitly "with a pinch of salt")
+assigned specific functions to the three new opcodes. Checked against primary
+sources on disk. **The two specific function assignments are refuted, because
+both functions are already assigned to different opcodes.**
+
+| claim | check | verdict |
+|---|---|---|
+| `0xF2` = "Q-Check PI/PO read" | QPxTool `qpx_opcodes.h:131` — `PLEXTOR_QCHECK = 0xEA` | **REFUTED** |
+| `0xF4` = "Read Beta/Jitter" (analogue OPU) | QPxTool `:137,:138` — `PLEXTOR_SCAN_TA_FETE = 0xF3`, `PLEXTOR_FETE_READOUT = 0xF5` | **REFUTED** |
+| `0xD9` = part of the "GigaRec / SilentMode / VariRec sub-control engine" | that engine is a *single* opcode, `0xE9`, page-selected (GigaRec=page 0x04, VariRec=0x02, SilentMode=0x06/07/08) — live-verified in session 3 | **REFUTED** |
+| "triggers when PlexTools runs …" | our own PlexTools CDB harvest found `0xEA` but **not** `0xF2`/`0xF4`/`0xD9` — PlexTools never issues them | **REFUTED** |
+
+No QPxTool source uses `0xF2`, `0xF4` or `0xD9` in opcode position at all.
+
+**The failure mode is worth naming, because it is the same one as the earlier
+LC87 claim about this chip: the right neighbourhood with invented specifics.**
+The claim's framing — that `0xF0`-`0xF5` is Plextor's diagnostic block — is
+*true* (`0xF1` EEPROM read, `0xF3` TA/FE-TE scan, `0xF5` FE-TE readout). Real
+surrounding facts make a fabricated specific assignment read as credible. Treat
+an LLM assertion about this part exactly as any other unverified claim: check
+the checkable parts first.
+
+### What we do know about 0xD9, measured
+
+`0xD9` is **not** a drop-in READ CD-DA variant: given the exact CDB shape that
+`0xD8` accepts (LBA 1000, 1 block), `0xD8` returns 2352 bytes and **`0xD9`
+returns `5/24/00`**. Its CDB layout differs. Field map, one byte set to `0x01`
+at a time against an all-zero baseline on a pressed audio CD:
+
+| CDB byte | sense | reading |
+|---|---|---|
+| 1, 2, 3, 4, 6 | `5/24/00` INVALID FIELD IN CDB | **validated** — `0x01` is illegal there |
+| 5, 7, 8, 9, 10 | `5/64/00` ILLEGAL MODE FOR THIS TRACK | **accepted** — reaches the track-mode check |
+| (all-zero baseline) | `5/64/00` | — |
+
+So `0xD9` parses a structured CDB and operates on **disc content** — it reaches
+a track-mode decision. `5/64/00` on an all-audio disc suggests it wants a track
+mode this disc does not provide. **The decisive next experiment is to repeat
+this against a Mode-1 data disc**, which needs different media in the drive.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
