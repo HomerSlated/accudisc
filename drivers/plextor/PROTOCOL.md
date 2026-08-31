@@ -674,6 +674,98 @@ mode** — `8051_main.sinc:234` defines a `srcMode` context bit, defaulting to 0
 Setting it is the route to full `analyzeHeadless` auto-analysis; `srcdis.py`
 then remains useful as an independent cross-check.
 
+## Exposed capability surface — measured on hardware (session 6, 2026-08-31)
+
+Read-only enumeration of what the PX-716A actually exposes, run against the
+live drive (`/dev/sg3`, fw 1.11) under `flock /var/tmp/sr0.lock`. Tools:
+`re-tools/mmcsweep.c` (presence) and `re-tools/mmcdetail.c` (payloads). No
+`MODE SELECT`, no `WRITE BUFFER`, no vendor opcodes.
+
+**Correction to the running assumption: media was present**, not an empty
+tray (`TEST UNIT READY` → 00). Everything issued was read-only so nothing
+turned on it, but the "empty tray" precondition claimed beforehand was false
+and the LBA-dependent results below describe *the loaded disc*.
+
+### Mode pages — 11 present, and the speed page is not one the host may touch
+
+| page | name | changeable mask (params) |
+|---|---|---|
+| 0x01 | Read/Write Error Recovery | `3f ff ff ff 00 00 ff 00` |
+| 0x02 | Disconnect/Reconnect | `ff ff …` |
+| 0x05 | Write Parameters | `7f ff 0f ff 00 3f ff 00` |
+| 0x07 | Verify Error Recovery | `3f ff …` |
+| 0x08 | Caching | `04 00 …` (WCE only; **RCD not changeable**) |
+| 0x0d | CD Device Parameters | `00 0f …` |
+| 0x0e | CD Audio Control | `06 00 00 00 00 00 0f ff 0f ff` |
+| 0x1a | Power Condition | `00 03 ff ff ff ff ff ff ff ff` |
+| 0x1d | Timeout & Protect | `00 00 04 00 ff ff` |
+| **0x2a** | **MM Capabilities** | **all zero over all 52 bytes** |
+| 0x3f | (return-all alias of 0x01) | — |
+
+**`MODE SENSE` PC=1 is the drive stating which bits the host may alter, so an
+all-zero mask on page 0x2A is a hard negative, not an inference: read speed is
+not controllable through the mode page.** Page 0x2A currently reports max read
+`0x1b90` = 7056 kB/s = 40.0x and *current* read speed identical at 40.0x.
+
+Genuinely useful and currently unused by AccuDisc: **page 0x01 byte 3 is the
+read retry count, is host-changeable, and currently reads 10**, with the
+recovery flag bits (TB/RC/EER/PER/DTE/DCR) changeable too — but the recovery
+*time limit* (bytes 10-11) is **not** changeable. That is a real exposed
+read-behaviour lever, relevant to the recovery ladder.
+
+### Features — 34 reported, 3 vendor
+
+`0x0107` Real-Time Streaming is CURRENT with payload `1e 00 00 00`: SCS,
+MP2A, WSPD and SW set, RBCB clear — i.e. the drive claims `SET CD SPEED` and
+`SET STREAMING` support. Both are already implemented in AccuDisc.
+
+The three vendor features are **write**-speed capability tables, not read
+control — worth documenting, but they are not the governor:
+
+* `0xff00` = `01 03 01 01`
+* `0xff10` = per-CD-profile write speeds — profile `0x0A` (CD-RW) 24x/10x/4x,
+  profile `0x09` (CD-R) 48x/32x/16x/8x/4x
+* `0xff11` = per-DVD-profile write speeds — profiles `0x2b`/`0x1b`/`0x1a`/
+  `0x14`/`0x11` (DVD+R DL / +R / +RW / -RW / -R)
+
+### READ BUFFER is *not* a firmware-memory window
+
+Worth recording as a negative because it was the hoped-for shortcut to
+locating the governor's variables at runtime. Only buffer **id 0** exists
+(ids 1-15 report zero capacity), capacity 8355840 bytes — that is the 8 MiB
+**data** buffer, and mode 2 returns disc data, not CPU RAM. There is no
+exposed live-memory read path here.
+
+### GET PERFORMANCE — the CAV curve is published, degradation is not
+
+Type 0 (nominal), one descriptor for the loaded disc:
+
+```
+start LBA 0        ->  2999 kB/s (17.0x)
+end   LBA 359487   ->  7056 kB/s (40.0x)
+```
+
+That is the drive publishing its own CAV read-performance model — slow at the
+inner radius, full rate at the outer. Type 3 confirms a constant 40.0x read
+ceiling across all five write-speed descriptors.
+
+**`EXCEPT=1` (performance exceptions) returns CHECK CONDITION `5/24/00`
+INVALID FIELD IN CDB — the drive does not implement performance-exception
+reporting at all.** This matters for `RECOVERY.md` §12.10: the drive has no
+standard mechanism by which it could ever *announce* that it has reduced read
+speed. A governor here is necessarily silent, because the reporting channel
+MMC defines for exactly this is not implemented.
+
+### Where that leaves the governor question
+
+Enumerated exposed levers over read speed, complete for the read-only surface:
+`SET CD SPEED` (0xBB) and `SET STREAMING` (0xB6) — both already implemented —
+plus page 0x01 error-recovery parameters, indirectly. **Not** page 0x2A, and
+**no** exception reporting. Still open, and needing a *timed* experiment
+rather than an enumeration: whether 0xBB/0xB6 actually override the governor
+in practice. Per [[entropy-not-mystery]] that must measure the **delivered**
+rate; page 0x2A reports the request, and is in any case read-only to the host.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
