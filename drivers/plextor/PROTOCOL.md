@@ -31,8 +31,14 @@ own drive. **Correction to session 2: GigaRec is 0xE9 page `0x04`, not `0x06`
   flashing utility (PE32 x86, MFC, 2003). Confirms the update path: standard
   SCSI WRITE BUFFER (0x3B) mode 5 ("download microcode and save"), no
   host-side transform of the firmware bytes before they're sent.
-- `private/drives/Plextor/Plextor-716.pdf` — end-user install manual only; no
-  SCSI content. Useful for feature naming, nothing else.
+- `private/drives/Plextor/Plextor-716.pdf` — end-user install manual. No SCSI
+  content, but more than feature naming: its §5 contents list *is* the
+  documented feature set for this drive, and §6 publishes the diagnostic LED
+  codes (see the documented-feature audit below).
+- `private/drives/Plextor/PTPXL/Help/PTPXLEN.chm` — PlexTools Professional XL
+  3.x help (2007). The application's documented feature set, broader than the
+  PX-716 (also PX-755/760, Blu-ray, TV-tuner hardware). **CP1252 — iconv
+  before grepping**, see the method note below.
 
 Tooling: `objdump -d -M intel` (cached full `.text` disassembly), `radare2`,
 and a stack-tracking harvester (`scratchpad/re/harvest2.py`) that resolves
@@ -1157,7 +1163,7 @@ both functions are already assigned to different opcodes.**
 | claim | check | verdict |
 |---|---|---|
 | `0xF2` = "Q-Check PI/PO read" | QPxTool `qpx_opcodes.h:131` — `PLEXTOR_QCHECK = 0xEA` | **REFUTED** |
-| `0xF4` = "Read Beta/Jitter" (analogue OPU) | QPxTool `:137,:138` — `PLEXTOR_SCAN_TA_FETE = 0xF3`, `PLEXTOR_FETE_READOUT = 0xF5` | **REFUTED** |
+| `0xF4` = "Read Beta/Jitter" (analogue OPU) | Beta/Jitter is `0xEA` — QPxTool `qscan_cmd.cpp:125,140,381` (`cmd_cd_jb_init`/`cmd_dvd_jb_init`/`cmd_jb_getdata`). *(This cell first cited `0xF3`/`0xF5` as the Beta/Jitter pair; those are FE/TE and TA. Verdict unchanged, supporting detail corrected 2026-08-31.)* | **REFUTED** |
 | `0xD9` = part of the "GigaRec / SilentMode / VariRec sub-control engine" | that engine is a *single* opcode, `0xE9`, page-selected (GigaRec=page 0x04, VariRec=0x02, SilentMode=0x06/07/08) — live-verified in session 3 | **REFUTED** |
 | "triggers when PlexTools runs …" | our own PlexTools CDB harvest found `0xEA` but **not** `0xF2`/`0xF4`/`0xD9` — PlexTools never issues them | **REFUTED** |
 
@@ -1188,6 +1194,33 @@ So `0xD9` parses a structured CDB and operates on **disc content** — it reache
 a track-mode decision. `5/64/00` on an all-audio disc suggests it wants a track
 mode this disc does not provide. **The decisive next experiment is to repeat
 this against a Mode-1 data disc**, which needs different media in the drive.
+
+### A second LLM theory for 0xD9 — also REFUTED, by data already in this file
+
+Relayed by Keith the same evening: `0xD9` as a "Vendor-Specific Subchannel /
+Session Interrogation" command, with `CDB[2]` = target track number or session
+index, and `5/64/00` explained as the requested subchannel matrix not existing
+yet on blank or unfinalised media.
+
+Both novel claims are contradicted by measurements already recorded above.
+
+| claim | check | verdict |
+|---|---|---|
+| `CDB[2]` = target track number / session index | The field map is on this page: `0x01` at byte 2 returns **`5/24/00` INVALID FIELD IN CDB**, on a pressed audio CD whose track 1 plainly exists. A track-number field must accept 1 | **REFUTED** |
+| `5/64/00` means "blank or single unfinalised track — the subchannel matrix does not exist yet" | `5/64/00` came back **identically** from a finalised pressed multi-track audio CD, a pressed data CD-ROM, an appendable CD-R with a data track, and a blank CD-R. The explanation predicts variation across exactly the axis we swept and found constant | **REFUTED** |
+| a subchannel/session interrogation command | On DVD `0xD9` returns `5/20/00` INVALID COMMAND OPERATION CODE — the opcode ceases to exist. Session and subchannel interrogation are not CD-only concepts | **unexplained by the theory** |
+| "vendor-specific Read Sub-channel" as a known legacy command | No public source uses `0xD9` in opcode position — QPxTool, cdrtools, libcdio, redumper, DiscImageCreator, FreeBSD all checked earlier in this session | **unsupported** |
+
+**Third instance of the same failure shape, and now it is a pattern worth
+stating as a rule.** Everything the theory gets right — the structured CDB, the
+3-bit field at `CDB[1]` bits 7:5, the track-mode gate — is *our own trace, fed
+back to it in the prompt*. Its only original content is the two rows above, and
+both are false. The LC87 claim and the Q-Check claim failed the same way: real
+surrounding facts, restated, wrapped around an invented specific.
+
+**So the check that has power is not "is this plausible?" but "what does this
+claim assert that we did not tell it?"** Isolate that, and test only that. Here
+it took two greps of this file and no drive time at all.
 
 ## Media sweep of 0xD9 / 0xF2 / 0xF4 — validation order, and 0xF4 executes (session 6, 2026-08-31)
 
@@ -1480,6 +1513,98 @@ sub-command selector for `0xF1`, and `0x01` was among the first values the
 `0xF2` field map tried. The long silent operation was plausibly started by
 `F2 01 …`. Plausibly — the trace that would have proved it was lost to output
 buffering, which is why the tool now traces every CDB before issuing it.
+
+## The documented-feature audit, and what the manual's LED codes say (session 6, 2026-08-31)
+
+Keith's question: *do we already know all the opcodes for every **documented**
+feature of the PX-716?* Answering it required enumerating from the documented
+side inward rather than from our opcode table outward — the full audit is in
+`FEATURES.md`. Three results belong here.
+
+### The EEPROM dump validates itself, and it is the Silent Mode persist target
+
+QPxTool decodes the *saved* (flash-persisted) Silent Mode block out of the
+EEPROM, not out of a mode page: `plextor_get_silentmode_saved()`
+(`lib/qpxplextor/plextor_features.cpp:338-359`) calls `plextor_read_eeprom()`
+and reads offsets `0x100`-`0x108`. Applied to our own 1 KB dump from `0xF1`:
+
+```
+0x100:  00 00 28 10 30 10 ff ff ff
+        |  |  |  |  |  |
+        |  |  |  |  |  +-- 0x10 = 16   DVD write max
+        |  |  |  |  +----- 0x30 = 48   CD  write max
+        |  |  |  +-------- 0x10 = 16   DVD read  max
+        |  |  +----------- 0x28 = 40   CD  read  max
+        |  +-------------- access time: 0 = FAST
+        +----------------- saved-state flag: 0 = no saved Silent Mode
+```
+
+Four consecutive bytes decode to **exactly** the PX-716A's four published
+maxima — 40x CD read, 16x DVD read, 48x CD write, 16x DVD write. That is not
+coincidence, and it establishes three things at once: QPxTool's offset map is
+right for this drive, our dump is correctly aligned and real, and the
+documented "Save Changes To Drive ... into the drive's flash memory" persists
+**into the region `0xF1` can read**.
+
+That last point matters for the `0xF2` DANGER classification. The worry was
+that `0xF2` might write non-volatile state our 1 KB baseline could not see. It
+remains true that the baseline covers only what `0xF1` returns and that there
+is no exposed window onto the rest (`READ BUFFER` id 0 is the 8 MiB data
+buffer and nothing else exists) — so "EEPROM unchanged after `0xF2`" is still
+**not** proof that `0xF2` wrote nothing. But the one documented non-volatile
+write on this drive lands inside the baseline, which is better than we knew.
+
+**Narrow retraction.** The refutation of "`0xF2` = EEPROM write" rested on
+three legs; leg (b), the arithmetic ("1 KB at 10 ms/byte is ~10 s, the
+observed run was minutes"), is withdrawn as a *general* timing argument — it
+sized the 1 KB EEPROM, and a flash erase/program cycle on 2005 hardware is
+minutes, silent and non-rotating. Legs (a) dispatch grouping and (c) media
+gating stand, and the audit adds an independent third: Silent Mode save **is**
+a PlexTools feature, so its opcode is in the 120-call-site harvest, and `0xF2`
+is not. The conclusion is unchanged; one of its supports was measuring the
+wrong device.
+
+### The manual documents an LED code that matches the 0xF2 event
+
+`Plextor-716.pdf` is described above as "no SCSI content ... feature naming,
+nothing else". That undersells it: §6 "Using the PX-716A Self-Test
+Diagnostics" (p.100-103) publishes the drive's diagnostic LED vocabulary.
+
+> *If there was a problem, the disc is not ejected, and you see the LED
+> indicator blink green. One green blink indicates a write or read error.
+> **Two green blinks indicate an initialization error.***
+
+The observed `0xF2` event was: silent, no rotation, LED **blinking twice
+roughly every 5 s**, drive unresponsive until power-cycled. The self-test also
+**requires a blank DVD+-R or CD-R** and reports the wrong medium separately —
+which rhymes with `0xF2`'s media gating (`2/30/05 CANNOT WRITE MEDIUM` on a
+pressed CD).
+
+**This is a hypothesis with a named weakness, not a finding.** The documented
+self-test is entered by *hardware* means only — an extra jumper plus holding
+eject at power-on, **with the interface cable physically disconnected** (both
+the 716A and 716SA procedures say so). So the routine is specified as
+unreachable from the host, and the 2-blink code is documented as a *completion*
+result, whereas what we saw was a repeating pattern. What the manual does
+establish is that a repeating green double-blink is this drive's published way
+of saying **initialization error**, which is a far better-sourced reading of
+the observation than "wedged".
+
+It also gives the `0xF2` classification a cheaper next step than any probe: if
+that reading is right, the state was an error report, not an in-progress
+operation. No further `0xF2` traffic is needed to test it, and none is
+proposed — this is recorded so the observation is not re-interpreted from
+scratch next time.
+
+### Method note: these vendor documents are CP1252
+
+Both the manual's extracted text and the CHM's HTML are CP1252. GNU grep in a
+UTF-8 locale silently skips lines containing invalid multibyte sequences, so a
+first pass over the help file reported that SpeedRead, Silent Mode and SecuRec
+are **not documented** — three false negatives, no error, no warning. `iconv
+-f CP1252 -t UTF-8` before grepping, or `grep -a`. Same shape as every other
+silent-narrowing failure in this project: the output was well-formed, so
+nothing downstream could catch it.
 
 ## Next steps (session 4+)
 

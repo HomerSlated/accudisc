@@ -136,3 +136,190 @@ CDB:  E9  DIR  PAGE  VAL  ..  ..  ..  ..  ..  L9  L10  ..
 Provenance: opcode/page constants and CDB framing cross-referenced against
 QPxTool (GPL) — see `../../docs/reference/ATTRIBUTION.md` — and independently
 live-verified on the user's own PX-716A. See `PROTOCOL.md` for the full trace.
+
+## Coverage audit — enumerated from the *documented* side inward (2026-08-31)
+
+The table above was built from the **opcode** side: PlexTools RE gave an opcode
+inventory, QPxTool gave pages and framing, the drive confirmed. Asking "is the
+table complete?" against that table is circular — it can only report the
+features we already had opcodes for. So this section enumerates the other
+direction: every feature the **vendor documents**, checked for an opcode.
+
+Two primary sources, neither previously mined for this:
+
+- `private/drives/Plextor/Plextor-716.pdf` — the PX-716 manual. Its §5 contents
+  list *is* the documented feature set for this drive.
+- `private/drives/Plextor/PTPXL/Help/PTPXLEN.chm` — PlexTools Professional XL
+  3.x help (2007). Broader than the PX-716: it also covers PX-755/760 (
+  PlexEraser), Blu-ray drives, and TV-tuner/video-capture hardware. Those rows
+  are excluded here — counting them would inflate the gap list with things that
+  were never PX-716 commands.
+
+> **Extraction trap, and it fails silently.** Both the CHM's HTML and the
+> manual's text are **CP1252**, not UTF-8. GNU grep in a UTF-8 locale skips
+> lines carrying invalid multibyte sequences, so `grep -i speedread
+> DriveSettings.html` returns **nothing** on a file that plainly contains
+> "Enable SpeedRead". A first pass here concluded SpeedRead, Silent Mode and
+> SecuRec were *undocumented*, all three false, with no error printed.
+> `iconv -f CP1252 -t UTF-8` first, or `grep -a`; and treat any negative taken
+> over these files without that step as void.
+
+### The audit
+
+☑ = opcode pinned. ⚠ = standard MMC, present on this drive, never explicitly
+bound to the feature name. — = not a drive command at all.
+
+| Documented feature | Source | Opcode / page | |
+|---|---|---|:-:|
+| CD / DVD Read Speed Setting | both | `0xBB` SET CD SPEED, `0xB6` SET STREAMING | ☑ |
+| Spindown Time | both | MODE page `0x0D` CD Device Parameters | ⚠ |
+| Audio Output Settings (volume) | CHM | MODE page `0x0E` CD Audio Control | ⚠ |
+| Buffer Underrun Proof | both | MODE page `0x05` Write Parameters (BUFE) | ⚠ |
+| Auto Insert Notification, DMA | CHM | Windows registry, host-side | — |
+| PoweRec | both | `0xED` | ☑ |
+| Single Session / Hide CD-R | CHM | `0xE9` page `0x01` | ☑ |
+| SpeedRead | both | `0xE9` page `0xBB` | ☑ |
+| BookType (+R, +R DL) | CHM only [^bt] | `0xE9` page `0x22` | ☑ |
+| AUTOSTRATEGY (4 modes) | both | `0xE4` / `0xE5` | ☑ |
+| **Media Quality Check** | CHM | **`0xE4` CDB[1]=`0x01`, CDB[2]=mode** — closed below | ☑ |
+| VariRec | both | `0xE9` page `0x02` | ☑ |
+| GigaRec | both | `0xE9` page `0x04` | ☑ |
+| Silent Mode settings | both | `0xE9` pages `0x06`/`0x07`/`0x08` | ☑ |
+| **Silent Mode "Save Changes To Drive" / "Reset values"** | CHM | **not an opcode — CDB[3] bit 1** — closed below | ☑ |
+| SecuRec | both | `0xD4` / `0xD5` | ☑ |
+| Q-Check C1/C2/CU | both | `0xEA` | ☑ |
+| Q-Check PI/PO | both | `0xEA` | ☑ |
+| **Q-Check Jitter/Beta** | both | **`0xEA`** — corrected below | ☑ |
+| Q-Check FE/TE | both | `0xF3` scan + `0xF5` readout | ☑ |
+| TA Test (Time Analyzer) | both | `0xF3` + a PX-716-specific histogram build | ☑ |
+| Read / Write Transfer Rate test | both | ordinary reads/writes, host-timed | — |
+| Erase Disc (Quick / Full) | CHM | `0xA1` BLANK | ☑ |
+| **Overburn** | manual (p.6, p.68) | no dedicated command — the host writes past the ATIP-declared capacity and the drive permits it | ☑ |
+| DVD Region setting / changes left | manual | `0xA4` REPORT KEY | ☑ |
+| Firmware upgrade | manual | `0x3B` WRITE BUFFER mode 5 — **never issue** | ☑ |
+| Audio read/write offset (displayed) | CHM | app-side table, not read from the drive | — |
+| Self-Test Diagnostics | manual §6 | **hardware-triggered** — see below | — |
+| Emergency eject, front-panel colour | manual | mechanical | — |
+| PlexEraser | CHM (PX-755/760) | `0xE3` | n/a |
+
+[^bt]: **Corrected 2026-08-31** (cdda2img's check, reproduced here). This row
+    first said "both". The PX-716 manual has **zero** hits for `book type`,
+    `BookType`, `bitset` or `bit setting`; all 12 `Book` occurrences are colour
+    books or "the CD book standard". Their own caveat — that `pdftotext` can
+    line-wrap a two-word phrase past a two-word grep — was closed here by
+    re-searching the newline-joined text: still zero. The `0xE9` page `0x22`
+    binding is unaffected; only the provenance was wrong.
+
+**Overburn was missed by the first pass of this audit.** It is on the manual's
+own p.6 feature list ("Overburn: Another way of burning more information onto a
+CD") and gets its own paragraph on p.68 explicitly distinguishing it from
+GigaRec. It is a *permission*, not a command: no opcode enables it, the host
+simply writes beyond the disc's stated capacity. Recorded so the row is not
+re-discovered as a gap. Found by cdda2img sweeping the feature lexicon inward,
+a third enumeration direction — see their
+`2026-08-31-px716-lexicon-capability-map.md`.
+
+**PlexEraser is not a PX-716 feature.** Zero occurrences in the PX-716 manual;
+the CHM scopes it "Only available for PX-755 Series / PX-760 Series". It stays
+on the DANGER list, but as a cross-model hazard, not a gap in our coverage.
+
+### The three gaps, closed
+
+**Media Quality Check** is an AUTOSTRATEGY subcommand, not a new opcode:
+`0xE4` CDB[1]=`0x01`, CDB[2]=mode, no data transfer; the drive then goes
+BUSY and the host polls TEST UNIT READY until it clears; the result is read
+back with `0xE4` CDB[1]=`0x01`, CDB[10]=`0x12` (18 bytes). QPxTool
+`lib/qpxplextor/plextor_features.cpp:1137-1180`, `plextor_media_check()`,
+which also states **DVD media only**. We already had that builder in the
+static inventory as `e4 01 …… 12` and simply never labelled it.
+
+**Silent Mode persistence** is a *bit*, not a command. Both setters take a
+`permanent` flag encoded as `CDB[3] = disc_type | 2*!!permanent`
+(`:381-414`, `plextor_set_silentmode_tray/_disc`). "Reset values" is
+`plextor_set_silentmode_disable()` — the same setters with defaults and the
+same flag. So `0xE9` pages `0x06`/`0x07` already cover it; row 6 of the table
+above was simply incomplete, not wrong.
+
+**Q-Check Jitter/Beta is `0xEA`, not `0xF3`.** `cmd_cd_jb_init` /
+`cmd_dvd_jb_init` / `cmd_jb_getdata` (`plugins/plextor/qscan_cmd.cpp:125,140,
+381`) all issue `PLEXTOR_QCHECK`. `0xF3` is FE/TE (`:158,236`) and TA
+(`:660-682`); `0xF5` is the FE/TE readout (`:524`). Worth stating explicitly
+because the earlier Gemini-claim refutation cited `0xF3`/`0xF5` as "the
+Beta/Jitter pair" — the *refutation* stands (`0xF4` is neither), but that
+supporting detail was wrong, and `qscan_cmd.cpp` names the functions plainly.
+
+### What the audit means for 0xD9 / 0xF2 / 0xF4
+
+**Every documented feature now has an opcode, and none of them is
+`0xD9`, `0xF2` or `0xF4`.** That is a real constraint rather than an absence
+of evidence, because of how the PlexTools harvest was scoped: it enumerated
+all **120 call sites** of the single SCSI issue helper `fcn 0x47b240` — the
+application's entire SCSI vocabulary, not a traced subset — and PlexTools is
+the vehicle through which every feature in the table above is exercised.
+`0xD9`/`0xF2`/`0xF4` appear at none of them.
+
+So the inversion resolves in the opposite direction to the one hoped for: they
+are almost certainly **not** documented features at all — service, factory or
+internal commands. Their remaining scope is bounded by the two assumptions the
+harvest rests on: that `fcn 0x47b240` is the only path to the SPTI wrapper at
+`0x47aa30`, and that the stack tracker resolved CDB[0] at every site.
+
+The corollary is the useful lead. If any documented behaviour *is* still
+unbound, it must live in `0xDE`, `0xDF`, `0xE1` or `0xE2` — opcodes PlexTools
+**does** issue and whose feature binding was never pinned (see PROTOCOL.md,
+"The 0xDF mode-set family": four builders, one per selector byte, "the shape
+expected of the SpeedRead / SilentMode / single-session / book-type group").
+That is static RE on `PTPXL.exe` with **zero drive risk**, unlike every
+remaining route into `0xD9`/`0xF2`/`0xF4`.
+
+### What this audit does NOT cover, and one conflation it could invite
+
+This file's scope is **Plextor vendor features** — that is what the table is
+for, and standard-MMC capabilities live in the core, not here. But scope is
+only safe when it is stated, so:
+
+**`READ CD` C2 error pointers are not the same thing as Q-Check C1/C2, and the
+audit row above covers only the latter.** Every one of the manual's 25 "C2"
+occurrences is Q-Check C1/C2/CU — the media-quality *scan*, `0xEA`. The C2
+pointer flags returned alongside audio data by `READ CD` are a different
+mechanism entirely, they are what secure ripping actually consumes, and they
+are probed in the core by `ok_c2` / `ok_c2_sub_raw`
+(`src/drive/features.c:154,169`). Neither enumeration reaches them, because
+neither the vendor manual nor the vendor opcode inventory is where they live.
+Anyone reading the Q-Check row as "C2 is covered" would be wrong.
+
+**Accurate Stream** is in the same position: probed by
+`accudisc_probe_accurate_stream` (`src/drive/features.c:93`), absent from every
+Plextor enumeration. It is a read-only capability bit in mode page `0x2A` — a
+capability, not a toggle. Confirmed against our licensed MMC-5 copy, Annex E.11:
+the MM Capabilities and Mechanical Status page "is read only", legacy, most
+recently defined in MMC-3. So there is nothing here for a vendor opcode to set.
+
+Both were surfaced by cdda2img enumerating a **third** way — inward from the
+cross-vendor feature lexicon (`private/research/incoming/2026-07-26-optical-
+drive-feature-lexicon.md`). That direction reaches standards and generic terms
+that a vendor marketing manual structurally cannot document, which is exactly
+why it found what the other two passes could not. The same sweep also corrected
+two rows above and one row in the lexicon itself ("MediaLock" is QPxTool's
+section heading, not Plextor's word for `PREVENT ALLOW MEDIUM REMOVAL`).
+
+Also outside this audit but documented by Plextor and served by standards
+commands: subchannel P–W, ISRC/MCN, ATIP, DAE, DAO/SAO/TAO, packet writing,
+High/Ultra Speed CD-RW.
+
+### Terminology — the manual's own words differ from ours
+
+Recorded because the audit's premise was "what the vendor documents", and this
+table has been using the PlexTools tab labels throughout. Counts are from the
+PX-716 manual:
+
+| this table says | the manual says | |
+|---|---|---|
+| SecuRec | **SecureRecording** | 25 vs 2 — "SecuRec" is only the PlexTools tab |
+| AutoStrategy | **AUTOSTRATEGY** (all caps) | 12 |
+| SilentMode | **Silent Mode** (two words) | 37 vs 0 |
+| — | **Buffer Underrun Proof Technology** | 13; the manual never uses Sanyo's "BURN-Proof" brand |
+
+The opcode bindings are unaffected; this is naming only. Left as-is in the rows
+above rather than mass-renamed, since QPxTool and our own driver use the
+compact forms — but the manual's spelling is what to search for when mining it.

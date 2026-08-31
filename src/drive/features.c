@@ -87,7 +87,36 @@ static int combo_smoke(struct accudisc_device *dev, unsigned c2, unsigned sub)
 /* Accurate Stream probe: read [lba, lba+12), then re-read from staggered
  * start points with cache defeat in between; on an Accurate Stream drive
  * the overlapping sectors are byte-identical regardless of where the read
- * began. Any positional mismatch = the drive can slip. */
+ * began. Any positional mismatch = the drive can slip.
+ *
+ * SCOPE OF THE VERDICT, and it is narrower than "Accurate Stream" sounds.
+ * The MMC capability is a read-only bit in mode page 0x2A (MMC-5 Annex E.11:
+ * the page "is read only", legacy, last defined in MMC-3) — so as a *claim* it
+ * is immutable and speed-independent. What this function returns is not that
+ * claim; it is an observation of behaviour, taken at whatever speed the drive
+ * happens to be running, since we pass none. Nothing here establishes that the
+ * behaviour is speed-invariant: a drive that holds position at 4x and slips at
+ * 40x is one immutable bit with two probe answers, and this probe would report
+ * whichever speed it met. Read the result as "did not slip, here, at this
+ * rate", not as the drive's page-0x2A capability. (Raised by cdda2img
+ * 2026-08-31, off the back of the RECOVERY.md §12.10 governor finding; recorded
+ * as a bound on the verdict, not as a call for a speed sweep.)
+ *
+ * WHAT IT ESTABLISHES THAT READING THE BIT WOULD NOT. MMC-3 §6.3.11 defines
+ * the bit as the drive supporting "an audio location without losing place to
+ * continue the READ CD command", and the READ CD section gives the reason:
+ * CD-DA carries no sector header, so there is a "1-second uncertainty of the
+ * address" and "reissuing the command may not return exactly the same data as
+ * the previous try". That is exactly the slip the memcmp below detects. But
+ * the spec's remedy for a drive that lacks the capability is a HARD error
+ * (ABORTED COMMAND / READ ERROR - LOSS OF STREAMING), and that path is scoped
+ * to the stream being lost mid-read — "If the Logical Unit stops while
+ * streaming". A fresh seek is a different case, and the standard offers only
+ * the uncertainty sentence for it. So one bit covers two situations, and a
+ * drive can be fully compliant on the mid-read error path while still slipping
+ * on a re-seek. The re-seek half is the one ripping depends on and the one
+ * nothing forces the drive to report honestly — which is why this probe is
+ * worth running even on a drive whose page 0x2A asserts the bit. */
 #define AS_SPAN 12
 
 int accudisc_probe_accurate_stream(accudisc_device *dev, uint32_t lba,
