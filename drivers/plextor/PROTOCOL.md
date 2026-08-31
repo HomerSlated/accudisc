@@ -365,7 +365,32 @@ genuinely idiomatic 80251/8051-family code (accumulator-centric arithmetic —
 `ADD A,r6`, `MOV r0,A`; register-indirect addressing — `MOV @r1,A`) at every
 sampled location, no invalid opcodes in any sample checked.
 
-## Firmware internal layout — first pass (session 5, 2026-08-30)
+## Firmware internal layout — first pass (session 5, 2026-08-30) — ⚠️ SUPERSEDED, LARGELY WRONG
+
+> **RETRACTED 2026-08-31 by session 6 (next section).** Everything below was
+> produced by decoding the image as **8051 / MCS-251 *binary* mode**. The
+> firmware is MCS-251 ***source* mode**, a different opcode map. Binary-mode
+> output was therefore noise that happened to be readable, and the section's
+> two headline claims are false:
+>
+> * "the code is real and coherent throughout the file" — **no**. Measured
+>   against a proper control, binary-mode decode of this image is statistically
+>   indistinguishable from random bytes (see next section, "Why this went
+>   undetected").
+> * "every control-transfer target stays inside its 64 KiB page" — **no**.
+>   The image is full of `ECALL`/`EJMP` with flat 24-bit addresses. The
+>   conclusion "no far-reach instructions observed" rested on a ~1600-
+>   instruction sample of a *mis-decode*.
+>
+> Also void: the "verified interrupt handler at `0x1b1a`
+> (`NOP`/`ORL 0x69,A`/`RETI`)". Those bytes are not an instruction boundary in
+> source mode; the real vector table is at file `0x50`. The retraction of the
+> `0x50` SFR-pair lead stands — it was wrong — but for a different reason than
+> recorded: `0x50` is a **data** table (`EJMP addr24` vectors), not code at all.
+>
+> Kept unedited below as the record of a wrong turn, and because the *negative*
+> results in it (no ASCII strings, no LJMP vector table) remain valid — they
+> were byte-level observations, not decode-dependent ones.
 
 Picked up directly from the "not yet done" note above, same session. Goal:
 locate the entry point / vector table / true base address, as a prerequisite
@@ -489,6 +514,143 @@ mechanism (the `0x50` SFR-pair candidate is retracted above; none found to
 replace it) or a documented boot sequence Sanyo never published. This is
 queued as the next step, not being pursued further right now — the governor
 logic (§ below, "Next steps" item 5) stays blocked on it.
+
+## Firmware decoded — MCS-251 *source mode*, base 0xF00000 (session 6, 2026-08-31)
+
+The layout thread was not stuck for lack of ideas. It was stuck because **every
+byte had been decoded with the wrong opcode map**, and the wrong map produced
+output plausible enough to reason about for a whole session.
+
+### The finding
+
+`rome_111.bin` is **MCS-251 *source mode*** code. The MCS-251 has two opcode
+maps, selected by `UCONFIG0.0`:
+
+| mode | opcodes 0x60–0xFF mean | legacy 8051 reached via |
+|---|---|---|
+| **binary** (8051-compatible) | the 8051 instruction | — (new instrs. use `A5` escape) |
+| **source** | the *new MCS-251* instruction | `A5` escape prefix |
+
+Every previous session used binary mode, which is `rz-ghidra`'s default. Under
+source mode the same bytes decode as ordinary firmware:
+
+```
+0x0ad60d  9afcc279   ECALL 0xfcc279     ; 24-bit inter-bank call
+0x0ad614  7eb3b877   MOV   acc,0xb877   ; read memory-mapped register
+0x0ad618  1eb0       SRL   acc
+0x0ad61c  5401       ANL   A,#0x1       ; isolate a status bit
+0x0ad61e  780d       JNE   0x98
+```
+
+### Consequences — every open question from session 5 resolves
+
+* **Base address = `0xF00000`.** The image is 0xF0000 bytes = 1 MiB flash minus
+  a 64 KiB top boot block (which the update file does not carry). `file_off =
+  addr − 0xF00000`. Confirmed, not assumed: every `ECALL`/`EJMP` target
+  observed maps inside the file *and* lands on a valid instruction boundary.
+* **There is no bank-select SFR, and the search for one was misconceived.**
+  Bank crossing is `ECALL`/`EJMP` with **flat 24-bit addresses** —
+  `A5 9A <addr24>` and `A5 8A <addr24>` in binary-mode bytes, i.e. `9A`/`8A`
+  in source mode. This is why no such SFR was ever found.
+* **The vector table is at file `0x50`,** immediately after the 0x50-byte
+  header — a table of 4-byte `EJMP addr24` entries. Entry 1 → `0xfe1a03`
+  (file `0x0e1a03`), which decodes as `SETB` then
+  `PUSH dr8/dr16/dr20/dr24/dr28`: an ISR prologue saving register banks.
+  Its entries shift by a constant between firmware revisions, as address-table
+  entries must.
+
+### Image container (byte-level, decode-independent)
+
+```
+0x00000  "PLEXTOR "  "DVDR   PX-716A  "  "1.11"   <- exact SCSI INQUIRY fields
+0x0001b  "03/23/07  15:10"                        <- build stamp
+0x00030  "PLEXTOR ROME    000"                    <- internal codename
+0x00044  ff-padding to 0x50
+0x00050  EJMP vector table
+...
+0x efffe  16-bit big-endian additive checksum of bytes [0, 0xEFFFE)
+```
+
+Verified: `sum(d[0:-2]) & 0xFFFF == 0xB6F2` == the trailing two bytes. Flat,
+uncompressed, unencrypted (2.5–10% `0xFF` fill across all 15 banks).
+
+### How it was established (and why the earlier "verification" was empty)
+
+The trap here is that **all 256 byte values are valid 8051 opcodes**, so "it
+disassembles cleanly" is a check that *cannot fail* and is therefore worth
+nothing. Session 5's confidence rested entirely on that non-check.
+
+The instrument that could return "no" is **conditional-branch target alignment**:
+in real code a relative branch must land on an instruction boundary. Calibrated
+against controls, on 1200-byte windows in four banks:
+
+| decode | on-boundary |
+|---|---|
+| random bytes (negative control) | ~62% |
+| synthetic valid 8051 (positive control) | ~86% |
+| **`rome_111.bin` as 8051 / binary mode** | **77.7%** (n=103) |
+| **`rome_111.bin` as MCS-251 source mode** | **96.2%** (n=53) |
+
+Supporting, independently derived: `0x7E` is the most common byte in the image
+at 5.67% — absurd as 8051 `MOV R6,#imm`, exactly right as source-mode `MOV`;
+the `s03` operand nibble correctly *predicts* instruction length; and 16-bit
+`dir16` operands cluster in `0xa000–0xbfff` at 3–4× the base rate, i.e. they
+are memory-mapped register addresses.
+
+**The decisive evidence is semantic, not statistical** — see the RPC1 patch below.
+
+### Firmware corpus
+
+Three images, all 983040 bytes (thanks to Keith for the 1.10 pair):
+
+| image | file |
+|---|---|
+| 1.11 (stock) | `cdda2img/private/drives/firmware/plextor/716A_111/rome_111.bin` |
+| 1.10 (stock) | `716A110.exe` → `rome110.bin` |
+| 1.10 (RPC1-modified) | `716A_110.ZIP` → `RPC1_110.BIN` |
+
+`1.10 stock` vs `1.11` differ in 51.8% of bytes — that is **bulk relocation, not
+a rewrite**: isolated changed sites show 16-bit operands shifting by a constant
+`+0x6D`, and the `0x50` vector entries by `+0x7D0`.
+
+### The RPC1 patch — a known-purpose semantic anchor
+
+`1.10 stock` vs `1.10 RPC1` differ in exactly **four bytes**: three code bytes
+in one 1687-byte cluster, plus the trailing checksum.
+
+| file offset | stock | RPC1 | source-mode meaning |
+|---|---|---|---|
+| `0x0ad64d` | `54` | `14` | `JE 0xcf` → `JE 0x8f` (branch target redirected) |
+| `0x0ada6e` | `6d` | `1a` | branch operand in the same check |
+| `0x0adce4` | `68` | `80` | **`JE 0x94` → `SJMP 0x94`** — conditional made unconditional |
+| `0x0effff` | `fb` | `80` | checksum fixup |
+
+The three code edits sum to −0x7B and the checksum byte moves by −0x7B: the
+container model closes exactly. `JE → SJMP` at `0x0adce4` is the textbook
+region-code defeat, so **the region-code enforcement path is at ≈ `0xFADCE4`**.
+A known-purpose patch decoding as precisely the expected instruction
+transformation is stronger evidence for the ISA than any alignment statistic.
+
+### Tooling
+
+`re-tools/srcdis.py` — source-mode disassembler. Source mode is byte-identical
+to binary mode with `A5` prepended (SLEIGH `GROUP3`), so it probes the stock
+`80251:BE:24:default` module with an injected `A5` and subtracts the prefix,
+falling back to GROUP1 (plain 8051, opcodes < 0x60) when GROUP3 misses.
+
+Two `rz-ghidra` defects it works around, both confirmed here and neither a
+firmware property:
+
+* **`pdj` (JSON) is broken for this module** — it returns `invalid` for
+  instructions its own `pd` *text* output decodes correctly. Parse `pd` text.
+* **the `@@=` offset iterator silently caps at ~115 results** regardless of how
+  many offsets are supplied. Batch with `;`-separated `-c` commands instead,
+  which scales (verified to 800).
+
+Ghidra 12.1.3 is installed and its 8051 module **already implements source
+mode** — `8051_main.sinc:234` defines a `srcMode` context bit, defaulting to 0.
+Setting it is the route to full `analyzeHeadless` auto-analysis; `srcdis.py`
+then remains useful as an independent cross-check.
 
 ## Next steps (session 4+)
 
