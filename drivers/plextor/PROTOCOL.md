@@ -1189,6 +1189,59 @@ a track-mode decision. `5/64/00` on an all-audio disc suggests it wants a track
 mode this disc does not provide. **The decisive next experiment is to repeat
 this against a Mode-1 data disc**, which needs different media in the drive.
 
+## Media sweep of 0xD9 / 0xF2 / 0xF4 — validation order, and 0xF4 executes (session 6, 2026-08-31)
+
+All earlier results were taken against a single profile (`0x0008`, CD-ROM), so
+the medium was swept. Tool: `re-tools/mmcvendor.c`.
+
+| medium | `0xD9` | `0xF2` | `0xF4` |
+|---|---|---|---|
+| **none** (tray open) | `2/3a/02` MEDIUM NOT PRESENT | `2/3a/02` | `2/3a/02` |
+| **pressed CD-ROM** (audio tracks) | `5/64/00` ILLEGAL MODE FOR THIS TRACK | `2/30/05` CANNOT WRITE MEDIUM | `5/24/00` INVALID FIELD IN CDB |
+| **CD-R** (data track, appendable) | `5/64/00` (unchanged) | *gated, not probed* | **status 00 — ACCEPTED** |
+
+### What this establishes
+
+**A validation order:** medium presence → medium type → CDB fields → track
+mode. Each opcode's failure point then reads as a statement of what it still
+needs, which a single sense code cannot give you.
+
+* **`0xF4` requires recordable media.** It is rejected on a pressed disc
+  (`5/24/00`) and **accepted on a CD-R**, returning good status and zero bytes.
+  Three candidate causes remain unseparated by two data points — recordable
+  *media type*, *writable state*, or the presence of a *data track*. A blank
+  CD-R discriminates: it is recordable and writable but has no data track.
+  Field map on CD-R: **only CDB byte 4 is validated**; bytes 1,2,3,5-10 all
+  accept `0x01` and still return good status.
+* **`0xD9` is not satisfied by a data track either.** It returns
+  `5/64/00 ILLEGAL MODE FOR THIS TRACK` on *both* an all-audio disc and a
+  data-track CD-R, with an identical field map on both. So it wants a track
+  mode neither disc provides, or a CDB field selects a mode and the zeroed
+  default is never valid. Value-sweeping the validated bytes (1,2,3,4,6) is the
+  next step, and must be done on **unwritable** media.
+* `0xF2` remains untested beyond the pressed disc; it needs a writable medium
+  by construction, which is the one case that carries real risk.
+
+### The safety gate was wrong, and is now fixed
+
+The gate originally covered only `0xF2`, on the reasoning that its sense code
+(`2/30/05 CANNOT WRITE MEDIUM`) proved it write-side, whereas `0xF4` merely
+rejected a CDB field and looked inert. **That reasoning was wrong**: `0xF4`
+looks inert on read-only media and *executes* on a CD-R. The disc in question
+was expected to be a pressed CD-ROM and turned out to be a CD-R, so an ungated
+opcode ran against writable media.
+
+**Rule now enforced in the tool: gate on the MEDIUM, never on a per-opcode
+guess about which opcodes are dangerous.** No opcode of unknown function is
+issued against a writable medium without an explicit `--allow-write-probe`.
+An opcode's behaviour against read-only media tells you nothing about its
+behaviour against writable media — which is the entire reason the gate exists.
+
+The affected disc was checked afterwards and shows no damage: TOC intact
+(1 data track, lead-out 239676), `READ DISC INFORMATION` consistent, and five
+sampled LBAs read with good status. **Byte-identity cannot be proven** — there
+was no prior checksum — and that limitation is recorded rather than glossed.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
