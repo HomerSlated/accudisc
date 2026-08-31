@@ -869,7 +869,7 @@ discriminator can return either answer:
 | `0xC1` unassigned (**negative control**) | `5/20/00` | INVALID COMMAND OPERATION CODE |
 | `0xC5` unassigned (**negative control**) | `5/20/00` | INVALID COMMAND OPERATION CODE |
 | `0xD8` known READ CD-DA | `4/00/00` | implemented |
-| **`0xD9`** | `5/64/00` | ILLEGAL MODE FOR THIS TRACK — parsed, rejected on *track mode*; a CD-DA read variant |
+| **`0xD9`** | `5/64/00` | ILLEGAL MODE FOR THIS TRACK — parsed, rejected on *track mode* (⚠ see retraction below) |
 | **`0xF2`** | `2/30/05` | CANNOT WRITE MEDIUM, INCOMPATIBLE FORMAT — a **write-side** command |
 | **`0xF4`** | `5/24/00` | INVALID FIELD IN CDB — parsed, rejected on a parameter |
 
@@ -1107,6 +1107,45 @@ here as a paired test so the failure signature is on record.
 `re-tools/sgsend.c` had a fixed 512-byte data-in buffer with **no bound check on
 `--in`**, so `--in 2352` (one raw CD sector) smashed the stack. Buffer raised to
 64 KiB and both `--in` and `--pl` now bounds-checked.
+
+## Public-source search on 0xD9 / 0xF2 / 0xF4 — and a retraction (session 6, 2026-08-31)
+
+Full report: `private/research/incoming/plextor-vendor-opcodes-d9-f2-f4.md`.
+
+**RETRACTED: "0xD9 is a READ CD-DA MSF variant."** That was my inference from
+its firmware chain adjacency to 0xD8 (READ CD-DA) plus a half-remembered
+D8=LBA / D9=MSF pairing. Checked against primary sources and **refuted**:
+cdrtools uses opcode 0xD8 only (4 call sites; C2 is selected by a CDB flag, not
+a second opcode); libcdio's vendor-unique enum lists C4/C9/D8/DB/DF with no
+0xD9; FreeBSD CAM's Plextor quirk table has a single 0xD8 entry; redumper's
+operation-code enum, QPxTool's `qpx_opcodes.h`, and DiscImageCreator likewise
+have nothing. **No public source associates 0xD9 with Plextor at all.** All we
+may say is what the drive said: it parses the CDB and rejects on track mode.
+
+**0xF2 and 0xF4 are genuinely undocumented** — zero opcode-position hits across
+seven independent sources, so this is a real absence rather than a narrow
+search. (Two apparent local hits were false: QPxTool's `0xF2` at
+`qscan_cmd.cpp:46` is CDB byte 1 of a *BenQ* 0xFD command, and `0xF4` at
+`pioneer_spdctl.cpp:21` is CDB byte 2 of a *Pioneer* command. Neither is an
+opcode.)
+
+**Two facts that did surface, both primary-sourced:**
+
+* **`0xF1` = `PLEXTOR_EEPROM_READ`** (QPxTool) — fills a blank in our 17-opcode
+  inventory.
+* **`0xF8` is a real Plextor opcode**, blacklisted from `pxfw`'s brute-force
+  prober alongside `0xDE`/`0xDF`. Function unknown, but **its presence on a
+  hazard blacklist is itself the finding** — do not probe it casually. It is a
+  21st candidate we had not identified.
+
+Apparent conflicts on `0xD5`/`0xF1` between tools are same-number reuse across
+different vendors' namespaces, not contradictions.
+
+**Consequence:** the function of `0xD9`/`0xF2`/`0xF4` is not recoverable from
+public sources. Our own firmware dispatch mapping is now the only primary
+source on them — which makes the RE work the reference rather than a
+duplicate of one. Gaps not covered: dvd+rw-tools (host unreachable), PxScan /
+CDVDlib (closed source), and a dedicated MyCE/CDFreaks forum-archaeology pass.
 
 ## Next steps (session 4+)
 
