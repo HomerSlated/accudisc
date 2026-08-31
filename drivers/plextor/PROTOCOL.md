@@ -1349,6 +1349,65 @@ negative finding.
 Identical field maps throughout. `0xD9` is satisfied by no CD medium of any
 type, and the only untested medium class left is **DVD**.
 
+## Pressed DVD — the command surface itself is media-dependent, and 0xF2 RUNS (session 6, 2026-08-31)
+
+Fifth medium: pressed DVD-Video (profile `0x0010` DVD-ROM, no ATIP, unwritable).
+
+| | `0xD9` | `0xF4` | `0xF2` |
+|---|---|---|---|
+| pressed CD-ROM (audio) | `5/64/00` | `5/24/00` (bit7=0) / accepted (bit7=1) | `2/30/05` |
+| pressed CD-ROM (data) | `5/64/00` | as above | `2/30/05` |
+| CD-R (data / blank) | `5/64/00` | accepted | accepted |
+| **pressed DVD-ROM** | **`5/20/00`** | **`5/20/00`** | **accepted** |
+
+### The drive's command surface changes with the medium
+
+`5/20/00` is INVALID COMMAND OPERATION CODE — the same sense the negative
+controls (`0xC1`, `0xC5`) return for opcodes that do not exist. So with a DVD
+loaded, **`0xD9` and `0xF4` cease to exist**: they are CD-only commands.
+
+**This is direct empirical confirmation of a static prediction.** The firmware
+analysis found ≥12 subtract-and-branch dispatch chains, each entered after a bit
+test on a state register, and inferred they were *per-drive-state command
+filters*. Loading a DVD makes two opcodes disappear — exactly that behaviour,
+observed independently of the disassembly.
+
+### CORRECTION: "0xF2 requires writable media" is false
+
+`0xF2` is accepted on a **pressed, unwritable** DVD-ROM. Rejected on CD-ROM,
+accepted on CD-R and DVD-ROM. That is the third generalisation about these
+opcodes withdrawn in one session, all the same shape — **a rule inferred from N
+media states, falsified at N+1**. Record the measurement table; do not state a
+rule until the media axis is exhausted.
+
+### 0xF2 executes a long, quiet physical operation — NOT a hang
+
+Probing `0xF2` with non-zero CDB parameters on the DVD made the drive stop
+answering: `TEST UNIT READY` returned `host=07` (DID_ERROR), block reads,
+`eject` and INQUIRY all timed out, while the kernel still reported the device
+`running`. `SG_SCSI_RESET` needs privilege we do not have. Keith power-cycled
+the drive, which fully recovered it (INQUIRY normal, no lasting harm).
+
+**Initial reading — "the drive is wedged" — was WRONG, corrected by Keith's
+direct observation of the front panel:** the LED blinked *twice, roughly every
+5 seconds*, very quietly, with no spindle or seek noise. The drive was **busy
+executing a long-running operation**, not crashed; the timeouts were the
+transport giving up on a drive that was mid-command. A slow periodic
+double-blink with a near-stationary disc is the signature of a **physical
+calibration** — laser power measurement / servo test — which corroborates the
+"calibration or measurement command" reading of `0xF2` from an entirely
+independent channel. It ran on an *unwritable* disc, so nothing could be
+written.
+
+**Consequences for method:**
+* Give unknown vendor opcodes **minutes-long** SG_IO timeouts, and expect the
+  drive to be unavailable meanwhile. Do not read a timeout as a hang.
+* **Trace every CDB to stderr, unbuffered, BEFORE issuing it.** The probe's
+  stdout was block-buffered, so when the process was killed the entire log was
+  lost and *which* parameter started the operation is still unknown. Now fixed
+  in `re-tools/mmcvendor.c` (`setvbuf` + pre-issue CDB trace).
+* Front-panel behaviour is data a probe cannot see. Ask.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —

@@ -25,6 +25,7 @@
  *   run:   flock /var/tmp/sr0.lock ./mmcvendor /dev/sg3 [--allow-write-probe]
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -34,8 +35,19 @@
 static int fd, st, slen;
 static unsigned char sn[64];
 
+/* Log the CDB BEFORE issuing it, unbuffered.  An unknown vendor opcode can
+ * WEDGE the drive (0xF2 with a non-zero parameter did, 2026-08-31, needing a
+ * power cycle).  With block-buffered stdout the whole log was lost when the
+ * process was killed, so we could not tell WHICH CDB hung it.  Never probe
+ * unknown opcodes without a durable per-command trace. */
+static int trace_cdb = 1;
 static int cmd(const unsigned char *c, int l, unsigned char *b, int n)
 {
+    if (trace_cdb) {
+        fprintf(stderr, "CDB:");
+        for (int i = 0; i < l; i++) fprintf(stderr, " %02x", c[i]);
+        fprintf(stderr, "\n"); fflush(stderr);
+    }
     sg_io_hdr_t io;
     memset(&io, 0, sizeof io); memset(sn, 0, sizeof sn);
     io.interface_id = 'S'; io.cmd_len = l; io.cmdp = (unsigned char *)c;
@@ -82,6 +94,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--allow-write-probe")) allow_write = 1;
         else dev = argv[i];
     }
+    setvbuf(stdout, NULL, _IONBF, 0);
     fd = open(dev, O_RDWR | O_NONBLOCK);
     if (fd < 0) { perror("open"); return 2; }
     unsigned char b[4096];
