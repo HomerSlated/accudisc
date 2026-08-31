@@ -1408,6 +1408,41 @@ written.
   in `re-tools/mmcvendor.c` (`setvbuf` + pre-issue CDB trace).
 * Front-panel behaviour is data a probe cannot see. Ask.
 
+### Was 0xF2 the firmware-upload command? No — checked, refuted
+
+Keith raised the possibility after observing the drive's behaviour, and it was
+worth taking seriously: an unknown opcode triggering a flash write with no valid
+payload could brick the drive. **Refuted from primary source.** QPxTool ships
+`pxfw`, a Plextor *firmware* tool; `console/pxfw/pxfw.cpp` uses **`0x3B`
+(standard SCSI WRITE BUFFER)** at lines 173 and 200 for the firmware path, plus
+`0xF1` (EEPROM read) at line 149. It does not use `0xF2`. Firmware upload on
+these drives goes through standard MMC `WRITE BUFFER`, which this project has
+never issued and which remains on the never-probe list.
+
+**Drive state verified intact** against the baseline captured earlier the same
+day: 11 mode pages / 10 changeable with byte-identical masks, 34 features,
+`READ BUFFER` capacity 8355840, page 2A max read `1b90`. Two bytes differ and
+both are *live* state rather than stored settings — page 2A byte 6 `2b`→`29` is
+the tray **lock-state** bit, cleared deliberately by our own `ALLOW MEDIUM
+REMOVAL`, and page 0x0D's inactivity timer was reset by the power cycle.
+
+**What 0xF2 actually did is still unknown, and "silence" narrows it further.**
+Keith clarified that the drive was *silent* — not merely quiet. No rotation at
+all. That rules out the disc-calibration reading as well, since laser power
+calibration requires the disc to spin. What remains: an internal operation
+touching no mechanism (an EEPROM/NVRAM access — note `0xF1` is EEPROM *read*,
+though opcode adjacency has already produced three retractions this session and
+is not evidence), or a command **blocking on an internal timeout** waiting for a
+hardware condition that never arrives, with the LED pattern signalling that
+wait. Both fit; nothing distinguishes them yet.
+
+**0xF2 is hereby classed with the DANGER opcodes** (`0xE3` PlexEraser, `0xEE`
+reset, `0xF8`): do not probe it further without a specific hypothesis and a
+plan, because it blocks the drive for minutes and needs a power cycle to clear.
+Identifying *which* CDB triggers it is now possible — `mmcvendor.c` traces every
+CDB to stderr unbuffered before issuing it — but costs another block-and-power-
+cycle and should not be done casually.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
