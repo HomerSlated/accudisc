@@ -965,6 +965,88 @@ still unlocated** — `0x3C` READ BUFFER, `0xB6` SET STREAMING, `0xBB` SET CD
 SPEED, `0xE9` vendor MODE — so at least one further dispatch idiom exists. Do
 not read 42 as the command surface.
 
+## The second dispatch mechanism — an indirect table, and why the enumeration stops there (session 6, 2026-08-31)
+
+The four known-implemented opcodes missing from the chain harvest (`0x3C`,
+`0xB6`, `0xBB`, `0xE9`) are dispatched by a **different mechanism**, now
+identified. This closes the question rather than leaving it open.
+
+### Finding every dispatch site, idiom-independent
+
+The chain dispatcher loads the CDB opcode from **dir16 `0xB7E7`**. Every dispatch
+site must touch that register whatever its idiom, so `7e/7a <sd> b7 e7` enumerates
+them all: **98 references**. Classified by what follows the load:
+
+| follows | count | idiom |
+|---|---|---|
+| `0x0a` MOVZ | 34 | **indirect table dispatch** (below) |
+| `ADD/JE` chain | 19 | the subtract-and-branch chains already documented |
+| `0xb4` CJNE | 16 | compare against a literal |
+| `0xbe` CMP | 9 | compare against a literal |
+| other | 20 | — |
+
+A generalised sweep confirms **`0xB7E7` is the only location in the image whose
+load is followed by an opcode-valued chain** — there is no second opcode register.
+
+### The indirect dispatch (Ghidra, srcMode=1)
+
+```
+MOV  R7,0x00b7e7        ; CDB opcode
+MOVZ WR2,R7             ; widen to word
+XRL  WR0,WR0            ; clear high half
+MOV  A,#0x2
+ADD  DR0,DR0 / DEC A / JNE   ; x2 twice -> DR0 = opcode * 4
+ADD  WR0,#0x85
+ADD  DR0,#0x6111        ; + per-site table base
+MOV  WR6,@DR0+0x20b     ; load handler pointer from the table
+ECALL @DR4              ; INDIRECT call
+```
+
+The per-site table bases are `0x6111`, `0x6511`, `0x6911`, `0x6d11` — **stride
+`0x400`**, exactly 256 entries x 4 bytes. So this is a classic opcode-indexed
+function-pointer table, with several tables (per drive state, matching the
+chains' role as state filters).
+
+**This explains the enumeration gap exactly.** Under table dispatch the opcode is
+never compared against a literal, so it appears in no chain — and indeed `0xE9`
+occurs as a compare immediate **nowhere in the image**. `0x3C`/`0xB6`/`0xBB`
+likewise have no compare site within 400 bytes of any `0xB7E7` access.
+
+### Why the static enumeration stops here — a bounded negative
+
+* The table base `0x85xxxx` is **outside** the flash window `0xF00000-0xFEFFFF`,
+  so the tables live in **RAM**, populated at boot.
+* They are not copied verbatim from flash: no 1024-byte window in the image reads
+  as 256 in-range 32-bit code addresses (searched; zero hits). The entry loaded is
+  16-bit (`MOV WR6,...`) at a 4-byte stride, so the table is *constructed*, not
+  stored.
+* Consequently the speed-ladder function `0xF65B36` has **no inbound references
+  at all** in Ghidra's database — it is reached only through the indirect call.
+
+So **opcode -> handler cannot be completed by static call-graph analysis alone**
+on this firmware. Completing it needs either the boot-time code that populates
+`~0x85631C`, or a live read of drive RAM — and the Phase 1 sweep already
+established there is no exposed RAM window (`READ BUFFER` id 0 is the 8 MiB data
+buffer and nothing else exists).
+
+### Working model of the command path
+
+Two cooperating mechanisms, offered as a **hypothesis** consistent with all
+evidence, not as established fact: the subtract-and-branch chains act as
+**per-drive-state legality filters** (the `0xfbffa8` chain holds exactly the
+no-media-legal commands), while the indirect table performs the **actual
+dispatch**. That would explain why both exist, why the chains are partial, and
+why they are entered after a state-register bit test.
+
+### Caveat on operand-level detail
+
+`80251.sinc` opens with `NOTE! 80251 implementation is preliminary and has not
+tested !!`. The instruction *stream* is validated here from several directions
+(2048/2048 seeds, the RPC1 patch semantics, the speed ladder's arithmetic
+progression), but individual **operand** renderings — register naming in
+`ECALL @DR4`, the exact widths above — should be re-derived before anything is
+built on them.
+
 ## Next steps (session 4+)
 
 1. **Write-path features** (GigaRec/VariRec/SecuRec/AutoStrategy effects) —
