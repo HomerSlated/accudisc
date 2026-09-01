@@ -17,6 +17,16 @@ cross-reference, then independently confirmed by raw SG_IO against the user's
 own drive. **Correction to session 2: GigaRec is 0xE9 page `0x04`, not `0x06`
 (see below).**
 
+
+> **This file is a chronological RE narrative** — it records how each finding was
+> reached, and what was retracted along the way, in the order it happened. For the
+> current *status matrix* (opcode → what it does → is it wired → is it tested) see
+> [`../../docs/reference/OPCODES.md`](../../docs/reference/OPCODES.md). One
+> correction that file carries: the set of opcodes proven implemented but absent
+> from the dispatch harvest is **eight**, not the four named below — `0x43`,
+> `0x51`, `0x55` and `0x5D` are also missing from the union and are issued
+> successfully on every run.
+
 ## Sources analysed
 
 - `private/drives/Plextor/PTPXL/PTPXL.exe` — PlexTools Professional XL 3.x

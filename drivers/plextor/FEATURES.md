@@ -5,6 +5,11 @@
 licensing. See `PROTOCOL.md` for the detailed protocol notes. Feature names are
 taken from the PlexTools / PX-716 user manual.
 
+**This file is indexed by consumer FEATURE.** For the opcode-first view — every
+opcode the firmware implements, whether AccuDisc issues it, and whether it is
+tested hardware-free and on hardware — see
+[`../../docs/reference/OPCODES.md`](../../docs/reference/OPCODES.md).
+
 Legend — **Identified**: opcode + CDB framing pinned. **Working**: exchange
 live-verified on the PX-716A via raw SG_IO (`re-tools/sgsend.c`). ☑ = done,
 ☒ = not yet, ◐ = partially (see note). "GET-verified" means the read path was

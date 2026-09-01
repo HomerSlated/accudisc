@@ -44,8 +44,10 @@
 #                     tables the build needs (src/drive/*.inc) are TRACKED, so
 #                     nothing here is required to build — verified, not assumed.
 #   docs/reference/   API_PLAN, RECORDING_PLAN, TODO: internal planning.
-#     (most)          RECOVERY.md especially — it is hardlinked to cdda2img and
-#                     is a design document, not user material. ATTRIBUTION.md
+#     (most)          OPCODES.md is a developer/RE reference (command surface
+#                     vs our wiring and test status). RECOVERY.md especially —
+#                     it is hardlinked to cdda2img and is a design document,
+#                     not user material. ATTRIBUTION.md
 #                     and cli-machine-interface.md ARE shipped: the first is a
 #                     credit obligation, the second is the stable contract for
 #                     driving the CLI that gets installed.
@@ -329,7 +331,7 @@ ok "every source of an installed artefact is present (libs, CLI, drivers, pkg-co
 # ABSENT. Asserted rather than trusted, because the include filter and this list
 # are edited at different times and drift is exactly what would not be noticed.
 devcruft=$(printf '%s\n' "$contents" \
-    | grep -E "^$NAME/(tests/|tools/|bindings/rust/|docs/research/|docs/flow/|\.githooks/|CLAUDE\.md|\.editorconfig|docs/reference/(TODO|RECOVERY|API_PLAN|RECORDING_PLAN)\.md)" \
+    | grep -E "^$NAME/(tests/|tools/|bindings/rust/|docs/research/|docs/flow/|\.githooks/|CLAUDE\.md|\.editorconfig|docs/reference/(TODO|RECOVERY|API_PLAN|RECORDING_PLAN|OPCODES)\.md)" \
     || true)
 if [ -n "$devcruft" ]; then
     printf '%s\n' "$devcruft" | sed 's/^/    /' >&2

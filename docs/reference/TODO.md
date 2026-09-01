@@ -7,6 +7,511 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## SELECTOR SWEEP — close the multiplexer gaps, then wire what qualifies — PLAN ONLY, agreed 2026-09-01, to run at the weekend
+
+Keith's five steps, in his order: (1) find which opcodes and pages are still
+undocumented, (2) devise tests to query them, (3) decide which are actually
+useful here, (4) wire those, (5) test unit/fixture **and** production. Added
+2026-09-01 during planning: **document the opcodes that are redundant because
+they duplicate standard MMC** — §3.1, which is a disqualifier in step 3 and a
+deliverable in its own right.
+
+Full status matrix and the gap list: **`docs/reference/OPCODES.md`** — §E is the
+multiplexer audit this plan executes, §G the gaps. Do not duplicate its tables
+here; that file is the source of record.
+
+**Nine opcodes carry a selector byte and we occupy one value of most of them.**
+`0xE9` is not special, only mapped. Excluded from every phase below, by the §F
+safety classes: `0x3B` WRITE BUFFER, `0xE3` PlexEraser, `0xEE` reset, `0xF2`,
+`0xF8`, `0xDE`/`0xDF` (all three on `pxfw`'s own blacklist).
+
+### The two rules that govern the whole plan
+
+**A. Nothing is swept until its discriminator is established.** A drive that
+returns eight well-formed bytes for a page it does not implement is
+indistinguishable from a page that is implemented and reads all zero. That is
+this project's dominant failure mode — an output too well-formed for anything
+downstream to reject. So every sweep is preceded by a control run proving the
+drive can return **both** answers, exactly as `0xD9`/`0xF2`/`0xF4` were gated on
+`0x12` (positive) against `0xC1`/`0xC5` (negative). No controls ⇒ the sweep does
+not run.
+
+**B. Every result is scoped to the medium it was taken on.** `0xD9` and `0xF4`
+*cease to exist* under a DVD — `5/20/00`, the same sense an unassigned opcode
+returns. The command surface is media-dependent, so "page N is not implemented"
+is only ever "not implemented on this profile". Every deliverable below is a
+table indexed by **(selector value x medium)**. Three rules about these opcodes
+were withdrawn in one session for exactly this, all the same shape: a rule
+inferred from N media states, falsified at N+1.
+
+Standing: `flock /var/tmp/sr0.lock` throughout (contention collapses Q 99%->13%
+while audio stays clean, i.e. it reads as a bad disc); trace every CDB to stderr
+**unbuffered before issuing**; before/after disc-state snapshot; GET/read forms
+only during discovery, never SET.
+
+---
+
+### Phase 0 — discriminators and static RE. No drive for the RE half.
+
+**0.1 Establish the `0xE9` page discriminator.** The GET response is a fixed
+8-byte data-in with `resp[0]` = page echo and `resp[1]` = constant `0x06`. The
+echo is the candidate discriminator. Prove it before trusting it: run `0xBB`
+(known implemented) against at least two pages expected absent, and record
+whether an absent page gives sense, or good status with a zero/absent echo. **If
+both cases produce identical well-formed blocks, the sweep is not possible by
+this route** — say so and stop, rather than producing 256 rows of nothing.
+
+**0.2 Establish the `0xED` discriminator.** Mode code 0 (POWEREC) is the positive
+control. **There is no negative control yet** and one is required before mode
+codes 1..255 mean anything. Same stop condition as 0.1.
+
+**0.3 Static RE on `PTPXL.exe` — zero drive risk, runs in parallel.** Bind the
+`0xDF` selector bytes (`ec`/`f1`/`f6`/`f2`, four builders, one dialog cluster
+around `0x728250`-`0x728f19`) and `0xDE`/`0xE1`/`0xE2`. This is the standing
+"live lead" and it is the only route to `0xDF` that does not touch a blacklisted
+opcode. Feature strings sit several levels up the C++ dialog hierarchy.
+
+Deliverable: a discriminator verdict per opcode (works / does not work / stop),
+plus whatever `0xDF` selector bindings the RE yields.
+
+---
+
+### Phase 1 — what the changeable bits MEAN. No drive at all.
+
+Presence and changeable masks for the 11 mode pages are already measured
+(`PROTOCOL.md` "Mode pages — 11 present"). Re-reading the payloads adds nothing.
+**The missing thing is what each host-changeable field does**, and MMC-5 declares
+these pages legacy and defers to MMC-3.
+
+**1.0 Reference material — RESOLVED 2026-09-01, no acquisition needed.** We have
+MMC-3: `private/research/mmc3r10g.pdf` in this repo (cdda2img holds an
+independent copy of the same file — same size, different inode, not hardlinked).
+The gap was narrower than "we need MMC-3": MMC-5 ships with a pre-extracted
+`.txt` beside its PDF and MMC-3 did not, and it was filed under
+`private/research/` rather than `private/code/MMC/` where the spec material
+lives, so a search of the obvious place missed it. **Fixed:** `pdftotext -layout`
+output now sits at `private/code/MMC/mmc3r10g.txt` (1.3 MB, §6.3.6 verified
+present at line 16095) beside `mmc5r04.txt`. The PDF was left where it is.
+MMC-6 (`mmc6r02g.pdf`) exists in cdda2img's research tree if a third opinion is
+ever wanted. All of it stays under git-ignored `private/` — licensed T10
+material, summaries fine, the source never leaves.
+
+**1.1 Extract MMC-3 field definitions** for the changeable bits of pages
+`01 02 07 08 0d 0e 1a 1d` from `private/code/MMC/mmc3r10g.txt`, into a table of
+(page, byte, bits, name, semantics, values). Precedent: page `0x0D`'s only
+changeable field was read out by hand on 2026-09-01 and turned out to be the
+**Inactivity Timer Multiplier** — *hold track state* after a seek, 125 ms to
+32 min — **not** a spindown control, which is what this file and `FEATURES.md`
+had loosely implied. The changeable mask `00 0f` matches MMC-3's 4-bit field
+exactly, so the mask independently corroborates the spec layout. Expect more of
+these; expect at least one more mislabel.
+
+**1.2 Then, and only then, read the payloads** of those 8 pages on the drive as a
+cheap confirmation of 1.1. Standard MMC, read-only, no vendor opcode, no medium
+precondition. This is the confirmation step, not the substance.
+
+**1.3 `0x43` READ TOC formats 1 (multi-session info) and 3 (PMA)** — the two
+formats we never issue. Zero risk, same reasoning.
+
+Deliverable: a field dictionary for the eight pages, plus a note per page saying
+whether it is a lever we could use or a legacy field with no CD-DA meaning.
+
+---
+
+### Phase 2 — vendor selector sweeps, medium-indexed. Gated on Phase 0.
+
+Runs only for opcodes whose discriminator passed Phase 0. Media axis, decided up
+front: **pressed audio CD, pressed data CD-ROM, blank CD-R** — the three CD
+profiles already characterised. A DVD arm is optional and read-only; its value is
+showing which selectors vanish, not what they do.
+
+| # | opcode | selector | space |
+|---|---|---|---|
+| 2.1 | `0xE9` | CDB[2] page | 10 identified of 256; GET only, `CDB[1]=0x00` |
+| 2.2 | `0xED` | CDB[2] mode code | 1 known of 256; GET form only |
+| 2.3 | `0xEA` | CDB[2] scan type | `0x00` and `0x10` documented; sweep the rest |
+| 2.4 | `0xF3` | CDB[1]/CDB[2] | the **6-call-site builder** `PROTOCOL.md` calls "likely a get/set dispatcher" — never probed |
+| 2.5 | `0xF1` | CDB[1] sub-cmd | `0x01` known (EEPROM read); others unknown |
+| 2.6 | `0xE4` | CDB[1]+CDB[2] | 3 builders; MQC arm is DVD-only |
+
+`0xF3` (2.4) is the highest-value item here: a six-site builder with a
+runtime-supplied byte 1 is the same shape `0xE9` turned out to have, which makes
+it the best candidate for a second feature cluster.
+
+**A GET is not automatically safe.** `0xF2` with a non-zero parameter ran a
+minutes-long physical operation and needed a power cycle, with the drive
+answering nothing meanwhile. Give unknown selectors minutes-long SG_IO timeouts,
+**do not read a timeout as a hang**, and gate on the medium regardless of
+direction — an opcode's behaviour on read-only media says nothing about its
+behaviour on writable media.
+
+Deliverable: per opcode, a (selector x medium) table with sense codes, and a
+verdict of implemented / absent / **undetermined**. "Undetermined" is a permitted
+and expected outcome; do not round it to either neighbour.
+
+---
+
+### Phase 3 — relevance. Narrow criterion, decided now so the weekend does not relitigate it.
+
+**Qualifies only if it serves one of: CD-DA read, the DAO write path, or the
+frame-accurate status surface.**
+
+- **DVD-only ⇒ out.** Book Type, Test Write, `0xE4` Media Quality Check, the
+  `0xEA` DVD arms (PI/PO, PI sum8, POE, PIF).
+- **Write-time-only ⇒ deferred** while the burn path is paused: GigaRec,
+  VariRec. Identified and GET-verified already; their *effects* need a burn.
+- **Expected to qualify:** Silent Mode main (`0xE9` page `0x08`), Single Session
+  / Hide CD-R (page `0x01`), mode page `0x01` byte 3 read retry count, and
+  `0xEA` `CDB[2]=0x10` Jitter/Beta.
+
+A GET-verified page is not a qualified feature: it means the exchange works, not
+that the feature was proven to do anything.
+
+#### 3.1 Redundancy — the "do not build this" list
+
+**A second disqualifier, alongside the DVD and write-time filters: an opcode that
+duplicates a standard MMC command we already issue.** This is the direct
+counterpart of the vendor-isolation rule — a vendor opcode earns its place only
+by doing something generic MMC cannot, and one that merely re-implements a
+command already in `src/mmc/` adds a driver dependency for nothing.
+
+**Keith's framing, 2026-09-01, and it upgrades this table from documentation to
+architecture: the redundancy table IS the gate between the generic MMC core and
+the vendor driver.** It is not merely a "do not build this" list; it is the
+decision rule that says which side of the `libaccudisc` / `accudisc-drv-*.so`
+boundary a capability belongs on, and it makes CLAUDE.md's vendor-isolation
+constraint operational rather than aspirational. Read as a rule:
+
+> **If a standard MMC command achieves it, it belongs in `src/mmc/` and the
+> driver must not reimplement it. Only what generic MMC cannot reach may live in
+> a vendor driver.** A capability reached by a *standard* opcode carrying
+> *vendor-specific values* is a CORE feature with a vendor data table, not a
+> driver feature — the same status the read-offset and ATIP tables already have
+> ("factual data tables are not features and may live in the core").
+
+That third case is the one this gate exists to catch, because it is the one that
+looks like a vendor feature and is not. A worked example arrived the same day:
+**Yamaha's AMQR appears to be set through mode page `0x05` Write Parameters**,
+i.e. `0x55` MODE SELECT — a command the core already issues — which would put it
+in the core with a vendor value table, *not* in a driver. See the drive-research
+item below; that reading is a lead, not yet a finding.
+
+Deliverable: a **redundancy table in `OPCODES.md`**, each row naming the vendor
+or legacy opcode, the standard command that supersedes it, and the evidence.
+Seed rows, all already established:
+
+| redundant | superseded by | evidence |
+|---|---|---|
+| `0xD8` READ CD-DA | `0xBE` READ CD | **all five** C2/sub-channel combinations work on this drive, so `0xD8` buys nothing. Already the documented reason it is unused. |
+| `0x08` READ(6), `0xA8` READ(12) | `0xBE` READ CD | legacy CDB widths of the same operation; `0xBE` is the only form that returns raw CD-DA with C2 and sub-channel |
+| `0x0A` WRITE(6), `0xAA` WRITE(12) | `0x2A` WRITE(10) | same, write side |
+| `0x1A` MODE SENSE(6) | `0x5A` MODE SENSE(10) | 6-byte form; we use the 10-byte form throughout |
+| `0xB9` READ CD MSF | `0xBE` READ CD | MSF-addressed sibling; we address by LBA |
+| `0x28` READ(10) | `0xBE` READ CD | cooked 2048-byte sectors; CD-DA needs raw |
+| `0xEB` speed LIST readout | `0xAC` GET PERFORMANCE **(candidate — verify)** | both report speed capability; whether `0xEB` carries anything `0xAC` and feature `0x0107` do not is **unverified** and is a Phase 2 question |
+
+**Redundancy is a property of THIS drive, not a universal one — say so in every
+row.** `0xD8` is redundant here *because* all five `0xBE` combinations work on a
+PX-716A. On a drive whose `0xBE` C2 forms are broken or absent, `0xD8` could be
+the only raw-audio path, and a row written as an unqualified fact would then be
+wrong in exactly the way this plan's rule B guards against. Each row states the
+drive and firmware it was established on.
+
+The last row is deliberately marked a candidate: it is an inference from two
+descriptions, not a measurement, and it is precisely the shape of claim this
+project keeps having to withdraw.
+
+---
+
+### Phase 4 — wire what qualified.
+
+**Two items need no discovery at all and should land first — they are not gated
+on any phase above.**
+
+**4.1 The `uncr`/`e32` offset ambiguity in code we already ship.** This is a
+correctness question on a shipped path and ranks **above** discovering new
+features. QPxTool decodes eight fields from the 26-byte CD Q-Check block (`bler`
+at 10, `e31 e21 e11` at 12/14/16, `uncr` at 18, `e32 e22 e12` at 20/22/24);
+`plextor.c` takes three and reads **CU at 20** where QPxTool reads `uncr` at 18.
+Neither side is authoritative — QPxTool's own source carries
+`// check where drive returns E32` and `// and where is UNCR` at
+`qscan_cmd.cpp:273-274`. **Settle it on hardware.** Requires a disc with a
+**known non-zero uncorrectable count**; without one the two readings are
+indistinguishable and the test proves only that the disc is clean — the same
+trap as `0x5C`'s Block=1 form.
+
+**4.2 `0xEA` `CDB[2]=0x10` Jitter/Beta, CD arm.** Framing already pinned from
+QPxTool (`cmd_cd_jb_init`, `CDB[1]=0x15`, `CDB[2]=0x10`, `CDB[3]=0x01` for CD).
+No sweep needed: relevance + wiring + test only.
+
+**4.3 Anything Phase 3 qualified**, then:
+
+**The two ABI gates, which are the real cost of this phase.**
+
+- **New vendor features mean `ACCUDISC_DRIVER_ABI` 3 -> 4.** POWEREC was
+  *appended* in ABI 3 (`include/accudisc/driver.h:90`); the same mechanism
+  applies, and every driver `.so` must be rebuilt in step.
+- **The free-to-break window is spent.** It was never "soname is `.so.0`" — what
+  made breakage free was that nothing outside this repo linked the library, and
+  that expired when the Python binding shipped. Any public-header addition must
+  align with `API_PLAN.md` and regenerate the binding, whose cdef is verified at
+  **import**, not at build.
+
+Do not promote process conventions (exit codes, `--progress-fd`, rendering) into
+the library; document the mapping instead.
+
+---
+
+### Phase 5 — test, both levels.
+
+**5.1 Fixture, for anything wired.** CDB-layout cases in `tests/test_cdb.c`, plus
+response-decode cases against captured vectors where a response is parsed. Note
+that `tests/test_burn_flow.c` stubs the whole MMC layer, so a passing flow test
+is **not** coverage of an opcode's bytes.
+
+**5.2 Backfill the two genuinely bare opcodes while here** (`OPCODES.md` §G.2):
+`0x2A` WRITE(10) — whose stub discards `lba` and `nblocks` outright, so no
+hardware-free test observes even which LBA the audio-writing command is given,
+including the two's-complement -150 lead-in address — and `0x54` SEND OPC.
+Hardware-free and cheap.
+
+**5.3 Production.** Real PX-716A under `flock`. Read-side items settle on any
+disc; `0xEA` Jitter/Beta wants a disc with known error content; 4.1 requires the
+known-non-zero-uncorrectable disc named above. Record results at opcode level —
+"a burn passed" is `exercised`, not `observed`, and the distinction is the point
+of `OPCODES.md`'s production column.
+
+**5.4 Update `OPCODES.md`** — it is the status matrix and goes stale first. It
+gains: the (selector x medium) tables from Phase 2, the MMC-3 field dictionary
+from Phase 1, and the redundancy table from 3.1. `FEATURES.md` gains rows only
+when semantics are established, never on a sense code alone.
+
+### Stop conditions
+
+Any of these ends the relevant thread rather than escalating it: a discriminator
+that cannot separate implemented from absent (Phase 0); a selector whose meaning
+is undetermined after the media axis is exhausted; a drive that stops answering
+(power-cycle, then **stop** — do not retry the parameter that did it). None of
+`0x3B`/`0xE3`/`0xEE`/`0xF2`/`0xF8`/`0xDE`/`0xDF` is probed at any point.
+
+
+## DRIVE PORTFOLIO — a batch of simple vendor drivers, and which drives to acquire — PLAN ONLY, raised 2026-09-01
+
+Keith, 2026-09-01, two related asks recorded as one item because the second
+decides the first:
+
+1. **Build a batch of simple drivers** modelled on those shipped with `cdrtools`
+   and `cdrdao`.
+2. **Research which drives are worth pursuing for special features**, so they can
+   be **marked for acquisition and testing**. Named target: at least one drive
+   capable of **Audio Master Quality Recording (AMQR)** — a high-redundancy write
+   strategy producing unusually robust media. "Nearly all Yamaha, but at least one
+   Plextor also supports it."
+
+**Everything below is gated on the redundancy rule** in the selector-sweep plan
+§3.1 above: a capability reachable by standard MMC belongs in the core, and only
+what generic MMC cannot reach earns a driver. Expect that rule to delete several
+candidate drivers before they are written.
+
+### A. What the reference tools actually ship — enumerated 2026-09-01
+
+`cdrdao/dao/` (12 drivers): `CDD2600`, `GenericMMC`, `GenericMMCraw`,
+`PlextorReader`, `PlextorReaderScan`, `RicohMP6200`, `SonyCDU920`, `SonyCDU948`,
+`TaiyoYuden`, `TeacCdr55`, `ToshibaReader`, `YamahaCDR10x`.
+
+`schily-2024-03-21/cdrecord/` (9): `drv_7501`, `drv_bd`, `drv_dvd`,
+`drv_dvdplus`, `drv_jvc`, `drv_mmc`, `drv_philips`, `drv_simul`, `drv_sony`.
+
+**Most of that list is dead weight for this project, and the classification is
+the first deliverable.** `CDD2600` (Philips), `SonyCDU920/948`, `YamahaCDR10x`
+(= CDR100/CDR102), `TeacCdr55`, `RicohMP6200`, `drv_7501`, `drv_philips`,
+`drv_jvc`, `drv_sony` are **pre-MMC 1990s SCSI writers** — they exist because
+those drives predate a common command set, which is precisely the problem MMC
+solved. Porting them buys nothing unless such a drive is physically acquired,
+and they are not the drives worth acquiring.
+
+Note what `cdrdao`'s own table already says: every modern Yamaha
+(`CRW2100`…`CRW8824`) is mapped to **`generic-mmc`**, not to a Yamaha driver.
+Only the ancient `CDR100`/`CDR102` get `yamaha-cdr10x`. That is the redundancy
+rule stated by a reference tool, in its own data, twenty years ago.
+
+**The live vendor surface is QPxTool's, not cdrdao's**: `lib/qpxplextor` (ours,
+shipped), `lib/qpxpioneer`, `lib/qpxyamaha`. Three vendors, and the second and
+third are the actual candidates for a "batch of simple drivers".
+
+Deliverable A: a table classifying all 21 reference drivers as **pre-MMC legacy
+(do not port)** / **superseded by generic MMC (do not port)** / **live vendor
+capability (candidate)**, with the reason per row. This is the same evidence
+shape as §3.1's redundancy table and should be merged into it.
+
+### B. Candidate vendor drivers, seeded from QPxTool
+
+| vendor | features QPxTool implements | mechanism | verdict |
+|---|---|---|---|
+| Plextor | Q-Check, SpeedRead, GigaRec, VariRec, SilentMode, SecuRec, AutoStrategy, BookType, PoweRec, PlexEraser | vendor opcodes `0xE9`/`0xEA`/`0xED`/`0xE4`/`0xE5`/`0xD4`/`0xD5` | **shipped** |
+| Pioneer | `pioneer_get_quiet` — quiet/speed control | see `lib/qpxpioneer` | candidate, unresearched |
+| Yamaha | **AMQR**, Force Speed, **DiscT@2** (`f1tattoo`, laser etching) | see C below | candidate |
+
+**Force Speed is a redundancy-rule casualty and a useful worked example.**
+`yamaha_check_forcespeed()` reads mode page `0x2A`, takes the max read and write
+speeds from offsets +14 and +28, and issues **`MMC_SET_SPEED` (`0xBB`) with
+`CDB[1]=0x01`** — a standard MMC opcode we already build, with the rotation-control
+field set to CAV. `cdrdao` carries the same thing as a *flag*,
+`OPT_MMC_YAMAHA_FORCE_SPEED`, not a driver. **This is core behaviour with a
+vendor quirk bit, not a driver feature** — exactly the third case §3.1 exists to
+catch. Verify the CDB[1] reading before acting on it.
+
+### C. AMQR — what is established, and what is not
+
+**Established, from primary source on disk 2026-09-01:**
+
+* QPxTool implements AMQR only as `yamaha_check_amqr()` in
+  `lib/qpxyamaha/yamaha_features.cpp`. It does `MODE SENSE` of
+  **page `0x05` Write Parameters**, walks to the page offset, and issues a
+  `mode_select()` of the same length.
+* **Every byte-modification in that function is commented out**, and
+  `yamaha_set_amqr()` is literally `{ return 1; }`. **QPxTool does not implement
+  AMQR.** What ships is a MODE SENSE/MODE SELECT round-trip that tests whether
+  the page can be written back — a weak probe that may well return true on drives
+  with no AMQR at all. Treat its "AudioMaster Q.R.: YES" output as unproven.
+* **Keith's Plextor recollection is corroborated by QPxTool's structure**:
+  `console/cdvdcontrol/cdvdcontrol.cpp:127` calls `yamaha_check_amqr(dev)` from
+  **inside the `isPlextor()` branch**, deliberately, in addition to the Yamaha
+  branch at :128. The author expected at least one Plextor to have it.
+  **QPxTool never names the model.**
+* The commented-out bytes are the only mechanism hint we have: writes to page
+  `0x05` at offsets +2, +3, +4 and +8. **This is abandoned experimentation by
+  QPxTool's author, not a specification.** It is a lead. Do not build on it.
+* **`AMQR` appears nowhere in `cdrtools` or `cdrdao`** (searched
+  case-insensitively across `private/code/`, zero hits).
+
+**Consequence for the gate, and it is the interesting one:** if AMQR really is
+mode page `0x05`, then it is **standard MMC `0x55` MODE SELECT with vendor
+values** — a CORE feature with a vendor data table, *not* a vendor driver. That
+would make AMQR the flagship worked example of §3.1's third case.
+
+**The two models, from Keith 2026-09-01: Yamaha CRW-F1 and Plextor Premium II.**
+"Both high value drives. I'll take either one." All `CRW-F1<any>` are the same
+drive with different interfaces, so the suffix is an interface code, not a
+variant. Both are already present in our own data:
+
+| drive | our offsets DB | QPxTool capability flags |
+|---|---|---|
+| `YAMAHA CRW-F1E` / `CRW-F1S` | **+733**, 829 / 42 submissions | n/a (Yamaha lib: AMQR, ForceSpeed, DiscT@2) |
+| `PLEXTOR CD-R PREMIUM2` | **+30**, 1932 submissions | `CHK_ERRC_CD \| CHK_JB_CD \| CHK_FETE` |
+
+Two consequences worth having before buying:
+
+* **The whole Yamaha CRW family reads +733** (CRW-70, 2100, 2200, 3200, F1E,
+  F1S), except CRW8424/8824 at +117. Since every F1 is the same drive, a
+  `CRW-F1UX` is +733 too — but **no `UX` row exists in `offsets_db.inc`**, so an
+  exact-string lookup would miss it and fall through to no offset. Check the
+  INQUIRY string on arrival and add the row; the value is not in doubt.
+* **The Premium II's Q-Check surface is a strict SUBSET of the PX-716A's** —
+  CD-only, no `CHK_ERRC_DVD`/`CHK_JB_DVD`/`CHK_TA_DVD`. It adds **no diagnostic
+  capability we lack.** Its value is write-side, which sharpens the case below
+  rather than weakening it, but it does retire the "a second Plextor would widen
+  our diagnostic surface" argument.
+
+**GigaRec 0.6x may be the real reason to buy the Premium II — and it is a better
+argument than AMQR, because it is locally sourced.**
+
+Our own RE decoded the full GigaRec rate-code table from `PTPXL.exe` at HIGH
+confidence (it matches QPxTool's `gigarec_tbl` byte-for-byte). The `0x80` bit
+marks the sub-1.0 **compression** rates, and our own table labels the bottom one:
+
+| code | rate | our note |
+|---|---|---|
+| `0x81` | 0.8x | compress |
+| `0x82` | 0.7x | compress |
+| `0x83` | **0.6x** | **compress (max reliability)** |
+
+QPxTool's GUI gates those rates **per model**
+(`gui/src/devsettings_widgets.cpp:131-155`): `0.7` and `0.8` are enabled
+unconditionally, `0.9`/`1.1` need `ratio_11` (PX-755/760/Premium II), and
+**`0.6` and `1.4` need `ratio_14`, which is `startsWith("CD-R   PREMIUM")` —
+Premium and Premium II only.**
+
+So, if that gating reflects firmware acceptance (**inferred from a GUI, not
+measured — verify it**): the PX-716A already reaches **0.7x and 0.8x**, i.e. the
+*same direction* AMQR goes — lower density, longer pits, more robust media — and
+**0.6x, our own table's "max reliability", requires exactly the drive Keith is
+considering.**
+
+**Therefore the cheap experiment comes first, and it may decide the purchase.**
+GigaRec is `0xE9` page `0x04`, already identified, framing pinned, GET-verified,
+and it is one of the eight unwired pages in the selector-sweep plan §3.1/Phase 3.
+Wire it, burn one CD-R at 0.8x and one at 1.0x, and measure both with `0xEA`
+Q-Check — which we already ship. That answers, on hardware we own, for the price
+of two blanks: **does lower recording density actually produce measurably more
+robust media here?** If it does not, neither AMQR nor GigaRec 0.6x is worth a
+drive purchase. If it does, the purchase is justified by a measured curve rather
+than by marketing copy.
+
+**Do not conflate GigaRec with AMQR.** Both reduce density, and that is the whole
+of the established similarity. Whether they are the same technique, related, or
+merely adjacent is **not established** and should not be assumed while designing
+the experiment above.
+
+**A documentation correction to check while doing this:** `FEATURES.md` row 4
+describes GigaRec on the PX-716A as "CD-R density 0.6-1.4x". If QPxTool's
+per-model gating is right, this drive reaches only 0.7-0.8 and 1.2-1.3, and the
+row is stating the *feature's* range inside a *per-drive* table. Also stale:
+`re-tools/gigarec_ratemap.py`'s docstring still says "page 0x06", corrected to
+`0x04` everywhere else.
+
+**Open, and the research to do:**
+
+1. **Confirm AMQR on both models with a real source.** Keith names Yamaha CRW-F1
+   and Plextor Premium II; **no local source names any AMQR-capable model**, so
+   this is currently recollection plus QPxTool's structural hint, not a citation.
+   Try the Wayback Machine for Yamaha's own product pages (`wayback` skill).
+2. **Search the PX-716A manual and PlexTools CHM first** — both are on disk. If
+   our own drive has it, no acquisition is needed at all. **They are CP1252 and a
+   UTF-8 `grep` silently skips lines**, so any negative taken without
+   `iconv -f CP1252 -t UTF-8` is void.
+3. **The actual mechanism** — page `0x05` bits, or something else. Primary
+   sources to try: Yamaha service/OEM documentation, `dvd+rw-tools`, MyCE/CDFreaks
+   archaeology, and the Wayback Machine for Yamaha's own product pages. The
+   `wayback` skill exists for exactly this.
+4. **Whether AMQR is even reachable on media we can still buy.** It reportedly
+   trades capacity for pit length; if it needs media characteristics no current
+   CD-R has, a drive purchase buys a demonstration and not a capability.
+
+### D. Acquisition list — the actual output
+
+A table of **capability → drive model(s) → why this project wants it → source**,
+each row marked **acquire / watch / reject**, so Keith can buy against it.
+
+Ordered by what the capability buys *this* project (CD-DA read fidelity, DAO
+write fidelity, the frame-accurate status surface). Candidate rows to research,
+none yet justified:
+
+* **AMQR** — robust audio media. The named target.
+* **Yamaha DiscT@2** — laser etching, and it ships free with a CRW-F1 rather than
+  being a reason to buy one. **Reject as a purchase driver**, on two independent
+  grounds: it has no bearing on audio fidelity, and per Keith it needs special
+  discs that are **out of production**, so the capability would arrive with no
+  media to exercise it. Worth one line in the docs as a known vendor feature we
+  deliberately do not implement, nothing more.
+* **Pioneer** vendor features — unresearched; `lib/qpxpioneer` is the entry point.
+* **Plextor Premium II** — AMQR (claimed), **GigaRec 0.6x and 1.4x** (gated to
+  this model per QPxTool), and it would test whether our driver's gating
+  generalises past one drive. **Its Q-Check surface adds nothing** — CD-only, a
+  strict subset of the PX-716A's. Buy it for the write-side density range and the
+  architecture test, not for diagnostics, and **only after the 0.8x experiment
+  above shows density buys robustness on hardware we already own.**
+* **A drive with a known-broken `0xBE` C2 path** — would falsify §3.1's `0xD8`
+  redundancy row, which is currently scoped to "this drive". Probably not worth
+  buying deliberately, but worth recognising if one turns up.
+
+**Standing caution for every row: one drive is not a population.** Every
+generalisation this project has made from the single PX-716A has needed
+withdrawing at N+1 — three in one session on the vendor opcodes alone. A second
+drive is worth more as a falsifier of what we already believe than as a source of
+new features.
+
+
 ## READ BUFFER ("AccuBuffer") — the slow-sink experiment, and why the page cache already is one (2026-08-26)
 
 Keith asked for a read buffer before the powered C2 test, and asked the right
