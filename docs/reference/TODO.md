@@ -3744,7 +3744,11 @@ read-only open, not a speed matter.
     the project has done the latter (0.26.0, 0.27.0) without harm because the
     consumers are known. Decide deliberately; do not discover it.
 
-    **AND IT COLLIDES WITH 8TRAX'S TOP ASK — do these two together.** Their
+    **IT COLLIDES WITH 8TRAX'S ITEM 1 — but do NOT wait for it.** That item is
+    `[P4]` (Keith 2026-09-02: 8trax has no code, and may be months away), so
+    coupling this work to it would drag this down rather than pull that up. The
+    constraint that survives is narrower than "do them together": *do not move
+    the write signature in a way that forecloses a matching read one.* Their
     request (§"Consumer requests — 8trax", item 1) is a read-path progress
     callback with the *identical* signature to the write one, because the whole
     value to them is the two paths becoming interchangeable behind one
@@ -4545,7 +4549,17 @@ with it — not a peer sharing work, not a front end over it. He also wants
 has written no code against us yet, which will never be true again, and asking
 them what they needed while their migration cost was zero was the whole point.
 
-### 1. Read-path progress callback — `[P2]`, their top ask
+**LOWEST PRIORITY IN THE FILE — Keith, 2026-09-02: "All 8trax requests are
+lowest priority. It might be months before we get anywhere near that. 8trax
+literally has no code."** Everything here is therefore `[P4]`. It was tagged
+`[P2]`/`[P3]` until then, which is what caused a session to surface item 1 as a
+near-term candidate on the strength of a `[P2]` grep — the "their top ask"
+wording made it worse by carrying *their* ranking with no scale attached. Their
+ranking orders these against **each other**; it says nothing about where any of
+them sits against our work, and there is no consumer waiting on the other end.
+Re-read this paragraph before promoting anything below.
+
+### 1. Read-path progress callback — `[P4]`, their top ask — ours lowest
 
 `accudisc_read_cdda` has no progress callback; `accudisc_write` does
 (`accudisc.h:270-275`). One consumer, two shapes.
@@ -4573,7 +4587,7 @@ other way, say so in the header rather than leaving it to be discovered.
 Same rule for the burn equivalent: whatever an unwritable sector is, it still
 advances `done`.
 
-### 2. Status map on the WRITE path — `[P3]`, below item 1 by their own ranking
+### 2. Status map on the WRITE path — `[P4]`, below item 1 by their own ranking
 
 `accudisc.h:1218-1219` has said "passes it to a read (later: write) request"
 since the map was introduced. 8trax asked explicitly (§b.3.2), which is what
@@ -4585,7 +4599,7 @@ not undoable.** That is where a user wants to watch it happen rather than read a
 percentage. Symmetric Rip/Burn tabs drawing one widget from one byte layout is
 the secondary benefit.
 
-### 3. Documentation defects this exposed — `[P3]`, cheap
+### 3. Documentation defects this exposed — `[P4]`, cheap
 
 - **The priority chain is not in the header — DONE 2026-08-08**, landed beside
   `ACCUDISC_MAP_STATE`. `engine.c:584-585` classifies
@@ -4623,7 +4637,7 @@ the secondary benefit.
   (~128 fired bits) and under `RECOVERED` (7 extra reads) are unrelated
   quantities. Never sum severity across states.
 
-### 4. The Rust binding is OURS — Keith's ruling, 2026-08-01 — `[P2]`
+### 4. The Rust binding is OURS — Keith's ruling, 2026-08-01 — `[P4]`
 
 *"We will build the bindings, and coordinate with the other agents to service
 their needs."* 8trax offered to write `accudisc-sys` + the safe wrapper from
