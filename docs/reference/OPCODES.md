@@ -234,10 +234,13 @@ at the two's-complement of −150, i.e. the raw 32-bit LBA is handed through
 unmodified rather than clamped at zero — a detail that would be very easy to
 "fix" into a bug.
 
-*Fixture:* **none.** No `adsc_cdb_write10` case exists in `test_cdb.c`, and
-`test_burn_flow.c` does not stub it (it operates above the write loop). The
-byte layout of the command that actually puts audio on a disc is asserted
-nowhere hardware-free.
+*Fixture:* `cdb` (added 2026-09-02; before that, **none** — the byte layout of
+the command that actually puts audio on a disc was asserted nowhere
+hardware-free). `test_cdb.c:test_write_path_cdbs` now pins the −150 lead-in
+address as `FF FF FF 6A`, the short 15-sector remainder at −15 that lands the
+gap exactly on LBA 0, the 27-sector `CHUNK` count, and the zero bytes 1/6/9 (no
+FUA). What it still cannot reach is `burn.c` *walking* the gap: delete the loop
+at `src/write/burn.c:536-543` and `test_cdb` stays green.
 
 *Production:* exercised — necessarily issued by the Step D acceptance burn
 (`RECORDING_PLAN.md` §11.8, PASSED 2026-07-24) and by the ABBA "Gold" burn
@@ -252,7 +255,10 @@ path**: a failed burn is closed with one FLUSH CACHE and nothing more, which is
 what both reference tools do (commit `95f1d33`, which fixed a failed burn
 leaving the drive mid-session).
 
-*Fixture:* `flow` only — sequence position asserted, bytes not.
+*Fixture:* `cdb` + `flow` — sequence position, and (2026-09-02) the CDB, whose
+one substantive bit is that **Immed stays clear**: the command must not return
+before the flush completes, or the abort path above reports success on an
+unfinished disc.
 *Production:* exercised, same runs as `0x2A`.
 
 ### `0x43` READ TOC/PMA/ATIP
@@ -314,7 +320,12 @@ off 13.2 s at LBA −150 where a real burn held off 8.2 s, and the suspected cau
 is that `burn.c` **skips SEND OPC in simulate** (`RECORDING_PLAN.md` §9,
 `LIVE_BURN_QUEUE.md` A2). Untested.
 
-*Fixture:* none. *Production:* exercised — a real burn necessarily calibrated.
+*Fixture:* `cdb` (2026-09-02). The assertion that earns its place is
+**DoOPC set** — with byte 1 bit 0 clear the drive returns its existing OPC data
+and calibrates nothing, succeeding either way. A silent no-op on the write
+path's power calibration, and well-formed enough that nothing downstream could
+reject it.
+*Production:* exercised — a real burn necessarily calibrated.
 
 ### `0x55` MODE SELECT(10)
 
@@ -379,7 +390,11 @@ sequence** for a known 2-track audio layout: MCN, lead-in, per-track pre-gap and
 index 1, lead-out, each with the right CTL/ADR, track number and absolute MSF
 (LBA + 150), checked byte by byte. `cuesheet.c` is linked for real rather than
 stubbed, because it is pure layout arithmetic with no device in it. **The payload
-is well covered; the 10-byte CDB header that carries it is not.**
+is well covered; the 10-byte CDB header that carries it is not.** — **closed
+2026-09-02**, `cdb` added. The header's one trap is that the length is **24-bit
+at bytes 6-8**, not the usual 16-bit Group-5 slot at 7-8: get it wrong and byte
+6 reads as zero, so every sheet under 64 KB still works and the failure hides
+until one does not.
 *Production:* exercised — Step D burn, and the CD-Text pass that came back
 byte-exact on real media 2026-07-24. **Absent from the firmware harvest.**
 
@@ -437,7 +452,10 @@ paths, and captures the `read_kbps`/`write_kbps` it was asked for. **The Nx→kB
 conversion IS asserted**: `src/mmc/cdb.c` is linked into that test for real, and
 `tests/CMakeLists.txt:93` says why — "`adsc_cd_speed_kbps` is the Nx -> kB/s
 conversion the speed tests are ABOUT, so a stub would test the stub." What is
-**not** asserted is the 12-byte CDB layout itself.
+**not** asserted is the 12-byte CDB layout itself. — **closed 2026-09-02**,
+`cdb` added: read speed at bytes 2-3, write speed at 4-5 with distinct values so
+a mirror could not pass, rotational control at byte 1, and `0xFFFF` passing
+through intact rather than being clamped.
 *Production:* observed — the timed experiment established that **both exposed
 levers work and are equivalent**, which is also the answer to the governor
 question: `0xBB`/`0xB6` plus mode page `0x01`, and nothing else.
@@ -579,7 +597,7 @@ would add nothing a reader will act on. Ordered by opcode.
 | `0x52` | READ TRACK INFORMATION | Per-track NWA/free-blocks. Used by `re-tools/` snapshots, not by the library. |
 | `0x53` | RESERVE TRACK | TAO/incremental writing. AccuDisc is DAO-only. |
 | `0x58` | REPAIR TRACK | Incremental-write repair. Not applicable to DAO. |
-| `0x5B` | CLOSE TRACK/SESSION | See §G — a constant for this exists in `cdb.h` and is **never used**. |
+| `0x5B` | CLOSE TRACK/SESSION | Writes the lead-out and finalises. **We do not issue it**, and our DAO burns close correctly on `0x35` alone. Whether that makes it redundant here or merely unexercised is an open question — `TODO.md` §`0x5B` carries the discriminator (`0x51` disc status after a burn). A dead `cdb.h` constant for it was removed 2026-09-02. |
 | `0xA1` | BLANK | Erase CD-RW/DVD-RW. Not implemented; would be needed for a CD-RW workflow. |
 | `0xA8` | READ(12) | 12-byte-CDB cooked read. |
 | `0xAA` | WRITE(12) | 12-byte-CDB write. |
@@ -952,35 +970,51 @@ this is the part that must not be missed.
 
 Findings that fell out of building the matrix, not previously recorded.
 
-1. **`ADSC_OP_CLOSE_TRK_SES` (`0x5B`) is a dead constant.** Defined at
-   `src/mmc/cdb.h:22`, referenced nowhere else in the tree — no builder, no
-   wrapper, no consumer. Either the DAO path genuinely never needs CLOSE
-   TRACK/SESSION (plausible: `0x35` SYNCHRONIZE CACHE is the whole close *and*
-   the whole abort here) or it is an unfinished intention. It should be removed
-   or wired.
+1. **`ADSC_OP_CLOSE_TRK_SES` (`0x5B`) was a dead constant — REMOVED 2026-09-02.**
+   Defined at `src/mmc/cdb.h:22`, referenced nowhere in the tree: no builder, no
+   wrapper, no consumer. Removed on Keith's instruction, **with the usability
+   question deferred, not answered** — the deletion records that we do not issue
+   it, which is not the same claim as "we do not need it". `TODO.md` §`0x5B`
+   carries the open question and its discriminator: read `0x51` READ DISC
+   INFORMATION after a burn and see whether `0x35` alone actually finalises. If
+   it does, `0x5B` is redundant here by §3.1 of the sweep plan; if it does not,
+   every disc we burn is being closed by a side effect we never asked for.
 
-2. **Five write-path opcodes have no CDB-layout test**: `0x2A` WRITE(10), `0x35`
-   SYNCHRONIZE CACHE, `0x54` SEND OPC, `0x5D` SEND CUE SHEET, `0xBB` SET CD
-   SPEED. `tests/test_burn_flow.c` stubs all five (plus `0x5C`), so it asserts the
-   *sequence* and would pass identically with garbage CDB headers. Adding
-   `test_cdb.c` cases is hardware-free and cheap.
+2. **Six write-path opcodes had no CDB-layout test — CLOSED 2026-09-02.**
+   `0x2A` WRITE(10), `0x35` SYNCHRONIZE CACHE, `0x54` SEND OPC, `0x5C` READ
+   BUFFER CAPACITY, `0x5D` SEND CUE SHEET and `0xBB` SET CD SPEED are now
+   asserted in
+   `tests/test_cdb.c:test_write_path_cdbs`, and each assertion was
+   **mutation-tested** — seven deliberate breakages of `src/mmc/cdb.c`, seven
+   caught — rather than trusted because it passed.
 
-   **Three of the five are only half-uncovered, and the distinction matters** —
-   the first draft of this item said "asserted nowhere hardware-free", which was
-   a claim about the whole suite drawn from two of its files:
+   The hole was `tests/test_burn_flow.c`, which stubs all six and so asserts the
+   burn *sequence* while passing identically with garbage CDB headers. The item
+   originally said "five", excluding `0x5C`; six is the stub count, and closing
+   five of six would have left the sixth hidden behind a heading that read
+   CLOSED. Its `write10` stub discarded its arguments outright
+   (`(void)lba; (void)nblocks;`), so **no hardware-free test had ever observed
+   which LBA the burn writes to** — including the two's-complement −150 lead-in
+   address, the one place WRITE(10)'s addressing is unusual enough to matter.
 
-   | opcode | what IS asserted hardware-free | what is not |
+   Three of the five were only half-uncovered, and the distinction is why the
+   first draft of this item ("asserted nowhere hardware-free") was wrong — a
+   claim about the whole suite drawn from two of its files:
+
+   | opcode | what WAS asserted hardware-free before this | what was not |
    |---|---|---|
    | `0x5D` | the **entire payload**, byte by byte (`test_cuesheet.c`) | the 10-byte CDB header |
    | `0xBB` | the **Nx→kB/s conversion**, via real `cdb.c` linked into `test_burn_flow` | the 12-byte CDB layout |
    | `0x35` | sequence position, incl. its role as the whole abort path | the CDB |
-   | `0x2A` | **nothing** — the stub discards `lba` and `nblocks` outright (`(void)lba;`) | everything |
+   | `0x2A` | **nothing** — the stub discarded `lba` and `nblocks` outright | everything |
    | `0x54` | **nothing** | everything |
+   | `0x5C` | **nothing** | everything (and its *response* is still unvalidated — item 4) |
 
-   So the genuinely bare pair is `0x2A` and `0x54`. WRITE(10) is the command that
-   puts audio on a disc and *no* hardware-free test observes even which LBA it is
-   given — including the two's-complement −150 lead-in address, which is the one
-   place its addressing is unusual enough to be worth asserting.
+   **What the fix does not reach**, so it is not read as cover for the burn: the
+   new cases pin five CDB layouts and say nothing about `burn.c` issuing them in
+   the right order with the right arguments. Delete the lead-in loop at
+   `src/write/burn.c:536-543` and `test_cdb` stays green. That half is
+   `test_burn_flow`'s job, and the two have to be read together.
 
 3. **Eight of `0xE9`'s nine identified feature pages are unwired**, and so are
    `0xE4`/`0xE5`. Every one is GET-verified with CDB framing pinned — the
@@ -992,7 +1026,12 @@ Findings that fell out of building the matrix, not previously recorded.
    would not.
 
 4. **`0x5C`'s response semantics are unvalidated** (§A). Issued on every burn,
-   never confirmed to mean what we read it as.
+   never confirmed to mean what we read it as. **Unchanged by item 2** — that
+   pinned the CDB we send, including the Block bit that decides whether the
+   answer is in bytes or blocks. It did not validate the answer, and cannot:
+   on an idle drive `blank == length`, so both readings agree and the check
+   that would settle it proves only that the buffer is empty. This needs a
+   drive mid-burn.
 
 5. **Mode page `0x01` byte 3 — the read retry count — is host-changeable, reads
    10, and AccuDisc never touches it.** A real exposed read-behaviour lever

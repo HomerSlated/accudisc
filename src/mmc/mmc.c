@@ -180,7 +180,12 @@ int adsc_mmc_write10(struct accudisc_device *dev, int32_t lba,
 {
     adsc_cmd cmd = {0};
 
-    if (nblocks == 0 || block_bytes == 0)
+    /* nblocks > 0xFFFF would truncate into the CDB's 16-bit transfer length
+     * while cmd.buf_len below kept the untruncated size: the drive would be
+     * told "zero blocks" and handed a multi-megabyte buffer, both well-formed,
+     * neither rejectable downstream. burn.c's CHUNK is 27 so this is not
+     * reachable today; reject it rather than leave it to stay unreachable. */
+    if (nblocks == 0 || nblocks > 0xFFFFu || block_bytes == 0)
         return ACCUDISC_ERR_INVAL;
 
     adsc_cdb_write10(cmd.cdb, (uint32_t)lba, (uint16_t)nblocks);

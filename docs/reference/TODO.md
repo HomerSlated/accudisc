@@ -7,6 +7,54 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## `0x5B` CLOSE TRACK/SESSION — constant removed 2026-09-02, question left open
+
+`ADSC_OP_CLOSE_TRK_SES 0x5B` was defined in `src/mmc/cdb.h` and referenced
+nowhere in the tree — no builder, no wrapper, no consumer. Removed on Keith's
+instruction, **with the usability question explicitly deferred rather than
+answered**: a deleted constant is not a finding, and "we don't issue it" is not
+"we don't need it".
+
+**What is actually established.** Only two things. The opcode is in the firmware
+enumeration (`OPCODES.md` §B, provenance FW). Our DAO path closes the disc with
+`0x35` SYNCHRONIZE CACHE alone, and that has burned correct discs read back
+byte-exact — so *for single-session DAO audio*, `0x35` is empirically sufficient.
+Nothing beyond that was ever tested, because the constant was never wired.
+
+**What is NOT established, and is the research question.**
+
+1. **Is `0x35` sufficient, or merely sufficient-so-far?** MMC defines CLOSE
+   TRACK/SESSION as the command that writes the lead-out and finalises. If this
+   drive's firmware performs the finalisation as part of the DAO cache flush,
+   `0x5B` is genuinely redundant here — which by Keith's redundancy rule
+   (SELECTOR SWEEP §3.1) puts it out of scope entirely. If it does not, then
+   every disc we burn is being closed by a side effect we never asked for, and
+   that is worth knowing before it stops being true on some other drive.
+   **Discriminator:** burn a disc, then read `0x51` READ DISC INFORMATION and
+   check the Disc Status and Last Session Status fields. Complete/finalised
+   after `0x35` alone answers it. This is cheap, read-only after a burn we
+   already do, and needs no new opcode.
+
+2. **Does it become necessary the moment we are not single-session DAO?** The
+   Close Function field (CDB byte 2, bits 2-0) selects close-track vs
+   close-session vs finalise. Multi-session, or a TAO/SAO path, would need it.
+   Both are out of scope today, so this is a *conditional* need, not a gap.
+
+3. **Is it even implemented on the PX-716A?** Presence in the enumeration means
+   the dispatch chain names it, not that it succeeds on a given medium — the
+   `0xD9`/`0xF4` lesson: the command surface is media-dependent and an opcode can
+   cease to exist under a different profile.
+
+**Verification route, when this is taken up.** Item 1 first, because it is
+read-only and can be answered from a burn we are doing anyway. Only if item 1
+says `0x35` does *not* finalise does `0x5B` become a live candidate, and it is a
+write-path command against writable media, so it is gated on §F's medium rules
+like anything else. Do not issue it speculatively against a disc that matters.
+
+**If it is later wired**, the constant comes back with a builder and a
+`test_cdb.c` case in the same commit — the state this entry exists to prevent is
+a third round of "there is a constant for it, and nothing uses it".
+
 ## SELECTOR SWEEP — close the multiplexer gaps, then wire what qualifies — PLAN ONLY, agreed 2026-09-01, to run at the weekend
 
 Keith's five steps, in his order: (1) find which opcodes and pages are still
