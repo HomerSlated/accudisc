@@ -597,7 +597,7 @@ would add nothing a reader will act on. Ordered by opcode.
 | `0x52` | READ TRACK INFORMATION | Per-track NWA/free-blocks. Used by `re-tools/` snapshots, not by the library. |
 | `0x53` | RESERVE TRACK | TAO/incremental writing. AccuDisc is DAO-only. |
 | `0x58` | REPAIR TRACK | Incremental-write repair. Not applicable to DAO. |
-| `0x5B` | CLOSE TRACK/SESSION | Writes the lead-out and finalises. **We do not issue it**, and our DAO burns close correctly on `0x35` alone. Whether that makes it redundant here or merely unexercised is an open question — `TODO.md` §`0x5B` carries the discriminator (`0x51` disc status after a burn). A dead `cdb.h` constant for it was removed 2026-09-02. |
+| `0x5B` | CLOSE TRACK/SESSION | Writes the lead-out and finalises. **We do not issue it, and we do not need to — ANSWERED 2026-09-03 on both status fields.** A live CD-RW DAO burn using `0x35` alone left `byte2 = 0x1E`: **Disc Status 2 (complete) AND Last Session Status 3 (complete)**, full TOC readable, lead-out placed. These are separate 2-bit fields that can disagree, so both were read (raw `0x51`; `accudisc disc` surfaces only the first). **Verified on CD-RW DAO single-session only** — CD-R lead-out behaviour differs and is unverified; re-read both fields on the next CD-R burn. The dead `cdb.h` constant was removed 2026-09-02 and nothing needs adding back. |
 | `0xA1` | BLANK | Erase CD-RW/DVD-RW. Not implemented; would be needed for a CD-RW workflow. |
 | `0xA8` | READ(12) | 12-byte-CDB cooked read. |
 | `0xAA` | WRITE(12) | 12-byte-CDB write. |
@@ -974,11 +974,23 @@ Findings that fell out of building the matrix, not previously recorded.
    Defined at `src/mmc/cdb.h:22`, referenced nowhere in the tree: no builder, no
    wrapper, no consumer. Removed on Keith's instruction, **with the usability
    question deferred, not answered** — the deletion records that we do not issue
-   it, which is not the same claim as "we do not need it". `TODO.md` §`0x5B`
-   carries the open question and its discriminator: read `0x51` READ DISC
-   INFORMATION after a burn and see whether `0x35` alone actually finalises. If
-   it does, `0x5B` is redundant here by §3.1 of the sweep plan; if it does not,
-   every disc we burn is being closed by a side effect we never asked for.
+   it, which is not the same claim as "we do not need it".
+
+   **THE DEFERRED QUESTION IS NOW ANSWERED (2026-09-03): `0x35` alone finalises,
+   so `0x5B` is redundant on this path and nothing needs adding back.** The
+   discriminator was run as specified — `0x51` READ DISC INFORMATION before and
+   after a live DAO burn, reading **both** 2-bit fields of byte 2, since Disc
+   Status and Last Session Status can disagree and `accudisc disc` surfaces only
+   the first:
+
+       BLANK    byte2=0x10   Disc 0 empty      LastSess 0 empty
+       BURNED   byte2=0x1E   Disc 2 complete   LastSess 3 complete
+
+   Full TOC read back, lead-out placed at the session end. The removal cost
+   nothing. **Scope: CD-RW, DAO, single session** — the only medium we had, and it
+   was consumed. TAO and multi-session are not written by this project; **CD-R is
+   unverified and its lead-out behaviour differs**, so re-read both fields on the
+   next CD-R burn before generalising.
 
 2. **Six write-path opcodes had no CDB-layout test — CLOSED 2026-09-02.**
    `0x2A` WRITE(10), `0x35` SYNCHRONIZE CACHE, `0x54` SEND OPC, `0x5C` READ
@@ -1008,7 +1020,7 @@ Findings that fell out of building the matrix, not previously recorded.
    | `0x35` | sequence position, incl. its role as the whole abort path | the CDB |
    | `0x2A` | **nothing** — the stub discarded `lba` and `nblocks` outright | everything |
    | `0x54` | **nothing** | everything |
-   | `0x5C` | **nothing** | everything (and its *response* is still unvalidated — item 4) |
+   | `0x5C` | `cdb` (`test_write_path_cdbs`) | response semantics **validated live 2026-09-03**, item 4 |
 
    **What the fix does not reach**, so it is not read as cover for the burn: the
    new cases pin five CDB layouts and say nothing about `burn.c` issuing them in
@@ -1025,13 +1037,27 @@ Findings that fell out of building the matrix, not previously recorded.
    would need the burn path, Silent Mode and Single Session are read-side and
    would not.
 
-4. **`0x5C`'s response semantics are unvalidated** (§A). Issued on every burn,
-   never confirmed to mean what we read it as. **Unchanged by item 2** — that
-   pinned the CDB we send, including the Block bit that decides whether the
-   answer is in bytes or blocks. It did not validate the answer, and cannot:
-   on an idle drive `blank == length`, so both readings agree and the check
-   that would settle it proves only that the buffer is empty. This needs a
-   drive mid-burn.
+4. ~~**`0x5C`'s response semantics are unvalidated**~~ — **ANSWERED 2026-09-03.
+   Bytes 8-11 are AVAILABLE (blank) space, and `burn.c:171` reads them
+   correctly.**
+
+   The reasoning recorded here was right that an idle drive cannot settle it, and
+   right that item 2 did not: on idle, `BufferLength(4-7) = 4802784` and
+   `bytes 8-11 = 4802784` — equal, so both readings agree (measured with a raw
+   `0x5C` probe). **But a burn discriminates, and maximally.** The engine computes
+   `fill = (total - blank) * 100 / total` and reported minimum fill **98%** on
+   every one of 15 live burns, i.e. bytes 8-11 fell to ~2% of capacity under load.
+   The two candidate readings predict opposite things there:
+
+   | if bytes 8-11 are… | behaviour as the buffer fills | computed fill |
+   |---|---|---|
+   | available space | falls toward 0 | **98% — OBSERVED** |
+   | data length | rises toward capacity | 2% — not seen |
+
+   Full capacity at idle, ~2% under load. It is available space. Note the shape of
+   the earlier error, which I made in the first write-up of this: **98% fill is
+   where the two readings DIVERGE, not where they agree** — "both readings agree"
+   is the idle argument, and applying it to a loaded buffer inverts it.
 
 5. **Mode page `0x01` byte 3 — the read retry count — is host-changeable, reads
    10, and AccuDisc never touches it.** A real exposed read-behaviour lever

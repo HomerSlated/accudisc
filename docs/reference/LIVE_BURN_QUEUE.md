@@ -19,11 +19,70 @@ and how many blanks it costs. Anything that does not need a blank is not here.
 that is called out — the CD-RW in particular is re-usable, so anything that only
 needs *a burn to have occurred* should go there first.
 
+> **BUT A CD-RW IS NOT UNLIMITED, and reading this line as though it were cost us
+> one on 2026-09-03.** Budget it in **write operations**, not in discs: every burn
+> AND every erase runs OPC into the Power Calibration Area. 15 burns + 14 erases
+> in one hour ended in `3/02/00` MEDIUM ERROR (no seek complete) on spin-up and
+> `cdrecord: OPC failed` — the disc unwritable, the drive unharmed. Full account:
+> `private/research/incoming/2026-09-03-first-cd-rw-live-burns.md` §9.
+>
+> **Three rules for any burn loop, all learned by breaking them:**
+> 1. **Re-verify `disc_status=0` between iterations and ABORT on the first
+>    anomaly.** One harness that night had this; its replacement dropped it, and
+>    8 erases went into an already-dead disc.
+> 2. **Never discard the erase tool's output.** It is the only record that
+>    distinguishes "the erase failed" from "the erase broke it".
+> 3. **Pace it.** Back-to-back ~70 s cycles for an hour is a thermal and
+>    calibration load, not a free loop.
+>
+> **And when a drive misbehaves, swap the disc before diagnosing the drive.** A
+> pressed CD costs nothing and separates medium from mechanism in one step; a
+> whole evening was spent escalating against a healthy drive for want of it.
+
 ---
 
-## A. Would share ONE CD-RW (re-usable — do these first)
+## A. Ran on the one CD-RW, 2026-09-03 — A1 and A2 ANSWERED
 
-### A1. Does `--simulate` pace the medium, or only the host?  `[HIGH VALUE]`
+> **THERE WILL BE NO MORE CD-RW MEDIA** (Keith, 2026-09-03: *"I won't be wasting
+> any more money on CD-RWs"*). The disc this section was written for was consumed
+> in one session — see the banner above and
+> `private/research/incoming/2026-09-03-first-cd-rw-live-burns.md`.
+>
+> **Everything still open in this file now costs a CD-R and is one-shot.** The
+> erase-and-repeat method is gone. Anything needing replicates must be designed
+> to extract its answer from a SINGLE burn, or be dropped.
+
+### A1. Does `--simulate` pace the medium, or only the host?  `[ANSWERED 2026-09-03]`
+
+> **ANSWERED, and the premise below is corrected rather than confirmed.** The
+> "~5x below request" reading was an artefact of burn LENGTH: a burn costs
+> `fixed + n x rate`, and at 2400 sectors the fixed term is ~82% of it, so that
+> column was mostly measuring overhead. Measured at two lengths (2400 and 9600
+> sectors) so the fixed term cancels in the slope:
+>
+> | | marginal | fixed cost |
+> |---|---|---|
+> | simulate | 0.595 ms/sector (22.4x), both pairs | 6.42, 6.43 s |
+> | live | 0.617 and 0.810 ms/sector (16.5-21.6x) | 12.9, 12.0 s |
+>
+> **The solid result: simulate understates the FIXED cost of a burn by 1.87-2.01x.**
+> The streaming rate is bounded, not measured — live short-burn times came out
+> bimodal (a 12.8-13.0 s cluster and a scattered 13.9-17.7 s one, unexplained),
+> so the ratio is quoted as a range on purpose. **It is now unimprovable**: it
+> would take ~10 more burns to tighten, and there is no cheap medium left.
+>
+> **Simulate is NOT pacing at a fifth of anything.** Its timing figures remain
+> usable as between-rung comparators; they are not absolute rates, and they are
+> optimistic about fixed cost by about 2x.
+>
+> **Also settled: on Ultra Speed CD-RW the requested speed is inert.** The drive
+> pinned to the ATIP 2T high (24x) for every request from 4x to 48x, simulate and
+> live alike (simulate payload spread 0.7% across the whole range). So the
+> comparison this entry specifies — 4x against 32x — had no separation to measure
+> on that medium at all. On CD-R the request IS live, so a future CD-R burn can
+> still exercise it.
+
+**The original question, as written 2026-08-28:**
 
 **The question.** Today's write-speed ladder (`2026-08-28-speed-leak-and-48x.md`
 §3) measured, in simulate, 2400 sectors with the engine's lead-in settle
@@ -52,7 +111,28 @@ simulate is a faithful timing proxy and a lot of future questions get cheaper.
 honest about dummy pacing; it does not say ours is, because we set the speed by
 a different command path.
 
-### A2. The simulate/real lead-in discrepancy — 13.2 s vs 8.2 s  `[MEDIUM]`
+### A2. The simulate/real lead-in discrepancy — 13.2 s vs 8.2 s  `[REFUTED 2026-09-03]`
+
+> **REFUTED. It was spin-up state, and the two figures were never in the same
+> state.** `accudisc stop`, 12 s, then measure; then measure again immediately:
+>
+>     COLD  12320  12280  12360 ms      (spread 0.65%)
+>     WARM   7400   7400   7400 ms      (identical to the millisecond)
+>
+> 4.9 s of spin-up. A2's 13.2 s sits on the cold value; its 8.2 s near the warm.
+>
+> **And with the state controlled, the ordering INVERTS**: warm simulate settle
+> 7360-7520 ms against warm live 9960-10240 ms — live is 1.35x LONGER, where the
+> SEND OPC hypothesis predicted simulate longer. The hypothesis does not survive
+> in either direction.
+>
+> **A2's second limb is moot**: the settle does not scale with the requested speed
+> at all (7360-7560 ms across 4x-48x), because the medium pinned the rate.
+>
+> **Warm settle repeats to 0 ms.** Any settle measurement that does not state the
+> drive's spin state is uninterpretable — that is the durable lesson here.
+
+**The original question, as written 2026-08-28:**
 
 Already recorded in RECORDING_PLAN.md §9 and NOT yet tested. Simulate holds off
 13.2 s at LBA -150; the one real burn we have held off 8.2 s. Hypothesis:
@@ -66,7 +146,19 @@ artefact. **Run A1 and A2 on the same disc: A2 is A1's control.**
 
 **Cost:** shares A1's disc.
 
-### A3. Does the FIFO's ride-through match its label under real timing? `[MEDIUM]`
+### A3. Does the FIFO's ride-through match its label under real timing? `[OPEN — now CD-R only]`
+
+> **Not run, and no longer shareable with a cheap disc.** No starvation ever
+> occurred across 15 live burns: `starv=0`, minimum fill 98%, every time. Forcing
+> one needs the rig, which **exists** at `/home/kgr/tmp/system/bin/slowdisk` (with
+> `slowdisk-run` and `docs/slowdisk.md`) — the System agent's workspace, not
+> either repo. An earlier search of this tree alone wrongly concluded it was gone.
+>
+> **Re-home it onto B1's CD-R.** B1 already burns a deliberately starved image and
+> reads it back; A3 is the same burn with the FIFO tally captured. One disc, both
+> answers. Do not spend a separate blank.
+
+**The original question:**
 
 0.29.0 made the ring report its true duration against the drive's stated rate
 (4.95 s at 4x, 5.00 s at 16x, where it previously claimed 5.0 s over 1.02 s of
@@ -121,7 +213,12 @@ and off. If the delivered rates differ, the governor is live on the write path
 and the burn engine has a decision to make (cdrecord turns it off when forcing a
 speed). If they do not, the simulate null generalises and the API stays a probe.
 
-**Cost:** shares A1's disc — it is the same ladder with one extra variable.
+**Cost — RE-COSTED 2026-09-03, this basis is gone.** "Shares A1's disc" assumed a
+re-usable CD-RW; there is none, and on that medium the ladder had **no spread to
+modulate** (the drive pinned to 24x for every request). A POWEREC on/off
+comparison there would have been two runs at the same rate. **It needs a CD-R,
+where the request is live** — and it is a poor use of a one-shot disc unless it
+rides along with B1.
 
 ### B2. Whether a 48x write request does anything on real media  `[LOW]`
 
@@ -158,8 +255,12 @@ expects" may be tracking the buffer rather than the disc — or may be frozen. I
 it behaves differently, an NWA-derived depth measured in simulate is not
 evidence about a real burn, and the field must be documented as such.
 
-**Cost:** shares A1's disc — poll NWA alongside the existing buffer poll during
-whichever burn runs there, and compare the trace against the simulate.
+**Cost — RE-COSTED 2026-09-03. Needs CODE before it needs a disc**, and the disc
+is now a CD-R. Verified by grep, not inferred from the CLI: there is **no `0x52`
+READ TRACK INFORMATION and no NWA anywhere** in `src/` or `include/`. The burn
+engine polls the drive buffer (`0x5C`) and nothing else. Write the poll first,
+then ride it along with whichever CD-R burn happens next — never spend a blank on
+this alone.
 
 ---
 
@@ -174,15 +275,30 @@ whichever burn runs there, and compare the trace against the simulate.
 
 ---
 
-## When the blanks arrive
+## When the blanks arrive — REWRITTEN 2026-09-03
 
-1. **CD-RW first**, A1 + A2 together on one disc — they are each other's
-   control, and it is re-usable if a rung needs repeating.
-2. **Then B1 on a CD-R**, because it is the only entry whose value is the
-   physical disc rather than a timing number.
-3. Re-check this file against `docs/reference/TODO.md` before starting: several
+Steps 1 and 2 below are spent: the CD-RW ran A1+A2 and did not survive. **What
+remains is CD-R only, one-shot, and must be planned as such.**
+
+1. ~~CD-RW first, A1 + A2 on one disc.~~ **DONE 2026-09-03.** A1 answered, A2
+   refuted. The disc was consumed; there will be no replacement.
+2. **B1 on a CD-R — now carrying A3 as well.** It is still the only entry whose
+   value is the physical disc rather than a timing number, and the starved burn
+   it needs is exactly the condition A3 wants measured. **One disc, two answers.**
+   Capture the FIFO tally and the buffer poll during it.
+3. **Decide B1b and A4 before that burn, not after.** Both were costed as "shares
+   A1's disc" and now have no home. A4 additionally needs code written first.
+   Anything not instrumented before the laser starts is not measurable afterwards.
+4. Re-check this file against `docs/reference/TODO.md` before starting: several
    entries here were opened by defects found the same day, and a fix landing in
    the meantime may have moved the question.
+
+**DESIGN RULE, learned by losing the cheap medium:** with no re-usable disc, every
+remaining question must be answerable from a **single burn**. Measure at two
+lengths within one session where the quantity allows it (that is what separated
+fixed cost from rate in A1); instrument everything you might want before starting;
+and never plan an experiment whose precision depends on replicates you cannot
+afford.
 
 **Every run: verify `kind=BLANK disc_status=0` before, and record what the disc
 reads as after. State how many blanks remain in the commit message.**

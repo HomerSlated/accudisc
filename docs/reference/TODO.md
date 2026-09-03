@@ -7,7 +7,27 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
-## `0x5B` CLOSE TRACK/SESSION — constant removed 2026-09-02, question left open
+## `0x5B` CLOSE TRACK/SESSION — ANSWERED 2026-09-03: `0x35` alone finalises
+
+> **CLOSED.** The discriminator below was run on the CD-RW, 2026-09-03, reading
+> **both** fields of `0x51` byte 2 (they are separate 2-bit fields and can
+> disagree; `accudisc disc` shows only Disc Status, so this needed a raw read):
+>
+>     BLANK    byte2=0x10   Disc 0 empty      LastSess 0 empty
+>     BURNED   byte2=0x1E   Disc 2 complete   LastSess 3 complete
+>
+> DAO + `0x35` SYNCHRONIZE CACHE finalises the disc **and** the session, with no
+> CLOSE TRACK/SESSION issued. Full TOC read back, lead-out placed. **Removing the
+> constant on 2026-09-02 cost nothing and nothing needs adding back.**
+>
+> **Scope:** CD-RW, DAO, single session. **CD-R is NOT verified** — its lead-out
+> behaviour differs, and there is no CD-RW left to re-test with, so the next CD-R
+> burn should re-read both fields before this is generalised. TAO and
+> multi-session are out of scope for this project either way.
+>
+> Detail: `private/research/incoming/2026-09-03-first-cd-rw-live-burns.md` §3.
+
+### The original question, as recorded 2026-09-02
 
 `ADSC_OP_CLOSE_TRK_SES 0x5B` was defined in `src/mmc/cdb.h` and referenced
 nowhere in the tree — no builder, no wrapper, no consumer. Removed on Keith's
@@ -54,6 +74,44 @@ like anything else. Do not issue it speculatively against a disc that matters.
 **If it is later wired**, the constant comes back with a builder and a
 `test_cdb.c` case in the same commit — the state this entry exists to prevent is
 a third round of "there is a constant for it, and nothing uses it".
+
+## `eject` has no MMC fallback, and the ioctl path is the one that fails — `[P2]`, raised 2026-09-03
+
+**Measured, not hypothesised.** On a drive that had stopped answering data-in
+commands, `accudisc eject` timed out three times (`rc=124` at 60 s, 90 s, 60 s),
+and the drive then accepted a raw MMC eject in **1.7 s**:
+
+    ALLOW MEDIUM REMOVAL (0x1E, prevent=0)   st=0x00 host=0x00      0 ms  OK
+    START STOP UNIT stop (0x1B, LoEj=0)      st=0x00 host=0x00      6 ms  OK
+    START STOP UNIT eject (0x1B, LoEj=1)     st=0x00 host=0x00   1722 ms  OK
+
+**We do not issue `0x1B` for tray control at all.** `src/device.c:415` calls
+`adsc_transport_eject`, which is the kernel's `CDROMEJECT` ioctl
+(`src/transport/sgio.c:128-139` — it already unlocks with `CDROM_LOCKDOOR` first,
+so the door lock is not the gap). `OPCODES.md` §B had already flagged that
+eject/load bypass `0x1B` and that **the spin-down form we ship therefore has no
+production record at all**; this is that gap being paid.
+
+**The question, which is genuinely open:** should `eject` fall back to
+`START STOP UNIT` when `CDROMEJECT` fails or times out? It is not free —
+
+- the ioctl exists partly because it is **unprivileged for cdrom-group members**
+  (`src/device.c:415` says so); `0x1B` through SG_IO needed an `O_RDWR` fd. Both
+  were available to this user, but that is not a general guarantee.
+- a fallback that fires on a *timeout* has to pick a timeout, and the ioctl's own
+  is not ours to set.
+- **it is a recovery path, so it must be tested by making it fire** — the house
+  rule. A fallback nobody has watched trigger is not a fallback.
+
+**Diagnostic note worth keeping regardless of the decision:** the useful signal
+that night was **which class of command still worked**. No-data commands (TEST
+UNIT READY, `0x1E`, `0x1B`) answered in 0-6 ms while every data-in command timed
+out. That is a cheap triage step and it is what found the working exit. But note
+what it did NOT do: **a timeout carries no attribution.** The fault was the
+medium, and only a command that returned a real sense key (`3/02/00` MEDIUM ERROR,
+from cdrecord) said so. See [[destructive-media-loops]].
+
+---
 
 ## SELECTOR SWEEP — close the multiplexer gaps, then wire what qualifies — PLAN ONLY, agreed 2026-09-01, to run at the weekend
 
