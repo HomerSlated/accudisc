@@ -111,6 +111,112 @@ what it did NOT do: **a timeout carries no attribution.** The fault was the
 medium, and only a command that returned a real sense key (`3/02/00` MEDIUM ERROR,
 from cdrecord) said so. See [[destructive-media-loops]].
 
+### ANSWERED 2026-09-04: the two paths send the SAME CDB, and the ioctl's safety checks are NOT on our path
+
+Keith's question was whether raw `0x1B` skips safety checks the ioctl performs.
+**Read out of the kernel source at tag `v7.1` (the running kernel is 7.1.12), not
+recalled.** The answer inverts the premise, and the inversion is the useful part.
+
+**1. `CDROMEJECT` on an `sr` device IS `START STOP UNIT`, byte for byte.**
+
+`sr_block_ioctl` (`drivers/scsi/sr.c:552`) deliberately does *not* route these two
+commands through the CD-ROM layer:
+
+    if (cmd != CDROMCLOSETRAY && cmd != CDROMEJECT) {
+            ret = cdrom_ioctl(&cd->cdi, bdev, cmd, arg);
+            if (ret != -ENOSYS)
+                    goto put;
+    }
+    ret = scsi_ioctl(sdev, mode & BLK_OPEN_WRITE, cmd, argp);
+
+`scsi_ioctl` (`drivers/scsi/scsi_ioctl.c:925-928`) then does:
+
+    case CDROMCLOSETRAY:  return scsi_send_start_stop(sdev, 3);
+    case CDROMEJECT:      return scsi_send_start_stop(sdev, 2);
+
+and `scsi_send_start_stop` (`scsi_ioctl.c:250-257`) builds `cdb[0] = START_STOP`,
+`cdb[4] = data`. Our own builder, `adsc_cdb_start_stop(cdb, start=0, loej=1)` at
+`src/mmc/cdb.c:14-19`, computes `cdb[4] = (1 << 1) | 0 = 2`. **Identical CDB.**
+There is no separate, safer kernel eject mechanism to lose.
+
+**2. The checks Keith had in mind are real, but they are bypassed.**
+
+`cdrom_ioctl_eject` (`drivers/cdrom/cdrom.c:2274-2288`) does carry genuine guards:
+
+    if (!CDROM_CAN(CDC_OPEN_TRAY))          return -ENOSYS;
+    if (cdi->use_count != 1 || cdi->keeplocked) return -EBUSY;
+    if (CDROM_CAN(CDC_LOCK)) { ret = cdi->ops->lock_door(cdi, 0); ... }
+
+Refusing to eject while another process has the device open, and while the door is
+held locked, is exactly the protection worth wanting. **It is not on our path and
+has not been since Linux 5.18.** Verified by tag: absent in `v4.19`, `v5.10`,
+`v5.15`; present in `v5.19`, `v6.0`, `v6.2`, `v6.6`, `v7.1`.
+
+The bypass is deliberate, not an accident. It was intended by `2e27f576abc6`
+("scsi: scsi_ioctl: Call scsi_cmd_ioctl() from scsi_ioctl()", 2021-07-29), which
+shipped with a typo — `ret != CDROMCLOSETRAY` instead of `cmd != ...`, and `ret`
+is 0 there, so the condition was always true and the restrictive path kept
+running. `bc5519c18a32` (2022-03-30, Kevin Groeneveld, Reviewed-by Christoph
+Hellwig) fixed the typo and says why in as many words:
+
+> This changes the behaviour of these ioctls as the cdrom_ioctl handling of these
+> is more restrictive than the scsi_ioctl version.
+
+So the kernel maintainers chose the **less** restrictive path for `sr`, knowingly.
+
+**3. What the ioctl path DOES give us — and SG_IO gets it too.**
+
+Two protections live in `sr_block_ioctl` above the dispatch, not in `cdrom_ioctl`:
+
+- `scsi_ioctl_block_when_processing_errors()` (`scsi_ioctl.c:975-988`) — returns
+  `-ENODEV` rather than queueing while the SCSI error handler owns the device.
+- `scsi_autopm_get_device()` — resumes a runtime-suspended device first.
+
+**A raw `SG_IO` on our `/dev/sr0` fd reaches the same function and therefore gets
+both.** Traced: `SG_IO` does not appear anywhere in `block/ioctl.c` (v7.1), so
+`blkdev_common_ioctl` returns `-ENOIOCTLCMD` and `blkdev_ioctl` falls through to
+`bdev->bd_disk->fops->ioctl` (`block/ioctl.c:795-797`), which is `sr_block_ioctl`
+via `sr_bdops`. We open the block node (`src/transport/sgio.c:23`), not `/dev/sg*`,
+so this is our actual path.
+
+**Therefore: an MMC fallback loses no safety check whatsoever.** The cdrom-layer
+guards are already bypassed for us, and the two SCSI-layer guards are shared.
+
+**4. Where the paths genuinely differ — and this is the design input.**
+
+| | `CDROMEJECT` ioctl | our `SG_IO` `0x1B` |
+|---|---|---|
+| CDB | `1B 00 00 00 02 00` | `1B 00 00 00 02 00` — same |
+| timeout | `START_STOP_TIMEOUT` = **60 s** (`scsi.h:139`, read from the running kernel's own header at `/lib/modules/7.1.12_1/build/include/scsi/scsi.h`) | `ADSC_TIMEOUT_CTRL_MS` = **30 s** (`src/transport/transport.h:18`) |
+| retries | `NORMAL_RETRIES` = **5** (`scsi_ioctl.c:30`), so up to 6 attempts | **none** — one attempt |
+| sense data | **discarded.** `ioctl_internal_command` (`scsi_ioctl.c:69-124`) inspects the sense, prints it to the kernel log, and returns a bare errno | **returned to us**, key/ASC/ASCQ intact |
+| door unlock | none on this path (`lock_door` was in the bypassed `cdrom_ioctl_eject`) | none — we call `CDROM_LOCKDOOR` ourselves first (`sgio.c:133`) |
+
+The ioctl is the *more patient* path, not the more careful one: up to ~360 s of
+aggregate attempts against our single 30 s. That disposes of "the ioctl gave up
+too early" as an explanation for anything.
+
+**The decisive difference is the sense data.** `ioctl_internal_command` swallows
+it and hands userspace an errno. This project already has "**a timeout carries no
+attribution**" written down as a lesson paid for in hardware — and here is the
+kernel enforcing exactly that loss of attribution on our only tray-control path.
+An MMC fallback that surfaces `3/02/00 MEDIUM ERROR` instead of `EIO` is worth
+having **on diagnostic grounds alone**, independently of whether it opens trays
+faster.
+
+**What this does NOT establish.** It does not explain the three timeouts of
+2026-09-03. That incident has several uncontrolled variables — a disc that was
+failing, a recovery sequence that sent `0x1E` and a spin-down *before* the eject,
+and elapsed time between the attempts — and there is no CD-RW left to re-run it
+on. The table above is a fact about the code. Attributing the incident to it would
+repeat the same night's actual error, which was reasoning from a timeout to a
+cause. **Left unexplained, deliberately.**
+
+**Still open after this, and unchanged by it:** whether to add the fallback at all,
+what trigger to use (the privilege argument above is unaffected — `0x1B` via SG_IO
+still needs an `O_RDWR` fd), and the house rule that a recovery path must be tested
+by making it fire.
+
 ---
 
 ## SELECTOR SWEEP — close the multiplexer gaps, then wire what qualifies — PLAN ONLY, agreed 2026-09-01, to run at the weekend

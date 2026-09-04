@@ -217,10 +217,21 @@ Spin up / spin down / load / eject, selected by the Start and LoEj bits.
 whole of `accudisc stop` — `cli/main.c:2668` → `accudisc_spindle_stop`
 (`src/device.c:404`) → `adsc_mmc_start_stop(dev, 0, 0)`. Note that mode page
 `0x0D`'s inactivity timer is **not** part of this and is not a spindown control
-at all; see §E. Eject and load do *not* go through this opcode either — `src/device.c:418,425` call
-`adsc_transport_eject`/`_load`, which use the kernel's `CDROMEJECT` and
-`CDROMCLOSETRAY` ioctls (`src/transport/sgio.c:128,139`). Worth knowing before
-anyone debugs a tray problem by looking for a CDB.
+at all; see §E.
+
+Eject and load do not go through this opcode **in our code** — `src/device.c:418,425`
+call `adsc_transport_eject`/`_load`, which use the kernel's `CDROMEJECT` and
+`CDROMCLOSETRAY` ioctls (`src/transport/sgio.c:128,139`).
+
+> **But they DO go through it on the wire, and this section said otherwise until
+> 2026-09-04.** `sr_block_ioctl` (`drivers/scsi/sr.c:552`, Linux ≥ 5.18) routes
+> `CDROMEJECT`/`CDROMCLOSETRAY` straight past the CD-ROM layer into `scsi_ioctl`,
+> which emits `START STOP UNIT` with `cdb[4] = 2` (eject) or `3` (load) —
+> byte-identical to what `adsc_cdb_start_stop` builds. So "debugging a tray problem
+> by looking for a CDB" is exactly the right instinct; the CDB is simply built by
+> the kernel rather than by us, and its sense data is discarded before we see it.
+> Full trace, kernel `file:line`, and the commit that made the bypass deliberate:
+> `TODO.md`, the `eject` `[P2]` section.
 
 *Production:* observed † — `PROTOCOL.md` records a `START STOP UNIT` eject refused
 `5/53/02` MEDIUM REMOVAL PREVENTED during the pressed-disc safety check. That is
