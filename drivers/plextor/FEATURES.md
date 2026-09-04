@@ -88,6 +88,75 @@ high-inner-RPM condition) was in fact active, not proof that it was. Q-health
 counters in the read summary are needed to settle it by re-running the rip with
 SpeedRead verified off.
 | 2 | **Write Strategy / AutoStrategy** | `0xE4` read / `0xE5` write | ☑ | ◐ | GET-verified: AutoStrategy currently ON (resp[2]&0x0F=1). Enable/disable = `0xE4` CDB[2]=`0x10\|state`. Strategy DB read `0xE4` CDB[1]=0x02 CDB[2]=0x03; custom strategy push = `0xE5`. Manual write-strategy needs AutoStrategy OFF. Effects need a burn. |
+
+### AutoStrategy strategy database — DECODED on hardware 2026-09-04
+
+Read with `e4 02 03 00 00 00 00 00 00 00 ff 00` (alloc length at **CDB[10]**),
+tray **empty**, `/dev/sg3`. Returns **72 bytes**:
+
+    0000: 00 46 02 00 1f 00 02 20 01 25 4d 43 43 20 30 33
+    0010: 52 47 32 30 20 20 00 01 00 58 06 00 00 00 00 00
+    0020: 00 00 00 00 00 00 00 00 02 25 52 49 54 45 4b 46
+    0030: 31 00 00 00 00 00 00 01 00 26 06 00 00 00 00 00
+    0040: 00 00 00 00 00 00 00 00
+
+Structure, as far as the two live entries establish it:
+
+| offset | field |
+|---|---|
+| `0x00-0x01` | `00 46` — length, 0x46 = 70 bytes following |
+| `0x02` | entry **count** (`02`) |
+| `0x03-0x07` | `00 1f 00 02 20` — unidentified header remainder |
+| `0x08 +32n` | entry record, 32 bytes each |
+
+Entry layout: `[0]` 1-based index, `[1]` = `0x25` on both, `[2..13]` **12-char
+ASCII media ID**, `[14..15]` = `00 01` on both, `[16]` = `00`, `[17]` differs
+(`0x58` vs `0x26`), `[18]` = `06`, remainder zero.
+
+**The two stored entries are `MCC 03RG20` and `RITEKF1` — both DVD media IDs.**
+`CDB[2]` is **ignored** for `CDB[1]=0x02`: values `00 01 02 04 05` all return the
+identical buffer, so there is **one** database, not a CD table and a DVD table.
+
+**Consequence, and it is a null result worth recording:** the drive holds **no
+AutoStrategy entry for CD media at all**. This was checked because the CD-RW
+destroyed on 2026-09-03 (Mitsubishi Chemical, Ultra Speed) might have left a
+learned strategy behind. It did not — which is itself informative: AutoStrategy
+only creates entries for media the firmware does not already know, so that disc
+was in the firmware's own table.
+
+Note the key format. CD media has **no ASCII identifier** — ATIP identifies a CD
+by the numeric `97:SS:FF` code. A 12-char ASCII key therefore cannot address CD
+media, which is consistent with this database being DVD-only by construction.
+
+### Where a CD-RW's write strategy actually comes from — it is NOT a firmware table
+
+Searched `rome_111.bin` (0xF0000 bytes, base `0xF00000`): the ATIP codes for
+Mitsubishi Chemical from `src/drive/media_atip_db.inc` — `97:15:20`, `97:50:20`,
+`97:34:23` — appear **nowhere**, in either BCD or binary encoding. Nor does any
+media-ID string: `MCC`, `RITEK`, `TYG`, `CMC MAG`, `SONY`, `TDK`, `MBI` all
+return **zero** hits; the only `PLEXTOR` occurrences are the header at `0x0`
+and `0x30`.
+
+That absence is expected once ECMA-395 §4.4 is read: **for CD-RW the write
+strategy parameters are carried in the ATIP itself**, not looked up by identity.
+Figure 4-4 assigns:
+
+| ATIP field | carries |
+|---|---|
+| Special Information 1 | write power at 1T Test Speed, 1T Test Speed, application code, disc type + sub-type |
+| Additional Information 1 | speed range for **1T** Write-strategy, **OPC parameters**, erase power at 1T |
+| Additional Information 2 | speed range for **2T** Write-strategy |
+| Additional Information 3 | Media Identification code |
+
+So the drive reads the family (1T/2T), the speed window and *indicative* powers
+off the pregroove, and OPC then refines the power for that disc in that drive at
+that temperature (§18.2.1: "**Indicative** values for PWO are given in ATIP").
+
+**A CD-RW's resolved strategy is therefore recorded on the disc, not in the
+drive.** For the 2026-09-03 medium the surviving fragment is what was logged at
+the time — 2T family, speed low 8 / high 24 — and the raw ATIP bytes were never
+dumped. The OPC-resolved power was never persisted anywhere by design.
+
 | 3 | **SecuRec** (disc password lock) | state `0xE9` page `0xD5`; set `0xD5` SEND_AUTH | ☑ | ◐ | State GET-verified: not protected (resp[3]=0). Password load = opcode `0xD5`, 16-byte WRITE `[00][len][14×passwd]`, CDB[2]=01 CDB[3]=01 CDB[4]=02 CDB[10]=0x10. OFF = `0xD5` with no data. Drive-enforced read-lock (auth handshake `0xD4`/`0xD5`), **not** container encryption. Not burn-tested. |
 | 4 | **GigaRec** (CD-R density 0.6–1.4×) | `0xE9` MODE, page `0x04` | ☑ | ◐ | GET-verified (off / 1.0×). **Corrects session-2: page is 0x04, not 0x06.** Rate at resp[3], disc-rate resp[4]. Rate table validated (see PROTOCOL.md). SET is write-time; effect needs a burn. |
 | 5 | **VariRec** (manual laser power) | `0xE9` MODE, page `0x02` | ☑ | ◐ | GET-verified (off). CD: CDB[3]=`0x02\|disc_type`; resp[2]=state, resp[3]=power, resp[5]=strategy. DVD variant same page, disc_type bit. Effect needs a burn. |
