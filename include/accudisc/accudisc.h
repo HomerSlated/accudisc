@@ -27,7 +27,22 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 33 /* 0.33.0: THE BINDING SURFACE IS A POLICY.
+#define ACCUDISC_VERSION_MINOR 34 /* 0.34.0: WRITE HEALTH. A live-write budget
+                                  * (accudisc_set_write_budget,
+                                  * ACCUDISC_ERR_WRITE_BUDGET) and a per-burn
+                                  * timing envelope (accudisc_write_health_get)
+                                  * — both added after 37 write operations in
+                                  * one hour destroyed a CD-RW on 2026-09-03.
+                                  * Damage to phase-change media accumulates per
+                                  * write PASS and does not depend on the
+                                  * interval between passes, so the guard is a
+                                  * pass budget and NOT a cool-down. Default is
+                                  * unlimited: no existing caller changes
+                                  * behaviour. Both are DEVICE-HANDLE scoped —
+                                  * see the CLI note on --max-writes for the
+                                  * cross-invocation gap they do not close.
+                                  *
+                                  * 0.33.0: THE BINDING SURFACE IS A POLICY.
                                   * Keith's ruling: if it is in the library it
                                   * is in the binding, and every exception
                                   * carries a written justification. The three
@@ -651,6 +666,30 @@ typedef enum accudisc_err {
                                      * offset key whose sources disagree. The
                                      * candidates come back with the error so the
                                      * caller can choose; see accudisc_offset_info */
+    ACCUDISC_ERR_WRITE_BUDGET = -15, /* accudisc_write refused: this device
+                                      * handle has already performed its budget
+                                      * of LIVE write operations. Nothing was
+                                      * written, the disc is untouched, and the
+                                      * drive was not commanded.
+                                      *
+                                      * A safety limit, not a licence check. It
+                                      * exists because a runaway caller is the
+                                      * failure that destroyed a CD-RW on
+                                      * 2026-09-03: 37 write operations in an
+                                      * hour, of which 22 fired after the disc
+                                      * had already failed. Damage to
+                                      * phase-change media accumulates per
+                                      * write PASS, so bounding the pass count
+                                      * is the one guard that binds whatever
+                                      * the underlying mechanism turns out to
+                                      * be. See docs/reference/TODO.md,
+                                      * "CD-RW MEDIA SAFEGUARDS".
+                                      *
+                                      * DEFAULT IS UNLIMITED — the library will
+                                      * not start refusing burns that a prior
+                                      * build accepted. Opt in with
+                                      * accudisc_set_write_budget(); the CLI
+                                      * does, so a shell loop is covered. */
     ACCUDISC_ERR_NOT_BLANK   = -13 /* accudisc_write refused: the loaded disc
                                       is not blank. Nothing was written.
                                       Split out of ERR_UNSUPPORTED in 0.4.0.
@@ -1194,6 +1233,88 @@ ACCUDISC_API int accudisc_write(accudisc_device *dev, const char *toc_path,
                                 void (*progress)(void *user, uint32_t done,
                                                  uint32_t total),
                                 void *user);
+
+/* ---- write health: bounding and watching repeated burns ---------------------
+ * Added 0.34.0, after a CD-RW was destroyed by 37 write operations in one hour
+ * (docs/reference/TODO.md, "CD-RW MEDIA SAFEGUARDS"). Two independent guards,
+ * both device-handle scoped, both about REPEATED writing rather than any single
+ * burn.
+ *
+ * WHY THE PASS COUNT IS THE QUANTITY. Damage to phase-change media accumulates
+ * per write pass: each pass melts the recording layer and deposits an increment
+ * of irreversible mass transport, and the increment grows steeply if the write
+ * power is wrong. Total damage is therefore (passes x increment-per-pass), and
+ * NEITHER TERM CONTAINS THE INTERVAL BETWEEN PASSES. That is why this is a
+ * budget and not a cool-down: pacing the same number of burns over six hours
+ * instead of one deposits exactly the same total. See ECMA-395 §13.1.4 and
+ * US 6,091,698 for the mechanism, and the TODO section for why three other
+ * candidate mechanisms were refuted.
+ *
+ * SIMULATE IS FREE and is not counted: accudisc_write with opts->simulate runs
+ * the whole path with the laser off and skips SEND OPC, so it neither writes
+ * nor calibrates. Prefer it for anything repeated. */
+
+/* Live write operations this handle may still perform. 0 = UNLIMITED, which is
+ * the default for a freshly opened device, so existing callers are unaffected.
+ * Setting a budget also resets the counter to zero.
+ *
+ * SCOPE, stated because it bounds what this can promise: it counts writes made
+ * THROUGH THIS HANDLE. It cannot see another process, another handle, or an
+ * external tool — and on 2026-09-03 twenty-two of the thirty-seven operations
+ * came from cdrecord, which no in-library guard could ever have counted. This
+ * is a guard against a runaway loop of our own, not a budget for the medium. */
+ACCUDISC_API int accudisc_set_write_budget(accudisc_device *dev,
+                                           uint32_t max_live_writes);
+
+/* Anomaly flags in accudisc_write_health.anomaly. Each is a DEVIATION FROM THIS
+ * DEVICE'S OWN FIRST LIVE BURN, not an absolute threshold — the baseline is
+ * per-medium and per-drive, so an absolute figure would be meaningless. */
+#define ACCUDISC_WRITE_ANOMALY_PAYLOAD  0x01u /* per-sector payload time has
+                                               * regressed past
+                                               * ACCUDISC_WRITE_PAYLOAD_TOL */
+#define ACCUDISC_WRITE_ANOMALY_SETTLE   0x02u /* lead-in settle has regressed
+                                               * past ACCUDISC_WRITE_SETTLE_TOL
+                                               * on an already-warm drive */
+
+/* Tolerances, as ratios x100 (130 = 1.30x the baseline).
+ *
+ * DERIVED FROM THE ONE FAILURE WE HAVE, not chosen for roundness. The burn
+ * immediately before the CD-RW died ran its payload 1.55x long and showed a
+ * lead-in settle at the COLD value (13320 ms) on a warm drive, where the same
+ * burn forty minutes earlier read 10000 ms — while the discs it produced were
+ * still byte-exact. So the degradation was visible in the TIMING a full burn
+ * before it was visible anywhere else, and these tolerances are set to have
+ * caught it with margin. They are deliberately loose: a false positive costs a
+ * warning, a false negative cost us the disc. */
+#define ACCUDISC_WRITE_PAYLOAD_TOL 130u
+#define ACCUDISC_WRITE_SETTLE_TOL  125u
+
+typedef struct accudisc_write_health {
+    uint32_t size;        /* = sizeof(accudisc_write_health) */
+    uint32_t live_writes; /* live write operations through this handle */
+    uint32_t budget;      /* as set; 0 = unlimited */
+
+    /* Baseline: the FIRST live burn on this handle. Zero until one completes. */
+    uint32_t base_settle_ms;
+    uint32_t base_payload_ms;
+    uint32_t base_sectors;
+
+    /* The most recent live burn. Zero until one completes. */
+    uint32_t last_settle_ms;
+    uint32_t last_payload_ms;
+    uint32_t last_sectors;
+
+    /* Bitmask of ACCUDISC_WRITE_ANOMALY_*, recomputed after each live burn.
+     * ZERO IS NOT A CLEAN BILL OF HEALTH: with fewer than two live burns there
+     * is no baseline to deviate from, and this is necessarily 0. Check
+     * live_writes before reading anything into it. */
+    uint32_t anomaly;
+} accudisc_write_health;
+
+/* Fill *out with this handle's write health. ACCUDISC_ERR_ABI if out->size is
+ * unset or unknown to this build. Purely a report: it commands nothing. */
+ACCUDISC_API int accudisc_write_health_get(accudisc_device *dev,
+                                           accudisc_write_health *out);
 
 /* Optional log sink for library/driver diagnostics (default: discarded). */
 ACCUDISC_API void accudisc_set_log(accudisc_device *dev,

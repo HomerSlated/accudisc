@@ -126,6 +126,28 @@ int accudisc_write(accudisc_device *dev, const char *toc_path,
     if (!dev || !toc_path || !bin_path)
         return ACCUDISC_ERR_INVAL;
 
+    /* Live-write budget, checked HERE: after the ABI import (so a stale binding
+     * still gets ERR_ABI, which tells it something actionable) but before the
+     * .toc is parsed and before a single command reaches the drive. A refusal
+     * must leave the disc and the drive untouched, and the only way to promise
+     * that is to refuse before doing anything.
+     *
+     * Simulate is exempt and deliberately so: it runs with the laser off and
+     * skips SEND OPC, so it costs the medium nothing. Making it exempt is what
+     * lets a caller who hits the budget switch to --simulate and keep working.
+     *
+     * Default is 0 = unlimited, so this is inert unless a caller opted in. */
+    if (!opts->simulate && dev->wr_budget && dev->wr_live >= dev->wr_budget) {
+        adsc_dev_log(dev, "write: REFUSED — live-write budget of %u reached on "
+                          "this device handle (%u done). Nothing was written "
+                          "and the drive was not commanded. Damage to "
+                          "rewritable media accumulates per write pass; this "
+                          "bound is the guard against a runaway loop. Use "
+                          "--simulate (free), or raise the budget deliberately.",
+                     dev->wr_budget, dev->wr_live);
+        return ACCUDISC_ERR_WRITE_BUDGET;
+    }
+
     struct adsc_write_toc *toc = malloc(sizeof *toc);
     if (!toc)
         return ACCUDISC_ERR_NOMEM;

@@ -574,14 +574,30 @@ with the laser off (test-write); requires a blank disc and an O_RDWR open.
   - `caveats` — burn completed but see the log, e.g. the CD-Text SIZE_INFO
     disagreed with the `.toc` (exit 3); the disc **was** written;
   - `not_blank` — the disc was not blank; nothing written (exit 2);
+  - `write_budget` — the `--max-writes` budget for this device handle was
+    already reached; **nothing written and the drive was never commanded**
+    (exit 2). Added 0.34.0. Distinct from `error` because it is *us* refusing,
+    not the drive or the disc failing, and the remedy is different: re-run with
+    `--simulate` (free — laser off, no power calibration) or raise the budget
+    deliberately;
   - `error` — a transport/device/local failure; nothing usable written (exit 2).
-  `sectors` is the count actually written (0 for `not_blank`).
+  `sectors` is the count actually written (0 for `not_blank` and
+  `write_budget`).
 - **exit**: 0 done; 1 usage / missing `--toc`/`--bin`; 2 fatal (disc not blank,
   or transport/device failure — could not complete); 3 completed with caveats.
-  Exit 2 covers both not-blank and other failures; **use `result=not_blank` to
+  Exit 2 covers not-blank, budget refusal and other failures; **use `result=` to
   tell them apart**, not the stderr text.
 
 `done`/`total` are sectors; `total` is the lead-out LBA (sum of track lengths).
+`--max-writes <n>` (0.34.0) bounds the LIVE burns this device handle will
+perform; `0`/absent = unlimited, which is the default. **It is per HANDLE, and
+this process opens one** — so it does nothing for a plain single `accudisc
+write`, and **nothing at all for a shell loop**, because each iteration is a
+fresh process with a fresh count. It exists so the CLI can drive the library's
+budget for a long-lived caller. The loop that destroyed a CD-RW on 2026-09-03
+was a shell loop and this flag would not have stopped it; see
+`docs/reference/TODO.md`, "CD-RW MEDIA SAFEGUARDS", for the cross-invocation gap.
+
 `--byteswap` swaps each 16-bit audio sample before writing (audio byte order is
 drive-specific — the PX-716A advertises SWABAUDIO; settle empirically by
 read-back before trusting a real burn).

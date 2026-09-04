@@ -212,6 +212,23 @@ int adsc_cdtext_encode_rw(const uint8_t *p, uint32_t n, uint8_t *out)
 { (void)p; (void)n; (void)out; return ACCUDISC_ERR_INVAL; }
 uint32_t adsc_cdtext_rw_block_count(uint32_t packs) { (void)packs; return 0; }
 
+/* Write-health stubs. This test links burn.c against a stub MMC layer with no
+ * device.c, so the two real implementations are absent. They are pure
+ * bookkeeping on the device handle and are exercised directly by
+ * test_write_health.c; here they only need to link, and the burn path must not
+ * change behaviour because of them. */
+void adsc_write_health_record(struct accudisc_device *dev, uint32_t settle_ms,
+                              uint32_t payload_ms, uint32_t sectors)
+{
+    (void)dev; (void)settle_ms; (void)payload_ms; (void)sectors;
+}
+
+int accudisc_write_health_get(accudisc_device *dev, accudisc_write_health *out)
+{
+    (void)dev; (void)out;
+    return ACCUDISC_ERR_UNSUPPORTED;
+}
+
 void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...)
 {
     va_list ap;

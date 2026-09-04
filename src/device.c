@@ -78,6 +78,8 @@ const char *accudisc_strerror(int err)
     case ACCUDISC_ERR_ABI:         return "struct size mismatch — rebuild "
                                           "against this library's header";
     case ACCUDISC_ERR_NOT_BLANK:   return "disc is not blank (nothing written)";
+    case ACCUDISC_ERR_WRITE_BUDGET:
+        return "live-write budget exhausted for this device (nothing written)";
     default:                       return "unknown error";
     }
 }
@@ -423,4 +425,88 @@ int accudisc_load(accudisc_device *dev)
     if (!dev)
         return ACCUDISC_ERR_INVAL;
     return adsc_transport_load(&dev->t);
+}
+
+
+/* ---- write health ---------------------------------------------------------
+ * See accudisc_write_health in the public header for the reasoning; the short
+ * version is that phase-change damage accumulates per write PASS and is
+ * independent of the interval between passes, so a pass budget is the guard
+ * that binds and a cool-down is not. */
+
+int accudisc_set_write_budget(accudisc_device *dev, uint32_t max_live_writes)
+{
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+    dev->wr_budget = max_live_writes;
+    /* Setting a budget resets the count. A caller setting a budget is starting
+     * a new bounded run; carrying a previous run's tally into it would make the
+     * limit mean something different on the second call than the first. */
+    dev->wr_live = 0;
+    return ACCUDISC_OK;
+}
+
+void adsc_write_health_record(struct accudisc_device *dev, uint32_t settle_ms,
+                              uint32_t payload_ms, uint32_t sectors)
+{
+    if (!dev)
+        return;
+    dev->wr_live++;
+    dev->wr_last_settle = settle_ms;
+    dev->wr_last_pay = payload_ms;
+    dev->wr_last_sect = sectors;
+
+    if (dev->wr_base_sect == 0) {
+        /* First live burn on this handle IS the baseline. Nothing to compare
+         * against yet, so the anomaly mask stays clear — which is why the
+         * public struct warns that 0 is not a clean bill of health. */
+        dev->wr_base_settle = settle_ms;
+        dev->wr_base_pay = payload_ms;
+        dev->wr_base_sect = sectors;
+        dev->wr_anomaly = 0;
+        return;
+    }
+
+    dev->wr_anomaly = 0;
+
+    /* PER-SECTOR rate, not raw elapsed. The 2400- and 9600-sector burns of
+     * 2026-09-03 differ by 4x in payload time by design; comparing the raw
+     * figures would report every short burn as an improvement and every long
+     * one as a fault. Cross-multiplied so this stays integer arithmetic and
+     * cannot divide by zero. */
+    if (sectors && dev->wr_base_sect && dev->wr_base_pay) {
+        uint64_t lhs = (uint64_t)payload_ms * dev->wr_base_sect * 100u;
+        uint64_t rhs = (uint64_t)dev->wr_base_pay * sectors *
+                       ACCUDISC_WRITE_PAYLOAD_TOL;
+        if (lhs > rhs)
+            dev->wr_anomaly |= ACCUDISC_WRITE_ANOMALY_PAYLOAD;
+    }
+
+    /* Settle is compared raw: it is the drive preparing to record, and it does
+     * not scale with the length of the burn that follows. The failure this
+     * catches is a settle that returns to its COLD value on a drive that has
+     * been burning for an hour. A baseline of 0 means the first burn reported
+     * no hold-off at all, and there is then nothing to be a ratio of. */
+    if (dev->wr_base_settle &&
+        (uint64_t)settle_ms * 100u >
+            (uint64_t)dev->wr_base_settle * ACCUDISC_WRITE_SETTLE_TOL)
+        dev->wr_anomaly |= ACCUDISC_WRITE_ANOMALY_SETTLE;
+}
+
+int accudisc_write_health_get(accudisc_device *dev, accudisc_write_health *out)
+{
+    if (!dev || !out)
+        return ACCUDISC_ERR_INVAL;
+    if (out->size != sizeof *out)
+        return ACCUDISC_ERR_ABI;
+    out->live_writes = dev->wr_live;
+    out->budget = dev->wr_budget;
+    out->base_settle_ms = dev->wr_base_settle;
+    out->base_payload_ms = dev->wr_base_pay;
+    out->base_sectors = dev->wr_base_sect;
+    out->last_settle_ms = dev->wr_last_settle;
+    out->last_payload_ms = dev->wr_last_pay;
+    out->last_sectors = dev->wr_last_sect;
+    out->anomaly = dev->wr_anomaly;
+    return ACCUDISC_OK;
 }

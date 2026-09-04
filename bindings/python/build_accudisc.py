@@ -189,6 +189,7 @@ typedef enum accudisc_err {
      * rather than quietly produce a dead attribute. */
     ACCUDISC_ERR_ABI,
     ACCUDISC_ERR_NOT_BLANK,
+    ACCUDISC_ERR_WRITE_BUDGET,
     ACCUDISC_ERR_AMBIGUOUS,
     ...
 } accudisc_err;
@@ -891,6 +892,23 @@ typedef struct accudisc_counters {
     uint32_t cu;
     ...;
 } accudisc_counters;
+
+typedef struct accudisc_write_health {
+    uint32_t size;
+    uint32_t live_writes;
+    uint32_t budget;
+    uint32_t base_settle_ms;
+    uint32_t base_payload_ms;
+    uint32_t base_sectors;
+    uint32_t last_settle_ms;
+    uint32_t last_payload_ms;
+    uint32_t last_sectors;
+    uint32_t anomaly;
+    ...;
+} accudisc_write_health;
+
+int accudisc_set_write_budget(accudisc_device *dev, uint32_t max_live_writes);
+int accudisc_write_health_get(accudisc_device *dev, accudisc_write_health *out);
 
 int accudisc_counter_scan_begin(accudisc_device *dev);
 int accudisc_counter_scan_read(accudisc_device *dev, accudisc_counters *out);

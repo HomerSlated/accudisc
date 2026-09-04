@@ -23,10 +23,24 @@
  */
 
 #define _POSIX_C_SOURCE 200809L
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+/* Monotonic milliseconds. CLOCK_MONOTONIC, not wall time: the burn timings
+ * derived from this are compared against each other across an hour of running,
+ * and a wall clock that steps (NTP, DST) would inject a phantom anomaly into
+ * exactly the comparison this exists to make. */
+static uint32_t now_ms(void)
+{
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u);
+}
 
 static void sleep_ms(long ms)
 {
@@ -370,6 +384,10 @@ int adsc_write_run(struct accudisc_device *dev,
     struct adsc_wfifo_seg seg[99];
     int fifo_live = 0;
     struct write_flow fl = {0};
+    /* Hoisted above every `goto done`: the reporting block at `done:` reads
+     * these, and it is reachable from the moment burn_started is set — which is
+     * before the gap loop that would otherwise have declared them. */
+    uint32_t t_settle_ms = 0, t_pay_ms = 0, total = 0;
     int session_open = 0;   /* the DRIVE holds a DAO session: must be released */
     int burn_started = 0;   /* ... and we got far enough for the tally to mean
                              * something. Distinct from session_open, which is
@@ -546,7 +564,15 @@ int adsc_write_run(struct accudisc_device *dev,
         }
     }
 
-    /* 5. Lead-in gap: LEADIN_GAP zero sectors starting at LBA -150. */
+    /* 5. Lead-in gap: LEADIN_GAP zero sectors starting at LBA -150.
+     *
+     * t_gap brackets the drive settling. The first WRITE(10) of a burn is the
+     * one the drive holds off while it prepares to record — measured at 13.2 s
+     * cold and 7.4 s warm on this drive — so this interval is the settle time,
+     * and a settle that returns to its COLD value on an hour-warm drive is the
+     * degradation signal that preceded the 2026-09-03 media failure by a full
+     * burn. See accudisc_write_health. */
+    uint32_t t_gap = now_ms();
     int32_t lba = -(int32_t)LEADIN_GAP;
     for (uint32_t left = LEADIN_GAP; left > 0;) {
         uint32_t n = left < CHUNK ? left : CHUNK;
@@ -557,7 +583,8 @@ int adsc_write_run(struct accudisc_device *dev,
     }
 
     /* 6. Track audio, contiguous from LBA 0 — fed through the FIFO. */
-    uint32_t total = toc->leadout_lba, done_sec = 0;
+    uint32_t done_sec = 0;
+    total = toc->leadout_lba;
     for (int i = 0; i < toc->ntracks; i++) {
         seg[i].file_offset = toc->track[i].file_offset;
         seg[i].sectors     = toc->track[i].sectors;
@@ -619,6 +646,12 @@ int adsc_write_run(struct accudisc_device *dev,
                               "sector", filled, fifo.nslots);
         }
     }
+
+    /* The FIFO start and prefill above are HOST work and must not land in
+     * either figure: they would inflate the payload on a buffered burn and be
+     * absent on an unbuffered one, making the two incomparable. */
+    t_settle_ms = now_ms() - t_gap;
+    uint32_t t_pay = now_ms();
 
     for (;;) {
         const uint8_t *src;
@@ -697,6 +730,8 @@ int adsc_write_run(struct accudisc_device *dev,
             cb(user, done_sec, total);
     }
 
+    t_pay_ms = now_ms() - t_pay;
+
     /* 7. Flush / close. */
     ret = adsc_mmc_sync_cache(dev);
     if (ret == ACCUDISC_OK)
@@ -763,6 +798,39 @@ done:
      * burn with 326 GENUINE stalls spread across the disc printed the same
      * headline as this one, so the report could not distinguish the case worth
      * acting on from the case that happens every time. */
+    /* Write health: only a LIVE burn that actually completed. A simulate run
+     * fired no laser, and a failed burn's timings describe the failure rather
+     * than the medium's trajectory — recording either would poison the baseline
+     * that later burns are compared against. `total` is the payload sector
+     * count, which is what makes burns of different lengths comparable. */
+    if (!opts->simulate && ret >= ACCUDISC_OK) {
+        accudisc_write_health h = { .size = sizeof h };
+
+        adsc_write_health_record(dev, t_settle_ms, t_pay_ms, total);
+        if (accudisc_write_health_get(dev, &h) == ACCUDISC_OK) {
+            adsc_dev_log(dev, "write: health — live burn %u, settle %u ms, "
+                              "payload %u ms over %u sectors",
+                         h.live_writes, h.last_settle_ms, h.last_payload_ms,
+                         h.last_sectors);
+            if (h.anomaly & ACCUDISC_WRITE_ANOMALY_PAYLOAD)
+                adsc_dev_log(dev, "write: ANOMALY — payload is slower per "
+                                  "sector than this handle's first burn "
+                                  "(%u ms / %u sectors now, %u ms / %u then). "
+                                  "On 2026-09-03 this preceded permanent media "
+                                  "failure by one burn, while the discs were "
+                                  "still reading back byte-exact. Stop and "
+                                  "check the medium before burning again.",
+                             h.last_payload_ms, h.last_sectors,
+                             h.base_payload_ms, h.base_sectors);
+            if (h.anomaly & ACCUDISC_WRITE_ANOMALY_SETTLE)
+                adsc_dev_log(dev, "write: ANOMALY — lead-in settle %u ms "
+                                  "against a first-burn %u ms. A warm drive "
+                                  "settling like a cold one is the drive "
+                                  "working harder to start recording.",
+                             h.last_settle_ms, h.base_settle_ms);
+        }
+    }
+
     if (fl.stalling_chunks == 1)
         adsc_dev_log(dev, "write: flow — ONE hold-off, %u ms at LBA %d "
                           "(%llu retries of a single write, not %llu events). "

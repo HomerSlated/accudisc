@@ -43,7 +43,30 @@ struct accudisc_device {
      * to last_sense: ERR_SENSE carries the drive's own explanation, ERR_IO
      * carries the transport's. */
     char last_io[96];
+
+    /* Write health (0.34.0). Counts and times LIVE burns only — a simulate run
+     * skips SEND OPC and never fires the laser, so it costs the medium nothing
+     * and must not appear here. See accudisc_write_health in the public header
+     * for why the PASS COUNT rather than the elapsed interval is the quantity
+     * being bounded. */
+    uint32_t wr_live;        /* live write operations through this handle */
+    uint32_t wr_budget;      /* 0 = unlimited (the default) */
+    uint32_t wr_base_settle; /* first live burn: lead-in settle, ms */
+    uint32_t wr_base_pay;    /* first live burn: payload time, ms */
+    uint32_t wr_base_sect;   /* first live burn: payload sectors */
+    uint32_t wr_last_settle;
+    uint32_t wr_last_pay;
+    uint32_t wr_last_sect;
+    uint32_t wr_anomaly;     /* ACCUDISC_WRITE_ANOMALY_* bitmask */
 };
+
+/* Record one completed LIVE burn against the handle's write health, and
+ * recompute the anomaly mask. `sectors` is the payload sector count (the
+ * lead-in gap excluded, so the per-sector rate is comparable across burns of
+ * different lengths — comparing raw payload_ms would flag every short burn).
+ * Called only from the burn path, only when the laser actually ran. */
+void adsc_write_health_record(struct accudisc_device *dev, uint32_t settle_ms,
+                              uint32_t payload_ms, uint32_t sectors);
 
 /* Run a command on the device, recording decoded sense in the handle on any
  * failure (cleared on success). Returns ACCUDISC_OK / _ERR_IO / _ERR_SENSE. */

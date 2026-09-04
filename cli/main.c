@@ -1630,6 +1630,19 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
     const char *toc = NULL, *bin = NULL;
     accudisc_write_opts o = ACCUDISC_WRITE_OPTS_INIT;
     double fifo_secs = -1.0;   /* >=0 when the user gave a duration */
+    /* --max-writes: bound the LIVE burns this handle will perform.
+     *
+     * SCOPE, AND IT IS NARROWER THAN IT LOOKS. The budget is per device HANDLE,
+     * and this process opens exactly one and burns exactly once — so
+     * `--max-writes` does nothing for a plain `accudisc write`, and NOTHING AT
+     * ALL for a shell loop, because every iteration is a fresh process with a
+     * fresh handle and a fresh count. It is useful to a long-lived caller (the
+     * library API, or a future batch mode) and it is here so the CLI can drive
+     * that path. The loop that destroyed a CD-RW on 2026-09-03 was a shell
+     * loop, and this flag would NOT have stopped it. See docs/reference/TODO.md,
+     * "CD-RW MEDIA SAFEGUARDS", for the cross-invocation gap and what would
+     * actually close it. */
+    uint32_t max_writes = 0;
     struct write_prog wp = { -1, 0, 0 };
 
     const char *optv = NULL;
@@ -1641,6 +1654,8 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
             bin = optv;
         else if (opt_val(argv, argc, &i, "--cdtext", &optv, &optbad))
             o.cdtext_path = optv;
+        else if (opt_val(argv, argc, &i, "--max-writes", &optv, &optbad))
+            max_writes = (uint32_t)strtoul(optv, NULL, 10);
         else if (!strcmp(argv[i], "--simulate"))
             o.simulate = 1;
         else if (!strcmp(argv[i], "--byteswap"))
@@ -1706,6 +1721,9 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
                     ? " — CAPPED, you asked for more" : "");
     }
 
+    if (max_writes)
+        (void)accudisc_set_write_budget(dev, max_writes);
+
     int err = accudisc_write(dev, toc, bin, &o, write_progress, &wp);
     fprintf(stderr, "\n");
     const char *mode = o.simulate ? "simulate" : "burn";
@@ -1724,6 +1742,15 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
          * else entirely. The `result=not_blank` token is unchanged. */
         fprintf(stderr, "accudisc: write: disc is not blank\n");
         result = "not_blank";
+        ret = 2;
+    } else if (err == ACCUDISC_ERR_WRITE_BUDGET) {
+        /* Exit 2 on the tool-wide convention: a precondition that could not be
+         * met, nothing written, the drive never commanded. Its own token so a
+         * caller can tell "I stopped you" from "the disc is wrong". */
+        fprintf(stderr, "accudisc: write: live-write budget reached — nothing "
+                        "written. Use --simulate (free) or raise --max-writes "
+                        "deliberately.\n");
+        result = "write_budget";
         ret = 2;
     } else if (err < 0) {
         (void)fail_dev(dev, "write", err); /* prints the human detail; exit 2 */

@@ -65,7 +65,9 @@ __all__ = [
     "fifo_bytes_for",
     "WOFF_SAMPLES", "WOFF_PULSE_A", "WOFF_PULSE_B", "WOFF_PULSE_LEN",
     "AccuDiscError", "InvalidArgument", "OutOfMemory", "OpenFailed", "IOFailed",
-    "SenseError", "ShortResponse", "Unsupported", "NotBlank", "Cancelled", "CrcError",
+    "SenseError", "ShortResponse", "Unsupported", "NotBlank", "WriteBudget",
+    "WriteHealth", "WRITE_ANOMALY_PAYLOAD", "WRITE_ANOMALY_SETTLE",
+    "Cancelled", "CrcError",
     "NotFound", "AbiMismatch", "RetainedBufferError",
     "C2", "Sub", "MapState", "SubQState", "Anomaly", "TocSource", "TocDegrade",
     "C2Verdict",
@@ -311,6 +313,20 @@ class NotBlank(AccuDiscError):
     """
 
 
+class WriteBudget(AccuDiscError):
+    """``ACCUDISC_ERR_WRITE_BUDGET`` — the live-write budget is exhausted.
+
+    Nothing was written, the disc is untouched, and the drive was never
+    commanded: the check runs before the .toc is even opened. Raised only when
+    a caller opted in with :meth:`Device.set_write_budget`; the default is
+    unlimited.
+
+    A safety limit, not a licence check. Damage to phase-change media
+    accumulates per write *pass*, so bounding the pass count is the guard that
+    binds. ``simulate=True`` is exempt and is the intended escape hatch.
+    """
+
+
 class Cancelled(AccuDiscError):
     """``ACCUDISC_ERR_CANCELLED`` — stopped by the cancel flag or the sink."""
 
@@ -371,6 +387,7 @@ _ERRORS: dict[int, type[AccuDiscError]] = {
     lib.ACCUDISC_ERR_SHORT: ShortResponse,
     lib.ACCUDISC_ERR_UNSUPPORTED: Unsupported,
     lib.ACCUDISC_ERR_NOT_BLANK: NotBlank,
+    lib.ACCUDISC_ERR_WRITE_BUDGET: WriteBudget,
     lib.ACCUDISC_ERR_CANCELLED: Cancelled,
     lib.ACCUDISC_ERR_CRC: CrcError,
     lib.ACCUDISC_ERR_NOTFOUND: NotFound,
@@ -1959,6 +1976,51 @@ class PerfDesc:
     end_kbps: int
 
 
+#: :data:`WriteHealth.anomaly` bit: per-sector payload time has regressed.
+WRITE_ANOMALY_PAYLOAD = 0x01
+#: :data:`WriteHealth.anomaly` bit: lead-in settle has regressed.
+WRITE_ANOMALY_SETTLE = 0x02
+
+
+@dataclass(frozen=True, slots=True)
+class WriteHealth:
+    """This device handle's live-write tally and per-burn timing envelope.
+
+    Both guards exist because 37 write operations in one hour destroyed a CD-RW
+    on 2026-09-03. Damage to phase-change media accumulates per write *pass* and
+    does not depend on the interval between passes, so the guard is a **pass
+    budget, not a cool-down**.
+
+    ``anomaly`` is a bitmask of :data:`WRITE_ANOMALY_PAYLOAD` and
+    :data:`WRITE_ANOMALY_SETTLE`, each a deviation from *this handle's own first
+    live burn* rather than an absolute threshold.
+
+    **Zero is not a clean bill of health.** With fewer than two live burns there
+    is no baseline to deviate from and the mask is necessarily 0 — check
+    ``live_writes`` before reading anything into it.
+    """
+
+    live_writes: int
+    budget: int
+    base_settle_ms: int
+    base_payload_ms: int
+    base_sectors: int
+    last_settle_ms: int
+    last_payload_ms: int
+    last_sectors: int
+    anomaly: int
+
+    @property
+    def payload_anomaly(self) -> bool:
+        """Per-sector payload time has regressed past tolerance."""
+        return bool(self.anomaly & WRITE_ANOMALY_PAYLOAD)
+
+    @property
+    def settle_anomaly(self) -> bool:
+        """Lead-in settle has regressed — a warm drive settling like a cold one."""
+        return bool(self.anomaly & WRITE_ANOMALY_SETTLE)
+
+
 @dataclass(frozen=True, slots=True)
 class Counters:
     """One reading of the drive's C1/C2/CU error counters.
@@ -2390,6 +2452,43 @@ class Device:
             yield sample
         finally:
             _check(lib.accudisc_counter_scan_end(self._handle), self)
+
+    def set_write_budget(self, max_live_writes: int) -> None:
+        """Bound the LIVE burns this handle will perform. 0 = unlimited.
+
+        A fresh device is unlimited, so this is opt-in and no existing caller
+        changes behaviour. Setting a budget also resets the count — a caller
+        setting one is starting a new bounded run.
+
+        Once the budget is reached :meth:`write` raises :class:`WriteBudget`
+        **before opening anything**: nothing is written and the drive is never
+        commanded. ``simulate=True`` is exempt, because it runs with the laser
+        off and skips power calibration, so it costs the medium nothing.
+
+        Scope, because it is narrower than it looks: this counts writes made
+        through *this handle*. It cannot see another process, another handle, or
+        an external tool — on 2026-09-03, 22 of the 37 operations came from
+        cdrecord and no in-library guard could have counted them.
+        """
+        _check(lib.accudisc_set_write_budget(self._handle, max_live_writes),
+               self)
+
+    def write_health(self) -> WriteHealth:
+        """This handle's write tally and timing envelope. Commands nothing."""
+        out = ffi.new("accudisc_write_health*")
+        out.size = ffi.sizeof("accudisc_write_health")
+        _check(lib.accudisc_write_health_get(self._handle, out), self)
+        return WriteHealth(
+            live_writes=out.live_writes,
+            budget=out.budget,
+            base_settle_ms=out.base_settle_ms,
+            base_payload_ms=out.base_payload_ms,
+            base_sectors=out.base_sectors,
+            last_settle_ms=out.last_settle_ms,
+            last_payload_ms=out.last_payload_ms,
+            last_sectors=out.last_sectors,
+            anomaly=out.anomaly,
+        )
 
     def counter_census(self, start: int, end: int, *, cadence: int = 0,
                        speed_x: int = 0, cancel: "Cancel | None" = None,
