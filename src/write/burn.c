@@ -4,8 +4,22 @@
  * disc-blank check -> SEND CUE SHEET -> lead-in gap + track audio (WRITE(10))
  * -> SYNCHRONIZE CACHE. Follows cdrdao's GenericMMC DAO sequence. With
  * opts->simulate the write-parameters test-write bit is set, so the drive runs
- * the whole path with the laser off (safe on any blank disc). Power
- * calibration (SEND OPC) is skipped in simulate and is a TODO for real burns.
+ * the whole path with the laser off (safe on any blank disc).
+ *
+ * Power calibration (SEND OPC, 0x54) is run for every REAL burn and skipped in
+ * simulate — see step 3 below. It was a TODO only until d0dcc49; the header said
+ * so for far longer, and that stale line was read as "we never calibrate" during
+ * the 2026-09-04 media-failure audit, which is the exact inverse of the fact the
+ * audit turns on. Each call fires the laser into the disc's Power Calibration
+ * Area, and an external erase tool runs its own calibration there too, which we
+ * never see.
+ *
+ * That is NOT, however, what killed the 2026-09-03 disc, and an earlier draft of
+ * this comment implied it was. ECMA-395 §5.3 gives each PCA 100 test partitions
+ * and there are two of them, against ~37 calibrations that night; MMC-5 also
+ * reserves distinct sense codes for the condition (1/73/01 ALMOST FULL,
+ * 3/73/02 FULL, 3/73/03 ERROR) and we saw none of them. See TODO.md,
+ * "CD-RW MEDIA SAFEGUARDS", for what the evidence does and does not support.
  */
 
 #define _POSIX_C_SOURCE 200809L

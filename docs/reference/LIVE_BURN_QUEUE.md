@@ -20,11 +20,17 @@ that is called out — the CD-RW in particular is re-usable, so anything that on
 needs *a burn to have occurred* should go there first.
 
 > **BUT A CD-RW IS NOT UNLIMITED, and reading this line as though it were cost us
-> one on 2026-09-03.** Budget it in **write operations**, not in discs: every burn
-> AND every erase runs OPC into the Power Calibration Area. 15 burns + 14 erases
-> in one hour ended in `3/02/00` MEDIUM ERROR (no seek complete) on spin-up and
-> `cdrecord: OPC failed` — the disc unwritable, the drive unharmed. Full account:
-> `private/research/incoming/2026-09-03-first-cd-rw-live-burns.md` §9.
+> one on 2026-09-03.** Budget it in **write operations**, not in discs. 15 burns +
+> 14 erases in one hour ended in `3/02/00` MEDIUM ERROR (no seek complete) on
+> spin-up and `cdrecord: OPC failed` — the disc unwritable, the drive unharmed.
+> Full account: `private/research/incoming/2026-09-03-first-cd-rw-live-burns.md` §9.
+>
+> **The MECHANISM stated here until 2026-09-04 — PCA/OPC exhaustion — is
+> REFUTED**, from primary sources: ECMA-395 §5.3 gives each PCA 100 test
+> partitions and a disc has two, against ~37 calibrations that night. The rules
+> below are unaffected: they were derived from what the loop did, not from why
+> the disc died. The surviving candidate is lead-in/PMA destruction, and it is
+> **inference, not a finding**. See `TODO.md`, "CD-RW MEDIA SAFEGUARDS".
 >
 > **Three rules for any burn loop, all learned by breaking them:**
 > 1. **Re-verify `disc_status=0` between iterations and ABORT on the first

@@ -219,6 +219,309 @@ by making it fire.
 
 ---
 
+## CD-RW MEDIA SAFEGUARDS — what the 2026-09-03 disc actually establishes — raised 2026-09-04
+
+Research file: `private/research/incoming/2026-09-04-cdrw-rapid-cycling-failure-modes.md`.
+Every claim below marked **[verified]** was read this session out of the cited
+primary source; **[inference]** means exactly that.
+
+### The verdict is three mechanisms ELIMINATED and one PLAUSIBLE — not a diagnosis
+
+| mechanism | status | why |
+|---|---|---|
+| PCA / OPC exhaustion | **refuted** | count and sense code both wrong |
+| Phase-change alloy fatigue | **refuted** | off by ~30x on cycle count |
+| Drive laser / optics overheating | **refuted** | drive verified healthy after |
+| Lead-in / PMA / ATIP destruction | **plausible, unproven** | fits the signature; no direct evidence |
+
+**Do not let the fourth row inherit the confidence of the first three.** They are
+refuted from standards; it is a hypothesis that survived.
+
+### PCA exhaustion — refuted twice over
+
+- **[verified, ECMA-395 §5.3]** Each PCA has a Test Area of **100 partitions**,
+  and a disc carries **two** (PCA1 and PCA2). We ran ~37 calibrations. Even if one
+  OPC consumed several partitions we would not be close. *(That one OPC consumes
+  exactly one partition is an [inference]; the arithmetic survives either way.)*
+- **[verified, ECMA-395 §5.3 and the partially-recorded-disc definition]** *"once
+  all partitions have been used, the total PCA1 or PCA2 must be CW-erased, after
+  which it is available for the next sequence of power calibration procedures."*
+  **On CD-RW, a full PCA is a recycle event, not death.** This leg depends on
+  firmware honouring the standard; the count above does not.
+- **[verified, MMC-5 ASC/ASCQ table]** The condition has its own sense codes —
+  `1/73/01` ALMOST FULL, `3/73/02` IS FULL, `3/73/03` ERROR, plus `3/73/10` and
+  `3/73/11` for the *current* PCA. We got `3/02/00` NO SEEK COMPLETE.
+
+### Alloy fatigue — the "1000 cycles" figure, and why comparing 37 to it is INVALID
+
+**[verified, ECMA-395 §18.4b]** requirement "Number of DOW cycles **at PW = PWO**:
+**> 1000**". That is the traceable origin of the rated figure quoted on packaging.
+
+**An earlier version of this section then said "37 is not in the same order of
+magnitude", and that comparison is wrong.** It compares two different quantities.
+Read what the rating actually specifies:
+
+- **[verified, §18.4b]** the cycles are **DOW** — Direct OverWrite, the modulated
+  write/erase pass — **at PW = PWO**, optimum write power.
+- **[verified, §18.1]** measured with Random EFM, i.e. ordinary data.
+- **[verified, §18.5]** "over one disc **at a fixed CLV**" — distributed, not
+  concentrated on one band.
+
+`cdrecord blank=fast -force` is none of those:
+
+- **[verified, §13.1.4]** it is (or may be — see below) a **CW erase**: continuous
+  unmodulated laser, and the standard says outright that it *"may reduce the
+  maximum number of DOW cycles"* and should be confined to PCA1/PCA2.
+- **[verified, §18.2.4]** CW-erase power is **PECW ≥ 1.15 × PEO** — a *higher*
+  power operation than the erase half of a DOW cycle.
+- **[verified, MMC blanking type 001b]** it touches only PMA / lead-in / first
+  pregap — one narrow band, taking every single operation.
+
+**So the honest statement is: the 1000-cycle rating never covered this usage.** It
+is a distributed, optimum-power, modulated-overwrite figure; we ran up to 37
+concentrated, higher-power, unmodulated erases into one band. The standard does
+**not** quantify how much CW erase reduces DOW life, so this explains **how
+destruction at 37 operations is possible** — it does **not** establish that this
+is what happened. Alloy fatigue *in the sense Keith proposed* (whole-disc, rate-
+driven, cool-down would help) remains unsupported; localised degradation of the
+lead-in band by a method the standard warns against does not.
+
+**[inference]** Whether this firmware's `blank=fast` actually uses CW erase or
+logical erase on the PMA is still unknown, and it is the hinge.
+
+### What DOES survive from Keith's "burns it out" intuition — and it is primary source
+
+**[verified, ECMA-395 §13.1.4 Physical Erase]**, quoted:
+
+> By writing with a continuous laser power of about PEO, the overwritten track
+> will be left in the high-reflective state... **The maximum number of DOW cycles
+> may be reduced by this procedure**, therefore it is recommended to use this
+> erase method only for erasing the PCA1 and PCA2 areas, where the presence of
+> previously written marks could disturb the OPC procedure.
+
+**[verified, §13.1.5]** Logical erase (overwrite with zero-content EFM) is
+recommended everywhere else and *"will cause less reduction of the maximum number
+of DOW cycles."*
+
+So the standard states outright that **erasing has a cost to cycle life beyond the
+cycle itself** — but the variable is the **erase method** and the **region**, not
+the rate. Nothing in the standard supports a cool-down period.
+
+**[inference, NOT verified]** Whether `cdrecord blank=fast` triggers physical or
+logical erase of the PMA/lead-in on PX-716A firmware is **unknown**, and it is the
+hinge of the surviving hypothesis. We cannot test it: no CD-RW.
+
+### Bricking rewritable media in a handful of cycles is DOCUMENTED, and the field mechanism is WRONG WRITE POWER — not wear-out
+
+**[verified 2026-09-04 by reading the source pages directly, not via the agent's
+summary]** Gough Lui's 2026 DVD±RW endurance testing (measurement class:
+automated back-to-back cycling on a Lite-On iHAS120, with quality scans and
+visual inspection) recorded permanent, unrecoverable media death at cycle counts
+of **1** and **6**:
+
+- *SWTechnology 2.4x DVD+RW* — "it burned at 2.4x just fine, but then, the disc
+  was **completely unrecognisable by the drive** afterwards. **The first burn
+  killed the disc** and there was nothing visual about the disc that would
+  explain why."
+- *Imation/JVC* — "after the **6th run**, the drive simply would not write to the
+  disc anymore claiming of an **Illegal Medium Format**... the claim that the
+  **embossed section** of the DVD-RW disc would somehow fail after rewriting. We
+  can see that there is some sort of **dark areas developing**".
+- *Prodisc DW06* — "the drive appears to have **murdered the disc**, causing the
+  disc to have an **unrecognised format**. Visually... the **inner tracks** appear
+  to be written in such a way to be unusually bright compared to the rest of the
+  disc. **It seems the wrong power has been used and may have damaged the
+  recording layer permanently.**"
+- *Philips* — "the disc's formatting is **permanently damaged**"; the author
+  speculates a "firmware bug or perhaps some vulnerability where **incorrectly
+  read disc metadata could result in incorrect burning of media**".
+
+**Why this matters more than everything above it.** The failures are not
+cycle-count fatigue — they happen at 1 and 6 cycles. The observed mechanism is
+**mis-calibrated write power damaging the recording layer permanently**, the
+damage is concentrated at the **inner diameter** (where the PCA, lead-in and PMA
+live), and in one case the **embossed pregroove itself** degraded. That is the
+same region our 37 operations were concentrated on, and it makes the failure a
+**calibration** failure rather than a wear-out.
+
+**[inference]** It also supplies a positive-feedback path that our incident's
+shape fits: a marginal lead-in yields bad calibration input, OPC then selects a
+wrong power, the wrong power further damages the lead-in, and the next cycle is
+worse. That accounts for a *progressive* decline (which we measured — burn times
+went bimodal before the fatal erase) ending in *abrupt* unrecognisability. It is
+not proven and we cannot prove it without media.
+
+> **SCOPE GAP, stated plainly:** these are **DVD±RW on a Lite-On**, not CD-RW on a
+> Plextor. Different standard, different layer stack, different drive. What
+> transfers is the *class* of failure (phase-change rewritable, OPC-calibrated,
+> inner-diameter control area) and the demonstration that low cycle counts brick
+> media. The specific numbers do not transfer.
+
+### THE PHYSICS: what writing at the wrong power does to the recording layer
+
+All quotations verified this session from ECMA-395 (`docs/research/`) and Ohta
+2001 (retrieved via Wayback; see the research file's Sources).
+
+**Normal operation is a controlled melt-and-quench.** **[verified, §13.1.1]**
+Recording heats the sensitive layer in the groove with a modulated laser. A
+*mark* is a region of reflection `<< Rtop`; erased areas sit at `Rtop`.
+**[verified, Ohta]** The written portion "is melted and after the laser spot moves
+away from that portion, it is **quenched immediately**. This quenching process
+changes the portion to be an amorphous mark". Erase raises the temperature "over
+the crystallizing temperature" *without* melting, and the mark recrystallises.
+Ohta puts the critical cooling rate at **3.4 K/ns** — amorphisation is a race
+between cooling and crystallisation, so the whole scheme depends on landing the
+deposited energy inside a narrow band.
+
+**The band is ±10%. [verified, §18.4a]** "Write power window of a disc: for
+`0.90 PWO < PW < 1.1 PWO` … disc must be recordable within specifications". The
+standard specifies a *window*, not a maximum — outside it, nothing is guaranteed.
+That window is what OPC exists to find, and it is why a mis-calibration of a few
+tens of percent is not a rounding error.
+
+**Too little power:** the layer does not fully melt (incomplete amorphisation,
+weak modulation), or on erase does not stay above the crystallisation temperature
+long enough (incomplete recrystallisation, residual marks). The result is a
+region that is optically neither properly written nor properly blank.
+
+**Too much power** drives the failure modes Ohta names, all of them thermal:
+
+1. **Grain growth in the dielectric.** "Grain growth in the ZnS layer was one
+   reason the phase-change optical disks degraded after many rewrites."
+2. **Sub-nanometre displacement of the active layer**, from asymmetric thermal
+   expansion along the scan direction: "The space deformation becomes the motive
+   force of the sub-nanometer displacement of the **liquid phase** active layer
+   components."
+3. **[verified, US 6,091,698]** repeated overwriting causes "a gradual **flow of
+   the phase change material** from one portion of the medium to another,
+   resulting in a degradation of the material".
+
+**Note "liquid phase" in (2) — it is the whole answer to why POWER rather than
+COUNT is the governing variable.** Mass transport happens while the material is
+molten. More power means more energy above the melting point, more time spent
+molten, and more irreversible transport *per pass*. A cool-down between cycles
+does nothing about it, because the damage is done in the nanoseconds while the
+spot is hot, not in the seconds afterwards.
+
+**Important caveat on (1) and (2): these are the SOLVED mechanisms.** Ohta is
+describing what took cyclability from thousands to >10⁶ — grain growth was fixed
+by the ZnS-SiO₂ mixture, space deformation reduced by an added SiO₂ layer. They
+explain **why power matters at all** in a disc operating *within* spec. They are
+not, by themselves, an account of our failure.
+
+**Why layer damage BRICKS a disc rather than merely corrupting data — the link to
+our sense code.** **[verified, §13.1.2]** Tracking is derived from the push-pull
+signal: "An off-track position of the scanning spot results in a diffraction
+pattern that is asymmetrical in the radial direction… Subtraction of the powers
+diffracted into the two halves of the aperture… yields a servo signal for track
+following." **[verified, §13.5, normative]** the Normalized Push Pull Ratio —
+push-pull before recording over push-pull after recording — is required to be
+**0.5 – 1.3**, and the stated reason is:
+
+> because the **servo electronics have to deal with both recorded and unrecorded
+> parts** of a partially recorded disc, and so with two different Push Pull
+> signals. As the **dynamic range of the servo electronics is limited**, the
+> allowed ratio in Push Pull signals should be specified.
+
+The normalising quantity after recording is `Iga`, "the averaged groove level
+after recording… actually used by the servo electronics for tracking in a
+recorded groove."
+
+**[inference — this joint is ours, the links above are all sourced]** A region
+written at the wrong power has a post-write groove level far from where the servo
+expects it. Push it far enough and NPPR leaves the 0.5–1.3 window, the servo's
+limited dynamic range is exceeded, and the drive cannot follow the track — which
+is what `3/02/00` NO SEEK COMPLETE looks like from the host. Damage the region
+that carries the lead-in and PMA and the drive cannot even classify the medium,
+which is our observed `profile=0x0000`.
+
+This also makes Gough Lui's visual finding and the NPPR requirement **the same
+fact seen two ways**: his inner tracks "written in such a way to be **unusually
+bright** compared to the rest of the disc" is a region sitting near or above
+`Rtop` where it should be carrying marks — a gross shift in exactly the quantity
+`Iga` normalises against.
+
+**What this does NOT establish.** We have no read of our own disc's layer. The
+physics explains how wrong power destroys a disc permanently; it does not show
+that this is what happened to ours. The ATIP read below is still the only
+measurement that would localise it.
+
+### The counter-case: what real PCA exhaustion looks like, and it is RECOVERABLE
+
+**[verified in the report's sources]** Launchpad bug #66710 records `cdrecord`
+blanking a CD-RW and returning `3/73/03` POWER CALIBRATION AREA ERROR with "OPC
+failed" and "Cannot blank disk, aborting" — **and the disc was not destroyed.**
+That is the signature we did *not* see. Field reports also span "hundreds of
+successful rewrites" against "failures after ~9" (VideoHelp, anecdote class), a
+spread far too wide for cycle count to be the governing variable.
+
+### `3/02/00` is a documented CD-RW *write-refusal* code, not necessarily a servo fault
+
+**[verified, MMC-5 r04 line 9125-9130]**, on High Speed CD-RW media:
+
+> Upon a write attempt to the High speed CD-RW media using a Drive that is only
+> compliant with [CD-Ref9], some Drives return CHECK CONDITION Status and set
+> SK/ASC/ASCQ values to either ILLEGAL REQUEST/WRITE PROTECTED **or MEDIUM
+> ERROR/NO SEEK COMPLETE**. The recommended SK/ASC/ASCQ values for this case are
+> ILLEGAL REQUEST/CANNOT WRITE MEDIUM – INCOMPATIBLE FORMAT.
+
+**Scope, honestly:** the passage describes a *legacy* drive meeting high-speed
+media. Our PX-716A is Ultra-Speed capable and pinned 24x, so the literal scenario
+does not apply. **[inference]** What transfers is that `3/02/00` is a known,
+sloppy vendor way of saying **"this drive has concluded it cannot write this
+CD-RW medium"** — a classification/compatibility answer, not proof that the
+servo failed to seek. Read our sense code that way and it stops being anomalous.
+
+### Safeguards — what is actually implementable
+
+**1. Name the `0x73` family in the write path. `[P2]`**
+`src/write/burn.c` special-cases only `2/04/08`, `5/24/00` and `5/20/00`
+(`burn.c:212, 335, 484`); a PCA sense would abort as a generic `ACCUDISC_ERR_SENSE`
+— right outcome, no diagnosis. Naming `73/01`, `73/02`, `73/03`, `73/10`, `73/11`
+costs nothing and turns an opaque failure into a stated cause. This is the
+"a timeout carries no attribution" lesson applied before the fact.
+
+> **Verify first, or it may be dead code:** `1/73/01` is sense key 1, RECOVERED
+> ERROR. The Linux midlayer dispositions RECOVERED ERROR as SUCCESS for its own
+> retry logic (`drivers/scsi/scsi_error.c:615`, `case RECOVERED_ERROR: return
+> SUCCESS`). Separately, SG_IO sets `SG_INFO_CHECK` whenever the status byte is
+> CHECK CONDITION (`scsi_ioctl.c:400-409`), and our transport returns
+> `ACCUDISC_ERR_SENSE` on that with the sense intact (`sgio.c:74-81`), so it
+> *should* still reach us. **[inference]** — untested on hardware. Establish it
+> before relying on an ALMOST FULL warning.
+
+**2. PCA remaining capacity is NOT readable over standard MMC. [verified]**
+The Count Area is not LBA-addressable, and READ DISC INFORMATION's OPC tables hold
+cached per-speed calibration *values*, not a consumed-partition counter. **Do not
+design a budget around a counter we can query — there isn't one.** Any budget is
+session-scoped and covers only our own writes; an external tool's erases are
+invisible to us (22 of the 37 that night came from `cdrecord`).
+
+**3. Never force-blank a disc whose state you could not read.** The 2026-09-03
+loop fired `blank=fast -force` eight times into a disc that no longer answered.
+Already a rule in `LIVE_BURN_QUEUE.md`; it belongs in code, not only in prose.
+
+**4. PROPOSAL, needs Keith's decision — make `--simulate` the default for harness
+and repeated-run work.** `burn.c:475` already skips SEND OPC in simulate, so a
+simulate run costs the medium nothing. This is a user-facing behaviour change and
+must not be implemented unilaterally.
+
+### Correction applied elsewhere
+
+`8a4f9a0` landed the PCA-exhaustion explanation into tracked docs. Corrected
+2026-09-04 in `LIVE_BURN_QUEUE.md`, `src/write/burn.c`, and the
+`destructive-media-loops` memory. **The operational rules in all three are
+unchanged** — they were derived from what the loop did, not from why the disc died.
+
+### Open, and cheap enough to be worth it
+
+- Does `blank=fast` physically or logically erase the PMA on this firmware? Needs
+  CD-RW. **Blocked, permanently, unless media reappears.**
+- Does a RECOVERED ERROR sense reach userspace through our SG_IO path? Testable on
+  **any** disc with a command that returns one — free, no media consumed.
+
+---
+
 ## SELECTOR SWEEP — close the multiplexer gaps, then wire what qualifies — PLAN ONLY, agreed 2026-09-01, to run at the weekend
 
 Keith's five steps, in his order: (1) find which opcodes and pages are still
