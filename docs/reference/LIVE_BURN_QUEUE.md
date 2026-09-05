@@ -367,6 +367,11 @@ source afterwards, and a regenerated file is not the same file.
 
 ### Order of operations
 
+0. **THE PRE-BURN BLOCKER IS CLOSED**: `accudisc write` prints the write-health
+   figures, and its device-free test passes. **This is step 0 and not a
+   preamble** — a requirement stated in prose two sections above a checklist is
+   the shape of requirement that gets skipped, and skipping this one is
+   unrecoverable. Do not proceed past this line until it is done.
 1. `flock /var/tmp/sr0.lock` for everything below — one drive, two agents.
 2. **Before:** `accudisc disc` — require `kind=BLANK disc_status=0`. Record
    `accudisc media` (the ATIP) for *this* disc; 49 of the 50 are presumed the
@@ -374,7 +379,11 @@ source afterwards, and a regenerated file is not the same file.
 3. **Burn**, capturing **stdout and stderr both**, unbuffered, to a file. The
    FIFO tally and every `adsc_dev_log` line arrive on stderr and are not
    recoverable afterwards.
-4. **Immediately after, same process where possible:** the write-health figures.
+4. **The write-health figures, printed by `accudisc write` ITSELF.** There is no
+   "capture them afterwards": the envelope is device-handle scoped and
+   `accudisc verify` is a different process with a different handle, so a second
+   invocation cannot reach them. This is not a sequencing problem that care can
+   solve — it is why step 0 exists.
 5. **After:** `accudisc disc`, plus a raw `0x51` read of **both** 2-bit fields of
    byte 2 — Disc Status and Last Session Status. They are separate fields and can
    disagree. CD-RW answered `0x1E` on 2026-09-03; **CD-R lead-out behaviour is
@@ -382,8 +391,29 @@ source afterwards, and a regenerated file is not the same file.
 6. **Read-side, in any order, repeatable:**
    - `accudisc verify --bin <source> --tier counters --driver auto` — the first
      hardware run of the 0.35.0 verify. **Expected: `aligned=1`,
-     `differing=0`, `result=pass`.** A `shift_samples` near the drive's `-30`
-     write offset plus `+30` read offset is the corroborating detail.
+     `differing=0`, `shift_samples=0`, `result=pass`.**
+
+     **`shift_samples=0` is a MEASURED prediction, not arithmetic on the two
+     offset numbers.** Do not derive it by summing the drive's `+30` read
+     offset and its `-30` write offset — a reader who sums them in the other
+     sign convention will conclude the verify is broken. The basis is the
+     2026-09-03 round trip on this same drive
+     (`private/research/incoming/2026-09-03-first-cd-rw-live-burns.md` §4):
+     the whole file compared byte-identical, and a cross-correlation over a
+     200 000-frame window put the best frame shift at **0** with MSE **0.0**.
+     The two offsets cancel end to end with no correction applied by either
+     path.
+
+     Two caveats, both from that same section. A shift of 0 is consistent with
+     both offsets being right **and** with two equal-and-opposite errors
+     cancelling, so this corroborates the *path*, not either offset
+     individually. And it was measured on **CD-RW**; a write offset is a
+     property of the drive rather than of the medium, so it should carry to
+     CD-R, but that is an expectation and this disc is what tests it.
+
+     **A nonzero `shift_samples` is a FINDING, not a reason to distrust the
+     verify.** Its alignment search was falsified against known displacements
+     of +667 and -1234 in `tests/test_verify.c`; record the magnitude.
    - `accudisc cxscan --driver auto` — the census, and with it
      `bler_mismatch/bler_checked`. **This is the first time the
      `bler == e11+e21+e31` identity is evaluated on real hardware**;
