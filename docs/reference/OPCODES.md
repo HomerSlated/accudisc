@@ -940,10 +940,28 @@ otherwise score as a passing check on evidence that distinguishes nothing.
 > frame we decode is the frame the firmware fills — and it is now tested on
 > 4740 real samples.
 >
+> **RE-CONFIRMED on two more discs, 2026-09-05/06, and the one apparent
+> exception is explained.** The starved burns (discs #2 and #3,
+> `2026-09-05-disc2-disc3-starved-burns.md`) both returned `bler_mismatch =
+> 0/4740` when read at a delivered 8x. Disc #2 read at 26.5x returned
+> **`1/4740`** — the single mismatch seen so far, on a disc producing 3.5
+> MILLION uncorrectable errors in that pass. Read as counter saturation on a
+> catastrophically failing surface, not as a failure of the identity; the same
+> disc at 8x is clean. Recorded because a future `1/4740` on a HEALTHY disc
+> would mean something quite different.
+>
 > **`uncr` (byte 18) is NOT settled by this.** The identity constrains bytes 10
 > and 12/14/16 only; byte 18 sits outside it and a clean disc gives it nothing
 > to distinguish, since `cu` was 0 on every sample of that disc. The question
 > below still needs a disc with real uncorrectable activity.
+>
+> **That disc now EXISTS, and this is the cheapest open question in this file.**
+> Discs #2 and #3 read at a delivered 24.3x produce 1 866 234 and 2 541 926
+> `cu` respectively across the census, against 0 at 8x — and they are permanent
+> artefacts that can be re-read at either speed as often as wanted. A
+> `cxdump.c` capture of all 26 bytes over a high-`cu` span at 24.3x, against the
+> same span at 8x where `cu` is 0, is a controlled A/B on byte 18 that costs no
+> media at all. See `drivers/plextor/re-tools/cxdump.c`.
 
 **`0xED` — one mode code of a byte.** We use mode code 0 (POWEREC). No source on
 disk enumerates any other, QPxTool names only the opcode, and the firmware

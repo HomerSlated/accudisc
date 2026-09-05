@@ -162,7 +162,46 @@ artefact. **Run A1 and A2 on the same disc: A2 is A1's control.**
 
 **Cost:** shares A1's disc.
 
-### A3. Does the FIFO's ride-through match its label under real timing? `[HALF ANSWERED 2026-09-05 — the forced half is still open]`
+### A3. Does the FIFO's ride-through match its label under real timing? `[ANSWERED 2026-09-05]`
+
+> **ANSWERED on disc #2's starved burn. The label is sound and it
+> under-promises.** Full working in
+> `private/research/incoming/2026-09-05-a3-fifo-ridethrough.md`.
+>
+> The engine printed `FIFO = 5.00 s of ride-through at the drive's stated
+> 16.0x`. Measured across a real full-ring-to-empty transition: **5.283 s
+> delivered**, of which the ring's own contribution is **4.99 s** once the
+> residual 1x trickle (346 sectors) is subtracted. Correct to 0.1%.
+>
+> **The objection this question was written against does not bite on this
+> drive at this rung.** The worry was that the duration is computed from page
+> 2A, which echoes the request rather than the delivery. Here the drive
+> delivered 1200.0 sectors/s measured over the 12 582 sectors before the
+> boundary — exactly the 16.0x it stated. 0.29.0's fix is confirmed on
+> hardware.
+>
+> **It took a two-regime disc to ask the question at all.** A burn starved
+> from sector 0 never fills the ring, so there is no ride-through to measure;
+> the first third of the source was warmed into page cache so the ring ran
+> full, and the cold remainder produced the transition.
+>
+> **A retraction worth carrying, because the error class recurs here.** The
+> first pass reported 5.977 s and a drive that had "slowed to 14.15x". Both
+> were artefacts of where the window was closed: `fifo.c:203` sets
+> `*was_empty = 1` BEFORE the consumer blocks, so `burn.c:715` emits its log
+> line only after a 690 ms wait. Per-chunk write latency across the window is
+> a flat 22.50 ms and the drive never slowed at all. **Reading an instrument
+> at an instant that is not the instant of the event** — the same shape as the
+> two false blockers in §D.
+>
+> **And the starvation cadence is set by READAHEAD, not by the ring.** 1283
+> intervals: 93.61% at two slots, 6.39% at three, against 6.40% predicted by
+> `131072/63504 = 2.0640`; spacing between three-slot events takes only the
+> values 15 and 16 (mean 15.63, predicted period 15.626). The producer's
+> 63 504-byte preads are served out of a 128 KiB readahead window, so it
+> starves once per WINDOW. The pre-burn prediction of ~8700 starvations, from
+> one-per-chunk reasoning, was wrong by exactly 2x; actual 4245. Under a
+> starved source the FIFO's failure granularity is a kernel tunable.
 
 > **The clean half is measured, on disc #1's real CD-R burn (§D).** At a
 > delivered 16.00x over a full 79-minute disc: **0 starvations, low-water
@@ -204,7 +243,72 @@ label is only as good as the rate it divides by.
 
 ## B. Needs a CD-R (one-shot, the burn is the artefact)
 
-### B1. BURN-Proof actually works  `[HIGH VALUE, DESTRUCTIVE BY DESIGN]`
+### B1. BURN-Proof actually works  `[ANSWERED 2026-09-05 — in two parts, and the second is not about linking]`
+
+> **Part one: the links are sample-transparent.** `verify --tier counters
+> --speed 8` on both starved discs: `shift=+0 compared=209034000 differing=0`,
+> `cu=0`, `c2_bits=0`, `hard=0`, `result=pass`. **4245 BURN-Proof link events
+> cost zero samples.**
+>
+> **Part two: the disc is still ruined, and mostly not by the links.** Read at
+> an explicit, delivered-matched 24.3x:
+>
+> | delivered | disc #1 clean | disc #2 noise A, starved | disc #3 noise B, starved |
+> |---|---|---|---|
+> | 8.0x | C1 140 127, CU **0** | C1 136 352, CU **0** | C1 198 057, CU **0** |
+> | 24.3x | C1 254 848, CU **0** | C1 9 090 777, CU **1 866 234** | C1 10 151 180, CU **2 541 926** |
+>
+> At 8x the three discs are indistinguishable; at 24.3x the clean one is still
+> at zero uncorrectable errors and both starved ones are in the millions. The
+> marks are not degraded in any way that shows at moderate speed — what is gone
+> is the **read-speed margin**.
+>
+> Linking measurably costs: at matched radius across the boundary on disc #2,
+> 660.3 C1/s and 4.5 CU/s unlinked against 1365.4 and 65.9 linked. But the
+> unlinked first third is ALREADY 25x (disc #2) and 54x (disc #3) worse than
+> disc #1's same span, with uncorrectable errors where disc #1 has none. **A
+> starved burn degrades the whole disc, including the part written before
+> anything went wrong.**
+>
+> **Disc #3 was intended as a MUSIC control and is not one — BECAUSE THE BURN
+> BYTE-REVERSED IT.** Its source was `cdda2img/rips/cdrdao/ABBA.bin`, which is
+> genuine music, stored **big-endian** as cdrdao writes CD_DA. `accudisc write`
+> has a `--byteswap` flag for exactly this and it was not passed, so the
+> samples reached the disc byte-reversed. Byte-reversed music is statistically
+> noise: lag-1 autocorrelation +0.0004 and RMS -4.8 dBFS read little-endian,
+> against +0.86 and -19.9 dBFS read correctly. **The disc therefore carries a
+> noise-like signal, and is a second noise arm rather than a music arm.**
+>
+> Two checks failed in series and both are worth recording. The pre-burn
+> characterisation measured RMS, peak and silent-block fraction — all LEVEL
+> statistics — and reported the sources as "differing in structure" without
+> ever measuring structure. The post-hoc check that then "confirmed" the source
+> was noise read it in the same wrong byte order the burn had used, so it
+> agreed with the mistake instead of catching it. `silent-narrowing` twice: a
+> check is only worth what its inputs can distinguish, and a check that shares
+> an assumption with the thing it is checking cannot test that assumption.
+> Caught by Keith, who played the disc and then named the cause.
+>
+> **So disc #3 replicates the effect on a second blank with a different noise
+> file — which kills disc-to-disc variation as an explanation — and settles
+> NOTHING about the source signal.** That question is open.
+>
+> **Not established: why.** Both starved discs are also the two 55-minute
+> discs. Thermal exposure of already-written marks is the only mechanism named
+> and nothing here measures temperature. The isolating experiment is an
+> **inverted-regime burn** — starve the FIRST third, run the rest clean — which
+> separates inner radius, written-earliest and longest-in-a-hot-drive from each
+> other. Not burnt.
+>
+> Full account: `private/research/incoming/2026-09-05-disc2-disc3-starved-burns.md`.
+> Outside literature: `2026-09-05-burnproof-link-quality.md` — the mechanism is
+> corroborated (first-generation gap 20-45 um; every successor markets 2-6 um),
+> but T10's MMC names this class of feature **"zero loss linking"** (`BUF`) and
+> no located source publishes a C1/C2 scan of a link point at multiple read
+> speeds. "Zero loss" is defensible as zero DATA loss, which our verify
+> confirms exactly; zero MARGIN loss is what nobody appears to have measured.
+> The PX-716A manual claims no cost, and notably reserves the words "Lossless
+> linking" and "Zero Link ... 0 byte gap" for the DVD formats alone.
 
 **The question.** `accudisc_write_opts.burnproof` is reported as *claimed by the
 drive*, never as tested — RECORDING_PLAN.md §9 makes that explicit and treats it
@@ -585,7 +689,11 @@ remains is CD-R only, one-shot, and must be planned as such.**
 1. ~~CD-RW first, A1 + A2 on one disc.~~ **DONE 2026-09-03.** A1 answered, A2
    refuted. The disc was consumed; there will be no replacement.
 2. ~~B1 on a CD-R — now carrying A3 as well.~~ **SUPERSEDED 2026-09-05 by
-   section D.** Two things changed: 50 blanks arrived, and 0.35.0 shipped an
+   section D**, then **DONE 2026-09-05/06 on discs #2 and #3** — see §B1 and
+   §A3 above, both now answered, and
+   `private/research/incoming/2026-09-05-disc2-disc3-starved-burns.md`.
+   The reasoning that moved it there, kept because it was vindicated: two
+   things changed — 50 blanks arrived, and 0.35.0 shipped an
    `accudisc_verify` with no hardware validation at all. Putting the
    *deliberately starved* burn first would commission a new instrument against a
    broken specimen — a `differ` result would be ambiguous between a link seam and

@@ -636,9 +636,92 @@ into the public ABI makes every consumer inherit our judgement. The library
 reports; `cli/main.c` renders. Same split as exit codes and terminal output
 (API_PLAN §3).
 
+## From the starved burns, 2026-09-05/06 (discs #2 and #3)
+
+Full account: `private/research/incoming/2026-09-05-disc2-disc3-starved-burns.md`.
+
+### `write` should warn when the source looks BYTE-REVERSED `[P2]`
+
+Disc #3 was burnt from a cdrdao `.bin`, which stores CD_DA **big-endian**.
+`--byteswap` exists for exactly this and was not passed, so an hour of music
+went onto a one-shot CD-R byte-reversed. Nothing in the engine noticed, and
+nothing could: the bytes round-tripped perfectly, `verify` reported
+`differing=0`, and every counter was consistent. The disc is a correct
+recording of the wrong bytes.
+
+**This is cheaply detectable and the check can actually fail.** Take a few
+thousand samples from the source, compute the lag-1 autocorrelation in both
+byte orders, and warn when the *swapped* order is dramatically more correlated
+than the given one. Measured on real material: `ABBA.bin` reads +0.0004 as
+given and **+0.8638** swapped; `Technotronic.bin` +0.0004 against **+0.4048**.
+Noise and digital silence are ~0 in both orders and must stay silent — the
+guard fires only on a clear asymmetry, so it cannot nag about a legitimately
+noisy source.
+
+Warn, never refuse: burning byte-reversed audio is a legitimate thing to want
+and the caller owns the decision. But it must not be possible to spend a
+one-shot disc on it in silence.
+
+### Anything COMPARED must carry an explicit `--speed` `[P1 for methodology]`
+
+Three `cxscan` runs with the same command line and no `--speed` delivered
+**21.4x, 8.0x and 26.5x**. Several hours of comparison rested on "disc #1 reads
+clean at max and disc #2 does not", which was 21.4x against 26.5x and never
+like for like.
+
+Requested rungs are not delivered rungs either: on the PX-716A, 24 delivers
+17.7x, 32 delivers 24.3x, and **40 delivers exactly what 32 does**, so 24.3x is
+the top of its CD-DA read range. A census is 4740 samples 75 sectors apart, so
+**elapsed = 4740 / delivered** — the clock is a free, direct speed measurement
+and should be recorded on every comparable run.
+
+`entropy-not-mystery` in a new place: never infer a setting from the request.
+Consider having `cxscan` and `verify` print the delivered rate they measured,
+so a comparison cannot silently be made across rungs.
+
+### The write-health anomaly detector is UNREACHABLE from the CLI `[P2]`
+
+`src/device.c:449` sets the envelope baseline when `wr_base_sect == 0`, i.e. on
+the first live burn **on that `accudisc_device` handle**. `accudisc write` opens
+a handle, burns one disc and exits, so `base == last` every time and
+`ACCUDISC_WRITE_ANOMALY_PAYLOAD` / `_SETTLE` can never fire through the CLI.
+Two burns in one process would be needed, which one disc per invocation makes
+impossible.
+
+`LIVE_BURN_QUEUE.md` §D's closing note — "validating it needs a second burn,
+and that is a legitimate use of disc #2" — is wrong for this reason, and is
+corrected in place. Either persist the baseline across invocations (keyed on
+what? drive serial plus media type?) or document the field as
+library-only and stop implying the CLI exercises it.
+
+### Match the requested burn speed to what the source can SUSTAIN `[P2]`
+
+The lever that would have prevented discs #2 and #3 is not a bigger ring. A
+ring covers *transient* under-supply; against sustained under-supply it only
+delays. 5.00 s at 16x is already 14.1 MB of locked memory,
+`ACCUDISC_FIFO_MAX_BYTES` is 32 MB, and covering disc #2's starvation would
+have needed **557 MB** — the whole remaining disc. Disc #1 shows the ring is
+correctly sized for what a ring can do: 0 starvations, low-water 221/222, over
+a full 79-minute burn.
+
+The engine already measures the shortfall — it counts starvations and low-water
+live — but only reports them afterwards, by which time the disc is spent.
+Wanted: a source-throughput probe before the laser starts, or a rung chosen
+from the measured source rate rather than from a flag. On a one-shot medium,
+"we could tell you were too slow, afterwards" is the wrong place to put the
+measurement.
+
 ## MEDIA — the Ritek CD-R stock, ATIP read 2026-09-05
 
 50 blanks, JVC-branded, **Ritek-manufactured**. ATIP read off one on hardware:
+
+> **STOCK: 46 remaining as of 2026-09-06.** Spent: disc #1 (clean reference,
+> 2026-09-05), disc #2 (starved, B1/A3), a 4x unstarved control that was burnt
+> and discarded as unsound, and disc #3 (intended as a music control; burnt
+> byte-reversed, so a second noise arm). Every burn's ATIP has read
+> `97:15:17` / `79:59:70` / Ritek, so the spindle is consistent across four
+> discs now rather than one.
+
 
 ```
 atip leadin=97:15:17 leadout=79:59:70 type=CD-R manufacturer=Ritek
