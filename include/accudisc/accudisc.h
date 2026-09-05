@@ -27,7 +27,39 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 34 /* 0.34.0: WRITE HEALTH. A live-write budget
+#define ACCUDISC_VERSION_MINOR 35 /* 0.35.0: POST-BURN VERIFICATION, IN TIERS,
+                                  * and full QPxTool parity on the vendor
+                                  * error counters.
+                                  *
+                                  * HARD ABI BREAK: accudisc_counters grows
+                                  * from 12 to 48 bytes (measured, not
+                                  * reckoned — the first draft of this comment
+                                  * said 44 and the compiler disagreed). It is caller-allocated
+                                  * and crosses the FFI boundary, so a binding
+                                  * compiled against the old header and loaded
+                                  * against this library is written past the
+                                  * end of its buffer — the 0.9.0 speed_rung
+                                  * shape. REBUILD THE BINDING. It takes no
+                                  * size field because the struct is fixed by
+                                  * an external format (a 26-byte firmware
+                                  * readout) and cannot grow again; that is the
+                                  * API_PLAN.md 7.1 exclusion that already
+                                  * covers accudisc_q and accudisc_sense.
+                                  * ACCUDISC_DRIVER_ABI goes 3 -> 4 so a stale
+                                  * driver .so is refused rather than
+                                  * misreading the struct.
+                                  *
+                                  * Verification is THREE TIERS, not one, so
+                                  * the tool is not Plextor-only: a byte
+                                  * compare of the read-back works on every
+                                  * drive and stands alone; C2 pointers add to
+                                  * it where the capability probe says the
+                                  * drive really has them; vendor counters add
+                                  * the pre-correction margin where a driver is
+                                  * attached. They answer DIFFERENT questions —
+                                  * see accudisc_verify_tier.
+                                  *
+                                  * 0.34.0: WRITE HEALTH. A live-write budget
                                   * (accudisc_set_write_budget,
                                   * ACCUDISC_ERR_WRITE_BUDGET) and a per-burn
                                   * timing envelope (accudisc_write_health_get)
@@ -1234,6 +1266,10 @@ ACCUDISC_API int accudisc_write(accudisc_device *dev, const char *toc_path,
                                                  uint32_t total),
                                 void *user);
 
+/* Post-burn verification (accudisc_verify) is declared below, after the
+ * vendor counter census it composes on for its highest tier. */
+
+
 /* ---- write health: bounding and watching repeated burns ---------------------
  * Added 0.34.0, after a CD-RW was destroyed by 37 write operations in one hour
  * (docs/reference/TODO.md, "CD-RW MEDIA SAFEGUARDS"). Two independent guards,
@@ -1351,10 +1387,52 @@ ACCUDISC_API const char *accudisc_access_method(accudisc_device *dev);
  * Plextor Q-Check). ACCUDISC_ERR_UNSUPPORTED without an attached driver
  * offering the capability. read returns the counts accumulated since the
  * previous read and resets the interval. */
+/* One interval's vendor error counters, decoded from the drive's 26-byte CD
+ * readout. FULL PARITY with QPxTool's decode as of 0.35.0 — every field the
+ * response carries is surfaced, where we previously took three.
+ *
+ * WHAT THE STAGES MEAN. CIRC corrects in two passes. C1 sees a frame first,
+ * and e11/e21/e31 count the C1 blocks that needed one, two or three symbol
+ * corrections. What C1 could not fix passes to C2, where e12/e22/e32 count
+ * the same three cases. Three bad symbols is past C2's reach, so e32 IS the
+ * uncorrectable case rather than a fourth severity beside it — which is why
+ * `cu` and `e32` below are the same number and not a contradiction.
+ *
+ * `bler` is the drive's own C1 block-error total, and it is REDUNDANT BY
+ * CONSTRUCTION: every C1 block error carries one, two or three bad symbols,
+ * so bler == e11 + e21 + e31 must hold. The census CHECKS that identity on
+ * every sample rather than assuming it (accudisc_census_stats.bler_mismatch)
+ * — it costs nothing, and a drive that broke it would be telling us the
+ * fields are sampled independently and that the sum is not the quantity a
+ * BLER limit refers to.
+ *
+ * `uncr` is the one field whose meaning is NOT settled, and it is named for
+ * where it was read rather than for what it is assumed to be. QPxTool reads
+ * `uncr` at byte 18 and `e32` at byte 20; our pre-0.35.0 decode read byte 20
+ * alone and called it `cu`. Both agree on what byte 20 holds. What byte 18
+ * holds is open — QPxTool's own source carries the comment "and where is
+ * UNCR" (qscan_cmd.cpp:274), so neither side is authoritative. It is decoded
+ * so that any scan of a disc with real error activity settles it; until then
+ * do not build a verdict on it. See docs/reference/OPCODES.md, the open
+ * question under the 0xEA table.
+ *
+ * c1/c2/cu are kept as the PORTABLE TRIPLE — the vocabulary shared with the
+ * generic verification path, which has no vendor counters and can never fill
+ * the e-fields. Code that must work on any drive speaks that triple. */
 typedef struct accudisc_counters {
-    uint32_t c1; /* correctable at C1 stage */
-    uint32_t c2; /* correctable at C2 stage */
-    uint32_t cu; /* uncorrectable */
+    uint32_t c1; /* correctable at C1 stage; == bler == e11+e21+e31 */
+    uint32_t c2; /* correctable at C2 stage; == e22 */
+    uint32_t cu; /* uncorrectable; == e32 */
+
+    /* The full readout, added 0.35.0. A drive without vendor counters leaves
+     * every one of these zero, which is why `have_detail` exists: a zero here
+     * means "not reported", never "none observed". */
+    uint32_t bler;            /* byte 10 — the drive's own C1 block total */
+    uint32_t e31, e21, e11;   /* bytes 12/14/16 — C1, by symbols corrected */
+    uint32_t uncr;            /* byte 18 — MEANING OPEN, see above */
+    uint32_t e32, e22, e12;   /* bytes 20/22/24 — C2, by symbols corrected */
+    uint8_t  have_detail;     /* nonzero if the e-fields were actually read */
+    uint8_t  reserved[3];
 } accudisc_counters;
 
 ACCUDISC_API int accudisc_counter_scan_begin(accudisc_device *dev);
@@ -1402,6 +1480,16 @@ typedef struct accudisc_census_stats {
     uint32_t peak_c1, peak_c2, peak_cu;     /* worst single sample */
     uint32_t samples;                       /* samples delivered */
     uint32_t read_errors;                   /* samples whose read failed */
+
+    /* Added 0.35.0. The drive reports its own C1 block total (bler) beside
+     * the three per-severity C1 counts, and bler == e11+e21+e31 holds by
+     * construction. This counts the samples where it did NOT — an identity
+     * violation, checked because it is free and because a nonzero count
+     * would mean the byte frame we decode is not the frame the drive is
+     * filling. Samples with have_detail == 0 are not counted either way:
+     * an undecoded sample cannot violate an identity. */
+    uint32_t bler_mismatch;
+    uint32_t bler_checked;                  /* samples the identity was tested on */
 } accudisc_census_stats;
 
 /* Arms the counters, scans [start, end), disarms — including on every error
@@ -1412,6 +1500,134 @@ ACCUDISC_API int accudisc_counter_census(accudisc_device *dev,
                                          const accudisc_census_opts *opts,
                                          accudisc_census_fn fn, void *user,
                                          accudisc_census_stats *stats);
+
+/* ---- POST-BURN VERIFICATION -----------------------------------------------
+ *
+ * THREE TIERS, AND THEY ANSWER THREE DIFFERENT QUESTIONS. This is the whole
+ * design, and collapsing them into one number would be the mistake:
+ *
+ *   TIER 0  COMPARE   "does the disc read back as the bytes I sent?"
+ *                     Post-CIRC, read-side, and the drive has already used
+ *                     every correction it has by the time we see the audio.
+ *                     Pure MMC READ CD — works on EVERY drive, needs no
+ *                     driver and no capability, and STANDS ALONE. A tool
+ *                     whose verification only worked on one vendor's
+ *                     hardware would not be a verification feature.
+ *
+ *   TIER 1  + C2      "did the drive have to work for it?"
+ *                     C2 error pointers are standard MMC, but claiming them
+ *                     and having them are different things, so this tier is
+ *                     gated on the capability PROBE (accudisc_read_caps,
+ *                     c2_verdict) rather than on the drive's claim.
+ *
+ *   TIER 2  + COUNTERS "how much margin is left?"
+ *                     Vendor error counters, pre-correction, per second.
+ *                     Needs an attached driver. This is the only tier that
+ *                     can tell a disc that barely passed from one that
+ *                     passed easily.
+ *
+ * WHY THAT DISTINCTION MATTERS RATHER THAN BEING PEDANTRY. A disc can pass
+ * tier 0 perfectly while sitting on the edge of its correction budget — CIRC
+ * hides exactly the degradation you are verifying for. So tier 0 answers
+ * "readable NOW", not "well written", and `tier` in the result says which
+ * question was actually answered. A caller that renders tier 0 as an
+ * unqualified PASS is overstating its own evidence.
+ *
+ * ALIGNMENT IS MEASURED, NEVER APPLIED. A read-back is displaced from the
+ * source by the drives' combined write and read offsets, so a naive byte
+ * compare reports total mismatch on a flawless disc. The library will not
+ * silently shift to fix that: "AccuDisc REPORTS offsets and never applies
+ * one" (see the offsets section above) exists precisely so no consumer gets a
+ * second correction site. Instead the verify LOCATES the displacement, states
+ * it in `shift_samples`, and compares at it — the same locate-and-report
+ * shape as accudisc_write_offset_locate. If no unique displacement can be
+ * found, `aligned` is 0 and the comparison counts are NOT reported as a
+ * result: an unaligned compare is not a failed compare. */
+typedef enum accudisc_verify_tier {
+    ACCUDISC_VERIFY_COMPARE  = 0, /* byte compare — any drive */
+    ACCUDISC_VERIFY_C2       = 1, /* + C2 pointers — probed capability */
+    ACCUDISC_VERIFY_COUNTERS = 2  /* + vendor counters — needs a driver */
+} accudisc_verify_tier;
+
+/* Search bound for the displacement, in samples either way. 8 sectors: a
+ * combined write+read offset beyond that is outside anything the offset
+ * corpus holds, and an unbounded search would find spurious matches in
+ * repetitive audio rather than failing honestly. */
+#define ACCUDISC_VERIFY_SHIFT_MAX 4704
+
+typedef struct accudisc_verify_opts {
+    uint32_t size;      /* = sizeof(accudisc_verify_opts); _VERIFY_OPTS_INIT */
+    uint32_t start;     /* first sector of the burnt span */
+    uint32_t count;     /* sectors; 0 = as many as bin_path holds */
+    uint8_t  want_tier; /* highest tier to ATTEMPT; degrades silently down */
+    uint8_t  require_tier; /* refuse with ACCUDISC_ERR_UNSUPPORTED below this.
+                            * Separate from want_tier because "use counters if
+                            * you have them" and "this run is worthless
+                            * without them" are different requests, and a
+                            * caller that means the second must be able to say
+                            * so rather than discovering the degrade in the
+                            * result it already believed. */
+    uint16_t speed_x;   /* read speed for the verify pass; 0 = leave as-is */
+    const volatile int *cancel; /* poll: nonzero aborts; or NULL */
+} accudisc_verify_opts;
+
+#define ACCUDISC_VERIFY_OPTS_INIT     { sizeof(accudisc_verify_opts), 0, 0, ACCUDISC_VERIFY_COUNTERS,       ACCUDISC_VERIFY_COMPARE, 0, NULL }
+
+typedef struct accudisc_verify_result {
+    uint32_t size;      /* = sizeof(accudisc_verify_result); set BEFORE the
+                         * call — it is how the library learns how much of
+                         * your allocation it may write. */
+    uint8_t  tier;      /* the tier ACHIEVED, which may be below want_tier */
+    uint8_t  aligned;   /* a unique displacement was found; if 0, every
+                         * comparison field below is meaningless and left 0 */
+    uint8_t  degraded;  /* tier < want_tier: something was asked for and not
+                         * available. Distinct from a failure. */
+    uint8_t  reserved;
+    int32_t  shift_samples; /* MEASURED displacement. The equation, because a
+                             * prose sign convention is the thing readers get
+                             * backwards: disc[j] == source[j + shift_samples].
+                             * So POSITIVE means the read-back runs EARLY — at
+                             * disc position j sits material from later in the
+                             * source — which is the same sign convention the
+                             * offsets section uses. This is the WRITE offset
+                             * and the READ offset combined, and one disc
+                             * cannot separate them. */
+
+    /* Tier 0. */
+    uint64_t samples_compared;
+    uint64_t samples_differing;
+    int64_t  first_diff_lba;    /* -1 if none */
+
+    /* Tier 1. Zero here means "none observed" ONLY when tier >= 1; below that
+     * it means the question was never asked, which is why `tier` has to be
+     * read first. */
+    uint64_t c2_bits;
+    uint64_t sectors_flagged;
+    uint64_t hard_errors;
+
+    /* Tier 2. Same rule: read `tier` before believing a zero. */
+    accudisc_census_stats census;
+} accudisc_verify_result;
+
+/* Verify a burn against the audio it was made from. `bin_path` is the same
+ * raw s16 file accudisc_write was given.
+ *
+ * Runs up to TWO passes over the span: one read to compare (tiers 0 and 1),
+ * and, only for tier 2, a second with the vendor counters armed. They are not
+ * merged into one pass deliberately — accudisc_counter_census owns the
+ * counters' whole lifetime including every error path, and reproducing that
+ * inside the compare loop would duplicate the one piece of this already
+ * proven correct.
+ *
+ * Returns ACCUDISC_OK when the verification RAN, whatever it found — a disc
+ * that differs is a result, not an error. Read the result to learn the
+ * verdict; the return code only says whether the question could be put. */
+ACCUDISC_API int accudisc_verify(accudisc_device *dev, const char *bin_path,
+                                 const accudisc_verify_opts *opts,
+                                 accudisc_verify_result *out,
+                                 void (*progress)(void *user, uint32_t done,
+                                                  uint32_t total),
+                                 void *user);
 
 /* ---- read-speed uncap (driver capability) ----------------------------------
  * Firmware caps CD read speed on some media; where the vendor offers an

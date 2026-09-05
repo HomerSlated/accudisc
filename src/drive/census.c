@@ -102,6 +102,24 @@ int accudisc_counter_census(accudisc_device *dev,
         if (s.counters.cu > st.peak_cu)
             st.peak_cu = s.counters.cu;
 
+        /* Check the drive's own C1 total against the sum of its three C1
+         * severity counts. Every C1 block error carries one, two or three bad
+         * symbols, so the identity holds by construction and a violation
+         * means the byte frame we decode is not the frame the firmware fills.
+         * Free to test, and the only way we would ever find out.
+         *
+         * Samples without detail are not counted on EITHER side. A drive with
+         * no vendor counters leaves every e-field zero, and 0 == 0+0+0 would
+         * otherwise score as a passing check on evidence that distinguishes
+         * nothing — the exact shape of a test that is green while measuring
+         * nothing. */
+        if (s.counters.have_detail) {
+            st.bler_checked++;
+            if (s.counters.bler !=
+                s.counters.e11 + s.counters.e21 + s.counters.e31)
+                st.bler_mismatch++;
+        }
+
         if (fn(&s, user) != 0) {
             ret = ACCUDISC_ERR_CANCELLED;
             break;

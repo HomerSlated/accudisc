@@ -890,6 +890,12 @@ typedef struct accudisc_counters {
     uint32_t c1;
     uint32_t c2;
     uint32_t cu;
+    uint32_t bler;
+    uint32_t e31, e21, e11;
+    uint32_t uncr;
+    uint32_t e32, e22, e12;
+    uint8_t  have_detail;
+    uint8_t  reserved[3];
     ...;
 } accudisc_counters;
 
@@ -927,6 +933,8 @@ typedef struct accudisc_census_stats {
     uint32_t peak_c1, peak_c2, peak_cu;
     uint32_t samples;
     uint32_t read_errors;
+    uint32_t bler_mismatch;
+    uint32_t bler_checked;
     ...;
 } accudisc_census_stats;
 
@@ -947,6 +955,46 @@ int accudisc_counter_census(accudisc_device *dev,
                             const accudisc_census_opts *opts,
                             accudisc_census_fn fn, void *user,
                             accudisc_census_stats *stats);
+
+/* ---- post-burn verification, three tiers -------------------------------- */
+#define ACCUDISC_VERIFY_COMPARE ...
+#define ACCUDISC_VERIFY_C2 ...
+#define ACCUDISC_VERIFY_COUNTERS ...
+#define ACCUDISC_VERIFY_SHIFT_MAX ...
+
+typedef struct accudisc_verify_opts {
+    uint32_t size;
+    uint32_t start;
+    uint32_t count;
+    uint8_t  want_tier;
+    uint8_t  require_tier;
+    uint16_t speed_x;
+    const volatile int *cancel;
+    ...;
+} accudisc_verify_opts;
+
+typedef struct accudisc_verify_result {
+    uint32_t size;
+    uint8_t  tier;
+    uint8_t  aligned;
+    uint8_t  degraded;
+    uint8_t  reserved;
+    int32_t  shift_samples;
+    uint64_t samples_compared;
+    uint64_t samples_differing;
+    int64_t  first_diff_lba;
+    uint64_t c2_bits;
+    uint64_t sectors_flagged;
+    uint64_t hard_errors;
+    accudisc_census_stats census;
+    ...;
+} accudisc_verify_result;
+
+int accudisc_verify(accudisc_device *dev, const char *bin_path,
+                    const accudisc_verify_opts *opts,
+                    accudisc_verify_result *out,
+                    void (*progress)(void *user, uint32_t done, uint32_t total),
+                    void *user);
 """
 )
 

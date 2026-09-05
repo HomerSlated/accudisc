@@ -35,7 +35,7 @@ extern "C" {
 
 /* Bumped on any incompatible change to this file; the library refuses
  * drivers built against a different ABI. */
-#define ACCUDISC_DRIVER_ABI 3
+#define ACCUDISC_DRIVER_ABI 4
 
 typedef enum accudisc_host_dir {
     ACCUDISC_HOST_NONE = 0,

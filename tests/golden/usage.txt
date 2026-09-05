@@ -74,6 +74,17 @@ commands:
   cxscan         hardware C1/C2/CU error census (needs --driver)
                  [--start LBA] [--speed X]; one 'cx <lba> <c1>
                  <c2> <cu>' line per sample, 75 sectors apart
+  verify         post-burn verification against the audio that was
+                 burnt. --bin FILE [--start LBA] [--count N]
+                 [--speed X] [--tier compare|c2|counters]
+                 [--require-tier T] [--max-bler N]
+                 THREE TIERS, three different questions: compare is a
+                 byte compare and works on ANY drive; c2 adds error
+                 pointers where the probe proves them; counters adds
+                 pre-correction margin and needs --driver. The tier
+                 reached is printed — a compare-tier pass says the
+                 disc reads back correctly now, not that it was well
+                 written. Exit 3 if it differs or cannot be aligned
   version        print the library version
 
 driver options (vendor features are OFF unless requested):

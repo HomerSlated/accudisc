@@ -895,16 +895,41 @@ do not implement.** Pinned from QPxTool's `plugins/plextor/qscan_cmd.cpp`:
 So on CD specifically there is exactly **one** unimplemented arm — **Jitter/Beta**
 — and its framing is already pinned. Everything else on this opcode is DVD.
 
-**An open question on the readout we already ship.** QPxTool decodes *eight*
-fields from the 26-byte CD block (`bler` at offset 10, then `e31 e21 e11` at
-12/14/16, `uncr` at 18, `e32 e22 e12` at 20/22/24); `plextor.c` takes three
-(`[12..17]` summed as C1, `[20..21]` as CU, `[22..23]` as C2). **The `uncr`
-placement disagrees** — we read CU at 20, QPxTool reads `uncr` at 18 and `e32`
-at 20. Before treating that as our bug, note that **QPxTool's own source is
-unsure**: lines 273-274 carry the comments `// check where drive returns E32`
-and `// and where is UNCR`. Neither side is authoritative here, so this is an
-open question, not a defect — and it is settleable on hardware with a disc whose
-uncorrectable count is known non-zero.
+**RESOLVED 2026-09-05 — all eight fields are now decoded, and the
+"disagreement" was mostly a naming difference.** QPxTool decodes *eight* fields
+from the 26-byte CD block (`bler` at offset 10, then `e31 e21 e11` at 12/14/16,
+`uncr` at 18, `e32 e22 e12` at 20/22/24); `plextor.c` used to take three
+(`[12..17]` summed as C1, `[20..21]` as CU, `[22..23]` as C2).
+
+Laid side by side, the two decodes **agree** on every byte both of them read:
+
+| byte | QPxTool | old `plextor.c` | verdict |
+|---|---|---|:---|
+| 10 | `bler` | *not read* | gap, now closed |
+| 12/14/16 | `e31 e21 e11` | summed as `c1` | agreed |
+| 18 | `uncr` | *not read* | **the only real disagreement** |
+| 20 | `e32` | `cu` | agreed — E32 (3+ symbols) IS the uncorrectable case |
+| 22 | `e22` | `c2` | agreed |
+| 24 | `e12` | *not read* | gap, now closed |
+
+So parity was **additive, not corrective**, and this section previously
+overstated the problem. The C2 criterion a burn verdict gates on comes from
+byte 22, which both decodes call the same thing; what is still open is only
+whether byte 18 or byte 20 carries the authoritative uncorrectable count, which
+affects failure *attribution* and never pass detection. **QPxTool's own source
+is unsure**: lines 273-274 carry `// check where drive returns E32` and
+`// and where is UNCR`, so neither side is authoritative. Byte 18 is now
+decoded as `accudisc_counters.uncr`, named for where it was read rather than
+for what it is assumed to be, so any scan of a disc with real error activity
+settles it. **Do not build a verdict on `uncr` until one does.**
+
+**The decode now checks itself.** Every C1 block error carries one, two or
+three bad symbols, so `bler == e11 + e21 + e31` holds by construction. The
+census tests that identity on every sample and reports
+`bler_mismatch`/`bler_checked` — free, and the only way we would ever discover
+that the byte frame we decode is not the frame the firmware fills. Samples
+without detail are counted on neither side, because `0 == 0+0+0` would
+otherwise score as a passing check on evidence that distinguishes nothing.
 
 **`0xED` — one mode code of a byte.** We use mode code 0 (POWEREC). No source on
 disk enumerates any other, QPxTool names only the opcode, and the firmware

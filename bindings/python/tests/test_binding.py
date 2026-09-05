@@ -164,12 +164,14 @@ def test_struct_sizes_match_api_plan():
     assert ffi.sizeof("accudisc_index_map") == 28         # OUT ARRAY
     assert ffi.sizeof("accudisc_perf_desc") == 16         # OUT ARRAY
     assert ffi.sizeof("accudisc_fulltoc_entry") == 9      # fixed by Red Book
-    assert ffi.sizeof("accudisc_counters") == 12
+    assert ffi.sizeof("accudisc_counters") == 48   # 12 -> 48 in 0.35.0
     assert ffi.sizeof("accudisc_census_opts") == 32       # IN, carries size
-    assert ffi.sizeof("accudisc_census_sample") == 24
-    assert ffi.sizeof("accudisc_census_stats") == 48
+    assert ffi.sizeof("accudisc_census_sample") == 60   # grew with counters
+    assert ffi.sizeof("accudisc_census_stats") == 56    # 48 -> 56 in 0.35.0
     assert ffi.sizeof("accudisc_cdtext_strings") == 640
     assert ffi.sizeof("accudisc_atip") == 24
+    assert ffi.sizeof("accudisc_verify_opts") == 24       # IN, carries size
+    assert ffi.sizeof("accudisc_verify_result") == 120    # OUT, carries size
 
 
 def test_every_IN_struct_declares_a_leading_size_field():
@@ -182,7 +184,7 @@ def test_every_IN_struct_declares_a_leading_size_field():
     """
     for name in ("accudisc_read_req", "accudisc_write_opts",
                  "accudisc_range_spec", "accudisc_pregap_scan_opts",
-                 "accudisc_census_opts"):
+                 "accudisc_census_opts", "accudisc_verify_opts"):
         assert ffi.offsetof(name, "size") == 0, \
             f"{name}: `size` must be the LEADING field or abi_import lies"
 

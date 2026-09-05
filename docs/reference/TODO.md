@@ -522,6 +522,122 @@ unchanged** — they were derived from what the loop did, not from why the disc 
 
 ---
 
+## POST-BURN VERIFICATION — three tiers, built 2026-09-05 (0.35.0)
+
+Keith's instruction: two methods, one generic and one advanced, "otherwise we
+end up building a tool that only works with Plextor drives." Built as **three**
+tiers rather than two, because the C2 middle rung is standard MMC yet still has
+to be *probed* — a drive can claim C2 it does not honour, and `accudisc_features`
+already carries the functional verdict that tells the two apart.
+
+| tier | question answered | requires |
+|---|---|---|
+| 0 `compare` | does the disc read back as the bytes I sent? | nothing — **any** drive |
+| 1 `c2` | did the drive have to work for it? | the C2 capability **probe**, not the claim |
+| 2 `counters` | how much margin is left? | an attached vendor driver |
+
+**They are not one question at three resolutions, and that is the point.** Tier
+0 is post-CIRC and read-side: the drive has already spent every correction it
+has by the time we see the audio, so a disc can pass tier 0 perfectly while
+sitting on the edge of its budget. CIRC hides exactly the degradation a
+post-burn verify exists to find. `accudisc_verify_result.tier` therefore states
+which question was answered, and the CLI prints a separate `quality=` token
+(`not_measured` / `unrated` / `rated`) so those three states cannot be
+collapsed into "PASS".
+
+**Tier 0 stands alone.** That is the requirement, restated as a property: a
+byte compare against the source needs no driver, no capability and no vendor.
+
+### Alignment is MEASURED, never applied — and it nearly went wrong twice
+
+A read-back is displaced from the source by the drives' combined write and read
+offsets, so a naive byte compare reports total mismatch on a flawless disc. The
+library will not silently shift to fix that: **"AccuDisc REPORTS offsets and
+never applies one"** (`accudisc.h`, offsets section) exists so no consumer gets
+a second correction site, and double correction is invisible — well-formed PCM,
+wrong by twice the offset. So the verify *locates* the displacement, states it
+in `shift_samples`, and compares at it. `aligned == 0` reports no comparison at
+all, because an unaligned compare is not a failed compare.
+
+Two defects found by falsifying the guards rather than by reading them:
+
+1. **The sign convention was contradictory** — the header said positive meant
+   the read-back ran LATE, the implementation comment said EARLY. Settled by
+   writing the equation instead of the prose: `disc[j] == source[j + shift]`,
+   so positive means EARLY, matching the offsets section. `test_verify` case 2
+   pins it at a known +667, and a sign flip fails that case.
+2. **The uniqueness rule was a RATIO and it was wrong for damaged discs.** The
+   first version required the runner-up shift to be ten TIMES worse, which is
+   fine while the best shift is near-perfect and arithmetically unreachable
+   once it is not: with 30% of the anchor differing, ten times worse is 300%,
+   so a badly-burnt disc — the one a verify exists for — would have come back
+   "cannot align" instead of "aligned, and 30% wrong". Replaced with a
+   SEPARATION rule: the runner-up must be worse by a fixed fraction of the
+   window. Silence gives `best == second == 0` and separates by nothing
+   (refuse); heavy damage separates by most of the window (accept).
+   `test_verify` 8d and 8e pin both ends.
+
+### What the falsification pass established
+
+Every load-bearing rule was broken deliberately and watched fail: the shift
+sign, the separation rule, the absolute "is this even the same audio" limit,
+the unaligned-means-no-comparison rule, `require_tier`, the census-failure
+degrade, the arm-is-not-a-readout check, and the C2 UNVERIFIED-is-not-SUPPORTED
+gate. **One guard did NOT register: the anchor entropy check.** That is
+correct rather than a gap — the separation rule catches silence on its own —
+and the source now says so explicitly, so nobody reads the early-out as the
+guarantee or deletes the margin thinking it redundant.
+
+### The threshold that is deliberately absent
+
+`verify` ships **no default quality limit**. A pass/fail line across C1 counts
+is a judgement, and a judgement shipped without a cited source is a judgement
+wearing the costume of a measurement — the failure this project is named
+after. `--max-bler N` takes one from the caller and yields
+`result=marginal`; without it the counts print and the disc is left
+`quality=unrated`. **[open]** Establishing a defensible default means citing a
+primary standard, which has not been done this session.
+
+### The verdict lives in the CLI, not the library
+
+`API_PLAN.md` §5.3 pins only the census cadence, so this was open. Decided by
+CLAUDE.md's invariant that relative checks never outrank absolute gates: a
+threshold on C1 is a relative check being promoted to a gate, and freezing one
+into the public ABI makes every consumer inherit our judgement. The library
+reports; `cli/main.c` renders. Same split as exit codes and terminal output
+(API_PLAN §3).
+
+## MEDIA — the Ritek CD-R stock, ATIP read 2026-09-05
+
+50 blanks, JVC-branded, **Ritek-manufactured**. ATIP read off one on hardware:
+
+```
+atip leadin=97:15:17 leadout=79:59:70 type=CD-R manufacturer=Ritek
+```
+
+**This is the reassuring result, and it is worth stating why.** The CD-RW
+post-mortem's surviving hypothesis is lead-in destruction by a mis-calibrated
+write power, and the route by which that happens to an honest tool is FAKED
+ATIP — a disc declaring a manufacturer code it is not, so the firmware resolves
+a strategy for the wrong dye. Here the ATIP declares Ritek and the disc *is*
+Ritek: JVC-branded Ritek media is ordinary, not a substitution. The stock is
+self-consistent with its branding, which is the opposite of the counterfeit
+case. **[verified]** on hardware; it says nothing about the other 49 discs,
+which are presumed the same spindle but not measured.
+
+`97:15:17` is not a literal row in `media_atip_db.inc` — the nearest is
+`97:15:10`. That is **not** a partial match dressed as a definite one: the
+lookup matches on the frame DECADE by design (`media_db.c:8-12`), because a
+manufacturer owns a whole `97:SS:Fx` range and real discs carry frames like
+`:17` against a `:10` entry. cdrecord uses the same rounding rule. Checked
+rather than assumed, because "manufacturer=Ritek" from a table with no such row
+is exactly the shape a silent wrong answer takes.
+
+**Ritek is not Taiyo Yuden and the difference is real** — thinner dye
+tolerances, more strategy sensitivity — but nothing here suggests the stock is
+misdeclared, and misdeclaration was the specific risk. Ordinary care applies;
+alarm does not.
+
 ## SELECTOR SWEEP — close the multiplexer gaps, then wire what qualifies — PLAN ONLY, agreed 2026-09-01, to run at the weekend
 
 Keith's five steps, in his order: (1) find which opcodes and pages are still

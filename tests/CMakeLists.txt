@@ -105,6 +105,18 @@ target_compile_definitions(test_burn_flow PRIVATE
 target_link_libraries(test_burn_flow PRIVATE Threads::Threads)
 add_test(NAME test_burn_flow COMMAND test_burn_flow)
 
+# Post-burn verification. Compiles src/write/verify.c directly against a stub
+# drive, so the alignment search — the part that can be confidently wrong — is
+# exercised at known displacements with no disc. src/abi.c is linked for real
+# because the size-field rules are among the things asserted.
+add_executable(test_verify test_verify.c
+               ${PROJECT_SOURCE_DIR}/src/write/verify.c
+               ${PROJECT_SOURCE_DIR}/src/abi.c)
+target_include_directories(test_verify PRIVATE
+                           ${PROJECT_SOURCE_DIR}/include
+                           ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME test_verify COMMAND test_verify)
+
 # The CLI's checked output writing. Compiles cli/sink.c directly — the point of
 # splitting it out of main.c is that /dev/full can stand in for a full
 # filesystem, so the truncation path is testable with no drive and no disc.

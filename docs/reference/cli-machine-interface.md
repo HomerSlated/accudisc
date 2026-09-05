@@ -33,6 +33,16 @@ Exit 3 per subcommand:
   format. No output file is written. A drive that *rejects* the request
   (CHECK CONDITION) is exit 2 — deliberately not conflated with absence.
 - `scan`: neither an MCN nor any ISRC was found.
+- `verify`: the disc does **not** match the audio it was burnt from
+  (`result=differ` — one differing sample is enough, and no threshold applies
+  to it), or the read-back could not be aligned against the source at all
+  (`result=unaligned`), or a caller-supplied `--max-bler` limit was exceeded
+  (`result=marginal`). `unaligned` is the one worth reading carefully: it is
+  neither a pass nor a failure but *no measurement*, and its usual causes are
+  the wrong `--bin` and a span with nothing but digital silence to anchor on.
+  A missing `--bin` is exit 1, and `--require-tier` naming a tier the drive
+  cannot reach is exit 2 — the question could not be put, which is not a
+  caveat about the disc.
 - `offset`: no source holds this drive (`read_offset unknown`, nothing else), or
   the candidates disagree (`read_offset unknown`, then `conflict N` and one
   `value <signed> <sources>` line per candidate). Both are *absence of a usable
@@ -133,6 +143,22 @@ Three properties of that table are load-bearing:
   C2, suspect or hard-error signal fired — it does not mean the audio is
   correct. The absolute gates (AccurateRip, CTDB) live in the calling
   application and this contract says nothing about them.
+- **`verify` is the ONE exception to the line above, and only at its lowest
+  tier.** A byte compare against the source the disc was written from is an
+  absolute check — the reference is known-correct by construction, not
+  inferred from the disc — so `verify result=pass` at `tier=compare` really
+  does mean the audio read back is the audio sent. What it does *not* mean is
+  that the disc is well written: CIRC hides degradation, so a disc can read
+  back perfectly while sitting at the edge of its correction budget. That is
+  the whole reason the tier is printed and the reason `quality=` is a separate
+  token. `quality=not_measured` (tier 0 or 1), `quality=unrated` (tier 2 with
+  no `--max-bler`) and `quality=rated` are three different states and a
+  consumer must not collapse them.
+- **`verify` ships NO default quality threshold, deliberately.** A pass/fail
+  line across C1 counts is a judgement, and a judgement shipped without a
+  cited source is a judgement wearing the costume of a measurement. Supply
+  `--max-bler` from your own standard reference to get `result=marginal`;
+  without it the counts are printed and the disc is left unrated.
 - **The `read` caveat verdict is the CONSUMER's to re-derive, and that is a
   ruling, not an omission** (Keith, 2026-07-29). The library deliberately does
   **not** export a `read_verdict()` helper or a verdict field. Every API

@@ -44,6 +44,7 @@ set(ACCUDISC_SOURCES
     write/tocparse.c
     write/burn.c
     write/write_api.c
+    write/verify.c
     write/write_offset.c
 )
 

@@ -92,6 +92,17 @@ static void usage(FILE *to)
         "  cxscan         hardware C1/C2/CU error census (needs --driver)\n"
         "                 [--start LBA] [--speed X]; one 'cx <lba> <c1>\n"
         "                 <c2> <cu>' line per sample, 75 sectors apart\n"
+        "  verify         post-burn verification against the audio that was\n"
+        "                 burnt. --bin FILE [--start LBA] [--count N]\n"
+        "                 [--speed X] [--tier compare|c2|counters]\n"
+        "                 [--require-tier T] [--max-bler N]\n"
+        "                 THREE TIERS, three different questions: compare is a\n"
+        "                 byte compare and works on ANY drive; c2 adds error\n"
+        "                 pointers where the probe proves them; counters adds\n"
+        "                 pre-correction margin and needs --driver. The tier\n"
+        "                 reached is printed — a compare-tier pass says the\n"
+        "                 disc reads back correctly now, not that it was well\n"
+        "                 written. Exit 3 if it differs or cannot be aligned\n"
         "  version        print the library version\n"
         "\n"
         "driver options (vendor features are OFF unless requested):\n"
@@ -513,6 +524,143 @@ static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
      * everything before the stop, and that is the useful part. */
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "counter read", err);
+    return 0;
+}
+
+/* Post-burn verification. THE VERDICT LIVES HERE, NOT IN THE LIBRARY, and
+ * that is a deliberate application of the project's own invariant that
+ * relative checks never outrank absolute gates (CLAUDE.md; RECOVERY.md). A
+ * pass/fail line drawn across C1 counts is a judgement about acceptable
+ * quality, and freezing a judgement into the public ABI makes every consumer
+ * inherit ours. The library reports; this renders.
+ *
+ * The three tiers answer three different questions and the output says which
+ * was reached, because "tier=compare pass" and "tier=counters pass" are not
+ * the same claim: the first means the disc reads back correctly TODAY, the
+ * second adds that it did so without spending its correction budget. */
+static const char *tier_name(uint8_t t)
+{
+    switch (t) {
+    case ACCUDISC_VERIFY_COMPARE:  return "compare";
+    case ACCUDISC_VERIFY_C2:       return "c2";
+    case ACCUDISC_VERIFY_COUNTERS: return "counters";
+    default:                       return "unknown";
+    }
+}
+
+static int tier_parse(const char *s, uint8_t *out)
+{
+    if (!strcmp(s, "compare"))  { *out = ACCUDISC_VERIFY_COMPARE;  return 0; }
+    if (!strcmp(s, "c2"))       { *out = ACCUDISC_VERIFY_C2;       return 0; }
+    if (!strcmp(s, "counters")) { *out = ACCUDISC_VERIFY_COUNTERS; return 0; }
+    return -1;
+}
+
+static int cmd_verify(accudisc_device *dev, int argc, char **argv)
+{
+    accudisc_verify_opts opts = ACCUDISC_VERIFY_OPTS_INIT;
+    accudisc_verify_result r;
+    const char *bin = NULL;
+    const char *optv = NULL;
+    long max_bler = -1;   /* -1 = the caller named no limit; see below */
+    int optbad = 0, err;
+
+    for (int i = 0; i < argc; i++) {
+        if (opt_val(argv, argc, &i, "--bin", &optv, &optbad))
+            bin = optv;
+        else if (opt_val(argv, argc, &i, "--start", &optv, &optbad))
+            opts.start = (uint32_t)strtoul(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--count", &optv, &optbad))
+            opts.count = (uint32_t)strtoul(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--speed", &optv, &optbad))
+            opts.speed_x = (uint16_t)strtoul(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--max-bler", &optv, &optbad))
+            max_bler = strtol(optv, NULL, 0);
+        else if (opt_val(argv, argc, &i, "--tier", &optv, &optbad)) {
+            if (tier_parse(optv, &opts.want_tier)) { usage(stderr); return 1; }
+        } else if (opt_val(argv, argc, &i, "--require-tier", &optv, &optbad)) {
+            if (tier_parse(optv, &opts.require_tier)) { usage(stderr); return 1; }
+        } else {
+            usage(stderr);
+            return 1;
+        }
+    }
+    if (optbad)
+        return 1;
+    if (!bin) {
+        fprintf(stderr, "accudisc: verify needs --bin FILE (the audio the "
+                        "disc was written from)\n");
+        return 1;
+    }
+    if (opts.require_tier > opts.want_tier)
+        opts.want_tier = opts.require_tier;
+
+    memset(&r, 0, sizeof r);
+    r.size = sizeof r;
+    err = accudisc_verify(dev, bin, &opts, &r, NULL, NULL);
+    if (err == ACCUDISC_ERR_UNSUPPORTED) {
+        fprintf(stderr, "accudisc: --require-tier %s not available via %s\n",
+                tier_name(opts.require_tier), accudisc_access_method(dev));
+        return 2;
+    }
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "verify", err);
+
+    printf("verify tier=%s aligned=%d degraded=%d\n",
+           tier_name(r.tier), r.aligned ? 1 : 0, r.degraded ? 1 : 0);
+
+    if (!r.aligned) {
+        /* No displacement could be established, so there is no comparison to
+         * report. This is NOT a clean disc and NOT a failed one — the audio
+         * could not be located against the source at all, which on a real
+         * burn most often means silence at every anchor or the wrong .bin. */
+        printf("verify result=unaligned\n");
+        fprintf(stderr, "accudisc: could not align the read-back against %s. "
+                        "Wrong source file, or a span with no usable audio to "
+                        "anchor on.\n", bin);
+        return 3;
+    }
+
+    printf("verify shift=%+d compared=%llu differing=%llu first_diff=%lld\n",
+           r.shift_samples, (unsigned long long)r.samples_compared,
+           (unsigned long long)r.samples_differing, (long long)r.first_diff_lba);
+    if (r.tier >= ACCUDISC_VERIFY_C2)
+        printf("verify c2_bits=%llu flagged=%llu hard=%llu\n",
+               (unsigned long long)r.c2_bits,
+               (unsigned long long)r.sectors_flagged,
+               (unsigned long long)r.hard_errors);
+    if (r.tier >= ACCUDISC_VERIFY_COUNTERS)
+        printf("verify c1=%llu peak_c1=%u c2=%llu peak_c2=%u cu=%llu "
+               "bler_mismatch=%u/%u\n",
+               (unsigned long long)r.census.c1, r.census.peak_c1,
+               (unsigned long long)r.census.c2, r.census.peak_c2,
+               (unsigned long long)r.census.cu,
+               r.census.bler_mismatch, r.census.bler_checked);
+
+    /* A single differing sample is a definitive failure: this is the audio
+     * the disc was made from, and the drive has already applied every
+     * correction it has by the time we see it. No threshold applies. */
+    if (r.samples_differing > 0 || (r.tier >= ACCUDISC_VERIFY_C2 && r.hard_errors)) {
+        printf("verify result=differ\n");
+        return 3;
+    }
+
+    /* The quality verdict, which needs a NUMBER, and the number is the
+     * caller's. There is no default limit here on purpose: a threshold
+     * shipped without a cited source is a judgement wearing the costume of a
+     * measurement, and this project has been bitten by exactly that. Pass
+     * --max-bler with a limit from your own reference and the verdict becomes
+     * available; without it the counts are printed and left unrated. */
+    if (r.tier >= ACCUDISC_VERIFY_COUNTERS && max_bler >= 0) {
+        if ((long)r.census.peak_c1 > max_bler) {
+            printf("verify result=marginal\n");
+            return 3;
+        }
+        printf("verify result=pass quality=rated\n");
+        return 0;
+    }
+    printf("verify result=pass quality=%s\n",
+           r.tier >= ACCUDISC_VERIFY_COUNTERS ? "unrated" : "not_measured");
     return 0;
 }
 
@@ -2708,6 +2856,8 @@ int main(int argc, char **argv)
         rc = cmd_read(dev, nrest, rest);
     else if (!strcmp(command, "cxscan"))
         rc = cmd_cxscan(dev, nrest, rest);
+    else if (!strcmp(command, "verify"))
+        rc = cmd_verify(dev, nrest, rest);
     else {
         fprintf(stderr, "accudisc: unknown command '%s'\n", command);
         usage(stderr);

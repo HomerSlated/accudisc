@@ -209,6 +209,22 @@ static int px_begin(const accudisc_host *host)
     return px_cx_cmd(host, 0x15, NULL, 0);
 }
 
+static uint32_t be16(const uint8_t *p)
+{
+    return (uint32_t)(((unsigned)p[0] << 8) | p[1]);
+}
+
+/* Decode all eight fields of the 26-byte CD readout — QPxTool parity, 0.35.0.
+ *
+ * We used to take three: [12..17] summed as C1, [20..21] as CU, [22..23] as
+ * C2.  Those three were not WRONG — byte 20 is the uncorrectable-at-C2 count
+ * on both decodes, and byte 22 the correctable-at-C2 count on both — but they
+ * discarded five fields the drive had already measured, including the one
+ * (byte 10) that lets the C1 decode check itself.
+ *
+ * The portable triple is still filled, because the generic verification path
+ * speaks it and has no e-fields to offer.  `have_detail` is what stops a
+ * consumer reading an unfilled e-field's zero as an observation of zero. */
 static int px_read(const accudisc_host *host, accudisc_counters *out)
 {
     uint8_t d[CX_COUNTERS_LEN] = {0};
@@ -216,11 +232,25 @@ static int px_read(const accudisc_host *host, accudisc_counters *out)
 
     if (rc != ACCUDISC_OK)
         return rc;
-    out->c1 = (uint32_t)(((unsigned)d[12] << 8) | d[13]) +
-              (uint32_t)(((unsigned)d[14] << 8) | d[15]) +
-              (uint32_t)(((unsigned)d[16] << 8) | d[17]);
-    out->cu = (uint32_t)(((unsigned)d[20] << 8) | d[21]);
-    out->c2 = (uint32_t)(((unsigned)d[22] << 8) | d[23]);
+
+    out->bler = be16(d + 10);
+    out->e31  = be16(d + 12);
+    out->e21  = be16(d + 14);
+    out->e11  = be16(d + 16);
+    out->uncr = be16(d + 18);   /* meaning OPEN — decoded, never relied on */
+    out->e32  = be16(d + 20);
+    out->e22  = be16(d + 22);
+    out->e12  = be16(d + 24);
+    out->have_detail = 1;
+
+    /* The portable triple.  C1 stays the SUM rather than switching to the
+     * drive's bler field: the sum is what every previously-reported figure
+     * from this driver was, and changing which quantity feeds it would move
+     * users' numbers silently.  The census checks the two against each other
+     * instead, which is the honest way to learn they ever differ. */
+    out->c1 = out->e11 + out->e21 + out->e31;
+    out->c2 = out->e22;
+    out->cu = out->e32;
     return ACCUDISC_OK;
 }
 

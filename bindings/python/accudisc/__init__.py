@@ -89,6 +89,7 @@ __all__ = [
     "CdText", "CdTextStrings", "decode_cdtext",
     "UncapState", "Rotation", "PerfDesc", "classify_rotation",
     "Counters", "CensusSample", "CensusStats",
+    "VerifyTier", "VerifyResult",
 ]
 
 # ---------------------------------------------------------------------------
@@ -2023,15 +2024,54 @@ class WriteHealth:
 
 @dataclass(frozen=True, slots=True)
 class Counters:
-    """One reading of the drive's C1/C2/CU error counters.
+    """One reading of the drive's error counters.
 
     **CU is the one that matters**: C1 and C2 are corrected errors, CU is
     uncorrectable. A disc with high C1 and zero CU is reading perfectly.
+
+    ``c1``/``c2``/``cu`` are the *portable triple* — the vocabulary shared with
+    the generic verification path, which has no vendor counters at all. The
+    remaining fields are the full readout the drive reports (QPxTool parity,
+    0.35.0) and are only populated when :attr:`have_detail` is true; a zero in
+    them otherwise means *not reported*, never *none observed*.
+
+    CIRC corrects in two passes: ``e11``/``e21``/``e31`` count the C1 blocks
+    needing one, two or three symbol corrections, and ``e12``/``e22``/``e32``
+    the same for C2. Three bad symbols is past C2's reach, so ``e32`` and
+    ``cu`` are the same number rather than a contradiction, as are ``bler``
+    and ``c1``.
+
+    .. warning::
+       ``uncr`` has **no settled meaning**. QPxTool reads it at byte 18 of the
+       readout, and its own source is unsure ("and where is UNCR"). It is
+       surfaced so a scan can settle the question; do not build a verdict on
+       it.
     """
 
     c1: int
     c2: int
     cu: int
+    bler: int = 0
+    e31: int = 0
+    e21: int = 0
+    e11: int = 0
+    uncr: int = 0
+    e32: int = 0
+    e22: int = 0
+    e12: int = 0
+    have_detail: bool = False
+
+    @property
+    def bler_consistent(self) -> bool:
+        """Whether ``bler == e11 + e21 + e31``, which holds by construction.
+
+        Meaningless without :attr:`have_detail`, and ``True`` is returned in
+        that case only because there is nothing to contradict — check
+        ``have_detail`` first.
+        """
+        if not self.have_detail:
+            return True
+        return self.bler == self.e11 + self.e21 + self.e31
 
 
 @dataclass(frozen=True, slots=True)
@@ -2058,6 +2098,81 @@ class CensusStats:
     peak_cu: int
     samples: int
     read_errors: int
+    #: Samples where ``bler != e11 + e21 + e31``. The identity holds by
+    #: construction, so any nonzero count means the byte frame being decoded
+    #: is not the frame the firmware fills — a finding, not a disc problem.
+    bler_mismatch: int = 0
+    #: Samples the identity could be tested on. Samples without detail are
+    #: counted on neither side: ``0 == 0+0+0`` would otherwise score as a
+    #: passing check on evidence that distinguishes nothing.
+    bler_checked: int = 0
+
+
+class VerifyTier(enum.IntEnum):
+    """Which question a post-burn verification actually answered.
+
+    The tiers are **not** one question at three resolutions:
+
+    * :attr:`COMPARE` — "does the disc read back as the bytes I sent?"
+      Post-CIRC and read-side. Works on **every** drive, needs no driver, and
+      stands alone.
+    * :attr:`C2` — "did the drive have to work for it?" Adds C2 error
+      pointers, gated on the functional capability probe rather than on the
+      drive's claim.
+    * :attr:`COUNTERS` — "how much margin is left?" Adds pre-correction vendor
+      counters and requires an attached driver.
+
+    A disc can pass :attr:`COMPARE` perfectly while sitting at the edge of its
+    correction budget, because CIRC hides exactly the degradation being looked
+    for. Rendering a tier-0 pass as an unqualified success overstates the
+    evidence.
+    """
+
+    COMPARE = 0
+    C2 = 1
+    COUNTERS = 2
+
+
+@dataclass(frozen=True, slots=True)
+class VerifyResult:
+    """The outcome of :meth:`Device.verify`.
+
+    ``tier`` says which question was answered and must be read before any
+    zero below is believed: at :attr:`VerifyTier.COMPARE` a ``c2_bits`` of 0
+    means *never asked*, not *none observed*.
+    """
+
+    #: The tier actually reached, which may be below the one requested.
+    tier: VerifyTier
+    #: Whether a unique displacement was found. When false, every comparison
+    #: field is zero and means nothing — an unaligned compare is not a failed
+    #: compare, and the usual causes are the wrong source file or a span of
+    #: digital silence with nothing to anchor on.
+    aligned: bool
+    #: True when ``tier`` is below what was asked for. Distinct from failure.
+    degraded: bool
+    #: The measured displacement, in samples, satisfying
+    #: ``disc[j] == source[j + shift_samples]``. Positive means the read-back
+    #: runs **early**. This is the write offset and the read offset combined,
+    #: and one disc cannot separate them. It is reported, never applied.
+    shift_samples: int
+    samples_compared: int
+    samples_differing: int
+    #: LBA of the first differing sector, or ``None``.
+    first_diff_lba: int | None
+    c2_bits: int
+    sectors_flagged: int
+    hard_errors: int
+    census: CensusStats
+
+    @property
+    def matches(self) -> bool:
+        """True when the disc read back as the audio it was written from.
+
+        False when unaligned, because nothing was compared. This is **not** a
+        quality verdict: see the note on :class:`VerifyTier`.
+        """
+        return self.aligned and self.samples_differing == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2536,6 +2651,55 @@ class Device:
             raise err[0]
         _check(rc, self)
         return _census_stats_from_c(stats)
+
+    def verify(
+        self,
+        bin_path: "str | os.PathLike[str]",
+        *,
+        start: int = 0,
+        count: int = 0,
+        tier: "VerifyTier | int" = VerifyTier.COUNTERS,
+        require_tier: "VerifyTier | int" = VerifyTier.COMPARE,
+        speed_x: int = 0,
+        cancel: "Cancel | None" = None,
+    ) -> VerifyResult:
+        """Verify a burn against the audio it was made from.
+
+        `bin_path` is the same raw s16 file :meth:`write` was given.
+
+        Returns a :class:`VerifyResult` whenever the verification *ran*,
+        whatever it found — a disc that differs is a result, not an
+        exception. :class:`Unsupported` is raised only when `require_tier`
+        names a tier this drive cannot reach, i.e. when the question could not
+        be put at all.
+
+        `tier` is the highest tier to attempt and degrades silently;
+        `require_tier` is the floor below which the run is refused. They are
+        separate because "use the counters if you have them" and "this run is
+        worthless without them" are different requests, and a caller meaning
+        the second must be able to say so rather than discovering the degrade
+        in a result it already believed.
+
+        Runs up to two passes over the span: one read to compare, and — only
+        for :attr:`VerifyTier.COUNTERS` — a second with the vendor counters
+        armed.
+        """
+        opts = ffi.new("accudisc_verify_opts *")
+        opts.size = ffi.sizeof("accudisc_verify_opts")
+        opts.start = start
+        opts.count = count
+        opts.want_tier = int(tier)
+        opts.require_tier = int(require_tier)
+        opts.speed_x = speed_x
+        keepalive: list = []
+        opts.cancel = _cancel_ptr(cancel, keepalive)
+
+        out = ffi.new("accudisc_verify_result *")
+        out.size = ffi.sizeof("accudisc_verify_result")
+        rc = lib.accudisc_verify(self._handle, str(bin_path).encode(),
+                                 opts, out, ffi.NULL, ffi.NULL)
+        _check(rc, self)
+        return _verify_result_from_c(out)
 
     def park_spindle(self) -> None:
         """Stop the spindle. Best-effort; a drive that refuses is not an error."""
@@ -3832,7 +3996,10 @@ def _cdtext_strings_from_c(c) -> CdTextStrings:
 
 
 def _counters_from_c(c) -> Counters:
-    return Counters(c1=c.c1, c2=c.c2, cu=c.cu)
+    return Counters(c1=c.c1, c2=c.c2, cu=c.cu,
+                    bler=c.bler, e31=c.e31, e21=c.e21, e11=c.e11,
+                    uncr=c.uncr, e32=c.e32, e22=c.e22, e12=c.e12,
+                    have_detail=bool(c.have_detail))
 
 
 def _census_sample_from_c(c) -> CensusSample:
@@ -3844,7 +4011,27 @@ def _census_sample_from_c(c) -> CensusSample:
 def _census_stats_from_c(c) -> CensusStats:
     return CensusStats(c1=c.c1, c2=c.c2, cu=c.cu,
                        peak_c1=c.peak_c1, peak_c2=c.peak_c2, peak_cu=c.peak_cu,
-                       samples=c.samples, read_errors=c.read_errors)
+                       samples=c.samples, read_errors=c.read_errors,
+                       bler_mismatch=c.bler_mismatch,
+                       bler_checked=c.bler_checked)
+
+
+def _verify_result_from_c(c) -> VerifyResult:
+    return VerifyResult(
+        tier=VerifyTier(c.tier),
+        aligned=bool(c.aligned),
+        degraded=bool(c.degraded),
+        shift_samples=c.shift_samples,
+        samples_compared=c.samples_compared,
+        samples_differing=c.samples_differing,
+        # -1 is the C sentinel for "no differing sector", and None is the
+        # Python one. Passing -1 through would be a valid-looking LBA.
+        first_diff_lba=None if c.first_diff_lba < 0 else c.first_diff_lba,
+        c2_bits=c.c2_bits,
+        sectors_flagged=c.sectors_flagged,
+        hard_errors=c.hard_errors,
+        census=_census_stats_from_c(c.census),
+    )
 
 
 def _range_plan_from_c(c, rc: int) -> RangePlan:
