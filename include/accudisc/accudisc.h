@@ -624,7 +624,25 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 0 /* 0.12.1: ar_submissions got more accurate,
+#define ACCUDISC_VERSION_PATCH 1 /* 0.35.1: accudisc_verify's TIER 2 NEVER
+                                  * WORKED. It passed fn = NULL to
+                                  * accudisc_counter_census, which required a
+                                  * callback, so the census returned ERR_INVAL
+                                  * and verify silently dropped to tier 1 with
+                                  * degraded = 1 — on every drive, with every
+                                  * driver, from the day 0.35.0 shipped. Found
+                                  * on the first hardware run (disc #1,
+                                  * 2026-09-05), not by the suite: the stub in
+                                  * tests/test_verify.c wrote `(void)fn;` and
+                                  * so accepted a call the real function
+                                  * refuses. `fn` is now OPTIONAL — a NULL fn
+                                  * is a stats-only census — which widens a
+                                  * contract the header had left unstated
+                                  * rather than narrowing one. No struct moved
+                                  * and nothing was removed, so this is a
+                                  * patch: callers that worked still work, and
+                                  * one that never could now does.
+                                  * 0.12.1: ar_submissions got more accurate,
                                   * not different in meaning. AccurateRip lists
                                   * some drives twice; where the duplicate rows
                                   * AGREE on the offset their counts are now
@@ -1495,7 +1513,12 @@ typedef struct accudisc_census_stats {
 /* Arms the counters, scans [start, end), disarms — including on every error
  * path, which is the reason this exists as one call rather than three. Returns
  * ACCUDISC_ERR_UNSUPPORTED without an attached driver offering the counters,
- * and in that case nothing was armed. stats may be NULL. */
+ * and in that case nothing was armed. stats may be NULL, and so may fn — a
+ * NULL fn is a STATS-ONLY census, which is what accudisc_verify's tier 2
+ * wants. (fn was mandatory until 2026-09-05; verify passed NULL, so tier 2
+ * could never succeed. The contract was underspecified here, not merely
+ * mis-implemented there.) Cancellation does not depend on fn: opts->cancel
+ * works either way. */
 ACCUDISC_API int accudisc_counter_census(accudisc_device *dev,
                                          const accudisc_census_opts *opts,
                                          accudisc_census_fn fn, void *user,

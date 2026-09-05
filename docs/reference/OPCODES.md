@@ -608,7 +608,7 @@ would add nothing a reader will act on. Ordered by opcode.
 | `0x52` | READ TRACK INFORMATION | Per-track NWA/free-blocks. Used by `re-tools/` snapshots, not by the library. |
 | `0x53` | RESERVE TRACK | TAO/incremental writing. AccuDisc is DAO-only. |
 | `0x58` | REPAIR TRACK | Incremental-write repair. Not applicable to DAO. |
-| `0x5B` | CLOSE TRACK/SESSION | Writes the lead-out and finalises. **We do not issue it, and we do not need to — ANSWERED 2026-09-03 on both status fields.** A live CD-RW DAO burn using `0x35` alone left `byte2 = 0x1E`: **Disc Status 2 (complete) AND Last Session Status 3 (complete)**, full TOC readable, lead-out placed. These are separate 2-bit fields that can disagree, so both were read (raw `0x51`; `accudisc disc` surfaces only the first). **Verified on CD-RW DAO single-session only** — CD-R lead-out behaviour differs and is unverified; re-read both fields on the next CD-R burn. The dead `cdb.h` constant was removed 2026-09-02 and nothing needs adding back. |
+| `0x5B` | CLOSE TRACK/SESSION | Writes the lead-out and finalises. **We do not issue it, and we do not need to — ANSWERED 2026-09-03 on both status fields.** A live CD-RW DAO burn using `0x35` alone left `byte2 = 0x1E`: **Disc Status 2 (complete) AND Last Session Status 3 (complete)**, full TOC readable, lead-out placed. These are separate 2-bit fields that can disagree, so both were read (raw `0x51`; `accudisc disc` surfaces only the first). **CD-R ANSWERED 2026-09-05 (disc #1, §D of `LIVE_BURN_QUEUE.md`): `byte2 = 0x0E`** — Disc Status 2 (complete) AND Last Session Status 3 (complete), the same two verdicts as CD-RW. The byte differs from CD-RW's `0x1E` **in bit 4 (Erasable) and in nothing else**, so `0x35` alone finalises a CD-R exactly as it finalises a CD-RW and `0x5B` is not needed on either. Raw `0x51`, both fields read; full TOC and lead-out present afterwards. The dead `cdb.h` constant was removed 2026-09-02 and nothing needs adding back. |
 | `0xA1` | BLANK | Erase CD-RW/DVD-RW. Not implemented; would be needed for a CD-RW workflow. |
 | `0xA8` | READ(12) | 12-byte-CDB cooked read. |
 | `0xAA` | WRITE(12) | 12-byte-CDB write. |
@@ -930,6 +930,20 @@ census tests that identity on every sample and reports
 that the byte frame we decode is not the frame the firmware fills. Samples
 without detail are counted on neither side, because `0 == 0+0+0` would
 otherwise score as a passing check on evidence that distinguishes nothing.
+
+> **HELD ON HARDWARE, 2026-09-05: `bler_mismatch = 0 / 4740`.** Measured over a
+> whole 79-minute Ritek CD-R on the PX-716A (`verify --tier counters`, disc #1,
+> `private/research/incoming/2026-09-05-disc1-clean-reference-burn.md`).
+> `bler_checked` had been **0 in every run ever made** before this one, so the
+> identity was a design claim and not a measurement until now. It is the
+> load-bearing assumption under the whole parity change — that the 26-byte
+> frame we decode is the frame the firmware fills — and it is now tested on
+> 4740 real samples.
+>
+> **`uncr` (byte 18) is NOT settled by this.** The identity constrains bytes 10
+> and 12/14/16 only; byte 18 sits outside it and a clean disc gives it nothing
+> to distinguish, since `cu` was 0 on every sample of that disc. The question
+> below still needs a disc with real uncorrectable activity.
 
 **`0xED` — one mode code of a byte.** We use mode code 0 (POWEREC). No source on
 disk enumerates any other, QPxTool names only the opcode, and the firmware

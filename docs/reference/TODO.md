@@ -598,6 +598,35 @@ after. `--max-bler N` takes one from the caller and yields
 `quality=unrated`. **[open]** Establishing a defensible default means citing a
 primary standard, which has not been done this session.
 
+**2026-09-05: there is now a real distribution to argue FROM, which there was
+not before.** Disc #1 — a clean full-length Ritek CD-R burnt at 16x on the
+PX-716A — measured C1 mean 46.2/s, peak 192/s, C2 nonzero on 1.1% of 4740
+one-second samples, CU 0 everywhere. That is **one disc, one drive, one
+medium, one speed**, so it is a data point and emphatically not a threshold:
+it says what a good burn on this stack looks like, and nothing about where the
+line between good and marginal falls. The item stays `[open]` and still wants
+a primary standard.
+
+### `verify`'s `first_diff=` prints an LBA next to two sample counts `[minor]`
+
+`cli/main.c:624` prints `shift`, `compared`, `differing` and `first_diff` on
+one line. The first three are in SAMPLES; `first_diff` is
+`accudisc_verify_result.first_diff_lba` — a **sector**. The struct field says
+so and the CLI token does not. Reading the disc #1 falsification run I misread
+`first_diff=170068` as a sample index and briefly took a correct result for a
+bug; it is exactly `floor(400000000 / 2352)`, the sector holding the byte that
+was tampered with. Rename the token to `first_diff_lba=` and document it in
+`cli-machine-interface.md`. **Not done during the burn on purpose** — the
+rehearsed binary and the burning binary had to be the same one.
+
+### The INSTALLED Plextor driver is still ABI 3 `[do before the next census run]`
+
+`/usr/local/lib64/accudisc/drivers/accudisc-drv-plextor.so` predates the
+0.35.0 ABI bump (3 → 4) and the loader rejects it: *"ABI mismatch or malformed
+descriptor"*, then generic MMC. Nothing fails loudly — `verify --tier counters`
+just degrades to tier 1 and exits 0. Re-run `./install.sh`; until then every
+tier-2 or `cxscan` run needs `--drivers-dir <build>/drivers`.
+
 ### The verdict lives in the CLI, not the library
 
 `API_PLAN.md` §5.3 pins only the census cadence, so this was open. Decided by

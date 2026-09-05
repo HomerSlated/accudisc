@@ -91,6 +91,12 @@ needs *a burn to have occurred* should go there first.
 > comparison this entry specifies — 4x against 32x — had no separation to measure
 > on that medium at all. On CD-R the request IS live, so a future CD-R burn can
 > still exercise it.
+>
+> **CONFIRMED ON CD-R, 2026-09-05 (§D), at one rung.** 355500 sectors in
+> 296241 ms = 1200.0 sectors/s = **16.00x against a requested 16x**, to three
+> figures, on Ritek CD-R. The request is delivered on this medium where it was
+> inert on the other. This is ONE rung: it says nothing about the shape of the
+> ladder either side of it, and the 4x-vs-32x comparison is still unrun.
 
 **The original question, as written 2026-08-28:**
 
@@ -156,9 +162,23 @@ artefact. **Run A1 and A2 on the same disc: A2 is A1's control.**
 
 **Cost:** shares A1's disc.
 
-### A3. Does the FIFO's ride-through match its label under real timing? `[OPEN — now CD-R only]`
+### A3. Does the FIFO's ride-through match its label under real timing? `[HALF ANSWERED 2026-09-05 — the forced half is still open]`
 
-> **Not run, and no longer shareable with a cheap disc.** No starvation ever
+> **The clean half is measured, on disc #1's real CD-R burn (§D).** At a
+> delivered 16.00x over a full 79-minute disc: **0 starvations, low-water
+> 221/222 slots, drive buffer never below 98%, 0 polls under 25%.** The host
+> never came close to falling behind, so the ring's 5.00 s label was never put
+> under load — which is a real result about the clean case and is NOT the
+> ride-through test. **The label remains unmeasured**; only a forced starvation
+> measures it, and that rides with disc #2.
+>
+> One caution from that burn, because it will otherwise be read as flow data:
+> `producer waited 12946 times` is **structural, not a timing measurement** —
+> 355500/27 chunks minus the primed slots. The CDEmu rehearsal reported the
+> identical 12946 on a virtual writer with completely different timing. A
+> figure that is equal across two unrelated runs is counting FIFO geometry.
+
+> **The forced half is not shareable with a cheap disc.** No starvation ever
 > occurred across 15 live burns: `starv=0`, minimum fill 98%, every time. Forcing
 > one needs the rig, which **exists** at `/home/kgr/tmp/system/bin/slowdisk` (with
 > `slowdisk-run` and `docs/slowdisk.md`) — the System agent's workspace, not
@@ -274,7 +294,7 @@ this alone.
 
 ---
 
-## D. DISC #1 — the clean reference burn `[DRAFTED 2026-09-05, AWAITING SIGN-OFF]`
+## D. DISC #1 — the clean reference burn `[BURNT 2026-09-05, PASSED]`
 
 > **MEDIA POSITION CHANGED 2026-09-05.** 50 CD-R blanks are now available (JVC
 > branded, **Ritek** manufactured; ATIP `97:15:17`, lead-out `79:59:70`, read on
@@ -328,17 +348,37 @@ ready. That realisation is what makes a single disc sufficient — the earlier
 assumption that jitter/beta had to be built first would have delayed the burn
 behind an ABI bump for no reason.
 
-### PRE-BURN BLOCKER — one code change, and it is not optional
+### PRE-BURN BLOCKER — RETRACTED 2026-09-05, there is no code change
 
-**`accudisc write` does not report the write-health figures.** `cli/main.c` never
-calls `accudisc_write_health_get`, and the envelope is **device-handle scoped**,
-so the moment the process exits the settle and payload timings are gone. Burning
-without this wired means the one write-side measurement 0.34.0 was built for is
-silently lost, and the disc cannot be re-burnt to recover it.
+**The blocker written here was wrong, and it was wrong the same way A3's was.**
+It said `accudisc write` does not report the write-health figures, because
+`cli/main.c` never calls `accudisc_write_health_get`. That call site claim is
+true and irrelevant: **the library calls the getter itself.** `burn.c:806` gates
+on `!opts->simulate && ret >= ACCUDISC_OK` — exactly this disc's case — then
+calls `accudisc_write_health_get` and logs `live_writes`, `settle`, `payload`
+and `sectors` through `adsc_dev_log`, plus either anomaly line if it fires.
+`cli/main.c:2780` installs `log_to_stderr` unconditionally on every
+device-opening command, `write` included. The figures reach stderr, and a run
+that captures stderr keeps them.
 
-Wire it, with a device-free test, **before** the burn. This is exactly the
-"anything not instrumented before the laser starts is not measurable afterwards"
-rule, caught by grep rather than after the fact.
+**Confirmed by measurement, not by reading**, in the CDEmu rehearsal below:
+
+```
+accudisc: write: health — live burn 1, settle 12 ms, payload 5099 ms over 355500 sectors
+```
+
+What is genuinely *not* printed is `base_*` and `anomaly`. Neither matters here:
+on the first live burn of a handle `base == last` by construction, and the
+"POPULATED, not VALIDATED" note below already says the anomaly bits cannot fire
+on disc #1. Nothing is lost.
+
+**Record the error class, because this is the second instance in one plan.**
+Both false blockers came from grepping `cli/main.c` for a call site. A CLI that
+delegates to a library which logs through an injected sink has no call site to
+find — the value is produced two frames down and travels out through the sink.
+**Trace where the value LANDS, not who calls the getter.** A grep over the
+caller is a search whose scope is narrower than the question, and it reports the
+absence of a call as the absence of the data.
 
 **Verified as NOT blockers** (checked, not assumed):
 - **A3's FIFO tally needs no code.** `burn.c:771` logs starvations, low-water
@@ -348,6 +388,18 @@ rule, caught by grep rather than after the fact.
   starvation, which disc #2 does; on a clean burn the tally is still the
   measurement, and `starv=0` on real media is a real result.
 - **The census and verify need no code.** Both shipped in 0.35.0.
+
+### CAPTURE THE LOG BY ITS MARKER, NOT BY LINE START
+
+Progress goes to **stderr as well**, written with `\r` and no newline, so the
+whole burn arrives as a handful of enormous lines with the log entries glued
+onto the ends of them. `grep -v '^writing '` therefore drops real findings: in
+the rehearsal it silently ate the FIFO tally, which had landed on the tail of
+`writing 355500/355500 (100.0%)`. Split on the marker instead:
+
+```sh
+tr '\r' '\n' < burn.err | grep -ao 'accudisc: .*'
+```
 
 ### The burn
 
@@ -464,11 +516,53 @@ source afterwards, and a regenerated file is not the same file.
 - If the burn fails, the next disc is a **repeat of disc #1**, not a move to
   disc #2 — the control has to exist before the experiment.
 
-### Sign-off
+### Sign-off — GIVEN, AND THE DISC IS BURNT
 
-**Not to be run until Keith signs this off.** Blanks: **50 before, 49 after.**
-Record the ATIP of the disc actually used, and state the remaining count in the
-commit message.
+Keith: *"Go ahead with the live burn queue"*, 2026-09-05 13:27 BST. Speed was
+taken as the plan's recommended **16x**, the one parameter left as his call;
+he authorised the plan as written rather than naming a different rung.
+**Blanks: 50 before, 49 after.** ATIP of the disc used: `97:15:17`, lead-out
+`79:59:70`, Ritek.
+
+### RESULT — the disc passed, and it found the defect it was burnt to find
+
+Full account: `private/research/incoming/2026-09-05-disc1-clean-reference-burn.md`.
+
+| measurement | result |
+|---|---|
+| burn | exit 0, 5m47s, 355500 sectors at a delivered **16.00x** |
+| write health | settle 11164 ms, payload 296241 ms — baseline, cannot self-validate |
+| FIFO (A3, clean) | **0 starvations**, low-water 221/222, buffer never below 98% |
+| `0x51` byte 2 | **`0x0E`** — both status fields "complete"; CD-RW answered `0x1E`, differing only in Erasable |
+| verify | `shift=+0 differing=0` over all 209 034 000 samples, `result=pass` |
+| census | C1 mean 46.2/s peak 192/s, C2 on 1.1% of samples, **CU 0 everywhere** |
+| BLER identity | **`bler_mismatch=0/4740`** — first hardware evaluation, and it holds |
+
+**And the defect: `accudisc_verify` tier 2 had never worked.** It passed
+`fn = NULL` to `accudisc_counter_census`, which required a callback, so tier 2
+returned `ERR_INVAL` and degraded to tier 1 on every drive since 0.35.0
+shipped. The suite missed it because `tests/test_verify.c` stubbed the census
+with `(void)fn;` — a stub more permissive than the function it stood in for.
+Fixed in **0.35.1** (`fn` is now optional: a NULL `fn` is a stats-only census),
+and the same disc then returned `tier=counters degraded=0`.
+
+**This is the entire argument for a clean control disc, vindicated.** Had disc
+#1 been B1's deliberately starved burn, `degraded=1` would have been read as
+the starved medium refusing the counters, and there would have been no second
+measurement to break the tie.
+
+### Two corrections to the text above, for whoever runs disc #2
+
+1. **`cxscan` does NOT print `bler_mismatch/bler_checked`.** Step 6 says it
+   does. Its stderr summary is C1/C2/CU totals and peaks only
+   (`cli/main.c:517`); the identity is reported by **`verify --tier counters`**
+   (`cli/main.c:632`). Use verify for it.
+2. **`--drivers-dir` is required for any tier-2 or census run** until
+   `install.sh` is re-run. The installed driver under
+   `/usr/local/lib64/accudisc/drivers/` is still the ABI 3 build and the
+   0.35.0+ loader rejects it ("ABI mismatch or malformed descriptor"), falling
+   back to generic MMC *silently as far as the exit code is concerned*. Point
+   it at `build/drivers`.
 
 ---
 

@@ -132,7 +132,25 @@ int accudisc_counter_census(accudisc_device *dev, const accudisc_census_opts *o,
                             accudisc_census_fn fn, void *user,
                             accudisc_census_stats *stats)
 {
-    (void)dev; (void)o; (void)fn; (void)user;
+    (void)user;
+    /* MIRROR THE REAL GUARD (src/drive/census.c) -- never relax it here.
+     *
+     * Until 2026-09-05 this line read `(void)dev; (void)o; (void)fn;` while
+     * the real function rejected a NULL fn with ERR_INVAL. verify's tier 2
+     * passes NULL, so it was accepted HERE and refused on every real drive,
+     * in every configuration, from the day 0.35.0 shipped -- and case 1 below
+     * asserted `tier == COUNTERS, degraded == 0` the whole time. A stub MORE
+     * PERMISSIVE than the function it stands in for cannot distinguish a
+     * valid call from an invalid one, so the assertion was well-formed and
+     * measured nothing. Found by the first hardware run, not by the suite.
+     *
+     * fn is optional in both now. Everything else the real guard checks is
+     * checked here, and anything added there must be added here. */
+    assert(dev != NULL);
+    assert(o != NULL);
+    assert(o->size == sizeof *o);   /* adsc_abi_import would reject otherwise */
+    assert(o->end > o->start);      /* empty span: nothing to arm for */
+    (void)fn;                       /* NULL == stats-only, and that is legal */
     if (!fake.census_ok)
         return ACCUDISC_ERR_UNSUPPORTED;
     if (stats) {
@@ -232,6 +250,10 @@ int main(void)
     assert(r.tier == ACCUDISC_VERIFY_COUNTERS);
     assert(r.degraded == 0);
     assert(r.census.samples == 42);
+    /* The stats actually travelled back, which is the whole point of a
+     * stats-only census: verify asks for no per-sample callback and still
+     * gets the aggregate. */
+    assert(r.census.c1 == 1234);
     free(disc);
 
     /* ---- 2. a known POSITIVE displacement comes back exactly ------------ */

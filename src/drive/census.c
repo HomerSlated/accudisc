@@ -30,7 +30,16 @@ int accudisc_counter_census(accudisc_device *dev,
     if (stats)
         *stats = st;
 
-    if (!dev || !opts || !fn)
+    /* fn MAY BE NULL: a stats-only census. It was required until 2026-09-05,
+     * and accudisc_verify's tier 2 passed NULL — so tier 2 returned ERR_INVAL
+     * on every drive, in every configuration, from the day it shipped. Nothing
+     * caught it because tests/test_verify.c stubbed this function with
+     * `(void)fn;`, a stub more permissive than the function it stood in for.
+     * Widened rather than patched at the call site: wanting the aggregate
+     * without the per-sample map is a legitimate use, and the next caller
+     * would have hit the same wall. Cancellation still works without a
+     * callback -- opts->cancel is the other path and is unaffected. */
+    if (!dev || !opts)
         return ACCUDISC_ERR_INVAL;
 
     /* Before the span check, so a stale binding is diagnosed as ERR_ABI
@@ -120,7 +129,7 @@ int accudisc_counter_census(accudisc_device *dev,
                 st.bler_mismatch++;
         }
 
-        if (fn(&s, user) != 0) {
+        if (fn && fn(&s, user) != 0) {
             ret = ACCUDISC_ERR_CANCELLED;
             break;
         }
