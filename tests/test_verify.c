@@ -42,6 +42,11 @@ static struct {
                                   * both could never show the difference */
     int       census_ok;
     int       read_fail;   /* make every read fail */
+    uint32_t  stride;      /* sector_len; 0 = audio_len. A real C2 read returns
+                            * 2646 or 2648 bytes per sector with the audio in
+                            * the first 2352, so a stub whose stride EQUALS its
+                            * audio length cannot catch a stride bug — it has no
+                            * stride. This makes the padded layout real. */
     unsigned  reads;
 } fake;
 
@@ -49,7 +54,8 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                        accudisc_sink_fn sink, void *user,
                        accudisc_read_stats *stats)
 {
-    static uint8_t buf[SPS * 4 * 8];
+    static uint8_t buf[2700 * 8];
+    uint32_t stride = fake.stride ? fake.stride : SPS * 4;
     (void)dev;
 
     fake.reads++;
@@ -67,6 +73,10 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         uint32_t n = req->count - done > 8 ? 8 : req->count - done;
         accudisc_chunk ch;
 
+        /* 0xEE in the tail: if the audio stride is read wrongly the compare
+         * picks up padding, and padding that is plausible audio would let the
+         * bug pass. This value is not. */
+        memset(buf, 0xEE, sizeof buf);
         for (uint32_t k = 0; k < n; k++) {
             uint32_t lba = req->lba + done + k;
             int64_t j = (int64_t)(lba - fake.lba0) * SPS;
@@ -75,15 +85,16 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                 uint32_t v = 0;
                 if (j + i >= 0 && (uint64_t)(j + i) < fake.disc_samples)
                     v = fake.disc[j + i];
-                memcpy(buf + (size_t)k * SPS * 4 + (size_t)i * 4, &v, 4);
+                memcpy(buf + (size_t)k * stride + (size_t)i * 4, &v, 4);
             }
         }
         memset(&ch, 0, sizeof ch);
         ch.lba = req->lba + done;
         ch.nsec = n;
         ch.data = buf;
-        ch.sector_len = SPS * 4;
+        ch.sector_len = stride;
         ch.audio_len = SPS * 4;
+        ch.c2_len = stride - SPS * 4;
         if (sink(user, &ch) != 0)
             return ACCUDISC_ERR_CANCELLED;
         done += n;
@@ -409,6 +420,37 @@ int main(void)
     free(disc);
     free(src);
     src = make_source(n, 0);
+    disc = make_disc(src, n, 0);
+
+    /* ---- 8f. A C2 READ HAS A STRIDE, and the audio is only its first
+     * 2352 bytes. Every case above ran with sector_len == audio_len, which is
+     * exactly the layout that cannot expose a stride bug. A real C2 request
+     * returns 2648 bytes per sector; if cmp_sink indexed by audio_len instead
+     * of sector_len it would drift into the C2 padding one sector in and
+     * report a near-total mismatch — on the tier that is supposed to be the
+     * more capable one. */
+    reset_fake(disc, n);
+    fake.stride = 2648;
+    assert(run(&r, ACCUDISC_VERIFY_C2, ACCUDISC_VERIFY_COMPARE, sectors)
+           == ACCUDISC_OK);
+    assert(r.tier == ACCUDISC_VERIFY_C2);
+    assert(r.aligned == 1);
+    assert(r.shift_samples == 0);
+    assert(r.samples_differing == 0);
+    assert(r.samples_compared == n);
+
+    /* and the same with a displacement, so the two arithmetics are exercised
+     * together rather than one masking the other */
+    free(disc);
+    disc = make_disc(src, n, 588);
+    reset_fake(disc, n);
+    fake.stride = 2648;
+    assert(run(&r, ACCUDISC_VERIFY_C2, ACCUDISC_VERIFY_COMPARE, sectors)
+           == ACCUDISC_OK);
+    assert(r.aligned == 1);
+    assert(r.shift_samples == 588);
+    assert(r.samples_differing == 0);
+    free(disc);
     disc = make_disc(src, n, 0);
 
     /* ---- 9. ABI guards ---------------------------------------------------- */

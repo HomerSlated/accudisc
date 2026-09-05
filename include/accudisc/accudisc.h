@@ -1605,7 +1605,14 @@ typedef struct accudisc_verify_result {
     uint64_t sectors_flagged;
     uint64_t hard_errors;
 
-    /* Tier 2. Same rule: read `tier` before believing a zero. */
+    /* Tier 2. Same rule: read `tier` before believing a zero.
+     *
+     * The census covers the SECTOR span [start, start+count), UNSHIFTED — it
+     * is not displaced by shift_samples. That is deliberate: the counters
+     * describe what the drive read off those sectors, not where the audio sat
+     * within them, and a sub-sector displacement cannot move a sector
+     * boundary. So `census` and the comparison fields above are measured over
+     * the same sectors but answer questions at different granularities. */
     accudisc_census_stats census;
 } accudisc_verify_result;
 

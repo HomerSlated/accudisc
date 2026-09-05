@@ -17,9 +17,22 @@
  * convention. Nothing here shifts the caller's data; see the offsets note in
  * the header for why applying would be wrong.
  */
+/* _FILE_OFFSET_BITS before any header, so off_t is 64-bit where the platform
+ * offers the choice. A CD image is ~747 MB, which fits a 32-bit long only just;
+ * a longer source (a 99-minute disc, or a caller pointing at a whole image)
+ * does not. Byte offsets here are off_t and seeks are fseeko for the same
+ * reason accudisc_write_opts.fifo_bytes is uint32_t and not size_t: a struct
+ * or an offset whose width changes with the target changes BEHAVIOUR by
+ * platform, and the platforms that would diverge are the small boards and
+ * legacy hosts least able to report it. */
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
 #include "accudisc/accudisc.h"
 #include "internal.h"
@@ -196,7 +209,7 @@ static int cmp_sink(void *user, const accudisc_chunk *chunk)
         if (n == 0)
             continue;
 
-        if (fseek(c->bin, (long)((uint64_t)j0 * BYTES_PER_SAMPLE), SEEK_SET) != 0 ||
+        if (fseeko(c->bin, (off_t)((uint64_t)j0 * BYTES_PER_SAMPLE), SEEK_SET) != 0 ||
             fread(c->src, 1, (size_t)n * BYTES_PER_SAMPLE, c->bin)
                 != (size_t)n * BYTES_PER_SAMPLE) {
             c->io_err = 1;
@@ -281,7 +294,7 @@ static int align_span(accudisc_device *dev, FILE *bin, uint64_t src_samples,
         }
         src = malloc((size_t)(win_hi - win_lo) * BYTES_PER_SAMPLE);
         if (!src) { free(a.buf); return ACCUDISC_ERR_NOMEM; }
-        if (fseek(bin, (long)(win_lo * BYTES_PER_SAMPLE), SEEK_SET) != 0 ||
+        if (fseeko(bin, (off_t)(win_lo * BYTES_PER_SAMPLE), SEEK_SET) != 0 ||
             fread(src, 1, (size_t)(win_hi - win_lo) * BYTES_PER_SAMPLE, bin)
                 != (size_t)(win_hi - win_lo) * BYTES_PER_SAMPLE) {
             free(src); free(a.buf);
@@ -314,7 +327,7 @@ int accudisc_verify(accudisc_device *dev, const char *bin_path,
     FILE *bin = NULL;
     uint64_t src_samples;
     size_t out_bytes;
-    long fsz;
+    off_t fsz;
     uint8_t tier, c2mode = ACCUDISC_C2_NONE;
     int rc;
 
@@ -341,7 +354,7 @@ int accudisc_verify(accudisc_device *dev, const char *bin_path,
     bin = fopen(bin_path, "rb");
     if (!bin)
         return ACCUDISC_ERR_IO;
-    if (fseek(bin, 0, SEEK_END) != 0 || (fsz = ftell(bin)) < 0) {
+    if (fseeko(bin, 0, SEEK_END) != 0 || (fsz = ftello(bin)) < 0) {
         fclose(bin);
         return ACCUDISC_ERR_IO;
     }
@@ -456,6 +469,13 @@ int accudisc_verify(accudisc_device *dev, const char *bin_path,
 
         memset(&co, 0, sizeof co);
         co.size = sizeof co;
+        /* The census scans the SECTOR span, unshifted. It is deliberately not
+         * offset by shift_samples: the counters are a property of what the
+         * drive read off the disc at those sectors, not of where the audio
+         * landed within them, and a sub-sector shift cannot move a sector
+         * boundary anyway. Stated here and in the header so nobody later
+         * "fixes" it into a rounded shift that changes which sectors are
+         * scanned without changing what is being asked. */
         co.start = o.start;
         co.end = o.start + o.count;
         co.speed_x = o.speed_x;
