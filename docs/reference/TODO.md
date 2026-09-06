@@ -672,6 +672,61 @@ Report which of MEASURED / CACHED / NOMINAL_FALLBACK produced the plan. A plan
 built on a fallback is a different object from one built on a measurement, and
 the caller has to be able to tell.
 
+### Give the fake drive a CLOCK and a draining buffer `[P2]`
+
+**The `--no-burnproof` underrun policy has never been exercised and cannot be
+without spending a disc.** When the ring runs dry with no failover, `burn.c`
+stops and says the disc is already spoilt — so testing that branch on real media
+means producing the coaster. It is the most safety-critical path in the write
+engine and it currently costs one blank per test.
+
+`tests/test_burn_flow.c` is already 90% of the way there: 996 lines, 32 tests,
+compiling the REAL `src/write/burn.c` against a stub MMC layer, with a fake drive
+that models `2/04/08` buffer-full pressure and walks a buffer level through
+`cap_blank_step`. Two things are missing and they are narrow:
+
+1. **a clock** — nothing models elapsed time, so nothing can model a rate;
+2. **a consumption-driven buffer** — the level steps per POLL, not per byte
+   written against a write rate.
+
+That is precisely what cdrecord's `cdr_simul` driver has and CDEmu does not.
+The two are not comparable: CDEmu is a virtual DEVICE (real MMC, real kernel
+path, real image file to verify against) with **no timing model and no buffer
+model**; `cdr_simul` is a driver inside the writer with a buffer of configurable
+size (`CDR_SIMUL_BUFSIZE`) and a timing model at any requested speed, which
+"correctly simulates even a buffer underrun". They are complementary and we
+should have the second as well as the first.
+
+**Measured, 2026-09-06:** every CDEmu rehearsal wrote 45 minutes of audio in
+2.5 s and answered `READ BUFFER CAPACITY` with a bit-identical `131584/131584`
+on all 947 polls. Those runs validated the plumbing and could say nothing about
+starvation, ride-through or underrun. CDEmu also does not claim BURN-Proof, so
+it cannot exercise the failover branch either.
+
+What a clock plus a drain model would buy, at zero media cost:
+
+- the underrun policy, both with and without BURN-Proof, deterministically;
+- the live telemetry's arithmetic — window minima, delivered rate, the
+  starvation rate-limiter — against a known ground truth;
+- **buffer sizes and rungs we do not own.** The 512 KB and 2 MB rows in
+  `docs/research/burn-planning.md` are pure arithmetic today with nothing
+  exercising them, and that document is the basis of the planner above;
+- the planner itself against synthetic sources with injected stalls — including
+  `sigma`, the one term real hardware cannot supply, because a worst case cannot
+  be summoned on demand.
+
+**Take the idea, not the code.** cdrtools is CDDL and we rewrite for this
+codebase anyway; and this belongs inside the existing test harness rather than
+as a new "driver" concept, which would collide with the vendor-isolation rule
+that reserves that word for external `.so` files.
+
+**The risk, and it is the house failure mode.** A simulation that drifts from
+the hardware is worse than none, because it produces confident numbers nobody
+re-checks. Pin it to measured reality and re-pin it when reality moves: the CAV
+fit `x = 21.349 + 8.8139e-05*LBA`, the real 4 802 784 B buffer rather than page
+2A's 8 MB claim, the 8 560 ms settle. A check that shares an assumption with the
+thing it is checking cannot test that assumption.
+
 ### `verify` has no `--byteswap` and needs one `[P2]`
 
 `write --byteswap` puts little-endian bytes on the disc, so verifying a
