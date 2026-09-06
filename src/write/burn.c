@@ -23,6 +23,7 @@
  */
 
 #define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -126,6 +127,9 @@ struct write_flow {
     int      cap_live;
     uint32_t cap_total;     /* buffer size in bytes */
     uint32_t min_fill_pct;  /* lowest fill seen, 0-100 */
+    uint32_t last_fill_pct; /* most recent, for the live line — a running
+                             * report needs the CURRENT value, not the
+                             * best-ever-worst one */
     uint32_t polls;
     uint32_t low_samples;   /* polls under ADSC_BUF_LOW_PCT */
 
@@ -161,6 +165,11 @@ struct write_flow {
  * Every 8th costs ~11 polls/s and still samples far faster than a buffer of a
  * few MB can drain. */
 #define ADSC_BUF_POLL_EVERY 8u
+
+/* How often the live line below is emitted. Two seconds: fast enough that a
+ * 45-minute starved burn is narrated rather than summarised, slow enough that
+ * the log of one stays under a thousand lines and can be watched by a person. */
+#define ADSC_TELEMETRY_MS 2000u
 
 /* Sample the drive's buffer fill. CALLED BEFORE THE WRITE, deliberately.
  *
@@ -200,6 +209,7 @@ static void buf_sample(struct accudisc_device *dev, struct write_flow *fl)
         fl->min_fill_pct = fill_pct;
     if (fill_pct < ADSC_BUF_LOW_PCT)
         fl->low_samples++;
+    fl->last_fill_pct = fill_pct;
     fl->polls++;
 }
 
@@ -653,13 +663,36 @@ int adsc_write_run(struct accudisc_device *dev,
     t_settle_ms = now_ms() - t_gap;
     uint32_t t_pay = now_ms();
 
+    /* LIVE TELEMETRY STATE.
+     *
+     * Everything else this engine says about the FIFO and the drive buffer is a
+     * SUMMARY printed after the last sector — the one moment at which it can no
+     * longer be acted on, and which cannot tell "starved throughout" from
+     * "starved for ten seconds a third of the way in". On a medium that cannot
+     * be re-run, the shape over time IS the measurement. So: one line every
+     * ADSC_TELEMETRY_MS carrying the WINDOW MINIMUM of each depth, not a spot
+     * sample — an instantaneous reading between two stalls looks like health.
+     *
+     * Log-only. Nothing below changes what is written, or when. */
+    uint32_t t_tel = t_pay, tel_sec = 0;
+    uint32_t win_fifo_min = fifo_live ? fifo.nslots : 0;
+    uint32_t win_buf_min  = 100;
+    uint64_t tel_starved = 0;
+    /* The per-chunk "FIFO empty" line below is the right thing to say once and
+     * the wrong thing to say 7500 times: a fully starved burn emits it on every
+     * pop, which buries the very log it is meant to narrate. First one in full,
+     * then at most one a second carrying the count since. The TOTAL is
+     * unaffected — fl.fifo_starved counts every one. */
+    uint32_t t_starve_log = 0;
+    uint64_t starve_logged = 0;
+
     for (;;) {
         const uint8_t *src;
-        uint32_t n;
+        uint32_t n, depth = 0;
         int was_empty = 0, got;
 
         if (fifo_live) {
-            got = adsc_wfifo_pop(&fifo, &src, &was_empty);
+            got = adsc_wfifo_pop(&fifo, &src, &was_empty, &depth);
             if (got < 0) { ret = got; goto done; }
             if (got == 0) break;                    /* end of stream */
             n = (uint32_t)got;
@@ -714,9 +747,24 @@ int adsc_write_run(struct accudisc_device *dev,
                 ret = ACCUDISC_ERR_IO;
                 goto done;
             }
-            adsc_dev_log(dev, "write: FIFO empty at sector %u — deferring to "
-                              "BURN-Proof, which links and resumes", done_sec);
+            {
+                uint32_t nowms = now_ms();
+                if (starve_logged == 0 || nowms - t_starve_log >= 1000u) {
+                    adsc_dev_log(dev, "write: FIFO empty at sector %u — "
+                                      "deferring to BURN-Proof, which links "
+                                      "and resumes (%llu since the last such "
+                                      "line, %llu in all)",
+                                 done_sec,
+                                 (unsigned long long)(fl.fifo_starved
+                                                      - starve_logged),
+                                 (unsigned long long)fl.fifo_starved);
+                    t_starve_log = nowms;
+                    starve_logged = fl.fifo_starved;
+                }
+            }
         }
+        if (fifo_live && depth < win_fifo_min)
+            win_fifo_min = depth;
 
         if (done_sec / CHUNK % ADSC_BUF_POLL_EVERY == 0)
             buf_sample(dev, &fl);
@@ -728,6 +776,58 @@ int adsc_write_run(struct accudisc_device *dev,
         done_sec += n;
         if (cb)
             cb(user, done_sec, total);
+
+        if (fl.cap_live && fl.polls && fl.last_fill_pct < win_buf_min)
+            win_buf_min = fl.last_fill_pct;
+        {
+            uint32_t nowms = now_ms();
+            if (nowms - t_tel >= ADSC_TELEMETRY_MS) {
+                double dt = (double)(nowms - t_tel) / 1000.0;
+                char fifos[96], bufs[96];
+
+                if (fifo_live)
+                    snprintf(fifos, sizeof fifos,
+                             "FIFO low %u/%u slots, %llu starved (+%llu)",
+                             win_fifo_min, fifo.nslots,
+                             (unsigned long long)fl.fifo_starved,
+                             (unsigned long long)(fl.fifo_starved
+                                                  - tel_starved));
+                else
+                    snprintf(fifos, sizeof fifos, "FIFO off");
+
+                /* A drive that answers with a CONSTANT is not measuring
+                 * anything, and its constant may be "entirely free" — which
+                 * reads as a burn permanently on the point of underrunning.
+                 * Say which of the two this is, every time, rather than only
+                 * in the summary that arrives when it is too late to matter. */
+                if (fl.cap_live && fl.polls)
+                    snprintf(bufs, sizeof bufs, "drive buffer low %u%%%s",
+                             win_buf_min,
+                             fl.cap_varied ? "" : " (CONSTANT so far — the "
+                                                  "drive is not reporting a "
+                                                  "live value)");
+                else
+                    snprintf(bufs, sizeof bufs,
+                             "drive buffer UNKNOWN (not reported)");
+
+                adsc_dev_log(dev,
+                             "write: live %6.1fs  %u/%u (%4.1f%%)  %.2fx over "
+                             "the last %.1fs  %s  %s  %llu stalls",
+                             (double)(nowms - t_pay) / 1000.0,
+                             done_sec, total,
+                             total ? 100.0 * (double)done_sec / total : 0.0,
+                             dt > 0 ? (double)(done_sec - tel_sec) / (75.0 * dt)
+                                    : 0.0,
+                             dt, fifos, bufs,
+                             (unsigned long long)fl.stalls);
+
+                t_tel = nowms;
+                tel_sec = done_sec;
+                tel_starved = fl.fifo_starved;
+                win_fifo_min = fifo_live ? fifo.nslots : 0;
+                win_buf_min = 100;
+            }
+        }
     }
 
     t_pay_ms = now_ms() - t_pay;

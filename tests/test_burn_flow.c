@@ -829,9 +829,19 @@ static void test_sizing_converts_duration_and_clamps(void)
      * is 176400 bytes; at 8x that is 1411200. */
     assert(accudisc_fifo_bytes_for(1.0, 1) == 176400u);
     assert(accudisc_fifo_bytes_for(1.0, 8) == 1411200u);
-    /* The cap is not cosmetic: 5 s at 48x is ~42 MB of LOCKED memory, which on
-     * a small board is a refusal to start rather than a buffer. */
-    assert(accudisc_fifo_bytes_for(5.0, 48) == ACCUDISC_FIFO_MAX_BYTES);
+    /* The cap is not cosmetic: the ring is LOCKED memory, so an unbounded
+     * duration is a refusal to start rather than a buffer.
+     *
+     * ASSERT AGAINST THE CAP, NOT AGAINST A DURATION THAT HAPPENS TO HIT IT.
+     * This read `fifo_bytes_for(5.0, 48) == ACCUDISC_FIFO_MAX_BYTES`, which
+     * silently stopped testing the clamp the moment the ceiling moved
+     * (2026-09-06, 32 MiB -> 512 MiB): 5 s at 48x is 42 MB, now well under it,
+     * so the assertion would have compared two unequal numbers and failed for
+     * the right reason but the wrong one. An hour of ride-through is past any
+     * ceiling this constant will plausibly take. */
+    assert(accudisc_fifo_bytes_for(3600.0, 48) == ACCUDISC_FIFO_MAX_BYTES);
+    /* ... and the unclamped path still works at a high speed. */
+    assert(accudisc_fifo_bytes_for(1.0, 48) == 176400u * 48u);
     assert(accudisc_fifo_bytes_for(0.0, 8) == 0);
 }
 

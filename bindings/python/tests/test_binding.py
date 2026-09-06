@@ -1970,7 +1970,9 @@ def test_fifo_sizing_is_one_rule_shared_with_the_engine():
     assert ad.fifo_bytes_for(1.0, 8) == 1_411_200
     # 5 s at 48x would be ~42 MB of LOCKED memory, which on a small board is a
     # refusal to start rather than a buffer.
-    assert ad.fifo_bytes_for(5.0, 48) == lib.ACCUDISC_FIFO_MAX_BYTES
+    # An hour at 48x is past any plausible ceiling; 5 s at 48x stopped being
+    # clamped when ACCUDISC_FIFO_MAX_BYTES went 32 MiB -> 512 MiB (2026-09-06).
+    assert ad.fifo_bytes_for(3600.0, 48) == lib.ACCUDISC_FIFO_MAX_BYTES
     assert ad.fifo_bytes_for(0.0, 8) == 0
 
 

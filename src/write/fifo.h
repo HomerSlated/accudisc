@@ -121,8 +121,17 @@ int adsc_wfifo_prefill(struct adsc_wfifo *f, unsigned *slots_out);
  * `*was_empty` is set when the consumer had to WAIT — i.e. the ring was dry and
  * the host had fallen behind the drive. That is the signal the burn engine's
  * underrun policy branches on, and it is reported per-call rather than only in
- * the totals because the FIRST occurrence is the one that decides. */
-int adsc_wfifo_pop(struct adsc_wfifo *f, const uint8_t **data, int *was_empty);
+ * the totals because the FIRST occurrence is the one that decides.
+ *
+ * `*depth_out` (may be NULL) is the ring occupancy AT THIS POP, in slots,
+ * counting the slot being handed out. Reported here rather than through an
+ * accessor because this is the only instant at which it means anything: the
+ * consumer samples it under the same lock that decides whether it had to wait,
+ * BEFORE the write it is about to issue gives the producer time to refill. A
+ * depth read from outside, after WRITE(10) returned, is biased high by exactly
+ * the duration of the write — the same trap buf_sample() documents. */
+int adsc_wfifo_pop(struct adsc_wfifo *f, const uint8_t **data, int *was_empty,
+                   uint32_t *depth_out);
 
 /* Release the slot the last pop returned. Separate from pop so the consumer
  * can hand the ring's own memory straight to WRITE(10) — no copy on the burn

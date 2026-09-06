@@ -193,12 +193,15 @@ int adsc_wfifo_prefill(struct adsc_wfifo *f, unsigned *slots_out)
     return f->producer_rc ? f->producer_rc : ACCUDISC_OK;
 }
 
-int adsc_wfifo_pop(struct adsc_wfifo *f, const uint8_t **data, int *was_empty)
+int adsc_wfifo_pop(struct adsc_wfifo *f, const uint8_t **data, int *was_empty,
+                   uint32_t *depth_out)
 {
     uint32_t n;
     int rc = 0;
 
     *was_empty = 0;
+    if (depth_out)
+        *depth_out = 0;
     pthread_mutex_lock(&f->mtx);
     if (f->count == 0 && !f->producer_done) {
         /* THE HOST HAS FALLEN BEHIND. Recorded before waiting, because the
@@ -224,6 +227,8 @@ int adsc_wfifo_pop(struct adsc_wfifo *f, const uint8_t **data, int *was_empty)
      * the whole burn blocked on a FULL ring. */
     if (!f->producer_done && f->count < f->min_count)
         f->min_count = f->count;
+    if (depth_out)
+        *depth_out = f->count;
     n = f->slot_nsec[f->tail];
     *data = f->arena + (size_t)f->tail * f->slot_bytes;
     pthread_mutex_unlock(&f->mtx);

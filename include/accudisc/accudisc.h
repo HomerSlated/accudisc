@@ -1227,9 +1227,32 @@ typedef struct accudisc_write_opts {
 /* Default ride-through. Conservative on purpose: enough to cross a writeback
  * storm or a page-cache stall, small enough to lock on a modest machine. */
 #define ACCUDISC_FIFO_DEFAULT_SECONDS 5.0
-/* Byte ceiling for the duration form. 5 s at 48x would be ~42 MB of LOCKED
- * memory, which on a small board is a refusal to start rather than a buffer. */
-#define ACCUDISC_FIFO_MAX_BYTES (32u * 1024u * 1024u)
+/* Byte ceiling for the duration form. The ring is LOCKED memory, so this is a
+ * refusal-to-start risk on a small board rather than a nicety.
+ *
+ * RAISED 32 MiB -> 128 MiB on 2026-09-06. The old value CLAMPED THE LIBRARY'S
+ * OWN DEFAULT at the top rung: ACCUDISC_FIFO_DEFAULT_SECONDS at 48x is
+ * 42 336 000 bytes, so `--fifo 5s` and the bare default alike were silently
+ * reduced to 33 554 432 and the caller was told it had 5 s when it had 3.96.
+ * A ceiling that cuts the default is not a guard, it is a bug with a constant
+ * for a name.
+ *
+ * 128 MiB is chosen to clear that default threefold, and to cover 5 s at DVD
+ * 16x (110.8 MB) should the scope ever extend there, while staying a quarter of
+ * the RAM of the smallest machine anyone would plausibly run this on.
+ *
+ * IT IS STILL THE WRONG MECHANISM, and the right one is filed as [P3] in
+ * docs/reference/TODO.md: the real budget is MemAvailable intersected with
+ * RLIMIT_MEMLOCK, read at run time, because no constant can be correct on both
+ * a 2 MB Amiga and a 64 GB workstation. What a fixed ceiling CAN do is stop a
+ * duration string from silently becoming a huge locked allocation.
+ *
+ * Sizes beyond this are deliberately NOT reachable. Measured 2026-09-06: at 48x
+ * against a 688 000 B/s source the smallest ring that prevents any underrun is
+ * 441 MB, 92% of a 45-minute image — but that ring is the symptom of a badly
+ * chosen write speed, not a configuration worth reaching by accident. Match the
+ * speed to the source instead; see docs/research/burn-planning.md. */
+#define ACCUDISC_FIFO_MAX_BYTES (128u * 1024u * 1024u)
 
 /* Bytes for `seconds` of CD audio at `speed_x`, clamped to
  * ACCUDISC_FIFO_MAX_BYTES. Exposed so a caller sizing in time uses the same

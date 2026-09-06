@@ -636,6 +636,98 @@ into the public ABI makes every consumer inherit our judgement. The library
 reports; `cli/main.c` renders. Same split as exit codes and terminal output
 (API_PLAN §3).
 
+## From the burn matrix, 2026-09-06 (discs 1-6, 4a-4e, cell 7)
+
+Design and derivation: `docs/research/burn-planning.md`.
+
+### `accudisc plan-burn` — compute the speed and the ring from measurement `[P2]`
+
+The user asks for the fastest safe burn on a machine nobody has characterised.
+Today that is a guess: `--speed` is whatever the caller types and `--fifo`
+defaults to 5 s at the *requested* rung, which is the wrong rate twice over.
+
+Everything needed is measurable at run time:
+
+```
+B(v) = max over t [ W_cum(t;v) - R*t ]  +  max(0, sigma*W_peak(v) - D)
+choose v minimising  B(v)/R + T_write(v),  subject to B(v) <= M
+```
+
+The deficit term is a RUNNING MAXIMUM, not an end-point difference: with CAV the
+ring drains across the outer radius and refills across the inner one.
+
+**The load-bearing measurement is `W(l)`, the delivered rate against LBA, and a
+TEST WRITE gives it for free.** Validated on this drive: a simulated burn
+reproduced the real CAV fit to 0.01% on slope and 0.14% on mean delivered rate,
+and the disc read back `kind=BLANK` and was reused. Calibrate once per (drive,
+media class), cache it, integrate it for any image length — the simulation is
+amortised, not a per-burn tax.
+
+Gate on **GET CONFIGURATION feature 002Eh** (CD Mastering/SAO) `Test write`, not
+on the drive: the descriptor is media-dependent and **DVD+R has no such bit at
+all**. When it is 0, fall back to the nominal rung rate with no CAV discount —
+that over-sizes and never under-sizes. Never fall back to a real burn.
+
+Report which of MEASURED / CACHED / NOMINAL_FALLBACK produced the plan. A plan
+built on a fallback is a different object from one built on a measurement, and
+the caller has to be able to tell.
+
+### `verify` has no `--byteswap` and needs one `[P2]`
+
+`write --byteswap` puts little-endian bytes on the disc, so verifying a
+big-endian source means handing `verify` a pre-swapped copy — 458 MB of
+duplicate file per arm, created by hand tonight for exactly this reason. The
+flag exists on `write` and the same one-line transform is missing on the far
+side of the round trip.
+
+### Take `flock(LOCK_EX)` on the device for the duration of a burn `[P2]`
+
+`src/transport/sgio.c:23` opens `O_RDWR|O_NONBLOCK` with no `O_EXCL` and no
+`flock`. cdrecord and cdrdao both open `O_EXCL`; the convention udev honours is
+an exclusive `flock` on the device node, and udev takes `LOCK_SH|LOCK_NB` while
+probing and skips a device a writer holds.
+
+**Measured consequence:** every starved burn tonight took an uninvited kernel
+`READ(10)` of LBA 0 into a live DAO session, refused 5/2C, at 9.0-9.3 s after
+the first BURN-Proof link — four for four, and in neither fed burn. Disabling
+`events_poll_msecs` did not stop it and no udev event accompanied it, so the
+opener is still unidentified. `/var/tmp/sr0.lock` disciplines the two agents on
+this machine and says nothing to anything else on it.
+
+### `ACCUDISC_FIFO_MAX_BYTES` raised 32 MiB -> 128 MiB, and wants a policy `[P3]`
+
+Raised 2026-09-06 because **the old value clamped the library's own default**:
+`ACCUDISC_FIFO_DEFAULT_SECONDS` at 48x is 42 336 000 B, so the bare default was
+silently reduced to 33 554 432 and the caller was told it had 5 s of
+ride-through when it had 3.96. A ceiling that cuts the default is not a guard.
+
+128 MiB clears that threefold and covers 5 s at DVD 16x (110.8 MB) should the
+scope extend there. It deliberately does NOT reach the 441 MB that would prevent
+all underrun at 48x against a 3.90x source — that ring is the symptom of a badly
+chosen speed, not something to reach by accident.
+
+**A fixed constant is still the wrong mechanism.** No single value is right on
+both a 2 MB Amiga and a 64 GB workstation. Derive the budget at run time from
+`MemAvailable` intersected with `RLIMIT_MEMLOCK`, which is what the planner
+above needs anyway; keep a conservative constant only to stop a *duration
+string* from silently becoming a huge locked allocation.
+
+Two assertions were rewritten to test the clamp rather than a duration that
+happened to hit it (`fifo_bytes_for(5.0, 48)` stopped being clamped).
+
+### The drive stalls under duty cycle, and nothing measures its temperature `[P3]`
+
+Five burns at identical settings, ordered by the rest before each: 1.0 min ->
+6 multi-second drive stalls and a 22.7 s longer payload; 5.4 min -> outright
+failure at 57.5%; 11.9 min -> 1 stall; 41.4 and 46.3 min -> none. Monotone on
+three independent measures. During each stall the drive's own buffer was
+79-98% full, so the drive stopped taking data it already had.
+
+`--simulate` **cannot** test this: the laser runs at read power, so a test write
+reproduces the host, the firmware and BURN-Proof but not the write-power thermal
+load. Simulate is the right instrument for protocol and pipeline questions and
+the wrong one for anything about heat or about marks.
+
 ## From the starved burns, 2026-09-05/06 (discs #2 and #3)
 
 Full account: `private/research/incoming/2026-09-05-disc2-disc3-starved-burns.md`.
@@ -715,12 +807,21 @@ measurement.
 
 50 blanks, JVC-branded, **Ritek-manufactured**. ATIP read off one on hardware:
 
-> **STOCK: 46 remaining as of 2026-09-06.** Spent: disc #1 (clean reference,
-> 2026-09-05), disc #2 (starved, B1/A3), a 4x unstarved control that was burnt
-> and discarded as unsound, and disc #3 (intended as a music control; burnt
-> byte-reversed, so a second noise arm). Every burn's ATIP has read
-> `97:15:17` / `79:59:70` / Ritek, so the spindle is consistent across four
-> discs now rather than one.
+> **STOCK: 35 remaining as of 2026-09-06 evening.**
+>
+> Spent 2026-09-05 (4): disc #1 (clean reference), disc #2 (starved, B1/A3), a
+> 4x unstarved control burnt and discarded as unsound, and disc #3 (intended as
+> a music control; burnt byte-reversed, so a second noise arm).
+>
+> Spent 2026-09-06 (11): the burn-verification matrix — 1 (music 48x fed), 2
+> (noise 48x fed), 3 (music 48x starved), 4a (**FAILED** at 57.5%, 5/2C), 4b
+> (noise 48x starved), 5 (music 4x starved), 6 (noise 4x starved); the
+> duty-cycle series 4c, 4d, 4e; and cell 7 (508 MB ring, not part of the
+> matrix). A twelfth blank carried a **simulated** burn and is unspent — a test
+> write leaves the disc `kind=BLANK` and reusable, verified on hardware.
+>
+> Every burn's ATIP has read `97:15:17` / `79:59:70` / Ritek, so the spindle is
+> consistent across fifteen discs now rather than one.
 
 
 ```

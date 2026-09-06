@@ -195,7 +195,8 @@ mean off. A zero-init caller is therefore protected rather than unprotected.
 
 ```
 accudisc: fifo 2822400 bytes = 2.0 s at 8x (assumed, drive default)
-accudisc: fifo 33554432 bytes = 0.9 s at 48x (assumed) — CAPPED, you asked for more
+accudisc: fifo 42336000 bytes = 5.0 s at 48x (assumed)
+accudisc: fifo 134217728 bytes = 15.9 s at 48x (assumed) — CAPPED, you asked for more
 ```
 
 It cannot be read back from the drive: mode page 2A reports the speed
