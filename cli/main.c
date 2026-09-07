@@ -556,10 +556,31 @@ static int tier_parse(const char *s, uint8_t *out)
     return -1;
 }
 
+/* Verify's progress. Two passes reach here on tier 2 and the library restarts
+ * `done` at zero for the second, which is the signal used to number them —
+ * cheaper and more honest than a pass field in the ABI, because the caller can
+ * always see the restart and the library would only be re-encoding it. */
+struct verify_prog {
+    unsigned pass;
+    uint32_t last;
+};
+
+static void verify_progress(void *user, uint32_t done, uint32_t total)
+{
+    struct verify_prog *v = user;
+
+    if (done < v->last)
+        v->pass++;
+    v->last = done;
+    fprintf(stderr, "\rverifying pass %u  %u/%u (%.1f%%)   ", v->pass, done,
+            total, total ? 100.0 * (double)done / (double)total : 0.0);
+}
+
 static int cmd_verify(accudisc_device *dev, int argc, char **argv)
 {
     accudisc_verify_opts opts = ACCUDISC_VERIFY_OPTS_INIT;
     accudisc_verify_result r;
+    struct verify_prog vp = { 1, 0 };
     const char *bin = NULL;
     const char *optv = NULL;
     long max_bler = -1;   /* -1 = the caller named no limit; see below */
@@ -597,7 +618,8 @@ static int cmd_verify(accudisc_device *dev, int argc, char **argv)
 
     memset(&r, 0, sizeof r);
     r.size = sizeof r;
-    err = accudisc_verify(dev, bin, &opts, &r, NULL, NULL);
+    err = accudisc_verify(dev, bin, &opts, &r, verify_progress, &vp);
+    fputc('\n', stderr);
     if (err == ACCUDISC_ERR_UNSUPPORTED) {
         fprintf(stderr, "accudisc: --require-tier %s not available via %s\n",
                 tier_name(opts.require_tier), accudisc_access_method(dev));

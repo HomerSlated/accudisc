@@ -176,6 +176,16 @@ struct cmp_ctx {
     uint8_t *src;          /* scratch, one chunk's worth */
     size_t src_cap;
     int io_err;
+    /* Progress. The public prototype has carried a progress callback since
+     * the function was declared and NOTHING EVER CALLED IT — a documented
+     * parameter that did nothing, which is worse than an absent one because a
+     * caller passing it gets silence and no way to tell that from a stalled
+     * drive. Driven from the sink rather than a sector counter in the caller,
+     * so `done` counts sectors the drive actually delivered. */
+    void (*progress)(void *user, uint32_t done, uint32_t total);
+    void *puser;
+    uint32_t total;        /* sectors in the span */
+    uint32_t done;         /* sectors delivered so far */
 };
 
 static int cmp_sink(void *user, const accudisc_chunk *chunk)
@@ -226,6 +236,32 @@ static int cmp_sink(void *user, const accudisc_chunk *chunk)
             }
         }
     }
+    /* After the whole chunk, not per sector: the sectors above can be skipped
+     * by the displacement clip without ever being compared, and progress must
+     * track what the DRIVE delivered, not what the comparison consumed. */
+    c->done += chunk->nsec;
+    if (c->progress)
+        c->progress(c->puser, c->done, c->total);
+    return 0;
+}
+
+/* Tier 2's second pass is a whole extra traversal of the disc, so it reports
+ * too. `done` restarts from zero here, which is how the caller can tell the
+ * two passes apart without the library inventing a pass-number field. */
+struct cen_prog {
+    void (*progress)(void *user, uint32_t done, uint32_t total);
+    void *puser;
+    uint32_t start;
+    uint32_t total;
+};
+
+static int cen_prog_sink(const accudisc_census_sample *sample, void *user)
+{
+    struct cen_prog *p = user;
+    uint32_t done = sample->lba + sample->count - p->start;
+
+    if (p->progress)
+        p->progress(p->puser, done > p->total ? p->total : done, p->total);
     return 0;
 }
 
@@ -331,8 +367,6 @@ int accudisc_verify(accudisc_device *dev, const char *bin_path,
     uint8_t tier, c2mode = ACCUDISC_C2_NONE;
     int rc;
 
-    (void)progress; (void)user;
-
     if (!dev || !bin_path || !opts || !out)
         return ACCUDISC_ERR_INVAL;
 
@@ -429,6 +463,9 @@ int accudisc_verify(accudisc_device *dev, const char *bin_path,
     c.lba0 = o.start;
     c.src_samples = src_samples;
     c.first_diff = -1;
+    c.progress = progress;
+    c.puser = user;
+    c.total = o.count;
     c.src_cap = (size_t)SAMPLES_PER_SECTOR * BYTES_PER_SAMPLE;
     c.src = malloc(c.src_cap);
     if (!c.src) {
@@ -466,6 +503,13 @@ int accudisc_verify(accudisc_device *dev, const char *bin_path,
 
     if (tier >= ACCUDISC_VERIFY_COUNTERS) {
         accudisc_census_opts co;
+        struct cen_prog cp;
+
+        memset(&cp, 0, sizeof cp);
+        cp.progress = progress;
+        cp.puser = user;
+        cp.start = o.start;
+        cp.total = o.count;
 
         memset(&co, 0, sizeof co);
         co.size = sizeof co;
@@ -482,7 +526,8 @@ int accudisc_verify(accudisc_device *dev, const char *bin_path,
         co.cancel = o.cancel;
         /* A census failure does not invalidate the compare that already ran.
          * Drop the tier and keep what was measured. */
-        if (accudisc_counter_census(dev, &co, NULL, NULL, &r.census)
+        if (accudisc_counter_census(dev, &co, progress ? cen_prog_sink : NULL,
+                                    progress ? &cp : NULL, &r.census)
             != ACCUDISC_OK) {
             memset(&r.census, 0, sizeof r.census);
             r.tier = ACCUDISC_VERIFY_C2;

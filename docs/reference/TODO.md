@@ -7153,3 +7153,46 @@ One cdrecord line to distrust: it printed `Profile: DVD-RW restricted overwrite`
 for a CD-R. Ours reads `profile=0x0009 kind=BLANK` with ATIP `type=CD-R
 manufacturer=Taiyo Yuden`, which is correct. Do not use that line as a
 cross-check of media identity on this drive.
+
+## From the read-verify pass, 2026-09-07 (discs 1, 2, 3, 4a, 4b)
+
+- **`accudisc.h` calls the vendor counters "per second" and they are not** `[P2]`
+  The tier-2 note describes them as "pre-correction, per second" — the QPxTool
+  convention. Measured on real media 2026-09-07, scanning the same 322 samples
+  at 24x and 4x: longest run of identical consecutive C1 is 3 at BOTH speeds (a
+  one-second latch re-read 24 times would give runs of ~24), the C1 total ratio
+  is 1.098 rather than ~6, and the per-LBA correlation is r = +0.9226. The
+  counter RESETS ON READ and accumulates over the interval since the previous
+  read, so a census sample is exactly its 75 sectors at any speed.
+  This matters because a consumer who believes the header will either choose a
+  1x cadence it does not need — six times the scan time — or divide out a
+  24-fold inflation that is not there. Fix the wording, and say what the
+  measurement was; a comment that states a convention as a behaviour is how
+  this one survived. Header change, so it goes through the API-notification
+  gate even though nothing about the ABI moves.
+
+- **`cxscan`'s summary line collides with its own data prefix** `[P2]`
+  Samples go to stdout as `cx <lba> <c1> <c2> <cu>`; the summary goes to stderr
+  as `cx summary: C1 ... C2 ... CU ...`. Two consequences, both hit on
+  2026-09-07. A caller merging the streams gets the summary spliced into the
+  MIDDLE of a sample line — observed verbatim as `cx 192375 8 cx summary: C1
+  30763 ...`, which destroyed that sample and left a malformed record that
+  crashed a downstream parser on an index error. And `grep '^cx '` over a merged
+  log matches the summary too, so even a correctly-separated consumer that
+  reunites them later mis-parses. The stream separation is right and the
+  summary belongs on stderr; the PREFIX is the defect. Give it a distinct
+  leading token, or emit the sample stream with a header line that names the
+  columns so a parser has something to key on besides a two-letter prefix.
+  Cheap, and it removes a silent data-loss path from the only command whose
+  stdout is a machine-readable measurement series.
+
+- **Disc labelled "#4c" is an unwritten CD-R** `[P3]` (Keith investigating)
+  Found 2026-09-07 mid-verify: `disc_status=0`, no TOC, valid Ritek ATIP. The
+  harness's `kind=AUDIO` pre-flight refused it and nothing was written. Five
+  cell-4 discs should exist against four surviving burn logs, so a blank here
+  is not explained by a missing burn. Candidates: a fresh blank strayed into the
+  stack, or it is the `--simulate` validation disc (test write, laser at read
+  power, read back BLANK, recorded as "reused"). **Until resolved, the
+  4b/4c/4d/4e label-to-log mapping is unverified** — it was inferred from the
+  labels being burn order, and a blank in the sequence is evidence the stack and
+  the logs have diverged.
