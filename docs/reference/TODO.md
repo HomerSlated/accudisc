@@ -522,6 +522,127 @@ unchanged** — they were derived from what the loop did, not from why the disc 
 
 ---
 
+## MEDIA-SAFE WRITING — Keith's three requirements, restated 2026-09-08
+
+The whole CD-R matrix was run in service of three things Keith actually wanted.
+Stating them plainly, with what is and is not established:
+
+1. **An explanation for what destroyed the CD-RW.** **STILL UNANSWERED.** The
+   2026-09-04 audit refuted PCA/OPC exhaustion from ECMA-395/MMC-5 and left
+   three mechanisms refuted, one plausible, none proven. Nothing in the CD-R
+   matrix bears on it directly: CD-R and CD-RW use different dyes, different
+   write strategies and different erase physics, and the matrix tested a
+   CD-R-only question. **Do not let the CD-R results be read as closing this.**
+2. **A way to prevent it happening again.** Partly in place — the blank check
+   between iterations, the write-ops budget for rewritables, and "swap the disc
+   before diagnosing the drive". The cooldown below is the missing piece.
+3. **A post-burn verify facility.** **BUILT** (0.35.0, three tiers) and
+   exercised on eight discs 2026-09-07/08. The gap is that it is a *separate
+   command*: `write` has no `--verify`, so verification is opt-in and
+   easily forgotten. See §3 below.
+
+### 1. Signal content is a variable, so a test sample must be chosen, not assumed — `[P2]`
+
+Keith: *"Don't use white noise as a test sample."*
+
+**Supported.** Full-scale noise costs ~30% more C1 than music, and it is the
+only effect in the matrix that reproduced across conditions: +31.7% at 48x fed,
++30.0% at 4x starved, +11.1% to +32.7% in cell 4. Denser high-frequency content
+means shorter EFM run lengths — harder marks to write and to read.
+
+**Refinement worth keeping:** noise is not a *bad* sample, it is a **stress**
+sample. It is the wrong choice as a baseline, because it inflates C1 by ~30% and
+that offset will be misattributed to whatever else the test is varying. It is
+the right choice when the question is "what is the worst this drive/media can
+be asked to do". Whatever ships as a self-test fixture should state which of the
+two it is. Candidate: a fixed, versioned, **musical** reference image for
+baselines, keeping the noise image as an explicit stress arm.
+
+### 2. Duty cycle and cooldown — `[P2]`
+
+Keith: *"Thermals matter: don't overwork the drive. A cooldown is needed."*
+
+**Supported by the WRITE side, not by the read-back.** The distinction matters
+and both halves should be recorded:
+
+- **Write side (2026-09-06 duty series).** Three quantities unrelated in the
+  code — a count of sub-1.0x telemetry windows, a FIFO producer counter, and a
+  millisecond payload timer — ordered the same five discs the same way by idle
+  gap. The two coldest agreed to 2 ms on a 693 s payload; the hottest was 22.7 s
+  slower. And **4a failed outright**, 5/2C at LBA 117 470, after a 5.4 min gap.
+  A failed burn costs a disc, which is the whole argument for a cooldown.
+- **Read side (2026-09-07/08 census).** Does **not** corroborate it. The
+  thermal-accumulation account of the radial gradient was refuted by disc 6,
+  which gradients hard at 4x over 730 s with the laser idle most of the time.
+  The idle-gap axis (P4) is unanswerable — two of four replicates are lost —
+  and the surviving pair moved +19.4% in C1 the predicted way but in the
+  **opposite** direction on C2 (278 against 77).
+
+**So the cooldown is justified as protection of the BURN, not of the MEDIUM.**
+That is a weaker claim than "thermals damage discs" and it is the one the data
+carries. It is still sufficient: a rest between burns costs seconds and a failed
+burn costs a blank.
+
+**To wire:** a minimum inter-burn rest, defaulting to something like 60 s,
+enforced in the CLI (not the library — it is a policy, and a library that sleeps
+is a library a caller cannot schedule). Needs: a decision on whether the drive
+exposes anything better than wall-clock elapsed since the last write. Our
+17-opcode Plextor catalogue has **no temperature command** and the firmware RE
+has surfaced nothing temperature-shaped, so wall clock is probably all there is.
+
+### 3. There is an optimal write speed and it must be measured, not assumed — `[P2]`
+
+Keith: *"an optimal write speed that is not the max or min, but somewhere
+in-between, and may change per drive, per media type, and per dye type. This can
+only be established with a live test."*
+
+**Half-established, and the established half is the surprising one: SLOW IS
+WORSE.** 4x was worse than 48x on both arms:
+
+| arm | 48x | 4x |
+|---|---:|---:|
+| music | 11.30 (fed), 10.68 (starved) | **12.15** |
+| noise | 14.88 (fed), 14.17 / 11.87 (starved) | **15.80** |
+
+So "burn slow to be safe" is not supported by this drive on this media. Whether
+an intermediate optimum exists is **untested** — the matrix sampled only the two
+ends of a five-rung ladder (4x 8x 16x 32x 48x); 8x, 16x and 32x were never
+burnt. Keith is right that only a live test settles it.
+
+**To wire — the shape this should take:** a `write-speed-probe` that burns a
+short arm at each admitted rung and scores it with the tier-2 census, producing
+a per-drive/per-media recommendation. Two hard constraints from this project's
+own history:
+
+- **Media cost.** Five rungs × one disc each is five blanks per media type.
+  A partial-disc arm is cheaper but confounds the CAV profile with the rung,
+  because the drive's rate varies 21x→39x with radius at nominal 48x. Any
+  short-arm design must write the **same radial band** at every rung.
+- **`--simulate` cannot do it.** Test write runs the laser at read power, so it
+  exercises the host, the firmware and BURN-Proof but not the write-power
+  thermal load, and it leaves no marks to census. The one thing this probe needs
+  to measure is exactly the thing simulation cannot reach.
+
+Related and already recorded: the write-speed ladder saturates at 32x with 48x
+accepted (2026-08-28), and POWEREC — the vendor write governor — was **ON for
+every burn in the matrix** and untested. With it on, the drive picks the rate
+and a requested speed is an upper bound at best, so a speed probe must set
+`write-governor off` or it is measuring the governor rather than the rung.
+
+### 4. Wire verification into the write path — `[P2]`
+
+`accudisc verify` exists and works (three tiers, 0.35.0). What does not exist is
+`write --verify`, so the round trip is opt-in. For CD-RW, where a re-burn is
+free, verification should arguably be the **default**; for CD-R it should at
+minimum be one flag rather than a second command with its own argument list. The
+byte-order trap is the reason this matters: `write --byteswap` puts the
+little-endian bytes on the medium and `verify` has **no `--byteswap`**, so a
+caller who verifies by hand against the source image they just burnt compares
+the disc against bytes that were never written to it. A wired-in verify knows
+which image it actually sent. See also the tier-2 caveat above: a disc can pass
+tier 0 while sitting on the edge of its error budget, because CIRC hides exactly
+the degradation a post-burn verify exists to find.
+
 ## POST-BURN VERIFICATION — three tiers, built 2026-09-05 (0.35.0)
 
 Keith's instruction: two methods, one generic and one advanced, "otherwise we
