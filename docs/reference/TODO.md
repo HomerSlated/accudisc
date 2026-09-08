@@ -7186,7 +7186,44 @@ cross-check of media identity on this drive.
   Cheap, and it removes a silent data-loss path from the only command whose
   stdout is a machine-readable measurement series.
 
-- **Disc labelled "#4c" is an unwritten CD-R** `[P3]` (Keith investigating)
+- **Two blanks in the burn-matrix stack, and the labelling channel is the
+  failure** `[P3]` (superseded the 2026-09-07 entry below; closed as far as it
+  can be)
+  Resolved 2026-09-08: the discs labelled **4c and 4e are both unwritten
+  CD-Rs** — `disc_status=0`, TOC refused `5/24/00`, valid Ritek ATIP, confirmed
+  three probes each. Ten matrix discs were written on 09-06; ten labels exist;
+  two of them are blank, so at most eight of the labelled discs can be written.
+  The record explains exactly **one** blank (the twelfth disc carried the
+  `--simulate` validation burn at 18:48 and was never spent) and cannot explain
+  two. No instrument can distinguish an unwritten blank from a simulated one:
+  test write runs the laser at read power and skips `SEND OPC`, so it leaves
+  nothing behind by design — `cxscan` was tried and needs the TOC.
+  The label-to-log mapping itself **was** recovered, and not from the labels:
+  the idle gap before each burn and the payload timer (matching to the
+  millisecond — duty-1 692 719 ms = 4c, duty-2 715 434 = 4d, duty-3 693 203 =
+  4e) bind the letters independently. Keith's labels follow the **test number
+  announced at ejection**, not burn order — discs 5 and 6 were burnt before
+  4c/4d/4e. **The lesson for future media runs: the only record of which disc
+  is which lived in the ejection order, a channel with no redundancy and no
+  checksum. Write the cell identity into something the disc carries** — a
+  distinct CD-Text title or a per-cell tail pattern in the payload — so a disc
+  can state its own identity. 4b/4c/4d/4e were byte-identical burns and cannot
+  be told apart by reading them; the 4c and 4e rows are unrecoverable, not
+  reassignable.
+
+- **The radial C1 gradient has no surviving explanation** `[P3]`
+  Measured across seven discs 2026-09-07/08. Rim ÷ hub C1 ranges 0.907 to 1.541
+  with no alignment to any design variable. Two accounts have now failed: the
+  48x CAV speed ramp (21x→39x with radius) is refuted because all four 48x
+  discs were written on it and two show no gradient; thermal accumulation over
+  a 92 s continuous burn is refuted because disc 6 was burnt at **4x** over
+  730 s with the laser idle most of the time and has one of the strongest
+  gradients in the set (1.320 with its defect band excluded). Not urgent, but
+  it should not be quietly dropped — it is a reproducible effect with a dead
+  mechanism, and anything built on "outer tracks are written worse because of
+  X" is currently unfounded.
+
+- **Disc labelled "#4c" is an unwritten CD-R** `[P3]` (SUPERSEDED — see above)
   Found 2026-09-07 mid-verify: `disc_status=0`, no TOC, valid Ritek ATIP. The
   harness's `kind=AUDIO` pre-flight refused it and nothing was written. Five
   cell-4 discs should exist against four surviving burn logs, so a blank here
