@@ -836,9 +836,9 @@ it.** Ranked by unexplored space against risk to the drive.
 |---|---|:---:|---|---|
 | `0x5A` MODE SENSE | page | **2** | **11 present** on this drive | none |
 | `0xEA` Q-Check | CDB[2] scan type | **1** | ≥2 (`0x00` errors, `0x10` jitter/beta) | none |
-| `0xED` drive mode 2 | CDB[2] mode code | **1** | unknown — no source enumerates them | low |
+| `0xED` drive mode 2 | CDB[2] mode code | **1** | **1 — MEASURED 2026-09-09, §I. The space is empty.** | low |
 | `0xF3` | CDB[1]/CDB[2] | **0** | TA form pinned; a **6-site dispatcher** unmapped | vendor |
-| `0xE9` vendor MODE | CDB[2] page | **1** | 10 identified of a 256-value byte | vendor |
+| `0xE9` vendor MODE | CDB[2] page | **1** | **10 readable + 3 failing of 256 — MEASURED 2026-09-09, §I** | vendor |
 | `0x43` READ TOC | format | 4 | 6 (formats 1, 3 unused) | none |
 | `0xE4`/`0xE5` | CDB[1] + CDB[2] | 0 | 3 builders, several modes | vendor |
 | `0xF1` EEPROM | CDB[1] sub-cmd | 1 (`0x01`) | unknown | low |
@@ -1404,6 +1404,130 @@ CD-R left open, so it is recorded as untested rather than as empty.
   RC needs a warning label), page `0x1a` power timers (real, unused), page
   `0x0d` hold-track timer (real, marginal). Everything else on these eight pages
   is legacy, vestigial, or read-only.
+
+## I. Vendor selector sweeps — SELECTOR SWEEP Phase 2, 2026-09-09
+
+Phase 2 runs only for opcodes whose discriminator passed Phase 0. Both `0xE9`
+and `0xED` passed, and were swept end to end.
+
+**Scope.** `PLEXTOR DVDR PX-716A` firmware `1.11`, **pressed CD-ROM**
+(`profile=0x0008 erasable=0 disc_status=2`, **ATIP absent** — the §F gate met on
+all three counts), Silent Mode **off**. GET forms only, `CDB[1] = 0x00`
+throughout; no SET was issued on either opcode. Disc state identical before and
+after. Tool: `drivers/plextor/re-tools/selsweep.c`.
+
+### I.1 The discriminator, and why the control was not ceremony
+
+An unassigned selector returns
+
+    key 5 ILLEGAL REQUEST, ASC 24h — INVALID FIELD IN CDB
+
+on both opcodes, against positive controls returning GOOD with a well-formed
+8-byte block. So absent and present-reading-zero are separable and the sweep is
+meaningful.
+
+**That was worth proving rather than assuming, and the sweep says why:** pages
+`0x01`, `0xBB` and `0xD5` are implemented and read all zero after the header. If
+the drive had answered an unassigned page with a well-formed zero block, those
+three rows would have been indistinguishable from nothing at all, and a 256-row
+table would have looked exactly like a successful sweep.
+
+**`0xED` shares `0xE9`'s two-byte header** — `resp[0]` = selector echo,
+`resp[1]` = `0x06` — which `plextor.c`'s header does not record for `0xED`.
+
+### I.2 `0xE9` — three response classes, not two
+
+| class | n | selectors |
+|---|---:|---|
+| readable | **10** | `01 02 04 08 20 21 22 40 bb d5` |
+| **`4/00/00` + DID_ERROR** | **3** | `06 07 41` (`resid=8`, nothing transferred) |
+| unassigned (`5/24/00`) | 243 | |
+
+Against the ten pages previously catalogued (`01 02 04 06 07 08 21 22 bb d5`)
+the total is unchanged and the membership is not: **−2, +2.** A count is not a
+check.
+
+- **`0x20` and `0x40` are new.** Neither appears as a `0xE9` page in
+  `FEATURES.md`, `PROTOCOL.md` or this file. `0x20` reads `20 06 00 …`, `0x40`
+  reads `40 06 01 …` — a state byte of 1, so `0x40` is a feature that is
+  currently **on**. Function unknown; not probed further.
+- **`0x41` fails**, and was never catalogued at all.
+
+> **The third class is named for its response, not its cause.** What was
+> measured is that these three fail *differently* from an unassigned selector.
+> Reading that as "the firmware recognises them" asserts internal structure no
+> observation here can see — a selector in a valid range with no handler behind
+> it could fall over the same way.
+
+### I.3 `0x06`/`0x07` are most likely FEATURE-GATED, and §E's Silent Mode row needs care
+
+`resp[2]` is the state byte on every page here, and `0x00` is off: `0x01` reads
+`01 06 00` (catalogued off), `0x02` `02 06 00` (off), `0x04` `04 06 00` (off),
+against `0x22` reading `22 06 01` where the catalogue says `resp[2] = 1`.
+
+Page `0x08` **Silent Mode — Main** reads `08 06 00 04 08 00 19 0d`. **Silent
+Mode is off, and its two sub-pages are exactly the two selectors that fail.**
+
+**Not testable in this phase, by design** — confirming it needs a `0xE9` SET,
+and Phase 0/2 issue none. The discriminator, written down for a later phase:
+**SET page `0x08` to turn Silent Mode on, then re-read `0x06` and `0x07`.**
+
+**This must not be read as "Silent Mode Disc/Tray do not work on the PX-716A".**
+The likeliest reading is that they were never asked with the feature on.
+
+It does cost `FEATURES.md` row 6 a tick. That row marks Silent Mode ☑☑ and cites
+page `0x08`'s settings block as the evidence for all three pages. **One page was
+verified and three were marked verified** — the same shape as the `0x0D`
+"Spindown Time" row, an inference sitting beside a measurement until the two
+stopped being distinguishable.
+
+### I.4 `0xED` — a measured negative, and the cheapest kind of result
+
+**Exactly one mode code exists: `0x00`.** The other 255 all return `5/24/00`.
+§E previously recorded the true count as "unknown — no source enumerates them";
+it is now measured on this profile, and it is **1**. That removes a 256-value
+unknown from the map rather than adding to it, and it retires `0xED` as a
+candidate for a second feature cluster.
+
+Mode code `0x00` read `00 06 01 00 00 00 00 00`: POWEREC **on**, recommended
+write speed 0 (no writable medium loaded).
+
+### I.5 The instrument failed before the drive did
+
+The first sweep reported **13** implemented pages, with `0x06`/`0x07` echoing
+`04` and `0x41` echoing `40` — a clean-looking aliasing pattern. It was an
+artefact of the tool.
+
+`selsweep.c` classified a response as GOOD on `io.status == 0` alone. SCSI
+status is one of three: a transport failure sets `host_status = DID_ERROR (7)`
+with `io.status` still **0**. Those three commands failed, transferred nothing
+(`resid = 8`), and the tool printed a buffer that still held **the previous
+successful page's response** — which, sweeping in ascending order, was `0x04`
+before `0x06`/`0x07` and `0x40` before `0x41`.
+
+Two things are worth keeping from it:
+
+- **A pre-registered control was written before the follow-up ran**, listing
+  aliasing and stale-buffer as the two explanations *and* a clause reserving a
+  third outcome. The prediction (aliasing) was **wrong**; stale-buffer was
+  essentially right, with the correction that the buffer was the **host's** and
+  the selector was never accepted at all.
+- **The drive was suspected before the instrument was.** Three probes were read
+  as a change in drive state; the drive was healthy throughout, every reading
+  reproducible, and `INQUIRY` and page `0x08` answered normally between every
+  probe. The cheap discriminator turned out to be running the three selectors on
+  **their own file descriptor**, where there is no previous response to inherit.
+
+Fixed: the tool now requires `status == 0 && host_status == 0 && driver_status
+== 0 && resid == 0` before believing a response, and reports a differently
+failing selector as its own class rather than folding it into either neighbour.
+
+### I.6 A second axis the plan did not name
+
+Phase 2's deliverable is a **(selector x medium)** table. `0x06`/`0x07` say that
+is not sufficient: those two rows most likely move when a *setting* changes with
+the medium held constant. **Drive state is a third axis**, and a sweep that
+varies only the disc will attribute a feature-gated result to the medium.
 
 ## Method notes that govern anything added here
 
