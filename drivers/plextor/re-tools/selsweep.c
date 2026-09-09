@@ -92,7 +92,14 @@ int main(int argc, char **argv)
          * of this tool did exactly that and produced three false IMPLEMENTED
          * rows, whose "data" was the previous successful response still sitting
          * in the buffer. Both must be clear, and the transfer must have
-         * actually happened (resid == 0), before a response is believed. */
+         * actually happened (resid == 0), before a response is believed.
+         *
+         * The third class is labelled FAILS DIFFERENTLY, not "recognised":
+         * failing unlike an unassigned selector does not establish that the
+         * firmware knows the value, since a handler-less selector in a valid
+         * range could fall over the same way. 0x41 was later shown to be
+         * recognised by a DIFFERENT observation - a medium-aware sense code
+         * with the tray open - and 0x06/0x07 still have no such evidence. */
         if (io.status == 0 && io.host_status == 0 && io.driver_status == 0
             && io.resid == 0) {
             printf("   0x%02x  GOOD    -          ", sel);
@@ -104,7 +111,7 @@ int main(int argc, char **argv)
             nabsent++;                       /* the discriminator: unassigned */
         } else {
             printf("   0x%02x  st=%02x host=%02x  %x/%02x/%02x  resid=%d"
-                   "  <== RECOGNISED BUT FAILING\n",
+                   "  <== FAILS DIFFERENTLY\n",
                    sel, io.status, io.host_status, key, asc, ascq, io.resid);
             nother++;
         }

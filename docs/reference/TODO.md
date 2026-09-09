@@ -1202,6 +1202,24 @@ whether it is a lever we could use or a legacy field with no CD-DA meaning.
 > dispatcher, and the highest-value item here), 2.5 `0xF1` sub-commands, 2.6
 > `0xE4`. Each needs its own Phase 0 discriminator first.
 
+- **`0xE9` pages `0x40` and `0x41` — an unnamed adjacent pair** `[P3]`, raised
+  2026-09-09. Named here so it is not lost inside `OPCODES.md` §I.2 as "function
+  unknown". What is established: `0x40` is **readable, a stored setting** (it
+  reads identically with the tray open, so it does not interrogate the disc),
+  and its state byte is **`01` — the feature is ON**, whatever it is. `0x41` is
+  a **real command** that reads the medium (`2/3a/02` with the tray open) and
+  fails `4/00/00` with a disc loaded. Neither appears as a `0xE9` page in
+  `FEATURES.md`, `PROTOCOL.md` or `OPCODES.md`.
+  **Why the pair is interesting rather than two loose ends:** a stored setting
+  next to a medium-reading command at the adjacent selector is the same shape as
+  `0x08` Silent Mode Main next to its `0x06`/`0x07` sub-pages, and is what a
+  main/sub or get/act pairing looks like from outside. **Not testable without a
+  SET**, which no phase has yet been authorised to issue. Two cheap routes that
+  need no SET: static RE on `PTPXL.exe` for a feature string near the `0xE9`
+  builders (Phase 0.3 territory), and re-reading `0x40` after any *other*
+  feature is toggled, to see whether it is a mirror of something already known
+  rather than a feature of its own.
+
 
 Runs only for opcodes whose discriminator passed Phase 0. Media axis, decided up
 front: **pressed audio CD, pressed data CD-ROM, blank CD-R** — the three CD
