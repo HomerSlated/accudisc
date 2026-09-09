@@ -96,11 +96,11 @@ int main(int argc, char **argv)
         int ng = cmd(cdb, 10, chg, 254);
         int plen = cur[9] < 250 ? cur[9] : 250;        /* page length byte */
         printf("   0x%02x  %3d  ", pg, plen);
-        for (int i = 0; i < 8 && i < plen; i++) printf("%02x ", cur[10 + i]);
+        for (int i = 0; i < plen; i++) printf("%02x ", cur[10 + i]);
         printf("  |  ");
         int any = 0;
         if (ng >= 10 && scsi_status == 0) {
-            for (int i = 0; i < 8 && i < plen; i++) { printf("%02x ", chg[10 + i]); if (chg[10 + i]) any = 1; }
+            for (int i = 0; i < plen; i++) { printf("%02x ", chg[10 + i]); if (chg[10 + i]) any = 1; }
             for (int i = 0; i < plen && i + 10 < ng; i++) if (chg[10 + i]) any = 1;
         } else printf("(PC=1 unsupported)");
         if (any) { printf(" <== HOST-CHANGEABLE"); nchange++; }

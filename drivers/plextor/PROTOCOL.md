@@ -704,19 +704,36 @@ and the LBA-dependent results below describe *the loaded disc*.
 
 ### Mode pages — 11 present, and the speed page is not one the host may touch
 
-| page | name | changeable mask (params) |
+| page | name | changeable mask (params, bytes 2..n) |
 |---|---|---|
-| 0x01 | Read/Write Error Recovery | `3f ff ff ff 00 00 ff 00` |
-| 0x02 | Disconnect/Reconnect | `ff ff …` |
-| 0x05 | Write Parameters | `7f ff 0f ff 00 3f ff 00` |
-| 0x07 | Verify Error Recovery | `3f ff …` |
-| 0x08 | Caching | `04 00 …` (WCE only; **RCD not changeable**) |
-| 0x0d | CD Device Parameters | `00 0f …` |
-| 0x0e | CD Audio Control | `06 00 00 00 00 00 0f ff 0f ff` |
+| 0x01 | Read/Write Error Recovery | `3f ff ff ff 00 00 ff 00 00 00` |
+| 0x02 | Disconnect/Reconnect | `ff ff 00 00 00 00 00 00 00 00 00 00 00 00` |
+| 0x05 | Write Parameters | `7f ff 0f ff 00 3f ff 00` then `ff` x42 |
+| 0x07 | Verify Error Recovery | `3f ff 00 00 00 00` |
+| 0x08 | Caching | `04 00 00 00 00 00 00 00 00 00` (WCE only; **RCD not changeable**) |
+| 0x0d | CD Device Parameters | `00 0f 00 00 00 00` |
+| 0x0e | CD Audio Control | `06 00 00 00 00 00 0f ff 0f ff 00 00 00 00` |
 | 0x1a | Power Condition | `00 03 ff ff ff ff ff ff ff ff` |
-| 0x1d | Timeout & Protect | `00 00 04 00 ff ff` |
+| 0x1d | Timeout & Protect | `00 00 04 00 ff ff ff ff` |
 | **0x2a** | **MM Capabilities** | **all zero over all 52 bytes** |
-| 0x3f | (return-all alias of 0x01) | — |
+| 0x3f | (return-all form; see note) | — |
+
+> **COMPLETED 2026-09-09.** Every mask above except `0x1a` and `0x0e` used to
+> end in `…`, because `mmcsweep` printed only the first **8** bytes of each
+> page. That cap is removed and these are whole pages. Two things were hidden
+> behind it: page `0x01`'s Recovery Time Limit (bytes 10-11, mask `00 00`,
+> confirming it is **not** changeable) and page `0x0e`'s output ports 2 and 3
+> (bytes 12-15, mask `00`, so the drive exposes **two** audio output ports and
+> not four).
+>
+> **`0x3f` is not an alias of page `0x01`.** It is the return-all form, and the
+> sweep prints only the first page of the list it returns — which is `0x01`.
+> A display artefact previously recorded here as a property of the drive.
+>
+> What every changeable bit **means**, field by field against MMC-3 §6.3 and
+> MMC-5 §7.6, is now in `docs/reference/OPCODES.md` §H. The masks land inside a
+> defined spec field on **six of six** pages checked, which is the independent
+> evidence that the byte frame is being read at the right offset.
 
 **`MODE SENSE` PC=1 is the drive stating which bits the host may alter, so an
 all-zero mask on page 0x2A is a hard negative, not an inference: read speed is

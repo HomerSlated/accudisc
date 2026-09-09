@@ -1102,7 +1102,35 @@ plus whatever `0xDF` selector bindings the RE yields.
 
 ---
 
-### Phase 1 — what the changeable bits MEAN. No drive at all.
+### Phase 1 — what the changeable bits MEAN. **DONE 2026-09-09 — `OPCODES.md` §H.**
+
+> **1.1, 1.2 and 1.3 are complete.** Deliverable is `OPCODES.md` §H: a field
+> dictionary for the eight pages, the completed changeable masks, and both
+> unused `READ TOC` formats. Read-only throughout, one closed audio CD-R, no
+> `MODE SELECT`. Four things came out of it that the plan did not anticipate:
+>
+> 1. **Three of the eight pages are not MMC pages.** MMC-3 Table 339 has
+>    `02h-04h` and `08h-0Ah` Reserved and `07h` "shall not be used"; `08h` was
+>    defined later by MMC-5 §7.6, and `02h`/`07h` are SPC/SBC. Asking MMC-3 for
+>    their fields returns nothing, which would have looked like a gap in the
+>    drive rather than a gap in the question.
+> 2. **`0x07` duplicates `0x01`** — same values, same mask, and MMC-3 says
+>    verify uses page `0x01`'s read parameters. A candidate §3.1 redundancy row.
+> 3. **Page `0x1A` Power Condition is the automatic spindown control**, fully
+>    host-settable, both timers zero and both enable bits clear. It is a better
+>    candidate than page `0x0D` for the ⚠ unbound `FEATURES.md` "Spindown Time"
+>    row — **still unbound**, but now pointed at a page that has the right shape.
+> 4. **DISP and SWPP are NOT host-changeable.** The two bits that could take
+>    the drive out of service until a power cycle are refused by the drive
+>    itself, so §F's safety class has a hardware floor under it and not only a
+>    convention. Against that, **RCD is not changeable either**, so this drive's
+>    read cache cannot be disabled through the caching page.
+>
+> The mask landed inside a defined spec field on **six of six** pages checked —
+> the check that makes a dictionary transcribed from `pdftotext` output
+> trustworthy. One anomaly is left **undetermined**, not explained: page `0x01`
+> bytes 4-5 are Reserved in MMC-3 and the drive offers them as changeable.
+
 
 Presence and changeable masks for the 11 mode pages are already measured
 (`PROTOCOL.md` "Mode pages — 11 present"). Re-reading the payloads adds nothing.

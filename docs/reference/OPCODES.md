@@ -1140,6 +1140,257 @@ Findings that fell out of building the matrix, not previously recorded.
 
 ---
 
+## H. Mode page field dictionary — SELECTOR SWEEP Phase 1, 2026-09-09
+
+What each host-changeable bit of the drive's mode pages actually **means**.
+Presence and masks were already known; this closes the gap between "the drive
+says you may change byte 3" and "byte 3 is the read retry count".
+
+**Scope.** `PLEXTOR DVDR PX-716A` firmware `1.11` on `/dev/sg3`, swept
+2026-09-09 under `flock`, with a **closed audio CD-R** loaded
+(`kind=AUDIO profile=0x0009 disc_status=2 erasable=0 audio_tracks=15`).
+Read-only throughout: `MODE SENSE(10)` at PC=0 and PC=1 only, no `MODE SELECT`,
+no vendor opcode. Per rule B of the sweep plan, **every row is scoped to that
+drive on that medium** — mode page content is media-dependent and a mask read
+on one profile is not a fact about another.
+
+Field definitions are summarised from MMC-3 r10g §6.3 and MMC-5 r04 §7.6 in
+`private/code/MMC/`. Licensed T10 material: summaries here, the source never
+leaves that directory.
+
+### H.1 Three of the eleven pages are not MMC pages at all
+
+MMC-3 Table 339 enumerates the mode pages defined for CD/DVD Logical Units.
+Measured against what this drive reports present:
+
+| page | MMC-3 Table 339 says | drive |
+|---|---|---|
+| `0x01` Read/Write Error Recovery | §6.3.4 | present |
+| `0x02` Disconnect/Reconnect | **`02h-04h` Reserved** | **present, 2 bytes changeable** |
+| `0x05` Write Parameters | §6.3.5 | present |
+| `0x07` Verify Error Recovery | **"Shall not be used"** | **present, 2 bytes changeable** |
+| `0x08` Caching | **`08h-0Ah` Reserved** | **present, WCE changeable** |
+| `0x0d` CD Device Parameters | §6.3.6 | present |
+| `0x0e` CD Audio Control | §6.3.7 | present |
+| `0x1a` Power Condition | §6.3.8 | present |
+| `0x1d` Time-out & Protect | §6.3.10 | present |
+| `0x2a` MM Capabilities | §6.3.11 (read only) | present, mask all zero |
+
+So the eight pages Phase 1 set out to document are **not eight MMC pages**.
+`0x02` and `0x07` are SPC/SBC pages the drive implements anyway; `0x08` was
+Reserved in MMC-3 and defined later, by MMC-5 §7.6. MMC-3 is silent on two of
+them by construction, and asking it for their fields would have returned
+nothing while looking like a gap in the drive rather than a gap in the question.
+
+**`0x07` is the interesting one, and it is redundant by the spec's own words.**
+MMC-3 states that Verify Error Recovery parameters are not supported by
+Multimedia Logical Units and that the *read* parameters of page `0x01` are used
+as the verify parameters instead. The drive's two pages agree with that
+reading: page `0x07` returns `00 0a` where page `0x01` returns `00 0a`, and both
+carry the same changeable mask in those bytes (`3f ff`). **Candidate row for the
+§3.1 redundancy table** — a page duplicating one we can already reach — noting
+that this is an observation of equal values, not proof the drive wires them to
+one register.
+
+### H.2 The masks corroborate the spec layout on every page checked
+
+The `0x0D` precedent — changeable mask `00 0f` matching MMC-3's 4-bit
+Inactivity Timer Multiplier exactly — generalises. Each row asks whether the
+drive's changeable mask lands on the bits the spec defines as fields:
+
+| page | mask (bytes 2..n) | spec field the set bits land on | verdict |
+|---|---|---|:---:|
+| `0x01` | `3f ff ff ff 00 00 ff 00 00 00` | b2 bits 5-0 = TB, RC, (EER), PER, DTE, DCR — AWRE/ARRE fixed; b3 Read Retry Count; b8 Write Retry Count | ✅ |
+| `0x08` | `04 00 00 00 00 00 00 00 00 00` | b2 bit 2 = WCE only | ✅ |
+| `0x0d` | `00 0f 00 00 00 00` | b3 low nibble = Inactivity Timer Multiplier | ✅ |
+| `0x0e` | `06 00 00 00 00 00 0f ff 0f ff 00 00 00 00` | b2 bits 2,1 = IMMED, SOTC; b8/b10 low nibbles = port 0/1 channel selection; b9/b11 = port 0/1 volume | ✅ |
+| `0x1a` | `00 03 ff ff ff ff ff ff ff ff` | b3 bits 1,0 = Idle, Standby; b4-7 Idle Timer; b8-11 Standby Timer | ✅ |
+| `0x1d` | `00 00 04 00 ff ff ff ff` | b4 bit 2 = TMOE only; b6-7 Group 1 Time-out; b8-9 Group 2 Time-out | ✅ |
+
+**Six of six.** Not one set bit falls outside a defined field, and not one
+multi-bit field is partially exposed. That is the check that makes the rest of
+this section trustworthy: a field dictionary transcribed out of `pdftotext
+-layout` output can be well-formed and silently wrong, and the mask is an
+independent witness to the byte layout, read from the drive rather than from
+the page.
+
+**One anomaly, and it is recorded rather than explained.** Page `0x01` bytes 4
+and 5 carry mask `ff ff`, but MMC-3 marks both **Reserved** (they are SBC's
+Correction Span and Head Offset Count). The drive offers two reserved bytes as
+host-settable. Not probed — writing them means `MODE SELECT`, which this phase
+does not issue. **Undetermined**, and it stays that way until someone decides a
+`MODE SELECT` experiment is worth it.
+
+### H.3 The dictionary
+
+Current values are this drive's state at the time of the sweep, not defaults.
+
+#### `0x01` Read/Write Error Recovery — MMC-3 §6.3.4
+
+| byte | bits | field | changeable | current | meaning |
+|---:|---|---|:---:|---:|---|
+| 2 | 7 | AWRE | — | 0 | auto-reallocate on write |
+| 2 | 6 | ARRE | — | 0 | auto-reallocate on read |
+| 2 | 5 | TB | ✅ | 0 | transfer an unrecovered block to the host before CHECK CONDITION |
+| 2 | 4 | RC | ✅ | 0 | read continuous — deliver the full length with no recovery delay, **fabricating data if need be** |
+| 2 | 3 | (Reserved in MMC-3; EER in SBC) | ✅ | 0 | the drive exposes it; MMC-3 does not name it |
+| 2 | 2 | PER | ✅ | 0 | report recovered errors. On CD this reports **that layered correction was used** |
+| 2 | 1 | DTE | ✅ | 0 | end the transfer on a recovered error |
+| 2 | 0 | DCR | ✅ | 0 | disable error correction |
+| 3 | 7-0 | **Read Retry Count** | ✅ | **10** | times the controller runs its read recovery algorithm |
+| 4, 5 | | Reserved (see H.2 anomaly) | ✅ | 0 | undetermined |
+| 8 | 7-0 | Write Retry Count | ✅ | 0 | |
+| 10-11 | | Recovery Time Limit | — | 0 | **confirmed not changeable this session** |
+
+**Lever, and the most interesting one in this file.** RC, PER, DTE, DCR and the
+retry count are exactly the axes a recovery ladder wants, and AccuDisc sets none
+of them. RC in particular is the drive's own "give me something rather than
+retry" switch — the behaviour the ladder currently approximates from the host
+side. **Caution before anyone wires it: RC=1 permits the drive to return
+fabricated data,** which is the one thing a recovery ladder must never silently
+accept, and there is no flag in the returned data saying it happened.
+
+#### `0x02` Disconnect/Reconnect — SPC, not MMC
+
+| byte | field | changeable | current |
+|---:|---|:---:|---:|
+| 2 | Buffer Full Ratio | ✅ | `0x04` |
+| 3 | Buffer Empty Ratio | ✅ | `0xf0` |
+| 4-15 | (bus timing parameters) | — | 0 |
+
+Legacy parallel-SCSI bus arbitration, exposed through an ATAPI drive. **No CD-DA
+meaning; not a lever.** Recorded so nobody mistakes "two changeable bytes" for
+an unexplored feature.
+
+#### `0x07` Verify Error Recovery — "shall not be used"
+
+Bytes 2-3 mirror page `0x01` (`00 0a`, mask `3f ff`). See H.1.
+
+#### `0x08` Caching — MMC-5 §7.6
+
+| byte | bits | field | changeable | current | meaning |
+|---:|---|---|:---:|---:|---|
+| 2 | 2 | WCE | ✅ | 0 | write cache enable: GOOD status may return before the data is on the medium |
+| 2 | 0 | **RCD** | **—** | 0 | read cache disable: 1 would force every READ to come **from the medium** |
+
+**The negative here is the finding.** RCD is the standard way to defeat a
+drive's read cache, and on this drive it is **not host-changeable** — RCD reads
+0, so the drive may serve reads from cache and the host cannot forbid it through
+this page. Anything relying on re-reads being genuinely re-read from the medium
+cannot get that guarantee here by setting RCD. Scoped to this drive: RCD is
+changeable on plenty of others.
+
+#### `0x0d` CD Device Parameters — MMC-3 §6.3.6
+
+| byte | bits | field | changeable | current | meaning |
+|---:|---|---|:---:|---:|---|
+| 3 | 3-0 | Inactivity Timer Multiplier | ✅ | `0x0b` = **2 min** | time held in the **hold track state** after a seek or read |
+| 4-5 | | MSF-S units per MSF-M unit | — | **60** | matches the CD-DA value MMC-3 states |
+| 6-7 | | MSF-F units per MSF-S unit | — | **75** | likewise |
+
+Not a spindown control — see the standing note in §E. The two ratio fields
+reading exactly 60 and 75 is a third independent check that the byte frame is
+being read at the right offset.
+
+#### `0x0e` CD Audio Control — MMC-3 §6.3.7
+
+| byte | bits | field | changeable | current | meaning |
+|---:|---|---|:---:|---:|---|
+| 2 | 2 | IMMED | ✅ | 1 | spec says it shall always be 1; it is |
+| 2 | 1 | SOTC | ✅ | 0 | stop on track crossing |
+| 8 | 3-0 | port 0 channel select | ✅ | `0x01` | **channel 0** (Table 355) |
+| 9 | | port 0 volume | ✅ | `0xff` | no attenuation |
+| 10 | 3-0 | port 1 channel select | ✅ | `0x02` | **channel 1** |
+| 11 | | port 1 volume | ✅ | `0xff` | no attenuation |
+| 12-15 | | ports 2 and 3 | **—** | 0 | the drive exposes two output ports, not four |
+
+Governs **PLAY AUDIO**, the drive's analogue path. AccuDisc transfers digital
+audio over `0xBE` and never plays anything, so this page is **legacy for us**.
+Its value is as corroboration: ports 0 and 1 reading channel 0 and channel 1 at
+full volume is left/right wired the obvious way, and it lands on the exact
+nibbles Table 355 defines.
+
+#### `0x1a` Power Condition — MMC-3 §6.3.8
+
+| byte | bits | field | changeable | current | meaning |
+|---:|---|---|:---:|---:|---|
+| 3 | 1 | Idle | ✅ | 0 | use the Idle Timer |
+| 3 | 0 | Standby | ✅ | 0 | use the Standby Timer |
+| 4-7 | | Idle Timer | ✅ | 0 | inactivity before Idle, in **100 ms** units |
+| 8-11 | | Standby Timer | ✅ | 0 | inactivity before Standby, same units |
+
+**This is the automatic spindown control, and it is fully host-settable and
+entirely unused.** Both enable bits are clear and both timers are zero, so the
+drive currently has no inactivity power management at all.
+
+> **It also gives the `FEATURES.md` "Spindown Time" row a better candidate than
+> the one it names.** That row points at page `0x0D` and is marked ⚠ unbound;
+> §E already established `0x0D` is the hold-track timer and `0x1B` START STOP
+> UNIT is the immediate stop. Neither is a *timed automatic* spindown, and page
+> `0x1A` is — with two timers in 100 ms units and an enable bit each.
+> **Still unbound**: nothing here shows PlexTools writes this page. It is the
+> better hypothesis, not a finding, and it is testable the same way — the fields
+> are host-changeable.
+
+#### `0x1d` Time-out & Protect — MMC-3 §6.3.10
+
+| byte | bits | field | changeable | current | meaning |
+|---:|---|---|:---:|---:|---|
+| 4 | 2 | TMOE | ✅ | **0** | time-out parameters in effect. **0 means commands shall not time out** |
+| 4 | 1 | **DISP** | **—** | 0 | would make the drive unavailable **until power is removed and reapplied** |
+| 4 | 0 | **SWPP** | **—** | 0 | software write protect until power cycle |
+| 6-7 | | Group 1 Minimum Time-out (s) | ✅ | 0 | |
+| 8-9 | | Group 2 Minimum Time-out (s) | ✅ | `0xffff` | |
+
+**Two safety-relevant negatives, and they are worth more than the levers.**
+DISP and SWPP are the two bits on this drive's whole exposed surface that could
+take it out of service from a single `MODE SELECT`, and **the drive declares
+both non-changeable.** That is a hardware-enforced floor under the §F safety
+classes rather than a convention we maintain.
+
+TMOE reading 0 is also worth carrying: **the drive is currently in a mode where
+commands are not required to time out at all**, which is consistent with `0xF2`
+having run for minutes with the drive answering nothing, and is a reason never
+to read a long SG_IO timeout as a hang.
+
+### H.4 `0x43` READ TOC formats 1 and 3 — Phase 1.3
+
+Both issued read-only against the same closed audio CD-R.
+
+**Format 1, multi-session information** — `43 00 01 00 00 00 00 00 0c 00`:
+
+    00 0a 01 01 00 10 01 00 00 00 00 00
+
+Length `0x000a`, first complete session 1, last complete session 1, then one
+descriptor: ADR/CTRL `0x10` (ADR=1, audio), track `01`, start LBA `0`. It is a
+**12-byte fixed-size answer to "where does the last session start"**, against
+the full TOC's variable-length parse. Cheap, and it needs no lead-in read.
+
+**Format 3, PMA** — `43 00 03 00 00 00 00 00 ff 00`:
+
+    00 02 00 00
+
+Header only, `resid=251`: **no PMA descriptors.** Expected — the PMA is the
+incomplete-disc structure and this disc is closed. **Scoped, and the scope is
+the whole result:** this says nothing about what format 3 returns on an *open*
+disc, which is the only case where it carries anything. Testing that costs a
+CD-R left open, so it is recorded as untested rather than as empty.
+
+### H.5 What this changes
+
+- **`0x3f` is not "an alias of page `0x01`".** `PROTOCOL.md`'s table says so;
+  the bytes are identical because `0x3f` returns *all* pages and the sweep
+  prints only the first one in the list. A tool display artefact recorded as a
+  drive property.
+- **`mmcsweep` printed only the first 8 bytes of every page**, which is why the
+  masks in `PROTOCOL.md` end in `…` and why page `0x01`'s Recovery Time Limit
+  and page `0x0e`'s ports 2-3 were never seen. Cap removed 2026-09-09; the
+  masks above are complete pages.
+- **Levers worth having, in order:** page `0x01` retry/recovery bits (real, and
+  RC needs a warning label), page `0x1a` power timers (real, unused), page
+  `0x0d` hold-track timer (real, marginal). Everything else on these eight pages
+  is legacy, vestigial, or read-only.
+
 ## Method notes that govern anything added here
 
 - **Vendor documents are CP1252 and grep LIES about them.** GNU grep in a UTF-8
