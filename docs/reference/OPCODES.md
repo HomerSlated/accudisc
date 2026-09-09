@@ -1188,9 +1188,13 @@ Multimedia Logical Units and that the *read* parameters of page `0x01` are used
 as the verify parameters instead. The drive's two pages agree with that
 reading: page `0x07` returns `00 0a` where page `0x01` returns `00 0a`, and both
 carry the same changeable mask in those bytes (`3f ff`). **Candidate row for the
-§3.1 redundancy table** — a page duplicating one we can already reach — noting
-that this is an observation of equal values, not proof the drive wires them to
-one register.
+§3.1 redundancy table** — a page duplicating one we can already reach.
+
+**It is a candidate and not a finding, and the gap is not pedantry:** two
+independent registers sitting at their defaults read identically to one
+register read twice. The discriminator is a single `MODE SELECT` — change one
+page's retry count and see whether the other moves — and it has not been run,
+because this phase issues no `MODE SELECT` at all.
 
 ### H.2 The masks corroborate the spec layout on every page checked
 
@@ -1349,9 +1353,19 @@ both non-changeable.** That is a hardware-enforced floor under the §F safety
 classes rather than a convention we maintain.
 
 TMOE reading 0 is also worth carrying: **the drive is currently in a mode where
-commands are not required to time out at all**, which is consistent with `0xF2`
-having run for minutes with the drive answering nothing, and is a reason never
-to read a long SG_IO timeout as a hang.
+commands are not required to time out at all** — a reason never to read a long
+SG_IO timeout as a hang.
+
+> **What that does NOT establish.** An earlier draft added that this is
+> "consistent with `0xF2` having run for minutes with the drive answering
+> nothing". Cut, because it is a mechanism assembled from two facts read on
+> different days on different media with no test between them, and **a drive
+> that ignores TMOE entirely produces the same observation.** The `0xF2`
+> behaviour is explained by nothing here. This project has had to withdraw
+> three claims of exactly this shape — the page-2A speed inference, the thermal
+> account of the radial gradient, and the SpeedRead RPM/Q story — and the tell
+> in every one was a plausible bridge between two measurements that were never
+> taken together.
 
 ### H.4 `0x43` READ TOC formats 1 and 3 — Phase 1.3
 

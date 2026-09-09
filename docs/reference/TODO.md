@@ -1114,8 +1114,12 @@ plus whatever `0xDF` selector bindings the RE yields.
 >    defined later by MMC-5 §7.6, and `02h`/`07h` are SPC/SBC. Asking MMC-3 for
 >    their fields returns nothing, which would have looked like a gap in the
 >    drive rather than a gap in the question.
-> 2. **`0x07` duplicates `0x01`** — same values, same mask, and MMC-3 says
->    verify uses page `0x01`'s read parameters. A candidate §3.1 redundancy row.
+> 2. **`0x07` is a CANDIDATE duplicate of `0x01`** — same values (`00 0a`), same
+>    mask (`3f ff`), and MMC-3 says verify uses page `0x01`'s read parameters.
+>    **Equal values are not a shared register:** two independent registers
+>    holding their defaults read identically. The discriminator is cheap —
+>    `MODE SELECT` one page's retry count and see whether the other moves — and
+>    until it is run this is a candidate §3.1 row, not a redundancy finding.
 > 3. **Page `0x1A` Power Condition is the automatic spindown control**, fully
 >    host-settable, both timers zero and both enable bits clear. It is a better
 >    candidate than page `0x0D` for the ⚠ unbound `FEATURES.md` "Spindown Time"
