@@ -983,7 +983,13 @@ measurement.
 
 50 blanks, JVC-branded, **Ritek-manufactured**. ATIP read off one on hardware:
 
-> **STOCK: 35 remaining as of 2026-09-06 evening.**
+> **STOCK: 33 remaining — COUNTED on the spindle 2026-09-09.** The 35 below
+> was inferred, and was wrong twice over: it assumed the simulated disc went
+> back on the spindle (it did not), and it had no row at all for a disc spent
+> on something that was not an experiment. One was — a personal burn of *Toca
+> (20th Anniversary Edition)*, identified by Keith 2026-09-09. **Every disc off
+> the spindle was assumed to be a test disc.** With both corrections the count
+> closes exactly: 4 + 11 + 1 simulate + 1 Toca = 17 off, 50 - 17 = 33.
 >
 > Spent 2026-09-05 (4): disc #1 (clean reference), disc #2 (starved, B1/A3), a
 > 4x unstarved control burnt and discarded as unsound, and disc #3 (intended as
@@ -7331,6 +7337,20 @@ cross-check of media identity on this drive.
   can state its own identity. 4b/4c/4d/4e were byte-identical burns and cannot
   be told apart by reading them; the 4c and 4e rows are unrecoverable, not
   reassignable.
+  **UPDATE 2026-09-09, spindle counted: the count closes and the stack still
+  does not.** 33 blanks remain, so 17 discs left the spindle: 4 burnt 09-05,
+  11 burnt 09-06, the simulate disc, and one personal music burn that no
+  version of this ledger had a category for. The simulate disc therefore
+  accounts for exactly **one** of the two blanks, and the count is now fully
+  consumed — **the second blank cannot have come from this spindle**, and the
+  real 4c and 4e remain unaccounted for. One cheap test is left and has never
+  been run: **ATIP on the two blanks.** Only `disc` was run on them, never
+  `media`. A reading other than `97:15:17`/Ritek proves an outside blank and
+  closes it; two Ritek readings are inconclusive rather than confirming. This
+  changes no result either way — the missing discs were byte-identical
+  duplicates of discs we still hold, which is why P4 was recorded as
+  unanswerable. Full working:
+  `private/research/incoming/2026-09-09-unlabelled-disc.md`.
 
 - **The radial C1 gradient has no surviving explanation** `[P3]`
   Measured across seven discs 2026-09-07/08. Rim ÷ hub C1 ranges 0.907 to 1.541
