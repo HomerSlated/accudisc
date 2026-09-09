@@ -1176,7 +1176,32 @@ whether it is a lever we could use or a legacy field with no CD-DA meaning.
 
 ---
 
-### Phase 2 — vendor selector sweeps, medium-indexed. Gated on Phase 0.
+### Phase 2 — vendor selector sweeps, medium-indexed. **`0xE9` and `0xED` DONE 2026-09-09 — `OPCODES.md` §I.**
+
+> **2.1 `0xE9` and 2.2 `0xED` are complete across three media states**
+> (pressed CD-ROM, pressed audio CD, empty tray), read-only, GET-only, no SET
+> issued. Results and the (selector x medium) table: `OPCODES.md` §I.
+>
+> - **`0xED`: the space is EMPTY.** Exactly one mode code, `0x00`. The other 255
+>   are unassigned on every arm. §E had the true count as "unknown — no source
+>   enumerates them"; it is now measured, and it is 1. `0xED` is retired as a
+>   candidate second feature cluster.
+> - **`0xE9`: 10 readable, 3 failing, 243 unassigned — identical on all three
+>   arms.** Two new pages, `0x20` and `0x40`, catalogued nowhere on disk. Two
+>   catalogued pages, `0x06`/`0x07` (Silent Mode Disc/Tray), do not read;
+>   `FEATURES.md` row 6 is corrected from ☑☑ to ☑◐.
+> - **`0x41` is a real command**, on evidence: with the tray open it returns a
+>   medium-aware `2/3a/02` NOT READY where the 243 unassigned selectors return
+>   `5/24/00` in the same run.
+> - **Drive state is a third axis** the plan did not name. `0x06`/`0x07` are
+>   identical across all three media, so whatever gates them is not the disc —
+>   most likely Silent Mode being off. Discriminator, not yet run: SET page
+>   `0x08`, then re-read.
+>
+> **Still open on this phase:** 2.3 `0xEA` scan types, 2.4 `0xF3` (the six-site
+> dispatcher, and the highest-value item here), 2.5 `0xF1` sub-commands, 2.6
+> `0xE4`. Each needs its own Phase 0 discriminator first.
+
 
 Runs only for opcodes whose discriminator passed Phase 0. Media axis, decided up
 front: **pressed audio CD, pressed data CD-ROM, blank CD-R** — the three CD

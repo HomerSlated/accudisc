@@ -1522,6 +1522,42 @@ Fixed: the tool now requires `status == 0 && host_status == 0 && driver_status
 == 0 && resid == 0` before believing a response, and reports a differently
 failing selector as its own class rather than folding it into either neighbour.
 
+### I.5a The media axis, run — and `0x41` is a real command
+
+Three arms, all read-only, all GET-only. Membership and counts are **identical**
+across every one: 10 readable, 3 failing, 243 unassigned.
+
+| selector | pressed CD-ROM | pressed audio CD | **no medium (tray open)** |
+|---|---|---|---|
+| the 10 readable | identical | identical | identical |
+| the 243 unassigned | `5/24/00` | `5/24/00` | `5/24/00` |
+| `0x06`, `0x07` | `4/00/00` + DID_ERROR | same | **same** |
+| `0x41` | `4/00/00` + DID_ERROR | same | **`2/3a/02` NOT READY — MEDIUM NOT PRESENT / TRAY OPEN** |
+
+**`0x41` is a real command, established on evidence rather than inferred.**
+With the tray open it returns a correct, medium-aware sense code. A selector
+with no handler cannot do that — and in the same run the drive answered all 243
+unassigned selectors with `5/24/00`, so it was not simply refusing everything
+while the tray was open.
+
+That is exactly the evidence §I.2 declines to read out of a failure signature.
+"Fails differently" does not establish recognition; **medium-awareness does.**
+
+For `0x06` and `0x07` the same arm cuts the other way: identical in all three
+states, so **whatever gates them is not the medium.** The feature-state reading
+in §I.3 is strengthened by elimination, not confirmed — the SET-then-re-read
+discriminator still has to be run.
+
+`0x22` and `0x40` read identically with an empty tray, so both are **stored
+settings, not interrogations of the disc.** That mildly corrects the catalogue's
+framing of `0x22` Book Type as per-disc-type: `resp[2] = 1` with no disc loaded
+is a stored default.
+
+> **The prediction for this arm was wrong, and usefully.** It named `0x22` and
+> `0x40` — the two pages whose state byte reads `01` — as the ones most likely
+> to move with the medium. Neither did. The one that moved was the selector
+> filed as the least interesting of the three failures.
+
 ### I.6 A second axis the plan did not name
 
 Phase 2's deliverable is a **(selector x medium)** table. `0x06`/`0x07` say that
