@@ -7,6 +7,34 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## `[P1]` DO NOT BURN — the current write path writes wrong bytes (CDEmu, 2026-09-10)
+
+**Measured with no physical media.** The Eliminator image (204 143 sectors),
+burnt with `--byteswap --speed 48 --no-burnproof` and the default FIFO to a fresh
+CDEmu blank, then verified against `Eliminator_s16le.bin`:
+`aligned=1 shift=+0 compared=120036084 differing=272791 first_diff=17948`,
+**0.23% of samples wrong**, while the burn itself reported exit 0 and clean
+telemetry. The binary was built 2026-09-07, including `892ca32`.
+
+**Prime suspect, not established:** `892ca32` raised `ACCUDISC_FIFO_MAX_BYTES`
+32 → 128 MiB, which unclamped the 48x default ring from 33 530 112 B / 528 slots
+to 42 293 664 B / 666 slots. **No burn that later verified bit-exact ever used
+the 666-slot ring**: the fed matrix discs burnt with 528 slots, the starved ones
+with 55, and cell 7 with a pinned 8000. So the bug may be latent and ring-size
+dependent rather than new code. **Also not excluded: CDEmu itself.**
+
+Bisect on CDEmu, cheapest first: (1) `--fifo 33530112`; (2) `--no-fifo`;
+(3) a build at `892ca32^`; (4) cmp the read-back against the image and check
+whether differences fall on 27-sector slot boundaries. **Then add a hardware-free
+round-trip test that would have caught this.** `test_burn_flow` stubs the whole
+MMC layer and cannot see bytes, which is how a write-path change reached real
+media without a round trip. Working and logs:
+`private/research/incoming/2026-09-10-reburn-predictions.md`.
+
+**Collateral already paid:** one Ritek CD-R (4c) burnt on this binary. It has a
+separate, unexplained problem that the regression does not account for: after the
+burn it could not be aligned or counted, and it reads blank again.
+
 ## `0x5B` CLOSE TRACK/SESSION — ANSWERED 2026-09-03: `0x35` alone finalises
 
 > **CLOSED.** The discriminator below was run on the CD-RW, 2026-09-03, reading
@@ -7426,6 +7454,16 @@ cross-check of media identity on this drive.
   duplicates of discs we still hold, which is why P4 was recorded as
   unanswerable. Full working:
   `private/research/incoming/2026-09-09-unlabelled-disc.md`.
+  **WITHDRAWN 2026-09-10: "4c and 4e are unwritten" is UNSUPPORTED.** Disc 4a,
+  written and verified bit-for-bit to its failure edge on 2026-09-07, reads
+  `kind=BLANK disc_status=0` with a refused TOC and valid ATIP from 2026-09-09
+  on. That is exactly the signature this entry used to call 4c and 4e
+  unwritten. A Toca CD-R control read correctly the same evening, so the drive
+  still recognises written CD-Rs; 4a itself changed. A re-burn of 4c then
+  completed, became unreadable, and reads blank again (see the `[P1]` entry at
+  the top). **"Reads blank" does not separate never-written from
+  written-then-unreadable, and the ledger reasoning above rests on it.** Keith
+  raised this independently.
 
 - **The radial C1 gradient has no surviving explanation** `[P3]`
   Measured across seven discs 2026-09-07/08. Rim ÷ hub C1 ranges 0.907 to 1.541
