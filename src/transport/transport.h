@@ -45,8 +45,10 @@ typedef struct adsc_cmd {
     /* Why an ACCUDISC_ERR_IO happened. Without these, a timeout, a host/adapter
      * error, a kernel command-filter rejection and a sense-less CHECK CONDITION
      * are indistinguishable — every one reports "transport I/O failure" and the
-     * cause is unrecoverable after the fact. Valid only when exec returned
-     * ACCUDISC_ERR_IO; io_errno is set only for an outright ioctl failure. */
+     * cause is unrecoverable after the fact. The three status fields are set
+     * after EVERY completed ioctl (0.36.0; before that only on ERR_IO), so a
+     * CHECK CONDITION carries scsi_status 0x02. io_errno is set only for an
+     * outright ioctl failure, and then nothing else here is meaningful. */
     int io_errno;
     uint16_t host_status;   /* SG DID_* */
     uint16_t driver_status; /* SG DRIVER_* */

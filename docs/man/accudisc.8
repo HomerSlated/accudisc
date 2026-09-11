@@ -167,6 +167,8 @@ valid only until the next command.
 .B typedef struct accudisc_device accudisc_device;
 .PP
 .B #define ACCUDISC_OPEN_RDWR 0x1u
+.B #define ACCUDISC_OPEN_TRACE 0x2u
+.B #define ACCUDISC_OPEN_TRACE_DATA 0x4u
 .PP
 .B accudisc_device *accudisc_open(const char *path, unsigned flags, int *err);
 .B void accudisc_close(accudisc_device *dev);
@@ -183,10 +185,28 @@ is required for vendor opcodes, MODE SELECT and writing, because the kernel's
 unprivileged SG_IO command filter blocks those on a read-only descriptor. Plain
 reading should not set it \(em least privilege.
 .PP
+.B ACCUDISC_OPEN_TRACE
+(0.36.0) traces every command the handle sends \(em from the library, its
+engines and any attached vendor driver \(em through the log sink: a line before
+each command is issued (sequence number, seconds since open, CDB in hex, MMC
+name, direction and length, timeout), so a command that never returns is still
+named; then its result (GOOD, CHECK CONDITION with key/ASC/ASCQ and the SCSI,
+host and driver status, or a transport failure), elapsed time and residual; the
+raw sense on failure; and the first bytes of each parameter list sent and
+response received. READ(10/12), READ CD, READ CD MSF and WRITE(10/12) appear
+only when they fail; the sequence number still counts them. Engines add
+\(lqtrace: \-\-\(rq lines naming their current step, and a traced burn that
+completes issues one extra READ DISC INFORMATION to record the disc status the
+drive then reports. Nothing else about what is sent changes.
+.B ACCUDISC_OPEN_TRACE_DATA
+implies it and shows the bulk transfers too, one line each on the calling
+thread \(em during a burn, a slow sink delays the next write, so log to a file.
+The format is diagnostic, not an interface, and a trace can carry drive identity.
+.PP
 .B accudisc_set_log(dev, fn, user)
 installs an optional sink for library and driver diagnostics. The default is to
 discard them. It is the only channel on which some information (for example the
-specific write caveat) is reported at all.
+specific write caveat, or the trace above) is reported at all.
 .SS Buffer ownership
 Buffers the library allocates for the caller \(em the raw TOC, full TOC and
 CD\-Text blobs, and the decoded

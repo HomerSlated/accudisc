@@ -5,6 +5,7 @@ set(ACCUDISC_SOURCES
     accudisc.c
     abi.c
     device.c
+    trace.c
     transport/sgio.c
     transport/sense.c
     mmc/cdb.c

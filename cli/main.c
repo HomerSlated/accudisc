@@ -16,7 +16,8 @@
 static void usage(FILE *to)
 {
     fprintf(to,
-        "usage: accudisc [--device DEV] <command> [options]\n"
+        "usage: accudisc [--device DEV] [--debug|--debug-data] <command> "
+        "[options]\n"
         "\n"
         "commands:\n"
         "  info           identify the drive (INQUIRY)\n"
@@ -110,6 +111,18 @@ static void usage(FILE *to)
         "                      the drive, or request NAME (warn if missing)\n"
         "  --drivers-dir DIR   driver location (default: $ACCUDISC_DRIVER_DIR\n"
         "                      or the installed directory)\n"
+        "\n"
+        "debug options (stderr; any command that opens the drive):\n"
+        "  --debug        trace every command sent to the drive: CDB, name,\n"
+        "                 result (sense key/asc/ascq, SCSI/host/driver status),\n"
+        "                 time, and the first bytes of each parameter list and\n"
+        "                 response; a burn also names each phase and reads the\n"
+        "                 disc status back after the close. READ/WRITE data\n"
+        "                 transfers appear only when they fail\n"
+        "  --debug-data   as --debug, and every READ/WRITE transfer too. One line\n"
+        "                 per transfer on the burn's own thread: send stderr to a\n"
+        "                 FILE, since a slow terminal can delay the next write\n"
+        "                 and change the timing being recorded\n"
         "\n"
         "read options:\n"
         "  --start LBA    first sector (default: start of the audio session)\n"
@@ -2720,6 +2733,7 @@ int main(int argc, char **argv)
     const char *driver = NULL;    /* --driver: NULL = vendor features off */
     const char *drivers_dir = NULL;
     const char *command = NULL;
+    unsigned trace = 0;           /* --debug / --debug-data: open flags */
     char *rest[64];
     int nrest = 0;
 
@@ -2737,6 +2751,10 @@ int main(int argc, char **argv)
             driver = optv;
         else if (opt_val(argv, argc, &i, "--drivers-dir", &optv, &optbad))
             drivers_dir = optv;
+        else if (!strcmp(a, "--debug"))
+            trace |= ACCUDISC_OPEN_TRACE;
+        else if (!strcmp(a, "--debug-data"))
+            trace |= ACCUDISC_OPEN_TRACE | ACCUDISC_OPEN_TRACE_DATA;
         else if (!strcmp(a, "--version") || !strcmp(a, "-V")) {
             /* A bad option already reported means the line was malformed; do
              * not let a LATER --version/--help turn that into a success.
@@ -2793,13 +2811,23 @@ int main(int argc, char **argv)
     int need_rdwr = driver != NULL || strcmp(command, "write") == 0;
     int err = 0;
     accudisc_device *dev =
-        accudisc_open(device, need_rdwr ? ACCUDISC_OPEN_RDWR : 0, &err);
+        accudisc_open(device, (need_rdwr ? ACCUDISC_OPEN_RDWR : 0) | trace, &err);
     if (!dev) {
         fprintf(stderr, "accudisc: open %s: %s\n", device,
                 accudisc_strerror(err));
         return 2;
     }
     accudisc_set_log(dev, log_to_stderr, NULL);
+    if (trace) {
+        /* One header, so a trace file says what produced it. The library
+         * issues nothing at open, so no command precedes this line. */
+        fprintf(stderr, "accudisc: debug: accudisc %s, device %s (%s), "
+                        "command '%s', trace %s\n",
+                accudisc_version_string(), device,
+                need_rdwr ? "read-write" : "read-only", command,
+                (trace & ACCUDISC_OPEN_TRACE_DATA) ? "control + data"
+                                                   : "control");
+    }
 
     if (driver) {
         const char *name = strcmp(driver, "auto") == 0 ? NULL : driver;

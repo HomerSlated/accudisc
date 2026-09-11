@@ -6,6 +6,13 @@ this document is a **stable interface**: changes are additive only. Anything
 line, summary block, log messages) — may change at any time and must not be
 parsed.
 
+That includes the **`--debug` / `--debug-data` trace (0.36.0)**, deliberately:
+it is for reading after something went wrong, and its line format will change
+as it learns what is worth printing. It goes to stderr only. It changes no
+stdout token and no exit code, and it adds exactly one command to a burn: a
+READ DISC INFORMATION after a completed close. A binding reaches the same trace
+through `ACCUDISC_OPEN_TRACE` / `ACCUDISC_OPEN_TRACE_DATA` and its log sink.
+
 ## Exit codes (all subcommands)
 
 | code | meaning |

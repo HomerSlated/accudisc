@@ -2040,6 +2040,43 @@ def test_features_reports_write_capability_as_a_claim():
 # ---------------------------------------------------------------------------
 
 
+def test_trace_names_each_command_through_the_log_sink():
+    """0.36.0: ``Device(trace=1)`` delivers the per-command trace to set_log.
+
+    /dev/null opens (the version check and the open both precede any command)
+    and fails every SG_IO, which is enough to see the lines arrive, in order,
+    and to see that an untraced handle gets none of them.
+    """
+    got: list[str] = []
+    with ad.Device("/dev/null", trace=1) as d:
+        d.set_log(got.append)
+        try:
+            d.identify()
+        except ad.AccuDiscError:
+            pass
+        else:
+            raise AssertionError("INQUIRY on /dev/null must fail")
+    text = "\n".join(got)
+    assert "trace #000001 +" in text and "INQUIRY" in text, text
+    assert "trace #000001 < TRANSPORT FAILURE" in text, text
+
+    quiet: list[str] = []
+    with ad.Device("/dev/null") as d:
+        d.set_log(quiet.append)
+        try:
+            d.identify()
+        except ad.AccuDiscError:
+            pass
+    assert not any("trace" in ln for ln in quiet), quiet
+
+    for bad in (3, -1, 2.5):
+        try:
+            ad.Device("/dev/null", trace=bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"trace={bad!r} must be refused")
+
+
 def test_the_runner_reaches_the_end_of_the_file():
     """No `def test_*` may appear after `sys.exit(_main())`.
 

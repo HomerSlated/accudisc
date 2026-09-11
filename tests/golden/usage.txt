@@ -1,4 +1,4 @@
-usage: accudisc [--device DEV] <command> [options]
+usage: accudisc [--device DEV] [--debug|--debug-data] <command> [options]
 
 commands:
   info           identify the drive (INQUIRY)
@@ -92,6 +92,18 @@ driver options (vendor features are OFF unless requested):
                       the drive, or request NAME (warn if missing)
   --drivers-dir DIR   driver location (default: $ACCUDISC_DRIVER_DIR
                       or the installed directory)
+
+debug options (stderr; any command that opens the drive):
+  --debug        trace every command sent to the drive: CDB, name,
+                 result (sense key/asc/ascq, SCSI/host/driver status),
+                 time, and the first bytes of each parameter list and
+                 response; a burn also names each phase and reads the
+                 disc status back after the close. READ/WRITE data
+                 transfers appear only when they fail
+  --debug-data   as --debug, and every READ/WRITE transfer too. One line
+                 per transfer on the burn's own thread: send stderr to a
+                 FILE, since a slow terminal can delay the next write
+                 and change the timing being recorded
 
 read options:
   --start LBA    first sector (default: start of the audio session)

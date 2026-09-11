@@ -13,6 +13,7 @@ accudisc \- precision Red Book CD\-DA reader and writer
 .IR auto | NAME ]
 .RB [ \-\-drivers\-dir
 .IR DIR ]
+.RB [ \-\-debug | \-\-debug\-data ]
 .I command
 .RI [ options ]
 .br
@@ -74,6 +75,32 @@ set, passing this option opens the device read-write.
 Where to look for driver modules. Default:
 .BR $ACCUDISC_DRIVER_DIR ,
 falling back to the installed driver directory.
+.TP
+.B \-\-debug
+Trace every command sent to the drive, on stderr: before it is issued, its
+sequence number, the seconds since the device was opened, the CDB in hex, its
+MMC name, the transfer direction and length and the timeout; after it, the
+result (GOOD, CHECK CONDITION with sense key/ASC/ASCQ and the SCSI, host and
+driver status, or a transport failure with no sense), the elapsed time and
+any residual, the raw sense on a failure, and the first bytes of each
+parameter list sent and response received. The issue line comes first, so a
+command that never returns (a wedged USB bridge) is still named. READ and WRITE
+data transfers appear only when they fail. A
+.B write
+also names each phase as it starts (write parameters, speed, blank check, power
+calibration, cue sheet, lead\-in gap, payload, close) and, after a burn that
+completes, reads the disc status back and says what the drive now reports. That
+READ DISC INFORMATION is the only command
+.B \-\-debug
+adds. The output is diagnostic and not a stable interface; it can include
+drive identity, so treat it as private.
+.TP
+.B \-\-debug\-data
+As
+.BR \-\-debug ,
+and every READ/WRITE transfer too: a few thousand lines per disc. During a
+burn they are written on the burn's own thread, so send stderr to a file \(em
+a slow terminal can delay the next write and change the timing being recorded.
 .TP
 .BR \-\-help ", " \-h
 Print the usage text on stdout and exit 0.

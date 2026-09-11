@@ -382,6 +382,36 @@ static int set_write_speed(struct accudisc_device *dev, unsigned speed_x,
     return ACCUDISC_OK;
 }
 
+/* READ DISC INFORMATION byte 2, decoded for the trace. Two separate fields
+ * (MMC Disc Status bits 1-0, State of Last Session bits 3-2) that can
+ * disagree, which is why both are printed. */
+static const char *disc_status_name(int v)
+{
+    static const char *const n[] = { "empty/blank", "incomplete/appendable",
+                                     "complete", "other" };
+    return n[v & 3];
+}
+
+static const char *session_state_name(int v)
+{
+    static const char *const n[] = { "empty", "incomplete",
+                                     "reserved/damaged", "complete" };
+    return n[v & 3];
+}
+
+static void trace_disc_info(struct accudisc_device *dev, const char *when,
+                            const struct adsc_disc_info *di)
+{
+    adsc_dev_trace_note(dev, "%s: disc status %d (%s), last session %d (%s), "
+                             "sessions %d, tracks %d-%d, erasable %d, lead-in "
+                             "start %02u:%02u:%02u",
+                        when, di->status, disc_status_name(di->status),
+                        di->last_session, session_state_name(di->last_session),
+                        di->sessions, di->first_track, di->last_track,
+                        di->erasable, di->leadin_m, di->leadin_s,
+                        di->leadin_f);
+}
+
 int adsc_write_run(struct accudisc_device *dev,
                    const struct adsc_write_toc *toc, int bin_fd,
                    const struct adsc_burn_opts *opts,
@@ -467,6 +497,12 @@ int adsc_write_run(struct accudisc_device *dev,
                          claimed ? "disabled by the caller"
                                  : "not claimed by the drive");
     }
+    adsc_dev_trace_note(dev, "phase: write parameters (MODE SELECT page 05: "
+                             "DAO, %s, BURN-Proof %s, CD-Text %s)",
+                        wp.simulate ? "TEST WRITE (laser at read power)"
+                                    : "live write",
+                        wp.burnproof ? "on" : "off",
+                        wp.cdtext ? "yes" : "no");
     if ((ret = adsc_write_set_params(dev, &wp)) != ACCUDISC_OK)
         goto done;
 
@@ -478,6 +514,9 @@ int adsc_write_run(struct accudisc_device *dev,
      * rate, and refusing would turn "you did not get the speed you asked for"
      * into "you got no disc". It is said out loud instead, because the FIFO's
      * seconds-of-protection are computed against the rate. */
+    adsc_dev_trace_note(dev, "phase: write speed (%s)",
+                        opts->speed > 0 ? "set, then read back"
+                                        : "not set; read back only");
     if (opts->speed > 0) {
         int srate = set_write_speed(dev, (unsigned)opts->speed, &speed_kbps);
         if (srate != ACCUDISC_OK)
@@ -504,8 +543,10 @@ int adsc_write_run(struct accudisc_device *dev,
 
     /* 2. Refuse anything but a blank disc. */
     struct adsc_disc_info di;
+    adsc_dev_trace_note(dev, "phase: blank check (READ DISC INFORMATION)");
     if ((ret = adsc_write_read_disc_info(dev, &di)) != ACCUDISC_OK)
         goto done;
+    trace_disc_info(dev, "blank check", &di);
     if (di.status != 0) {
         ret = ACCUDISC_ERR_NOT_BLANK;
         goto done;
@@ -515,12 +556,20 @@ int adsc_write_run(struct accudisc_device *dev,
      * Skipped in simulate. A drive that reports "invalid command" (SK 5 /
      * ASC 0x20) simply doesn't need it — proceed. */
     if (!opts->simulate) {
+        adsc_dev_trace_note(dev, "phase: power calibration (SEND OPC: the "
+                                 "laser fires in the PCA at the inner edge)");
         ret = adsc_mmc_send_opc(dev);
         if (ret == ACCUDISC_ERR_SENSE && dev->last_sense.key == 0x05 &&
-            dev->last_sense.asc == 0x20)
+            dev->last_sense.asc == 0x20) {
+            adsc_dev_trace_note(dev, "power calibration: the drive does not "
+                                     "implement SEND OPC (5/20); proceeding");
             ret = ACCUDISC_OK;
+        }
         if (ret != ACCUDISC_OK)
             goto done;
+    } else {
+        adsc_dev_trace_note(dev, "phase: power calibration SKIPPED (test "
+                                 "write: the laser stays at read power)");
     }
 
     /* 4. SEND CUE SHEET — the whole-disc DAO layout. With CD-Text this also
@@ -529,8 +578,12 @@ int adsc_write_run(struct accudisc_device *dev,
     if ((ret = adsc_cuesheet_build(toc, &di, cue, sizeof cue, &cuelen)) !=
         ACCUDISC_OK)
         goto done;
+    adsc_dev_trace_note(dev, "phase: cue sheet (SEND CUE SHEET, %u bytes = "
+                             "%u entries)", cuelen, cuelen / 8u);
     if ((ret = adsc_mmc_send_cue_sheet(dev, cue, cuelen)) != ACCUDISC_OK)
         goto done;
+    adsc_dev_trace_note(dev, "cue sheet accepted: the drive now holds an OPEN "
+                             "DAO session");
     /* From here the DRIVE holds an open DAO session and is waiting for the
      * rest of the data. Every exit below must reach `done:` so the session
      * is aborted; a bare return leaves the drive live and refusing almost
@@ -543,6 +596,8 @@ int adsc_write_run(struct accudisc_device *dev,
      * extent immediately preceding LBA -150 (cdrdao order: cue sheet ->
      * writeCdTextLeadIn -> gap -> audio). */
     if (have_cdtext) {
+        adsc_dev_trace_note(dev, "phase: CD-Text lead-in (R-W packs before "
+                                 "LBA -150)");
         if ((ret = write_cdtext_leadin(dev, toc, &di, &fl)) != ACCUDISC_OK)
             goto done;
     }
@@ -582,6 +637,10 @@ int adsc_write_run(struct accudisc_device *dev,
      * and a settle that returns to its COLD value on an hour-warm drive is the
      * degradation signal that preceded the 2026-09-03 media failure by a full
      * burn. See accudisc_write_health. */
+    adsc_dev_trace_note(dev, "phase: lead-in gap (%u zero sectors from LBA "
+                             "-%u; the drive holds the first write while it "
+                             "prepares to record)", (unsigned)LEADIN_GAP,
+                        (unsigned)LEADIN_GAP);
     uint32_t t_gap = now_ms();
     int32_t lba = -(int32_t)LEADIN_GAP;
     for (uint32_t left = LEADIN_GAP; left > 0;) {
@@ -662,6 +721,10 @@ int adsc_write_run(struct accudisc_device *dev,
      * absent on an unbuffered one, making the two incomparable. */
     t_settle_ms = now_ms() - t_gap;
     uint32_t t_pay = now_ms();
+    adsc_dev_trace_note(dev, "phase: payload (%u sectors from LBA 0, %s; "
+                             "lead-in gap settled in %u ms)", total,
+                        fifo_live ? "through the FIFO" : "synchronous",
+                        t_settle_ms);
 
     /* LIVE TELEMETRY STATE.
      *
@@ -831,11 +894,49 @@ int adsc_write_run(struct accudisc_device *dev,
     }
 
     t_pay_ms = now_ms() - t_pay;
+    adsc_dev_trace_note(dev, "payload complete: %u sectors in %u ms", done_sec,
+                        t_pay_ms);
 
     /* 7. Flush / close. */
-    ret = adsc_mmc_sync_cache(dev);
+    adsc_dev_trace_note(dev, "phase: close (SYNCHRONIZE CACHE: the drive "
+                             "drains its buffer and closes the session)");
+    {
+        uint32_t t_close = now_ms();
+
+        ret = adsc_mmc_sync_cache(dev);
+        adsc_dev_trace_note(dev, "close returned %d after %u ms", ret,
+                            now_ms() - t_close);
+    }
     if (ret == ACCUDISC_OK)
         session_open = 0;
+
+    /* TRACE ONLY: what does the drive say it just wrote? The one command the
+     * trace adds (see ACCUDISC_OPEN_TRACE). A completed burn that the drive
+     * reports as blank is exactly the failure seen on three discs in
+     * 2026-09, and until now no burn recorded Disc Status after the close. It
+     * is read-only and its result changes nothing: rc is the burn's. */
+    if (dev->trace && ret == ACCUDISC_OK) {
+        struct adsc_disc_info post;
+        int prc;
+
+        adsc_dev_trace_note(dev, "phase: post-burn check (READ DISC "
+                                 "INFORMATION; trace only)");
+        prc = adsc_write_read_disc_info(dev, &post);
+        if (prc != ACCUDISC_OK)
+            adsc_dev_trace_note(dev, "post-burn: READ DISC INFORMATION failed "
+                                     "(rc %d)", prc);
+        else {
+            trace_disc_info(dev, "post-burn", &post);
+            if (post.status == 0)
+                adsc_dev_trace_note(dev, "post-burn: the drive reports the disc "
+                                         "BLANK after a completed burn%s",
+                                    opts->simulate
+                                        ? " (expected: a test write records "
+                                          "nothing)"
+                                        : " -- NOTHING WAS RECORDED, or the "
+                                          "drive cannot see what was");
+        }
+    }
 
 done:
     /* ABORT THE SESSION IN THE DRIVE BEFORE ANYTHING ELSE.
@@ -858,6 +959,9 @@ done:
      * NOT do is claim the drive recovered: we sent the release, we did not
      * verify it took. */
     if (session_open) {
+        adsc_dev_trace_note(dev, "phase: abort (FLUSH CACHE to release the "
+                                 "drive's open session; the burn failed with "
+                                 "%d)", ret);
         (void)adsc_mmc_sync_cache(dev);
         adsc_dev_log(dev, "write: session aborted in the drive (FLUSH CACHE) "
                           "-- without this it stays mid-DAO and refuses "

@@ -34,6 +34,9 @@ int adsc_write_get_params(struct accudisc_device *dev,
 struct adsc_disc_info {
     int erasable;     /* 1 = CD-RW, 0 = CD-R */
     int status;       /* 0 = blank, 1 = appendable, 2 = complete, 3 = other */
+    int last_session; /* byte 2 bits 3-2: 0 = empty, 1 = incomplete,
+                       * 2 = reserved/damaged, 3 = complete. A separate field
+                       * from `status`, and the two can disagree. */
     int first_track;
     int last_track;
     int sessions;

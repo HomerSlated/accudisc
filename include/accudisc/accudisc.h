@@ -27,7 +27,17 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 35 /* 0.35.0: POST-BURN VERIFICATION, IN TIERS,
+#define ACCUDISC_VERSION_MINOR 36 /* 0.36.0: A PER-COMMAND TRACE. Two open
+                                  * flags, ACCUDISC_OPEN_TRACE and _TRACE_DATA,
+                                  * print every command a handle sends and what
+                                  * came back, through the existing log sink.
+                                  * Purely additive: no struct, no symbol, no
+                                  * default behaviour moves. Bumped anyway
+                                  * because a binding offering the flags needs
+                                  * a library that honours them — an older one
+                                  * ignores unknown open flags silently.
+                                  *
+                                  * 0.35.0: POST-BURN VERIFICATION, IN TIERS,
                                   * and full QPxTool parity on the vendor
                                   * error counters.
                                   *
@@ -624,7 +634,8 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 1 /* 0.35.1: accudisc_verify's TIER 2 NEVER
+#define ACCUDISC_VERSION_PATCH 0 /* reset by 0.36.0. Previously:
+                                  * 0.35.1: accudisc_verify's TIER 2 NEVER
                                   * WORKED. It passed fn = NULL to
                                   * accudisc_counter_census, which required a
                                   * callback, so the census returned ERR_INVAL
@@ -788,6 +799,35 @@ typedef struct accudisc_device accudisc_device;
  * the kernel's unprivileged SG_IO command filter blocks those on read-only
  * fds. Plain reading should not set this (least privilege). */
 #define ACCUDISC_OPEN_RDWR 0x1u
+
+/* Per-command trace (0.36.0), delivered through the log sink (accudisc_set_log)
+ * — install one, or the lines are discarded like any other diagnostic.
+ *
+ * ACCUDISC_OPEN_TRACE: every command this handle sends, from the library, its
+ * engines and any attached vendor driver. For each: a line BEFORE it is issued
+ * (sequence number, seconds since open, CDB in hex, MMC name, direction and
+ * length, timeout) so a command that never returns is still named; then a
+ * result line (GOOD / CHECK CONDITION key/asc/ascq with SCSI, host and driver
+ * status / transport failure, elapsed ms, residual), raw sense on failure, and
+ * the first bytes of every parameter list sent and response received. The
+ * bulk data transfers — READ(10/12), READ CD, READ CD MSF, WRITE(10/12), a
+ * few thousand per disc — are shown only when they FAIL; the sequence number
+ * still counts them, so a gap in the numbers is the transfers between. Engines
+ * add "trace: -- ..." lines naming the step they are in (a burn's phases).
+ *
+ * ACCUDISC_OPEN_TRACE_DATA: implies TRACE, and shows the bulk transfers too.
+ * One line per transfer on the burn's own thread: at 48x that is one every few
+ * milliseconds, so a slow sink (a terminal, a blocked pipe) can delay the next
+ * WRITE(10) and PERTURB THE TIMING it is recording. Log to a file.
+ *
+ * The line format is diagnostic, not a machine interface, and may change. A
+ * trace can carry drive identity (INQUIRY, vendor responses): treat it as
+ * private. Neither flag changes what is written or the order of anything sent,
+ * with ONE addition: a traced burn that completes issues a READ DISC
+ * INFORMATION after the close, to record what the drive then says the disc is
+ * (Disc Status and Last Session State). */
+#define ACCUDISC_OPEN_TRACE      0x2u
+#define ACCUDISC_OPEN_TRACE_DATA 0x4u
 
 /* Open the drive at path (e.g. "/dev/sr0"). Returns NULL on failure; if err
  * is non-NULL it receives the accudisc_err cause. */

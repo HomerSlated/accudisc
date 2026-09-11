@@ -2194,17 +2194,32 @@ class Device:
        it presents as a bad disc rather than as a lock failure.
     """
 
-    def __init__(self, path: str = "/dev/sr0", *, rdwr: bool = False):
+    def __init__(self, path: str = "/dev/sr0", *, rdwr: bool = False,
+                 trace: int = 0):
         """Open the drive at ``path``.
 
         ``rdwr=True`` is required for vendor opcodes, MODE SELECT and writing:
         the kernel's unprivileged SG_IO command filter blocks those on
         read-only fds. Plain reading should leave it off (least privilege).
+
+        ``trace`` turns on the per-command trace (``ACCUDISC_OPEN_TRACE``):
+        ``1`` shows every command the handle sends and its result, except
+        READ/WRITE data transfers, which appear only when they fail; ``2``
+        (``ACCUDISC_OPEN_TRACE_DATA``) shows those too. The lines arrive
+        through :meth:`set_log`, so install a sink or they are discarded.
+        Level 2 during a burn means a Python callback per transfer on the
+        burn's own thread: keep the sink cheap, or it perturbs the timing it
+        records. The format is diagnostic, not an interface.
         """
         self._dev = None
         _check_version_skew()
+        if trace not in (0, 1, 2):
+            raise ValueError(f"trace must be 0, 1 or 2, not {trace!r}")
         err = ffi.new("int*")
         flags = lib.ACCUDISC_OPEN_RDWR if rdwr else 0
+        if trace:
+            flags |= (lib.ACCUDISC_OPEN_TRACE_DATA if trace == 2
+                      else lib.ACCUDISC_OPEN_TRACE)
         dev = lib.accudisc_open(path.encode(), flags, err)
         if dev == ffi.NULL:
             _raise(err[0])

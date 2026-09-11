@@ -7,6 +7,7 @@
 
 #include "internal.h"
 #include "mmc/mmc.h"
+#include "trace.h"
 
 void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...)
 {
@@ -104,6 +105,12 @@ accudisc_device *accudisc_open(const char *path, unsigned flags, int *err)
     dev->host.dev = dev;
     dev->host.exec = host_exec;
     dev->host.log = host_log;
+    /* TRACE_DATA implies TRACE: asking for the bulk transfers and not the
+     * control commands around them would be a log with no context. */
+    dev->trace = (flags & ACCUDISC_OPEN_TRACE_DATA) ? ADSC_TRACE_DATA
+                 : (flags & ACCUDISC_OPEN_TRACE)    ? ADSC_TRACE_CTRL
+                                                    : ADSC_TRACE_OFF;
+    dev->trace_t0_ns = adsc_mono_ns();
     if (err)
         *err = ACCUDISC_OK;
     return dev;
@@ -137,7 +144,15 @@ void accudisc_last_sense(const accudisc_device *dev, accudisc_sense *out)
 
 int adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
 {
-    int rc = adsc_transport_exec(&dev->t, cmd);
+    uint32_t seq = 0;
+    uint64_t t0 = 0;
+    int shown = 0, rc;
+
+    /* The ONE place every command passes — library, engines and vendor
+     * drivers (through host_exec) alike — so the trace cannot miss a path. */
+    if (dev->trace)
+        adsc_trace_before(dev, cmd, &seq, &t0, &shown);
+    rc = adsc_transport_exec(&dev->t, cmd);
 
     if (rc == ACCUDISC_OK)
         memset(&dev->last_sense, 0, sizeof(dev->last_sense));
@@ -151,6 +166,8 @@ int adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
      * clearing here would erase the very cause the caller is about to report. */
     if (rc == ACCUDISC_ERR_IO)
         adsc_io_detail(cmd, dev->last_io, sizeof(dev->last_io));
+    if (dev->trace)
+        adsc_trace_after(dev, cmd, rc, seq, t0, shown);
     return rc;
 }
 

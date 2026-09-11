@@ -38,6 +38,7 @@ int adsc_write_read_disc_info(struct accudisc_device *dev,
 
     memset(out, 0, sizeof(*out));
     out->status      = buf[2] & 0x03;         /* 0 blank .. 2 complete */
+    out->last_session = (buf[2] >> 2) & 0x03; /* 0 empty .. 3 complete */
     out->erasable    = (buf[2] >> 4) & 0x01;  /* CD-RW */
     out->first_track = buf[3];
     out->sessions    = buf[4];                /* LSB (enough for CD) */

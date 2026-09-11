@@ -100,6 +100,12 @@ static struct {
     /* Microseconds added to every pread (see __wrap_pread). 0 = full speed. */
     unsigned slow_read_us;
     unsigned preads;           /* preads that came through the wrap */
+
+    /* TRACE (0.36.0). READ DISC INFORMATION calls, what the post-burn one
+     * reports, and every trace note in order, " | "-separated. */
+    unsigned discinfo_calls;
+    int      post_status;      /* disc status returned from the 2nd call on */
+    char     notes[4096];
 } fake;
 
 /* A SLOW SOURCE, ON DEMAND. The starvation tests below need the ring to run dry
@@ -256,7 +262,13 @@ int adsc_mmc_read_buffer_capacity(struct accudisc_device *d,
 int adsc_write_set_params(struct accudisc_device *d, const struct adsc_write_params *w)
 { (void)d; (void)w; return ACCUDISC_OK; }
 int adsc_write_read_disc_info(struct accudisc_device *d, struct adsc_disc_info *di)
-{ (void)d; memset(di, 0, sizeof *di); di->status = 0; di->leadin_len = 0; return ACCUDISC_OK; }
+{
+    (void)d;
+    memset(di, 0, sizeof *di);
+    /* Blank for the pre-burn check; whatever the test says afterwards. */
+    di->status = fake.discinfo_calls++ ? fake.post_status : 0;
+    return ACCUDISC_OK;
+}
 int adsc_mmc_set_cd_speed(struct accudisc_device *d, uint16_t read_kbps,
                           uint16_t write_kbps, unsigned rotctl)
 {
@@ -320,6 +332,21 @@ int accudisc_write_health_get(accudisc_device *dev, accudisc_write_health *out)
 {
     (void)dev; (void)out;
     return ACCUDISC_ERR_UNSUPPORTED;
+}
+
+void adsc_dev_trace_note(struct accudisc_device *dev, const char *fmt, ...)
+{
+    char msg[256];
+    size_t used = strlen(fake.notes);
+    va_list ap;
+
+    if (!dev->trace)            /* the real one is silent with tracing off */
+        return;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    snprintf(fake.notes + used, sizeof fake.notes - used, "%s%s",
+             used ? " | " : "", msg);
 }
 
 void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...)
@@ -388,6 +415,8 @@ static int bin_fd(void) { return bin_fd_n(TRACK_SECTORS); }
 static int opt_speed;
 /* And the FIFO run_n() asks for. 0 = the engine's default. */
 static uint32_t opt_fifo;
+/* Trace level on the fake handle, and a LIVE (non-simulate) burn. */
+static int opt_trace, opt_live;
 
 static int run_n(uint32_t sectors)
 {
@@ -402,11 +431,16 @@ static int run_n(uint32_t sectors)
     toc.track[0].audio = 1;
     toc.track[0].sectors = sectors;
     toc.track[0].file_offset = 0;
-    opts.simulate = 1;
+    opts.simulate = !opt_live;
     opts.speed = opt_speed;
     opts.fifo_bytes = opt_fifo;
 
-    rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
+    {
+        struct accudisc_device *dev = fake_dev();
+
+        dev->trace = opt_trace;
+        rc = adsc_write_run(dev, &toc, fd, &opts, NULL, NULL);
+    }
     close(fd);
     return rc;
 }
@@ -418,6 +452,8 @@ static void reset(void)
     memset(&fake, 0, sizeof fake);
     opt_speed = 0;
     opt_fifo = 0;
+    opt_trace = 0;
+    opt_live = 0;
     /* A healthy drive by default: 4 MiB buffer, nearly full. Tests that care
      * about the buffer override these. */
     fake.cap_total = 4u * 1024u * 1024u;
@@ -1001,6 +1037,95 @@ static void test_the_666_slot_ring_delivers_byte_exact_through_a_wrap(void)
     assert_image_landed("666-slot");
 }
 
+/* ---- the trace (0.36.0) ------------------------------------------------ */
+
+/* THE PROMISE IN THE HEADER: tracing changes nothing the drive is sent except
+ * one READ DISC INFORMATION after a completed burn. A debug flag that altered
+ * the burn would make every traced burn a different experiment from the
+ * untraced one it is meant to explain. */
+static void test_the_trace_adds_ONE_command_and_changes_no_other(void)
+{
+    unsigned w_off, s_off, c_off, d_off;
+
+    reset();
+    assert(run_n(LONG_SECTORS) == ACCUDISC_OK);
+    w_off = fake.write_calls; s_off = fake.sync_calls;
+    c_off = fake.cap_polls;   d_off = fake.discinfo_calls;
+    assert(d_off == 1 && "untraced: the pre-burn blank check only");
+    assert(fake.notes[0] == 0 && "untraced: no trace notes at all");
+
+    reset();
+    opt_trace = 1;
+    assert(run_n(LONG_SECTORS) == ACCUDISC_OK);
+    assert(fake.write_calls == w_off && fake.sync_calls == s_off &&
+           fake.cap_polls == c_off && "the same writes, closes and polls");
+    assert(fake.discinfo_calls == d_off + 1 && "plus the post-burn check");
+}
+
+static void test_the_burn_phases_are_announced_in_order(void)
+{
+    static const char *const phase[] = {
+        "phase: write parameters", "phase: write speed", "phase: blank check",
+        "blank check: disc status 0", "phase: power calibration",
+        "phase: cue sheet", "cue sheet accepted", "phase: lead-in gap",
+        "phase: payload", "payload complete", "phase: close",
+        "close returned 0", "phase: post-burn check", "post-burn: disc status",
+    };
+    const char *at;
+
+    reset();
+    opt_trace = 1;
+    assert(run() == ACCUDISC_OK);
+    at = fake.notes;
+    for (size_t i = 0; i < sizeof phase / sizeof phase[0]; i++) {
+        const char *hit = strstr(at, phase[i]);
+
+        if (!hit)
+            fprintf(stderr, "missing or out of order: \"%s\" in: %s\n",
+                    phase[i], fake.notes);
+        assert(hit && "each phase, in the order the burn runs them");
+        at = hit + strlen(phase[i]);
+    }
+    /* simulate: OPC is skipped, and says so, and a blank afterwards is the
+     * expected outcome rather than an alarm */
+    assert(strstr(fake.notes, "power calibration SKIPPED"));
+    assert(strstr(fake.notes, "(expected: a test write records nothing)"));
+}
+
+/* A LIVE burn the drive then calls blank is the 2026-09 failure. The trace must
+ * say so in words, and must not say so about a disc the drive calls complete. */
+static void test_a_live_burn_the_drive_calls_BLANK_is_flagged(void)
+{
+    reset();
+    opt_trace = 1;
+    opt_live = 1;
+    fake.post_status = 0;
+    assert(run() == ACCUDISC_OK && "the flag reports; it does not fail the burn");
+    assert(strstr(fake.notes, "NOTHING WAS RECORDED"));
+    assert(!strstr(fake.notes, "SKIPPED") && "a live burn runs OPC");
+
+    reset();
+    opt_trace = 1;
+    opt_live = 1;
+    fake.post_status = 2;
+    assert(run() == ACCUDISC_OK);
+    assert(strstr(fake.notes, "post-burn: disc status 2 (complete)"));
+    assert(!strstr(fake.notes, "BLANK after"));
+}
+
+/* A burn that FAILS gets no post-burn check (there is nothing to describe),
+ * but does announce the abort. */
+static void test_a_failed_traced_burn_announces_the_abort(void)
+{
+    reset();
+    opt_trace = 1;
+    fake.busy_forever = 1;          /* the drive never takes a write */
+    assert(run() != ACCUDISC_OK);
+    assert(strstr(fake.notes, "phase: abort"));
+    assert(!strstr(fake.notes, "post-burn"));
+    assert(fake.discinfo_calls == 1);
+}
+
 /* The drive holds an open DAO session from SEND CUE SHEET onward. Returning an
  * error without releasing it leaves the drive live and refusing READ DISC
  * INFORMATION / READ ATIP with 5/2C/00 -- measured on a PX-716A on 2026-08-28
@@ -1215,6 +1340,10 @@ int main(void)
     test_no_fifo_still_burns();
     test_every_ring_delivers_the_image_BYTE_EXACT();
     test_the_666_slot_ring_delivers_byte_exact_through_a_wrap();
+    test_the_trace_adds_ONE_command_and_changes_no_other();
+    test_the_burn_phases_are_announced_in_order();
+    test_a_live_burn_the_drive_calls_BLANK_is_flagged();
+    test_a_failed_traced_burn_announces_the_abort();
     test_a_FAILED_burn_releases_the_session_in_the_drive();
     test_a_failure_BEFORE_the_cue_sheet_aborts_nothing();
     test_sizing_converts_duration_and_clamps();

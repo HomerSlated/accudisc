@@ -39,6 +39,13 @@ struct accudisc_device {
     void (*log_fn)(void *user, const char *msg);
     void *log_user;
 
+    /* Per-command trace (0.36.0), from the open flags: ADSC_TRACE_OFF / _CTRL
+     * / _DATA (src/trace.h). trace_seq numbers every command issued, traced or
+     * not; trace_t0_ns is the open time the "+T" column counts from. */
+    int trace;
+    uint32_t trace_seq;
+    uint64_t trace_t0_ns;
+
     /* Cause of the most recent ACCUDISC_ERR_IO ("" if none yet). The companion
      * to last_sense: ERR_SENSE carries the drive's own explanation, ERR_IO
      * carries the transport's. */
@@ -71,6 +78,16 @@ void adsc_write_health_record(struct accudisc_device *dev, uint32_t settle_ms,
 /* Run a command on the device, recording decoded sense in the handle on any
  * failure (cleared on success). Returns ACCUDISC_OK / _ERR_IO / _ERR_SENSE. */
 int adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd);
+
+/* A trace-only narrative line ("trace: -- ..."), emitted only when the handle
+ * was opened with a trace flag. For the steps of a multi-command operation
+ * (the burn's phases), so the per-command lines around it can be read as a
+ * sequence rather than a list. Silent — and free — with tracing off. */
+void adsc_dev_trace_note(struct accudisc_device *dev, const char *fmt, ...)
+#if defined(__GNUC__)
+    __attribute__((format(printf, 2, 3)))
+#endif
+    ;
 
 /* Identify once and cache (INQUIRY). */
 int adsc_dev_identify(struct accudisc_device *dev);

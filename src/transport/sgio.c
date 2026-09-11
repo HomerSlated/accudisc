@@ -71,6 +71,16 @@ int adsc_transport_exec(adsc_transport *t, adsc_cmd *cmd)
      * not. */
     cmd->resid = adsc_resid_clamp(io.resid, cmd->buf_len);
 
+    /* All three status fields, on EVERY completed ioctl. Until 0.36.0 they were
+     * filled only on the sense-less failure branch, so a CHECK CONDITION left
+     * scsi_status at 0 — and anything printing it (the trace) would have shown
+     * "status=0x00" for a command the drive refused. That is the failure that
+     * produced thirteen false "implemented" rows in the selector sweep
+     * (re-tools/selsweep.c, 2026-09-09): one field checked, the drive believed. */
+    cmd->host_status = io.host_status;
+    cmd->driver_status = io.driver_status;
+    cmd->scsi_status = io.status;
+
     if ((io.info & SG_INFO_OK_MASK) != SG_INFO_OK) {
         /* sb_len_wr > 0: the drive returned sense — a CHECK CONDITION the
          * caller can decode; anything else (host/driver/transport) is a
@@ -82,9 +92,6 @@ int adsc_transport_exec(adsc_transport *t, adsc_cmd *cmd)
         /* Keep WHY. A bare ERR_IO here is otherwise unattributable after the
          * fact: DRIVER_TIMEOUT, DID_ERROR from the adapter and a status-only
          * failure all look identical to the caller. */
-        cmd->host_status = io.host_status;
-        cmd->driver_status = io.driver_status;
-        cmd->scsi_status = io.status;
         return ACCUDISC_ERR_IO;
     }
     return ACCUDISC_OK;

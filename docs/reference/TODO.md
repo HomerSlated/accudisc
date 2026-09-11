@@ -49,6 +49,15 @@ written over duty-1's marks. If 4c was a true blank, a fresh burn failed within
 Working note: `private/research/incoming/2026-09-10-reburn-predictions.md`
 (09-11 correction section).
 
+**Instrument, 0.36.0:** `--debug` traces every command with its result, names
+each burn phase, and reads Disc Status / Last Session State back after a
+completed close. That post-burn read runs **only under `--debug`** today, so
+the default command stream is unchanged. Once a traced burn has shown it
+harmless on this drive, consider making it unconditional (logged, never
+changing rc). "The drive called the disc blank straight after a burn that
+reported success" is worth knowing on every burn, not only on the ones someone
+thought to trace.
+
 > **WITHDRAWN 2026-09-11: "DO NOT BURN, the write path writes wrong bytes".**
 > The 09-10 CDEmu round trip reported `differing=272791 first_diff=17948` and
 > `892ca32`'s larger ring (528 → 666 slots) was suspected. **It was CDEmu.** The
