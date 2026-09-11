@@ -37,14 +37,46 @@ blank**, since that wedges the USB bridge. If 4b or 4d now read blank, the
 something no log records. Pre-registered in the working note before the first
 disc is loaded.
 
+**RESULT 2026-09-11: every other burnt disc reads.** Toca at both ends, then
+4b, 4d, 1, 2, 3, 5, 6 and 7: all AUDIO, disc status 2, full TOC, with zero
+CHECK CONDITIONs and zero transport failures across the sitting. 4b and 4d,
+same cell, same settings, still read five days on. **The failure is confined
+to 4a, 4c and 4e among twelve written Riteks.** Toca, it turns out, was burnt
+by our own write path (0.33.0, `cdda2img burn --speed 48`, 2026-09-02) on
+this spindle's media in this drive, and reads cleanly nine days later. So
+"the media cannot hold a burn" and "our burns do not last" are both out as
+general explanations. What remains: bad individual discs, something that
+happened to those three after burning, or a read laser losing the most
+marginal discs first. 4a was marginal from the start: C1 at 69x disc 1's.
+
+**And the ledger re-solves (Toca #2, found and probed 2026-09-11: a Ritek
+from this spindle, reads, TOC identical to #1).** The 09-09 claim that the
+simulate disc stayed off the spindle was derived by making 17 close with one
+Toca, never observed. With two, 4 + 11 + 2 Toca = 17 closes exactly **with the
+simulate disc back on the spindle**. So the discs labelled 4c and 4e are the
+real duty-1 and duty-3 burns: **all three failures are written discs that
+went blank.** 4c's 09-10 re-burn wrote over duty-1's marks, which retires
+"a fresh burn failed in 20 minutes". No fresh burn has been seen to go blank.
+Toca #2 is also the `2026-09-03 --speed 32` run that cdda2img reported as
+**exit 1**, on a disc that completed and plays. If `accudisc write` returned
+non-zero on a good burn, that is a defect in its own right; nothing records
+which side failed. Reproduce it under `--debug` when a burn is next due.
+**Drive-wear check, run 2026-09-11:** disc 1 re-censused with the identical
+command, mean C1 **10.92 against 11.30** on 09-07 (−3.4%; the pre-registered
+no-change band was 8.5–14.1), per-LBA r = 0.952. **No evidence the read laser
+has weakened.** That leaves 4a with its own account: the one marginal disc
+(C1 700, CU 79 765 over the 57.5% an aborted burn wrote, and no lead-out).
+The open question narrows to **4c and 4e**: complete burns, exit 0, blank
+within about one and two days, never censused, while 4b and 4d (the same
+settings, 4d the hottest) read at five days.
+
 **Then one blank, if Keith agrees: a fresh-disc durability burn.** Disc 1's
 conditions (Eliminator, 48x, BURN-Proof off, fed), the current binary with
 `--debug`, verify immediately, then re-read after an eject/reload and again
 after 24–48 h. This is the test that matters: no fresh blank burnt with the
-current code has yet been observed to go blank. 4c's re-burn is the only
-candidate, and it has two readings. If the label mapping is right, it was
-written over duty-1's marks. If 4c was a true blank, a fresh burn failed within
-20 minutes. Nothing so far separates the two readings.
+current code has yet been observed to go blank. (4c's re-burn looked like a
+candidate until the ledger re-solved, above: it was written over duty-1's
+marks.)
 
 Working note: `private/research/incoming/2026-09-10-reburn-predictions.md`
 (09-11 correction section).
@@ -1051,11 +1083,13 @@ measurement.
 
 > **STOCK: 33 remaining — COUNTED on the spindle 2026-09-09.** The 35 below
 > was inferred, and was wrong twice over: it assumed the simulated disc went
-> back on the spindle (it did not), and it had no row at all for a disc spent
+> back on the spindle (it did not — **WITHDRAWN 2026-09-11: it did; a second
+> Toca burn was found, and 4 + 11 + 2 Toca = 17**), and it had no row at all for a disc spent
 > on something that was not an experiment. One was — a personal burn of *Toca
 > (20th Anniversary Edition)*, identified by Keith 2026-09-09. **Every disc off
 > the spindle was assumed to be a test disc.** With both corrections the count
 > closes exactly: 4 + 11 + 1 simulate + 1 Toca = 17 off, 50 - 17 = 33.
+> (Superseded 2026-09-11: 4 + 11 + 2 Toca = 17, with the simulate disc among the 33.)
 >
 > Spent 2026-09-05 (4): disc #1 (clean reference), disc #2 (starved, B1/A3), a
 > 4x unstarved control burnt and discarded as unsound, and disc #3 (intended as
@@ -7502,6 +7536,12 @@ cross-check of media identity on this drive.
   the top, which also withdraws the 09-10 write-path alarm). **"Reads blank" does not separate never-written from
   written-then-unreadable, and the ledger reasoning above rests on it.** Keith
   raised this independently.
+  **RESOLVED 2026-09-11: the labels were right, and 4c and 4e were written.**
+  A second Toca burn turned up (a Ritek from this spindle), so the count closes
+  as 4 + 11 + 2 Toca = 17 with the simulate disc BACK on the spindle. The 09-09
+  "it did not return" was forced by the one-Toca count and never observed.
+  4a, 4c and 4e are three written discs that went blank; every other burn
+  still reads (fleet re-read, see the `[P1]` entry at the top).
 
 - **The radial C1 gradient has no surviving explanation** `[P3]`
   Measured across seven discs 2026-09-07/08. Rim ÷ hub C1 ranges 0.907 to 1.541
