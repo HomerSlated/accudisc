@@ -927,6 +927,14 @@ int adsc_write_run(struct accudisc_device *dev,
                                      "(rc %d)", prc);
         else {
             trace_disc_info(dev, "post-burn", &post);
+            /* MEASURED 2026-09-11 on disc 4f: disc status 1 with the full TOC
+             * here, BLANK after one eject and reload. The drive answers this
+             * from its memory of the session; only a reload makes it read the
+             * disc. Say so on every burn, or this line reads as a verdict. */
+            adsc_dev_trace_note(dev, "post-burn: this is the drive's view of "
+                                     "the session it just ran, NOT a read of "
+                                     "the disc -- eject, reload and re-read "
+                                     "before trusting it");
             if (post.status == 0)
                 adsc_dev_trace_note(dev, "post-burn: the drive reports the disc "
                                          "BLANK after a completed burn%s",

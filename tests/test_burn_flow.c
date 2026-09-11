@@ -1089,6 +1089,8 @@ static void test_the_burn_phases_are_announced_in_order(void)
     /* simulate: OPC is skipped, and says so, and a blank afterwards is the
      * expected outcome rather than an alarm */
     assert(strstr(fake.notes, "power calibration SKIPPED"));
+    /* measured on 4f: the drive's post-burn answer is its memory, not the disc */
+    assert(strstr(fake.notes, "NOT a read of the disc"));
     assert(strstr(fake.notes, "(expected: a test write records nothing)"));
 }
 

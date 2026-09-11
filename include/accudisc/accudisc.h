@@ -824,8 +824,10 @@ typedef struct accudisc_device accudisc_device;
  * trace can carry drive identity (INQUIRY, vendor responses): treat it as
  * private. Neither flag changes what is written or the order of anything sent,
  * with ONE addition: a traced burn that completes issues a READ DISC
- * INFORMATION after the close, to record what the drive then says the disc is
- * (Disc Status and Last Session State). */
+ * INFORMATION after the close, to record what the drive then reports (Disc
+ * Status and Last Session State). That is the drive's view of the session it
+ * just ran, NOT a read of the disc: measured 2026-09-11, a disc it called
+ * incomplete-with-TOC here read BLANK after one eject and reload. */
 #define ACCUDISC_OPEN_TRACE      0x2u
 #define ACCUDISC_OPEN_TRACE_DATA 0x4u
 

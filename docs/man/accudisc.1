@@ -89,7 +89,9 @@ data transfers appear only when they fail. A
 .B write
 also names each phase as it starts (write parameters, speed, blank check, power
 calibration, cue sheet, lead\-in gap, payload, close) and, after a burn that
-completes, reads the disc status back and says what the drive now reports. That
+completes, reads the disc status back and says what the drive now reports \(em
+its view of the session it just ran, not a read of the disc: only an eject and
+reload makes the drive look at the disc itself. That
 READ DISC INFORMATION is the only command
 .B \-\-debug
 adds. The output is diagnostic and not a stable interface; it can include

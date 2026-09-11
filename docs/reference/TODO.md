@@ -85,6 +85,18 @@ nothing a real burn should do. A burn should never be starved, which is what
 `plan-burn` above is for. Whether the drive itself has aged is NOT answered by
 a failure under cell 4. Disc 1's conditions are the clean test.
 
+**4f after one eject + reload: BLANK.** Before the eject the drive
+reported an incomplete disc with the full 11-track TOC; after the reload,
+READ DISC INFORMATION byte 2 went 0x05 → 0x00 and the TOC was refused, with
+the ATIP unchanged. **What a drive says before a reload is its memory of the
+session, not the disc.** That reframes 4c and 4e: neither was ever read
+after a reload and found readable. Their first post-eject reads were already
+blank, so "blank from the first reload" fits as well as "decayed in a day".
+It also means the 0.36.0 trace's post-burn check proves nothing about the
+disc. Fix its wording, and make the harness eject, reload and re-read before
+calling a burn good. (4f's session was never closed; whether an unclosed DAO
+disc always reads blank on this firmware is unknown.)
+
 **Then one blank, if Keith agrees: a fresh-disc durability burn.** Disc 1's
 conditions (Eliminator, 48x, BURN-Proof off, fed), the current binary with
 `--debug`, verify immediately, then re-read after an eject/reload and again
