@@ -7,6 +7,39 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## `[P1]` THE DRIVE CANNOT RELIABLY WRITE — cdrdao fails too (2026-09-11)
+
+**Established 2026-09-11 23:55: not our code.** `cdrdao write --speed 48`
+(generic MMC 2.0, nothing of ours in the path) failed on a fresh blank at 87%
+with **`3/02/00` MEDIUM ERROR, NO SEEK COMPLETE**, info field 333 483 — the
+same sense disc 4a's re-burn drew on 09-10. Its own power calibration reported
+success first, as ours does.
+
+Three failures in one evening, three mechanisms:
+- **4f** (accudisc, cell 4): `3/0C/07` WRITE ERROR – RECOVERY NEEDED at 15.9%;
+- **1b** (accudisc, cell 1, the cleanest conditions we have): completed,
+  closed, drive reported complete — **BLANK after one eject and reload**;
+- **ABBA** (cdrdao): `3/02/00` NO SEEK COMPLETE at 87%.
+
+**Reading is unaffected.** Disc 1 re-censused tonight at mean C1 10.92 against
+11.30 on 09-07 (r = 0.952), and nine older discs read perfectly in the same
+sitting, both Tocas included.
+
+**Act on this before spending more media.** Both traced burns spent ~20 s in
+SEND OPC and still returned GOOD; cdrdao also calibrated "successfully". A
+calibration that long is the drive hunting for a workable write power, which
+fits less light reaching the disc: a hazed/dirty objective lens, or a write
+laser down on output. Reads need far less power. In order: **clean the lens**,
+then try **4x** (cells 5 and 6 burnt cleanly at 4x on 09-06); a weakening
+writer often still manages low speed, which would be a diagnosis and a
+workaround at once. **Every burn from here costs a blank, so change one thing
+at a time.** 32 blanks left.
+
+The ring-size lead (528 vs 666 slots) is retired: an independent writer fails
+the same way. No blank need be spent on it.
+
+Working: `private/research/incoming/2026-09-10-reburn-predictions.md`.
+
 ## `[P1]` Burnt CD-Rs that later read BLANK: 4a, 4c, 4e (open, 2026-09-11)
 
 Three Ritek CD-Rs burnt 2026-09-06 now read `kind=BLANK disc_status=0`, with
