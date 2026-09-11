@@ -7,33 +7,62 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
-## `[P1]` DO NOT BURN — the current write path writes wrong bytes (CDEmu, 2026-09-10)
+## `[P1]` Burnt CD-Rs that later read BLANK: 4a, 4c, 4e (open, 2026-09-11)
 
-**Measured with no physical media.** The Eliminator image (204 143 sectors),
-burnt with `--byteswap --speed 48 --no-burnproof` and the default FIFO to a fresh
-CDEmu blank, then verified against `Eliminator_s16le.bin`:
-`aligned=1 shift=+0 compared=120036084 differing=272791 first_diff=17948`,
-**0.23% of samples wrong**, while the burn itself reported exit 0 and clean
-telemetry. The binary was built 2026-09-07, including `892ca32`.
+Three Ritek CD-Rs burnt 2026-09-06 now read `kind=BLANK disc_status=0`, with
+the TOC refused `5/24/00` and a valid ATIP. **4a was read and verified on 09-07
+and read blank from 09-09**, so "reads blank" does not mean "never written". A
+Toca CD-R control reads correctly on the same drive, so the drive still
+recognises written CD-Rs.
 
-**Prime suspect, not established:** `892ca32` raised `ACCUDISC_FIFO_MAX_BYTES`
-32 → 128 MiB, which unclamped the 48x default ring from 33 530 112 B / 528 slots
-to 42 293 664 B / 666 slots. **No burn that later verified bit-exact ever used
-the 666-slot ring**: the fed matrix discs burnt with 528 slots, the starved ones
-with 55, and cell 7 with a pinned 8000. So the bug may be latent and ring-size
-dependent rather than new code. **Also not excluded: CDEmu itself.**
+| disc | 09-06 burn | later |
+|---|---|---|
+| 4a | cell 4 attempt 1 (13:07): `5/2C/00` at LBA 117 470 (57.5%), TOC-complete | verified 09-07; blank from 09-09; 09-10 re-burn refused `3/02/00` before sector 0 |
+| 4b | cell 4 attempt 2 (~14:00), log destroyed | read fine 09-07 |
+| 4c | cell 4, duty-1 (16:12), exit 0 | blank 09-07; 09-10 re-burn completed, unreadable, blank again ~20 min later |
+| 4d | cell 4, duty-2 (16:26), exit 0 | read fine 09-08 |
+| 4e | cell 4, duty-3 (16:50), exit 0 | blank 09-08; not re-burnt |
 
-Bisect on CDEmu, cheapest first: (1) `--fifo 33530112`; (2) `--no-fifo`;
-(3) a build at `892ca32^`; (4) cmp the read-back against the image and check
-whether differences fall on 27-sector slot boundaries. **Then add a hardware-free
-round-trip test that would have caught this.** `test_burn_flow` stubs the whole
-MMC layer and cannot see bytes, which is how a write-path change reached real
-media without a round trip. Working and logs:
-`private/research/incoming/2026-09-10-reburn-predictions.md`.
+The cell-4 burns share the noise image, 48x, BURN-Proof on and a starved
+source, and every surviving cell-4 log shows a **pinned 3 528 000-byte /
+55-slot ring** (4b's log was destroyed). The blank-reading
+discs are therefore not separated from 4b/4d by any burn setting, and the ring
+cannot be the cause (below).
 
-**Collateral already paid:** one Ritek CD-R (4c) burnt on this binary. It has a
-separate, unexplained problem that the regression does not account for: after the
-burn it could not be aligned or counted, and it reads blank again.
+**The open question, and the free test that comes first.** Re-read the fleet
+in one sitting, with the Toca control in the same sitting: 4b, 4d, 1, 2, 3, 5,
+6, 7, each with `disc`, `toc`, `media`. **No long reads on a disc that reads
+blank**, since that wedges the USB bridge. If 4b or 4d now read blank, the
+09-06 burns are decaying with time. If they still read, the three differ in
+something no log records. Pre-registered in the working note before the first
+disc is loaded.
+
+**Then one blank, if Keith agrees: a fresh-disc durability burn.** Disc 1's
+conditions (Eliminator, 48x, BURN-Proof off, fed), the current binary with
+`--debug`, verify immediately, then re-read after an eject/reload and again
+after 24–48 h. This is the test that matters: no fresh blank burnt with the
+current code has yet been observed to go blank. 4c's re-burn is the only
+candidate, and it has two readings. If the label mapping is right, it was
+written over duty-1's marks. If 4c was a true blank, a fresh burn failed within
+20 minutes. Nothing so far separates the two readings.
+
+Working note: `private/research/incoming/2026-09-10-reburn-predictions.md`
+(09-11 correction section).
+
+> **WITHDRAWN 2026-09-11: "DO NOT BURN, the write path writes wrong bytes".**
+> The 09-10 CDEmu round trip reported `differing=272791 first_diff=17948` and
+> `892ca32`'s larger ring (528 → 666 slots) was suspected. **It was CDEmu.** The
+> 272 791 frames are exactly the non-zero source frames inside the ten
+> pre-gaps, with 0 differing sectors elsewhere. CDEmu's **WRITER-TOC stores
+> every pre-gap as `SILENCE`** and discards the audio the host sent, and its
+> eleven stored WAVs are byte-equal to the source over all 204 143 index-1
+> sectors. `892ca32` adds no drive-visible command, so the command stream is
+> unchanged since before it. Two durable results: (1) a CDEmu round trip must
+> compare index-1 ranges only, or use an image with silent pre-gaps (no CDEmu
+> writer keeps pre-gap audio); (2) `test_burn_flow` now burns a
+> position-unique image through 8 ring arms, including 4c's exact 666-slot ring
+> through a wrap, and requires every LBA accepted once with the right bytes,
+> which the old all-zero test could not see. Mutation-checked.
 
 ## `0x5B` CLOSE TRACK/SESSION — ANSWERED 2026-09-03: `0x35` alone finalises
 
@@ -7461,7 +7490,7 @@ cross-check of media identity on this drive.
   unwritten. A Toca CD-R control read correctly the same evening, so the drive
   still recognises written CD-Rs; 4a itself changed. A re-burn of 4c then
   completed, became unreadable, and reads blank again (see the `[P1]` entry at
-  the top). **"Reads blank" does not separate never-written from
+  the top, which also withdraws the 09-10 write-path alarm). **"Reads blank" does not separate never-written from
   written-then-unreadable, and the ledger reasoning above rests on it.** Keith
   raised this independently.
 

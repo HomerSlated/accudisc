@@ -85,7 +85,38 @@ static struct {
     unsigned cur_read_kbps;    /* what accudisc_get_speed reports */
     char     speed_log[512];   /* the speed line */
     char     fifo_secs_log[512]; /* the FIFO ride-through line */
+
+    /* BYTE CAPTURE (2026-09-11). Every accepted program-area WRITE(10) is
+     * compared against the image the burn was given, on the fly, and each LBA
+     * counts how often it was accepted. NULL `img_hits` = not checking. */
+    const struct adsc_write_toc *img_toc;
+    int      img_swap;         /* the burn was told --byteswap */
+    uint8_t *img_hits;         /* per program-area LBA, accepted writes */
+    uint32_t img_sectors;
+    uint32_t img_bad_sectors;  /* accepted sectors whose bytes were wrong */
+    int32_t  img_first_bad;    /* LBA of the first, -1 if none */
+    unsigned img_bad_shape;    /* writes that were not 2352-byte blocks */
+
+    /* Microseconds added to every pread (see __wrap_pread). 0 = full speed. */
+    unsigned slow_read_us;
+    unsigned preads;           /* preads that came through the wrap */
 } fake;
+
+/* A SLOW SOURCE, ON DEMAND. The starvation tests below need the ring to run dry
+ * and used to rely on a 2-slot ring losing a race against an instant fake
+ * drive. It usually did; measured 2026-09-11, 1 run in ~30 the reader thread
+ * kept up for the whole burn, and "it really did starve" failed on unchanged
+ * code. The build links this binary with -Wl,--wrap=pread, so every pread in
+ * fifo.c and burn.c comes through here and a test can make the producer
+ * slower than the consumer outright rather than hope. */
+ssize_t __real_pread(int fd, void *buf, size_t n, off_t off);
+ssize_t __wrap_pread(int fd, void *buf, size_t n, off_t off)
+{
+    fake.preads++;
+    if (fake.slow_read_us)
+        usleep(fake.slow_read_us);
+    return __real_pread(fd, buf, n, off);
+}
 
 static struct accudisc_device *fake_dev(void)
 {
@@ -105,10 +136,71 @@ static int busy(struct accudisc_device *dev)
     return ACCUDISC_ERR_SENSE;
 }
 
+/* The test image: every 32-bit word carries a value derived from its own byte
+ * offset in the FILE (an odd multiplier is a bijection mod 2^32, so no two words
+ * in 16 GiB repeat). A chunk that is dropped, duplicated, reordered, written to
+ * the wrong LBA, read from the wrong offset, or swapped twice lands different
+ * bytes at that position. An all-zero image, which every other test here
+ * burns, cannot tell any of those from a correct burn. */
+static uint8_t pat_byte(uint64_t off)
+{
+    uint32_t v = (uint32_t)(off / 4u) * 2654435761u + 0x9E3779B9u;
+
+    return (uint8_t)(v >> (8u * (unsigned)(off % 4u)));
+}
+
+/* Program-area LBA -> byte offset in the image, through the TOC's own segment
+ * list. Deliberately NOT lba * 2352: an arm below leaves gaps between tracks in
+ * the file, so a burn that ignored file_offset would pass a contiguous check. */
+static int64_t img_offset(int32_t lba)
+{
+    uint32_t acc = 0;
+
+    for (int t = 0; t < fake.img_toc->ntracks; t++) {
+        if ((uint32_t)lba < acc + fake.img_toc->track[t].sectors)
+            return (int64_t)fake.img_toc->track[t].file_offset
+                   + (int64_t)((uint32_t)lba - acc) * 2352;
+        acc += fake.img_toc->track[t].sectors;
+    }
+    return -1;
+}
+
+static void img_check(int32_t lba, uint32_t nblocks, const uint8_t *buf,
+                      uint32_t block_bytes)
+{
+    if (!fake.img_hits || lba < 0)          /* the lead-in gap is zeros, unchecked */
+        return;
+    if (block_bytes != 2352u) {
+        fake.img_bad_shape++;
+        return;
+    }
+    for (uint32_t s = 0; s < nblocks; s++) {
+        int32_t l = lba + (int32_t)s;
+        int64_t base;
+        int bad = 0;
+
+        if ((uint32_t)l >= fake.img_sectors || (base = img_offset(l)) < 0) {
+            fake.img_bad_sectors++;         /* written past the end of the TOC */
+            continue;
+        }
+        fake.img_hits[l]++;
+        for (uint32_t i = 0; i < 2352u && !bad; i++) {
+            /* --byteswap exchanges the two bytes of each 16-bit sample, so the
+             * byte at i came from i ^ 1 in the file. */
+            uint64_t from = (uint64_t)base + (fake.img_swap ? (i ^ 1u) : i);
+            bad = buf[(size_t)s * 2352u + i] != pat_byte(from);
+        }
+        if (bad) {
+            if (fake.img_bad_sectors == 0)
+                fake.img_first_bad = l;
+            fake.img_bad_sectors++;
+        }
+    }
+}
+
 int adsc_mmc_write10(struct accudisc_device *dev, int32_t lba, uint32_t nblocks,
                      const uint8_t *buf, uint32_t block_bytes)
 {
-    (void)lba; (void)nblocks; (void)buf; (void)block_bytes;
     fake.write_calls++;
     if (fake.busy_forever)
         return busy(dev);
@@ -117,12 +209,13 @@ int adsc_mmc_write10(struct accudisc_device *dev, int32_t lba, uint32_t nblocks,
         fake.busy_last_ok = !fake.busy_last_ok;
         if (!fake.busy_last_ok)
             return busy(dev);
-        return ACCUDISC_OK;
-    }
-    if (fake.busy_left) {
+    } else if (fake.busy_left) {
         fake.busy_left--;
         return busy(dev);
     }
+    /* Only an ACCEPTED write reaches the disc, so only an accepted one is
+     * checked — a refused one is re-sent, and must be re-sent unchanged. */
+    img_check(lba, nblocks, buf, block_bytes);
     return ACCUDISC_OK;
 }
 
@@ -710,7 +803,9 @@ static void test_a_starving_ring_STOPS_a_drive_with_no_failover(void)
     toc.track[0].audio = 1;
     toc.track[0].sectors = LONG_SECTORS;
     opts.simulate = 1;
-    opts.fifo_bytes = 1;            /* clamped to the 2-slot floor: it WILL dry */
+    opts.fifo_bytes = 1;            /* clamped to the 2-slot floor ... */
+    fake.slow_read_us = 2000;       /* ... and the source is slower than the
+                                     * drive, so it WILL dry, every run */
 
     fd = bin_fd_n(LONG_SECTORS);
     rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
@@ -740,6 +835,7 @@ static void test_the_same_starvation_is_SURVIVED_with_a_failover(void)
     toc.track[0].sectors = LONG_SECTORS;
     opts.simulate = 1;
     opts.fifo_bytes = 1;            /* the SAME starvation as above */
+    fake.slow_read_us = 2000;
 
     fd = bin_fd_n(LONG_SECTORS);
     rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
@@ -749,6 +845,9 @@ static void test_the_same_starvation_is_SURVIVED_with_a_failover(void)
      * failover exists. That is the whole reason 0.26.0 had to learn the
      * difference before this ring could be written. */
     assert(rc == ACCUDISC_OK && "BURN-Proof links and the burn completes");
+    /* The wrap is what makes this deterministic, and a link-time wrap can be
+     * silently inert (_FORTIFY_SOURCE turns pread into __pread_chk). */
+    assert(fake.preads > 0 && "pread went through __wrap_pread");
     assert(strstr(fake.fifo_log, "starvations"));
     assert(!strstr(fake.fifo_log, "0 starvations") && "it really did starve");
 }
@@ -759,6 +858,147 @@ static void test_no_fifo_still_burns(void)
     /* --no-fifo must be the OLD synchronous path, not a small ring. */
     assert(run_fifo(LONG_SECTORS, 0) == ACCUDISC_OK);
     assert(!fake.fifo_log[0] && "no FIFO line when there is no FIFO");
+}
+
+/* ---- the bytes, not the call count (2026-09-11) ---------------------------
+ *
+ * WHY THIS EXISTS. On 2026-09-10 a CDEmu round trip reported 272 791 wrong
+ * samples and the ring was suspected, because 892ca32 had just grown the 48x
+ * default from 528 slots to 666. The suspicion could not be tested here: every
+ * burn in this file wrote an ALL-ZERO image and counted WRITE(10) calls, so a
+ * ring that dropped, repeated, or reordered chunks passed. (It was CDEmu: its
+ * TOC writer stores every pre-gap as SILENCE. Every index-1 byte had landed.)
+ *
+ * Each arm burns a position-unique image and requires every program-area LBA
+ * to be accepted EXACTLY once carrying EXACTLY the right bytes. */
+
+static void img_write_file(int fd, uint64_t bytes)
+{
+    static uint8_t blk[1u << 16];
+
+    for (uint64_t o = 0; o < bytes;) {
+        size_t n = bytes - o < sizeof blk ? (size_t)(bytes - o) : sizeof blk;
+
+        for (size_t i = 0; i < n; i++)
+            blk[i] = pat_byte(o + i);
+        assert(pwrite(fd, blk, n, (off_t)o) == (ssize_t)n);
+        o += n;
+    }
+}
+
+/* Burn `ntracks` tracks of secs[] sectors from a pattern image and return the
+ * engine's rc. `gap` bytes of file are skipped before every track, so the
+ * segment list is exercised rather than assumed contiguous. */
+static int burn_image(const uint32_t *secs, int ntracks, uint32_t gap,
+                      uint32_t fifo_bytes, int swap)
+{
+    static struct adsc_write_toc toc;
+    struct adsc_burn_opts opts;
+    char path[] = "/var/tmp/accudisc-burnbytes-XXXXXX";
+    uint64_t off = 0;
+    uint32_t lba = 0;
+    int fd, rc;
+
+    memset(&toc, 0, sizeof toc);
+    memset(&opts, 0, sizeof opts);
+    toc.ntracks = ntracks;
+    for (int t = 0; t < ntracks; t++) {
+        off += gap;
+        toc.track[t].audio = 1;
+        toc.track[t].sectors = secs[t];
+        toc.track[t].index1_lba = lba;
+        toc.track[t].file_offset = off;
+        off += (uint64_t)secs[t] * 2352u;
+        lba += secs[t];
+    }
+    toc.leadout_lba = lba;
+    opts.simulate = 1;
+    opts.fifo_bytes = fifo_bytes;
+    opts.byteswap = swap;
+
+    fd = mkstemp(path);
+    assert(fd >= 0);
+    unlink(path);
+    img_write_file(fd, off);
+
+    fake.img_toc = &toc;
+    fake.img_swap = swap;
+    fake.img_sectors = lba;
+    fake.img_hits = calloc(lba, 1);
+    fake.img_bad_sectors = 0;
+    fake.img_first_bad = -1;
+    fake.img_bad_shape = 0;
+    assert(fake.img_hits);
+
+    rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
+    close(fd);
+    return rc;
+}
+
+/* Every LBA accepted once, with the right bytes. Frees the hit map. */
+static void assert_image_landed(const char *arm)
+{
+    uint32_t missing = 0, repeated = 0;
+
+    for (uint32_t l = 0; l < fake.img_sectors; l++) {
+        missing += fake.img_hits[l] == 0;
+        repeated += fake.img_hits[l] > 1;
+    }
+    if (missing || repeated || fake.img_bad_sectors || fake.img_bad_shape)
+        fprintf(stderr, "burn_bytes[%s]: %u missing, %u repeated, %u wrong "
+                        "(first at LBA %d), %u mis-shaped writes\n",
+                arm, missing, repeated, fake.img_bad_sectors,
+                fake.img_first_bad, fake.img_bad_shape);
+    assert(missing == 0 && "every program-area sector reached the drive");
+    assert(repeated == 0 && "no sector was accepted twice");
+    assert(fake.img_bad_sectors == 0 && "every accepted sector carried the "
+                                        "image's own bytes");
+    assert(fake.img_bad_shape == 0);
+    free(fake.img_hits);
+    fake.img_hits = NULL;
+}
+
+static void test_every_ring_delivers_the_image_BYTE_EXACT(void)
+{
+    /* Track lengths that are not multiples of the 27-sector chunk, so slots
+     * come up short at every track end, and a one-sector track. */
+    static const uint32_t secs[] = { 40, 13, 1, 1000 };
+    static const struct {
+        const char *name;
+        uint32_t fifo;          /* 0 = --no-fifo, the synchronous path */
+        int swap, busy_every;
+    } arm[] = {
+        { "no-fifo",               0,                  0, 0 },
+        { "no-fifo+swap+busy",     0,                  1, 1 },
+        /* 1 byte clamps to the 2-slot floor: the ring starves throughout and
+         * BURN-Proof (claimed by the fake) carries it. */
+        { "2-slot starved",        1,                  0, 0 },
+        { "2-slot starved+swap",   1,                  1, 1 },
+        { "3-slot",                3u * 27u * 2352u,   1, 0 },
+        { "whole-burn",            FIFO_WHOLE_BURN,    0, 1 },
+        { "whole-burn+swap",       FIFO_WHOLE_BURN,    1, 0 },
+    };
+
+    for (size_t a = 0; a < sizeof arm / sizeof arm[0]; a++) {
+        reset();
+        fake.busy_every = arm[a].busy_every;
+        assert(burn_image(secs, 4, 7u * 2352u + 4u, arm[a].fifo,
+                          arm[a].swap) == ACCUDISC_OK);
+        assert_image_landed(arm[a].name);
+    }
+}
+
+/* THE RING DISC 4c WAS BURNT WITH, exactly: 42 293 664 bytes = 666 slots, the
+ * 48x default since 892ca32. The image is longer than the ring, so it wraps —
+ * the one place a slot-count-dependent defect could live. */
+static void test_the_666_slot_ring_delivers_byte_exact_through_a_wrap(void)
+{
+    static const uint32_t secs[] = { 17948, 700 };  /* 690 slots' worth */
+
+    reset();
+    assert(burn_image(secs, 2, 0, 42293664u, 1) == ACCUDISC_OK);
+    assert(strstr(fake.fifo_log, "starvations") && "the ring really ran");
+    assert_image_landed("666-slot");
 }
 
 /* The drive holds an open DAO session from SEND CUE SHEET onward. Returning an
@@ -781,7 +1021,9 @@ static void test_a_FAILED_burn_releases_the_session_in_the_drive(void)
     toc.track[0].audio = 1;
     toc.track[0].sectors = LONG_SECTORS;
     opts.simulate = 1;
-    opts.fifo_bytes = 1;            /* clamped to the 2-slot floor: it WILL dry */
+    opts.fifo_bytes = 1;            /* clamped to the 2-slot floor ... */
+    fake.slow_read_us = 2000;       /* ... and the source is slower than the
+                                     * drive, so it WILL dry, every run */
 
     fd = bin_fd_n(LONG_SECTORS);
     rc = adsc_write_run(fake_dev(), &toc, fd, &opts, NULL, NULL);
@@ -971,6 +1213,8 @@ int main(void)
     test_a_starving_ring_STOPS_a_drive_with_no_failover();
     test_the_same_starvation_is_SURVIVED_with_a_failover();
     test_no_fifo_still_burns();
+    test_every_ring_delivers_the_image_BYTE_EXACT();
+    test_the_666_slot_ring_delivers_byte_exact_through_a_wrap();
     test_a_FAILED_burn_releases_the_session_in_the_drive();
     test_a_failure_BEFORE_the_cue_sheet_aborts_nothing();
     test_sizing_converts_duration_and_clamps();

@@ -103,6 +103,10 @@ target_include_directories(test_burn_flow PRIVATE
 target_compile_definitions(test_burn_flow PRIVATE
                            STALL_CAP_MS=400u STALL_POLL_MS=10u)
 target_link_libraries(test_burn_flow PRIVATE Threads::Threads)
+# Every pread in fifo.c/burn.c goes through the test's __wrap_pread, so a
+# starvation test can make the source slower than the fake drive instead of
+# hoping a 2-slot ring loses a race (it did not, ~1 run in 30).
+target_link_options(test_burn_flow PRIVATE -Wl,--wrap=pread)
 add_test(NAME test_burn_flow COMMAND test_burn_flow)
 
 # Post-burn verification. Compiles src/write/verify.c directly against a stub
