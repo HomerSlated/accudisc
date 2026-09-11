@@ -70,6 +70,21 @@ The open question narrows to **4c and 4e**: complete burns, exit 0, blank
 within about one and two days, never censused, while 4b and 4d (the same
 settings, 4d the hottest) read at five days.
 
+**4f, cell 4 repeated 2026-09-11 22:52 under `--debug`: FAILED at 15.9%.**
+The first real-media trace named the command: `WRITE(10)` at LBA 32 474 →
+**`3/0C/07` MEDIUM ERROR, WRITE ERROR – RECOVERY NEEDED**, with the sense
+INFORMATION field pointing at the same write (+150). SEND OPC took 20 088 ms
+and returned GOOD. Host flow matched 09-06 duty-1 (which completed) sector for
+sector, so the pipeline did what it did on a good burn, and the drive reported
+the recording failing. The disc is left incomplete (disc status 1), kept to
+see whether it goes blank. **Cell 4 is now 6 attempts, 2 aborted mid-burn and
+2 gone blank, with only 4b/4d surviving,** while every other condition is
+10/10, including disc 3, which is cell 4 with music instead of noise. Do not
+burn cell 4 again: it is the one condition that makes coasters, and it is
+nothing a real burn should do. A burn should never be starved, which is what
+`plan-burn` above is for. Whether the drive itself has aged is NOT answered by
+a failure under cell 4. Disc 1's conditions are the clean test.
+
 **Then one blank, if Keith agrees: a fresh-disc durability burn.** Disc 1's
 conditions (Eliminator, 48x, BURN-Proof off, fed), the current binary with
 `--debug`, verify immediately, then re-read after an eject/reload and again
