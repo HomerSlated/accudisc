@@ -5156,6 +5156,174 @@ read-only open, not a speed matter.
   verify (`--verify-toc`) that diffs the burned TOC vs the source .toc and warns
   on any offset delta.
 
+## `[P1]` "ARE YOU READY?" — a bounded readiness gate on every drive request — Keith, 2026-09-12
+
+**The request, verbatim:** "every request to the drive needs to ask, essentially,
+'Are you ready?', with a timed cooldown before asking again if not, and a max
+number of retries before failing gracefully."
+
+**It is not implemented at all today.** `TEST UNIT READY` (0x00) appears in
+exactly one place in the tree — `src/trace.c:15`, as a string in the opcode
+decoder. Nothing ever issues it. There is per-sector read retry
+(`src/read/engine.c`) and a buffer-full retry in the burn chunk loop
+(`src/write/burn.c:216-254`), and no handling of drive READINESS anywhere.
+
+**Measured today, twice, both after a tray load:**
+
+- `accudisc disc` answered `profile=0x0000 reason=not_cd_profile` and
+  `accudisc media` drew **`2/04/01` NOT READY — LOGICAL UNIT IS IN PROCESS OF
+  BECOMING READY**. A `sleep 8` and a re-run gave the correct answer
+  (`kind=BLANK`, ATIP Ritek). A caller without that retry would have recorded
+  "not a CD" for a perfectly good blank.
+- A different load: the first `accudisc disc` took **20 s** to return and said
+  `reason=unreadable`; the next one was correct.
+
+**The folklore is already in our own docs** — "the first read after a reload can
+report `no_medium` while the drive spins up; retry once before believing it" —
+which is the tell. A workaround written for a human to perform is a missing
+feature.
+
+### The design
+
+**Mechanism.** `TEST UNIT READY`: six bytes, no data transfer, and its whole
+purpose is this question. The answer classifies into three groups, and the
+classification is the design:
+
+| sense | meaning | action |
+|---|---|---|
+| GOOD | ready | proceed |
+| `2/04/01` | becoming ready (spin-up, media recognition) | **cooldown, retry** |
+| `2/04/00` | not ready, cause not reportable | cooldown, retry (bounded) |
+| `2/04/02` | initializing command required | `START STOP UNIT` start=1, then retry |
+| `2/3A/xx` | **medium not present** | **terminal — fail at once.** No amount of waiting produces a disc. This is the "gracefully" half: the message is "no disc", not "gave up after 8 tries" |
+| `6/28/00` | not-ready-to-ready, medium MAY have changed | re-issue immediately (the command never executed; the UA is the drive announcing the new disc) |
+| `6/29/xx` | power-on / reset / bus device reset | same |
+| anything else | not a readiness problem | return it unchanged |
+
+**Where it hooks in — the one decision that matters.** Three candidate shapes
+were considered:
+
+- **(A) A TUR before every command, inside `adsc_dev_exec`.** This is the
+  literal reading of the request and it must NOT be built. It doubles the
+  command count, destroys the timing basis of `speeds` and `c2lag`, floods the
+  trace, and — the disqualifying one — it would insert commands **between the
+  `WRITE(10)`s of a live burn**, where the whole game is keeping the drive's
+  buffer fed. A readiness probe that causes an underrun is worse than the bug.
+- **(B) A gate at each public operation's entry.** One TUR per operation.
+  Safe, cheap, and covers the observed failures exactly (they are all "the
+  first command after a media change").
+- **(C) Reactive: no probe ahead of time; when a command FAILS with a
+  retryable readiness sense, cool down and re-issue THAT command, bounded.**
+  Costs nothing when the drive is ready, which is nearly always, and covers
+  mid-operation transitions that (B) cannot see.
+
+**Take (C) as the mechanism, with (B) only where a wait is known to be needed
+(immediately after `load`).** (C) is safe precisely because both retryable
+classes — key 2 NOT READY and key 6 UNIT ATTENTION — mean **the command did not
+execute**. That is what makes re-issuing it a repeat rather than a second
+action.
+
+**The write path is excluded, and this is not negotiable without a reason.**
+`WRITE(10)/(12)`, `SEND CUE SHEET`, `CLOSE TRACK/SESSION`, `BLANK`, `SEND OPC`
+and `MODE SELECT` are never auto-retried. Two reasons, and the second is the
+stronger: a repeat of a command with side effects is not obviously idempotent
+at the medium; and `2/04/01` arriving **during** a burn is a genuine anomaly
+that the burn engine must see, not something to be smoothed over. The
+generic-MMC rule of thumb ("key 2 means it did not execute") is a statement
+about the command, not a promise about the disc.
+
+**Every retry must be visible.** It goes in the trace — `drive not ready
+(2/04/01), waiting 500 ms, attempt 2/8` — and the count is carried out of the
+operation the way `burn.c` already carries `stalls`. A retry mechanism that
+silently absorbs "not ready" is itself a [[silent-narrowing]] hazard: this
+project has just spent two days on a fault whose signature was a drive that
+answered oddly, and a layer that quietly retried until the answer looked normal
+would have hidden it.
+
+### MEASURED 2026-09-12 17:20 — `tools/readyprobe.c`
+
+Built for this, and it changed the design. It polls the MMC-5 safe set plus the
+two commands `accudisc disc` uses, every 250 ms from the moment
+`CDROMCLOSETRAY` returns. One tray cycle on disc T2:
+
+```
+   t_ms  TUR       GESN media            GESN busy            GETCONF  MECHSTATUS
+      0  2/04/01   nochg pres=1 open=0   nochg busy=0 t=0.0s  0x0009   active  chg=3
+    261  2/04/01   nochg pres=1 open=0   nochg busy=0 t=0.0s  0x0009   playing chg=3
+    774  2/04/01   nochg pres=1 open=0   nochg busy=0 t=0.0s  0x0009   playing chg=3
+   1030  6/28/00   newmedia pres=1       nochg busy=0 t=0.0s  0x0009   playing chg=0   <- ready
+   1287  GOOD      nochg pres=1 open=0   nochg busy=0 t=0.0s  0x0009   playing chg=0
+```
+
+**Five findings, three of which contradict the design above:**
+
+1. **`TEST UNIT READY` is the only trustworthy oracle.** It is the sole
+   indicator that changed state exactly when the disc became usable.
+2. **GESN Media Present is TRUE from t=0** — `pres=1` for the whole window. It
+   answers "is there a disc", not "is the disc understood". Useful as the
+   TERMINAL check, useless as a readiness gate.
+3. **GET CONFIGURATION answered `0x0009`, correctly, from t=0** — while
+   `READ DISC INFORMATION` was still refusing with `2/04/01`. Earlier the same
+   day the same command answered `0x0000` during the same kind of window. So
+   it is *sometimes* right during the window, which is worse than consistently
+   wrong: no gate can be built on it.
+4. **The Device Busy class is SUPPORTED and never fires.** The drive advertises
+   `supported event classes 0x5E` — opchange, power, external, media,
+   **devicebusy** — and yet reported `busy=0 t=0.0s` on every single tick,
+   including the four while `TEST UNIT READY` was saying "becoming ready". So
+   the predicted time-to-ready this design was hoping to lean on **does not
+   exist on this drive for disc evaluation**. The cooldown has to be measured
+   after all. (That is a per-drive fact, not a spec fact — do not generalise it
+   to other hardware.)
+5. **`6/28/00` UNIT ATTENTION fires exactly once, at the transition.** That is
+   the drive announcing the new medium, and it lands on whatever command
+   happens to be in flight. It confirms the per-command UA retry is both
+   necessary and safe.
+
+**So the gate needs no GESN at all, and that is the measurement's best gift** —
+it sidesteps the event-draining hazard entirely. `TEST UNIT READY`'s own sense
+carries every case:
+
+| TUR result | meaning | action |
+|---|---|---|
+| GOOD | ready | proceed |
+| `2/04/xx` | becoming ready | cooldown, retry |
+| `6/28/00` | just became ready | retry at once |
+| `2/3A/01` | no disc, tray closed | terminal |
+| `2/3A/02` | tray open | terminal |
+
+`MECHANISM STATUS` changer-state (3 Initializing → 0 Ready, transitioning on
+the same tick) is a good corroborating signal for diagnostics and has no event
+queue behind it, so it cannot consume anything the kernel wanted. Its
+*Mechanism State* field is legacy junk — it flapped between "playing" and
+"active" on an idle drive — so read the Changer State field only.
+
+**Constants, from measurement.** The window was **~1.0 s** on a software
+reload. Keith's manual insertion earlier the same day needed more (8 s was
+enough; one call blocked 20 s), which is a different and longer path — a disc
+placed by hand on a tray the drive then has to pull in and spin from rest.
+Proposal: cooldown 250 ms, cap 30 s, every wait traced. 30 s of blocking is a
+long time for a CLI, but it is bounded, it only happens when the drive is
+genuinely becoming ready, and the alternative is today's behaviour — a wrong
+answer, instantly.
+
+**One unexplained observation, recorded because it is a drive state we have
+seen before.** The probe's first run left the drive reporting `2/3A/01` MEDIUM
+NOT PRESENT with the tray closed and changer state 3 (Initializing) —
+persistently, through 45 s of polling and a later quiet check. A tray cycle
+cleared it and the disc read perfectly. **It did not reproduce**: two repeats
+of the identical sequence and four `eject`+immediate-`load` cycles were all
+clean. Two explanations were formed and both were refuted by the next test —
+"the polling caused it" (a 3 s pause before closing the tray made the same
+polling succeed in 1.0 s) and "the tray was closed too soon" (four back-to-back
+`eject`/`load` pairs were fine). **Cause unknown.** `readyprobe` is the
+instrument that will characterise it if it recurs; the wedge state and its
+recovery (a tray cycle) are now on record.
+
+**Open, for Keith:** whether the policy is fixed, or exposed as API
+(`tries`/`cooldown_ms`). Exposing it is a public-header change and therefore an
+outbox notification; the defaults have to be right regardless, so start there.
+
 ## Probes / diagnostics
 
 - **`speeds` returned an all-zero ladder on a data disc — FIXED 0.37.0

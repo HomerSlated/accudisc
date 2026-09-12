@@ -31,6 +31,26 @@ gcc -o build/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudi
   CD track-CTRL classifier unconditionally, so it calls a DVD "CD-ROM (data)".
   Logical type must be gated on a CD profile (0x08/09/0A).*
 
+- **`readyprobe.c`** — read-only (bar the optional `--load`). **"Are you
+  ready?"**: polls the MMC-5 §4.1.6.2 safe set — TEST UNIT READY, GET EVENT
+  STATUS NOTIFICATION, GET CONFIGURATION — plus MECHANISM STATUS and READ DISC
+  INFORMATION at a fixed cadence from the moment the tray closes, one row per
+  tick. Finds which commands answer *truthfully* while the drive is still
+  evaluating a disc, and how long that window lasts. `--load` closes the tray
+  so t=0 is defined; `--seconds`, `--interval-ms` set the run.
+  **Needs `CAP_SYS_RAWIO`**: `doas /usr/bin/setcap cap_sys_rawio=ep
+  build/readyprobe`.
+
+  `--no-drain` skips the two GESN reads that use an allocation length above 4.
+  That distinction is normative, not a style choice: MMC-5 §6.7.1.4 says an
+  allocation length of 4 or less returns the header and **clears no event**,
+  while anything larger consumes one — and the Linux `sr` driver polls GESN for
+  media change itself, so an event we take is one the kernel does not see. The
+  header-only read is always issued and is always safe.
+
+  First results, and the readiness-gate design they rewrote, are in
+  `docs/reference/TODO.md`.
+
 - **`speedprobe.c`** — SET STREAMING (0xB6) flag-bit harness: does GET
   PERFORMANCE reflect a set ceiling; does Exact (0x02) work; does real RDD
   (0x04) restore. **Needs `CAP_SYS_RAWIO`** (data-OUT does not pass the
@@ -167,3 +187,5 @@ It is a free negative control: it *advertises* the Real-Time Streaming feature
 and then **rejects GET PERFORMANCE** (Illegal Request). Anything that trusts a
 feature bit instead of smoke-testing it will assert nonsense there — a virtual
 drive has no spindle, no radius, and no rotation.
+
+
