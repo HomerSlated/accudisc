@@ -39,6 +39,28 @@ recognition (reading measurably unchanged). **The drive writes marks it cannot
 read back, and its own power calibration takes ~20 s before reporting
 success.**
 
+**SELF-TEST RUN 2026-09-12 ~11:45 — FAILED, TWICE. The fault is inside the
+drive.** With the IDE ribbon off (no host, no bridge, no software of ours or
+anyone's), the drive ran its own write-then-read routine and both times ended
+with **the disc not ejected and the LED blinking green** — the manual's
+documented failure indication (p. 103: one green blink = write or read error,
+two = initialisation error; it is a repeating blink COUNT, so this is a
+documented code, not an unknown state). Run 1 stopped after ~30 s; run 2
+completed a full burn pass AND a full read pass before reporting the fault,
+which is the standalone form of the campaign's "writes, cannot read it back".
+
+**MEDIA IS EXCLUDED.** The 2026-09-11 burn session was two discs — one Ritek
+and one **Taiyo Yuden**, the reference-grade CD-R of the era. Both failed.
+Test A0 is answered, negative.
+
+**Test B (DVD±R) is DECLINED by Keith** — no DVD blanks, unwilling to buy a
+stack he has no use for. Do not propose it again.
+
+So: not the media, not the bridge, not the host, not our code, and no donor
+pickup exists. **The diagnosis is complete and the repair routes are closed.**
+What remains is the replacement path, and the read-side work, which is
+unaffected.
+
 **BOTH REPORTS LANDED 2026-09-12 09:55.** What changed:
 - **No donor part exists.** The PX-716's pickup is `SRU3541`, unique to this
   model; cross-brand donors are real for the PX-708/712 and PX-755/760 and
