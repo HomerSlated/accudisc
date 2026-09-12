@@ -11,9 +11,19 @@ attached; the blow-by-blow reasoning that produced it is not retained.
 
 **A standing rule, not a preference.** The starved-source arms (cells 3, 4, 5,
 6 and any variant) drove ~3 600 BURN-Proof stop/start link operations through
-the pickup on each of eight discs. That is the most plausible thing to have
-finished a 21-year-old write laser. **Those tests, and anything like them, are
-never to be run again.** Every starved arm in the burn-matrix and
+the pickup on each of eight discs. **Those tests, and anything like them, are
+never to be run again.**
+
+**The rule stands; the reason given for it on 09-12 morning does not, and that
+correction is owed.** The drive's own EEPROM life counters, decoded and then
+verified against the live drive the same morning, put **lifetime CD-write time
+at 2 h 35 m** (1 h 04 m before this campaign, +1 h 30 m during it). No
+published degradation model wears out a write diode in hours like that, so
+"the link cycling wore the laser out" is **weakly supported at best**. It is
+not refuted either — single-event damage and 20 years of shelf ageing are
+neither of them hour-proportional. What justifies the rule regardless: the
+tests cost discs and mechanism for a branch the fake drive in
+`tests/test_burn_flow.c` already covers at zero cost. Every starved arm in the burn-matrix and
 media-safe-writing plans below is withdrawn by this rule; a future write
 experiment is a normal fed burn or it does not happen.
 
@@ -29,12 +39,43 @@ recognition (reading measurably unchanged). **The drive writes marks it cannot
 read back, and its own power calibration takes ~20 s before reporting
 success.**
 
+**BOTH REPORTS LANDED 2026-09-12 09:55.** What changed:
+- **No donor part exists.** The PX-716's pickup is `SRU3541`, unique to this
+  model; cross-brand donors are real for the PX-708/712 and PX-755/760 and
+  **not for this one**. So every teardown/OPU/pot route terminates at a wall,
+  and confirming "dead OPU" buys nothing actionable.
+- **The media was never a controlled input.** Every failure is on Ritek blanks
+  from one spindle, and marginal dye reproduces all four signatures. One disc
+  of another brand is the cheapest experiment available (test A0).
+- **DVD write has never been re-tested** (counter unmoved at 24 h 18 m). The
+  pickup has separate 780 nm and 650 nm diodes, so a DVD±R burn separates the
+  CD write channel from everything shared (test B).
+- The self-test is fully documented from the manual (§7.1): both CABLE SELECT
+  and SLAVE jumpered, IDE ribbon off, hold eject while powering up.
+
 Research commissioned 2026-09-12 into repair routes — donor pickups and
 cross-brand compatibility, the replacement procedure, lens-cleaning chemicals,
 worm/rail lubricant grades, the pots on the OPU, and the drive's built-in
 self-diagnostic — report to land in
 `private/research/incoming/2026-09-12-plextor-laser-repair.md`. Keith's
-starting source: `forum.redump.org/topic/40219/`. Note the second-hand market
+starting source: `forum.redump.org/topic/40219/`.
+
+**Connection research also commissioned** →
+`private/research/incoming/2026-09-12-external-optical-connection.md`: which
+USB-SATA bridge chipsets really pass ATAPI *and* raw CDBs with sense intact,
+optical enclosures, cheap USB drives, and the longer-cable/eSATA routes, priced
+for the UK.
+**ADDENDUM, Keith 2026-09-12 09:27, to answer once that report lands:** his
+preferred shape is a **slot bracket carrying a real SATA port on the I/O
+plate**, fed by an internal cable to a motherboard SATA header; failing that,
+an **eSATA bracket plus an eSATA-to-SATA cable carrying power as well as
+data**. Specific questions: do plain SATA pass-through brackets exist, and are
+they sound for an external run (that connector is not designed for one, and
+1 m is the limit for the WHOLE path); and does the **eSATAp / "power over
+eSATA"** category still ship in a **12 V** variant, which an optical drive
+needs, on a bracket fed by Molex from the PSU. Name buyable parts.
+
+Note the second-hand market
 is spiking (Sony ending physical-media game production), so a replacement
 drive may be months away.
 
