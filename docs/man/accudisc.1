@@ -588,6 +588,26 @@ successful eject therefore takes as long as the tray does (under two seconds
 on a PX\-716A).
 .SS load
 Close the tray / load the disc.
+.PP
+It returns when the disc is
+.B usable,
+not when the command was accepted: after the tray shuts, the drive spends
+between one and eighteen seconds (measured, PX\-716A) refusing commands with
+sense
+.I 2/04/01
+while it works out what it is holding, and a TOC read issued during that window
+comes back wrong or empty. So
+.B load blocks
+\(em typically around twenty seconds in total, most of it the kernel's own
+tray\-close \(em and gives up after sixty. Closing the tray with no disc in it
+is not an error.
+.PP
+The same waiting applies to every ordinary read command, so a script no longer
+needs a
+.BR sleep
+between
+.B load
+and whatever it does next.
 .SS read
 Read CD\-DA sectors. See
 .B READ OPTIONS

@@ -132,6 +132,25 @@ Every row below was read out of `cli/main.c`, not inferred from this document.
 | 1 | any | **no library equivalent.** Argument and local-file validation happen before any device call; in-process that is the caller's own code |
 | 0 | any | none of the above |
 
+**Drive readiness (0.38.0) changes TIMING, not exit codes.** A command that
+meets a drive still evaluating a freshly loaded disc (`2/04/xx` NOT READY /
+BECOMING READY) is now re-issued every 250 ms for up to 60 s instead of failing,
+and one that meets a unit attention (`6/28`, `6/29`) is re-issued at once, up to
+three times. So a call that used to exit 2 within milliseconds may now exit 0
+after seconds. Three things a machine consumer should know:
+
+- **`load` blocks** until the disc is usable — around 20 s on a PX-716A, most of
+  it the kernel's tray-close ioctl. A script no longer needs a `sleep` after it.
+- **Nothing is probed in advance.** A ready drive issues exactly the commands it
+  always did, in the same order, at the same cost. The retry is reactive.
+- **Only pure reads are ever repeated**, from an allowlist in
+  `src/drive/ready.c`. No write, no MODE SELECT, no vendor opcode, and nothing
+  at all during the data phase of a burn.
+
+A timeout is `ACCUDISC_ERR_IO` (exit 2) with the elapsed time in
+`accudisc_last_io()`. "No disc" (`2/3A/xx`) is never waited on — it fails
+immediately, as it always did.
+
 Three properties of that table are load-bearing:
 
 - **`ERR_NOTFOUND` is the caveat code throughout.** It means the drive answered

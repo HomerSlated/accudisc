@@ -142,7 +142,7 @@ void accudisc_last_sense(const accudisc_device *dev, accudisc_sense *out)
     *out = dev->last_sense;
 }
 
-int adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
+static int exec_once(struct accudisc_device *dev, adsc_cmd *cmd)
 {
     uint32_t seq = 0;
     uint64_t t0 = 0;
@@ -168,6 +168,69 @@ int adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
         adsc_io_detail(cmd, dev->last_io, sizeof(dev->last_io));
     if (dev->trace)
         adsc_trace_after(dev, cmd, rc, seq, t0, shown);
+    return rc;
+}
+
+/* The readiness layer (0.38.0). Reactive by design: nothing is probed ahead of
+ * time, so a ready drive — the overwhelmingly common case — pays exactly
+ * nothing, and no extra command is ever inserted between two of the caller's.
+ * A proactive TEST UNIT READY before every command was considered and rejected
+ * for that second reason above all: it would have landed between the WRITE(10)s
+ * of a live burn.
+ *
+ * Both retried classes mean THE COMMAND DID NOT EXECUTE — that is what makes
+ * re-issuing it a repeat rather than a second action — and even so the retry
+ * is confined to the opcodes on adsc_op_repeatable()'s allowlist. */
+int adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
+{
+    unsigned ua = 0, waited = 0;
+    int rc = exec_once(dev, cmd);
+
+    while (rc == ACCUDISC_ERR_SENSE && adsc_op_repeatable(cmd->cdb[0])) {
+        int what = adsc_ready_classify(rc, &dev->last_sense);
+
+        if (what == ADSC_READY_RETRY_NOW) {
+            if (ua++ >= ADSC_UA_RETRIES)
+                break;
+            adsc_dev_trace_note(dev, "unit attention (%u/%02X/%02X) on %s — "
+                                     "the command did not execute; re-issuing "
+                                     "(%u/%u)",
+                                dev->last_sense.key, dev->last_sense.asc,
+                                dev->last_sense.ascq,
+                                adsc_op_name(cmd->cdb[0]), ua, ADSC_UA_RETRIES);
+            rc = exec_once(dev, cmd);
+            continue;
+        }
+        /* TEST UNIT READY is excluded from the WAIT branch on purpose: it is
+         * the question itself, and a layer that retried it until the answer
+         * changed would be answering for the caller who asked. */
+        if (what != ADSC_READY_WAIT || dev->ready_wait_off
+            || cmd->cdb[0] == 0x00)
+            break;
+        if (waited >= ADSC_READY_TIMEOUT_MS) {
+            adsc_dev_log(dev, "drive still not ready after %u.%us (%u/%02X/%02X)"
+                              " — giving up on %s",
+                         waited / 1000, (waited % 1000) / 100,
+                         dev->last_sense.key, dev->last_sense.asc,
+                         dev->last_sense.ascq, adsc_op_name(cmd->cdb[0]));
+            break;
+        }
+        adsc_dev_trace_note(dev, "drive not ready (%u/%02X/%02X) on %s — "
+                                 "waiting %u ms (%u of %u elapsed)",
+                            dev->last_sense.key, dev->last_sense.asc,
+                            dev->last_sense.ascq, adsc_op_name(cmd->cdb[0]),
+                            ADSC_READY_POLL_MS, waited, ADSC_READY_TIMEOUT_MS);
+        adsc_sleep_ms(ADSC_READY_POLL_MS);
+        waited += ADSC_READY_POLL_MS;
+        rc = exec_once(dev, cmd);
+    }
+    /* Say so once, outside the trace, when the pause was long enough for a
+     * human to have wondered. Silence under the threshold is deliberate: a
+     * message on every command would train the reader to skip this one. */
+    if (waited >= ADSC_READY_NOTE_MS && rc == ACCUDISC_OK)
+        adsc_dev_log(dev, "drive was not ready; %s succeeded after %u.%us",
+                     adsc_op_name(cmd->cdb[0]), waited / 1000,
+                     (waited % 1000) / 100);
     return rc;
 }
 
@@ -446,9 +509,29 @@ int accudisc_eject(accudisc_device *dev)
 
 int accudisc_load(accudisc_device *dev)
 {
+    int rc;
+
     if (!dev)
         return ACCUDISC_ERR_INVAL;
-    return adsc_transport_load(&dev->t);
+    dev->last_io[0] = '\0';
+    memset(&dev->last_sense, 0, sizeof(dev->last_sense));
+    rc = adsc_transport_load(&dev->t);
+    if (rc != ACCUDISC_OK)
+        return rc;
+    /* Return when the disc is USABLE, not when the ioctl was accepted — the
+     * same contract `eject` took in 0.37.0, and here it is the whole point.
+     * Measured 2026-09-12 (tools/readyprobe.c): the drive spends ~1.0 s after
+     * a software reload answering 2/04/01 BECOMING READY, and our own docs
+     * carried a hand-operated workaround for it ("the first read after a
+     * reload can report no_medium; retry once"). This is that workaround,
+     * moved into the code where it belongs.
+     *
+     * A terminal answer is NOT an error here. `load` on an empty tray
+     * legitimately leaves the drive with no medium, and the caller finds that
+     * out by asking — turning it into a failed load would break `load` as a
+     * way of closing a tray. */
+    rc = adsc_dev_wait_ready(dev, ADSC_READY_TIMEOUT_MS);
+    return rc == ACCUDISC_ERR_SENSE ? ACCUDISC_OK : rc;
 }
 
 

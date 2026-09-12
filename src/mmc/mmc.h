@@ -69,6 +69,11 @@ int adsc_mmc_get_configuration(struct accudisc_device *dev, uint16_t feature,
                                uint8_t *out, uint32_t cap);
 
 /* START STOP UNIT; start=0, loej=0 spins the spindle down without ejecting. */
+/* TEST UNIT READY: six bytes, no data, and the only command whose whole job is
+ * the readiness question. `cmd` is caller-owned so the poll loop can inspect
+ * the attempt; pass NULL if only the rc matters. */
+int adsc_mmc_test_unit_ready(struct accudisc_device *dev, adsc_cmd *cmd);
+
 int adsc_mmc_start_stop(struct accudisc_device *dev, unsigned start,
                         unsigned loej);
 

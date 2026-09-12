@@ -17,6 +17,7 @@ set(ACCUDISC_SOURCES
     drive/offsets.c
     drive/uncap.c
     drive/census.c
+    drive/ready.c
     drive/media_db.c
     drive/disc.c
     toc/toc.c

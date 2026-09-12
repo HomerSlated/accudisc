@@ -260,12 +260,51 @@ static int opt_val(char **argv, int argc, int *ip, const char *name,
     return 1;
 }
 
+/* Plain English for the handful of sense codes a user can actually act on.
+ * NULL for everything else, which keeps the triple as the answer rather than
+ * inviting a guess at what it meant.
+ *
+ * Only these. The temptation is a lookup table of every ASC/ASCQ in SPC, and
+ * that would be worse than useless here: most of them translate to a sentence
+ * no more actionable than the code, and a long table makes the few that ARE
+ * actionable harder to notice. Every entry below names something the person at
+ * the keyboard can do. */
+static const char *sense_in_words(const accudisc_sense *s)
+{
+    if (!s->valid)
+        return NULL;
+    if (s->key == 0x02 && s->asc == 0x3A)
+        return s->ascq == 0x02
+                   ? "there is no disc in the drive, and the tray is open"
+                   : "there is no disc in the drive";
+    if (s->key == 0x02 && s->asc == 0x04)
+        return "the drive is still getting ready and did not become ready in "
+               "time";
+    if (s->key == 0x05 && s->asc == 0x64)
+        return "the drive refuses this read on this track — asking for CD-DA "
+               "sectors from a data track does this";
+    if (s->key == 0x03 && s->asc == 0x02)
+        return "the drive could not complete a seek — a medium or mechanical "
+               "fault, not a command error";
+    if (s->key == 0x05 && s->asc == 0x2C)
+        return "the drive rejected the command as out of sequence — a tray "
+               "cycle usually clears it";
+    return NULL;
+}
+
 static int fail_dev(accudisc_device *dev, const char *what, int err)
 {
     accudisc_sense s;
+    const char *words;
 
     accudisc_last_sense(dev, &s);
     fprintf(stderr, "accudisc: %s: %s", what, accudisc_strerror(err));
+    /* The triple stays, always, and the words are added beside it — never
+     * instead of it. The code is what gets pasted into a bug report and
+     * grepped for in this repo's notes; a translation that replaced it would
+     * make the output friendlier and the archive poorer. */
+    if ((words = sense_in_words(&s)) != NULL)
+        fprintf(stderr, " — %s", words);
     if (s.valid)
         fprintf(stderr, " (key=0x%x asc=0x%02x ascq=0x%02x)", s.key, s.asc,
                 s.ascq);

@@ -22,6 +22,18 @@ struct accudisc_device {
      * (unsupported/illegal/unprivileged) — fall back to CDROM_SELECT_SPEED. */
     int streaming;
 
+    /* Non-zero suspends the NOT-READY cooldown in adsc_dev_exec. Set for the
+     * duration of a burn and nowhere else.
+     *
+     * The reason is specific rather than precautionary. READ BUFFER CAPACITY
+     * (0x5C) is on the repeatable allowlist AND is issued inside the write
+     * loop; a 250 ms sleep there is a quarter-second in which the drive's
+     * buffer is not being fed, which is the one thing a burn cannot afford. A
+     * readiness probe that causes an underrun is worse than the bug it fixes.
+     * Unit-attention retries are NOT suspended — they cost no time at all, and
+     * a UA mid-burn is precisely when re-issuing the read matters. */
+    int ready_wait_off;
+
     /* Vendor read-speed uncap, as set THROUGH THIS HANDLE: 0 = we never set it,
      * 1 = we set it on, -1 = we set it off. The uncap is persistent drive
      * state, so this is not the whole story — a prior session can have left it
@@ -88,6 +100,55 @@ int adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd);
  * was opened with a trace flag. For the steps of a multi-command operation
  * (the burn's phases), so the per-command lines around it can be read as a
  * sequence rather than a list. Silent — and free — with tracing off. */
+/* ---- drive readiness (0.38.0, src/drive/ready.c) --------------------------
+ *
+ * See that file's header for the measurements that shaped this; the short
+ * version is that TEST UNIT READY is the only indicator on the PX-716A that
+ * changes state when a freshly loaded disc becomes usable, so it is the only
+ * one consulted. */
+enum {
+    ADSC_READY_YES,       /* GOOD — proceed */
+    ADSC_READY_WAIT,      /* 2/04/xx — becoming ready; cool down and re-ask */
+    ADSC_READY_RETRY_NOW, /* 6/28|29 — unit attention; the command did not
+                           * execute, so re-issue it at once */
+    ADSC_READY_NO_MEDIUM, /* 2/3A/xx — terminal, no disc. Never retried */
+    ADSC_READY_OTHER      /* not a readiness condition; hand it back unchanged */
+};
+
+/* Poll interval and cap. MEASURED, not chosen, and the spread is wide: on the
+ * PX-716A the window after a software reload was ~1.0 s in one run
+ * (tools/readyprobe.c, 2026-09-12) and ~18 s in another on the same disc the
+ * same afternoon, with a hand-loaded disc needing 8 s once and a call blocking
+ * 20 s another time. One drive, one afternoon, a factor of eighteen.
+ *
+ * The cap is 60 s because the two failure directions are not symmetric. Too
+ * high costs waiting longer before reporting a drive that is genuinely stuck —
+ * annoying, and bounded. Too low returns "not ready" for a drive that WOULD
+ * have become ready, which is a false failure of exactly the kind this file
+ * exists to remove; the first draft's 30 s left barely 12 s of headroom over
+ * an observed case, which is not headroom. */
+#define ADSC_READY_POLL_MS 250u
+#define ADSC_READY_TIMEOUT_MS 60000u
+/* Below this, a wait is not worth a line of output. */
+#define ADSC_READY_NOTE_MS 1000u
+/* Unit attentions can queue (a media change and a reset can both be pending),
+ * so one retry is not always enough — but an unbounded loop against a drive
+ * stuck in UA is a hang. These retries cost nothing: no sleep, the command
+ * simply did not execute. */
+#define ADSC_UA_RETRIES 3u
+
+void adsc_sleep_ms(long ms);
+
+/* Pure, and therefore testable without a drive — tests/test_ready.c. */
+int adsc_ready_classify(int rc, const accudisc_sense *s);
+int adsc_op_repeatable(uint8_t op);
+
+/* Poll TEST UNIT READY until the drive is ready. ACCUDISC_OK when it is;
+ * ACCUDISC_ERR_SENSE for a terminal condition (no medium, tray open — the
+ * drive's own sense is in dev->last_sense and says which); ACCUDISC_ERR_IO on
+ * timeout, with an explanation in dev->last_io. */
+int adsc_dev_wait_ready(struct accudisc_device *dev, unsigned timeout_ms);
+
 void adsc_dev_trace_note(struct accudisc_device *dev, const char *fmt, ...)
 #if defined(__GNUC__)
     __attribute__((format(printf, 2, 3)))

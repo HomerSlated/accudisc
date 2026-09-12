@@ -381,6 +381,19 @@ int adsc_mmc_get_configuration(struct accudisc_device *dev, uint16_t feature,
     return adsc_dev_exec(dev, &cmd);
 }
 
+int adsc_mmc_test_unit_ready(struct accudisc_device *dev, adsc_cmd *cmd)
+{
+    adsc_cmd local = {0};
+    adsc_cmd *c = cmd ? cmd : &local;
+
+    memset(c, 0, sizeof(*c));
+    c->cdb[0] = 0x00;
+    c->cdb_len = 6;
+    c->dir = ADSC_XFER_NONE;
+    c->timeout_ms = ADSC_TIMEOUT_CTRL_MS;
+    return adsc_dev_exec(dev, c);
+}
+
 int adsc_mmc_start_stop(struct accudisc_device *dev, unsigned start,
                         unsigned loej)
 {

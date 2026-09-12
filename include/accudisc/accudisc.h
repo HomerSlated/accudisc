@@ -27,7 +27,42 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 37 /* 0.37.0: TWO SILENT SUCCESSES CLOSED, both
+#define ACCUDISC_VERSION_MINOR 38 /* 0.38.0: DRIVE READINESS. Until now nothing
+                                  * in this library ever asked the drive
+                                  * whether it was ready; the first command
+                                  * after a media change simply raced the
+                                  * drive's own evaluation of the new disc and
+                                  * reported whatever came back. Every command
+                                  * on an internal allowlist of pure reads now
+                                  * re-issues itself when the drive answers
+                                  * NOT READY / BECOMING READY (2/04/xx, 250 ms
+                                  * apart, up to 60 s) or UNIT ATTENTION
+                                  * (6/28|29, at once, up to 3 times). Nothing
+                                  * is probed in advance, so a ready drive pays
+                                  * nothing and no command is ever inserted
+                                  * between two of the caller's.
+                                  *
+                                  * accudisc_load now returns when the disc is
+                                  * USABLE rather than when the ioctl was
+                                  * accepted, matching what accudisc_eject took
+                                  * in 0.37.0. It can therefore block, and it
+                                  * removes the hand-operated rule our own docs
+                                  * carried ("the first read after a reload can
+                                  * report no_medium; retry once").
+                                  *
+                                  * WRITES ARE NEVER REPEATED. The allowlist is
+                                  * an allowlist, not a denylist, so an opcode
+                                  * nobody considered is not retryable; and the
+                                  * cooldown is suspended for the duration of a
+                                  * burn so a readiness wait can never sit
+                                  * between two WRITE(10)s.
+                                  *
+                                  * A caller sees fewer spurious failures and,
+                                  * on a drive that is slow to become ready,
+                                  * longer calls. No declaration or struct
+                                  * moves.
+                                  *
+                                  * 0.37.0: TWO SILENT SUCCESSES CLOSED, both
                                   * of them a call reporting OK for work that
                                   * did not happen.
                                   *
@@ -1943,8 +1978,24 @@ ACCUDISC_API int accudisc_spindle_stop(accudisc_device *dev);
  * that cannot report its own status is believed rather than accused. */
 ACCUDISC_API int accudisc_eject(accudisc_device *dev);
 
-/* Close the tray / load the disc (START STOP UNIT, LoEj=1 Start=1). A slot
- * loader with no disc may reject this; the drive's sense is returned. */
+/* Close the tray / load the disc (block-layer CDROMCLOSETRAY).
+ *
+ * Since 0.38.0 this returns when the disc is USABLE, not when the ioctl was
+ * accepted — it polls TEST UNIT READY until the drive stops answering
+ * "becoming ready". Measured on a PX-716A 2026-09-12: the drive spends between
+ * 1 s and 18 s after a reload refusing commands with 2/04/01, and a caller
+ * that read the TOC immediately got `no_medium` or a wrong answer. Our own
+ * documentation carried the workaround as a rule for humans to follow; this is
+ * that rule moved into the code.
+ *
+ * So it BLOCKS, for as long as the drive takes (the kernel's tray-close ioctl
+ * is itself the larger part of that — around 20 s on this drive), and gives up
+ * after 60 s.
+ *
+ * An empty tray is NOT an error: closing a tray with no disc in it is a
+ * legitimate thing to do, and the caller discovers there is no medium by
+ * asking. Turning that into a failed load would break `load` as a way of
+ * shutting the tray. */
 ACCUDISC_API int accudisc_load(accudisc_device *dev);
 
 /* ---- TOC ------------------------------------------------------------------ */

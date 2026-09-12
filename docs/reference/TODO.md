@@ -5156,7 +5156,7 @@ read-only open, not a speed matter.
   verify (`--verify-toc`) that diffs the burned TOC vs the source .toc and warns
   on any offset delta.
 
-## `[P1]` "ARE YOU READY?" — a bounded readiness gate on every drive request — Keith, 2026-09-12
+## `[P1]` "ARE YOU READY?" — a bounded readiness gate — BUILT 0.38.0, 2026-09-12
 
 **The request, verbatim:** "every request to the drive needs to ask, essentially,
 'Are you ready?', with a timed cooldown before asking again if not, and a max
@@ -5320,9 +5320,55 @@ polling succeed in 1.0 s) and "the tray was closed too soon" (four back-to-back
 instrument that will characterise it if it recurs; the wedge state and its
 recovery (a tray cycle) are now on record.
 
-**Open, for Keith:** whether the policy is fixed, or exposed as API
-(`tries`/`cooldown_ms`). Exposing it is a public-header change and therefore an
-outbox notification; the defaults have to be right regardless, so start there.
+### BUILT — 0.38.0, verified on hardware 2026-09-12 17:55
+
+`src/drive/ready.c` (classifier + allowlist + poll loop), the retry layer in
+`adsc_dev_exec`, the proactive wait in `accudisc_load`, `tests/test_ready.c`.
+
+**Reactive, as designed**: nothing is probed in advance, so a ready drive pays
+nothing and no command is inserted between two of the caller's.
+
+**The falsification run, which is the part worth keeping.** Two faults were
+injected and the suite caught both: making `2/3A` (no medium) classify as WAIT
+— three failures — and letting `0x2A` WRITE(10) into the repeat allowlist — one
+failure, by name. The allowlist test is written as an explicit roll-call of the
+dangerous opcodes rather than a spot check, because the failure it guards
+against is one specific opcode leaking in, which "some opcode is excluded"
+would not catch.
+
+**Measured behaviour, before and after**, `eject` then `load` then `toc` with no
+sleep anywhere:
+
+- before: `toc` answered `no_medium` or `unreadable`, and the session's rule was
+  a human one — "retry once before believing it";
+- after: `accudisc: drive became ready after 1.0s`, then `toc` correct, first
+  ask, `rc=0`.
+
+`load` itself took **20.8 s**, of which only **1.0 s** was our wait — the
+kernel's `CDROMCLOSETRAY` blocks for the rest. Worth knowing before anyone
+blames the gate for the pause.
+
+**The terminal path was watched firing too**: with the tray open, `toc`,
+`media` and `disc` all returned in **0.01 s** — no waiting on a condition that
+waiting cannot fix.
+
+**Cap raised 30 s → 60 s during the hardware run.** The window is not a
+constant: 1.0 s in one reload and ~18 s in another, on the same disc the same
+afternoon, plus 8 s hand-loaded and a 20 s block earlier. One drive, one
+afternoon, a factor of eighteen. The two failure directions are not symmetric —
+too high costs a longer wait before reporting a genuinely stuck drive, too low
+manufactures a false failure of exactly the kind this work removes.
+
+**Also landed: sense codes in words.** `fail_dev` now prints a plain sentence
+beside the triple for the handful of codes a user can act on — no disc / tray
+open, still-getting-ready, `5/64` CD-DA read on a data track, `3/02` seek
+failure, `5/2C` out of sequence. **Beside, never instead**: the triple is what
+gets pasted into a report and grepped for in these notes.
+
+**Still open, for Keith:** whether the policy is exposed as API
+(`tries`/`cooldown_ms`). Not needed so far — the defaults are measured and the
+waits are traced — and it would be a public-header change with an outbox
+notification behind it.
 
 ## Probes / diagnostics
 

@@ -591,6 +591,21 @@ int adsc_write_run(struct accudisc_device *dev,
      * both answer 5/2C/00 COMMAND SEQUENCE ERROR until it is released). */
     session_open = 1;
     burn_started = 1;
+    /* From here until `done:` the drive is mid-DAO and everything depends on
+     * keeping its buffer fed, so the readiness cooldown is suspended: READ
+     * BUFFER CAPACITY is on the repeatable allowlist and is issued inside the
+     * write loop, and a 250 ms sleep there is a quarter-second of not feeding
+     * the drive. Unit-attention retries stay on — they cost no time. Set after
+     * the cue sheet rather than at entry so the blank check and power
+     * calibration, which run before any data is owed, still get the wait.
+     *
+     * INVARIANT, audited 2026-09-12: `done:` is the ONLY exit from here on —
+     * the one bare `return` in this function is the argument check at the top,
+     * which runs long before this line. An early return added between here and
+     * `done:` would leave the flag set for the life of the handle and silently
+     * disable readiness waiting for every later command, with no symptom until
+     * something failed that would have succeeded. */
+    dev->ready_wait_off = 1;
 
     /* 4b. CD-Text lead-in, written BEFORE the gap: it occupies the lead-in
      * extent immediately preceding LBA -150 (cdrdao order: cue sheet ->
@@ -947,6 +962,7 @@ int adsc_write_run(struct accudisc_device *dev,
     }
 
 done:
+    dev->ready_wait_off = 0;
     /* ABORT THE SESSION IN THE DRIVE BEFORE ANYTHING ELSE.
      *
      * Returning an error is not enough: the drive is mid-DAO and waiting for
