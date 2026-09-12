@@ -207,7 +207,7 @@ laser down on output. Reads need far less power. In order: **clean the lens**,
 then try **4x** (cells 5 and 6 burnt cleanly at 4x on 09-06); a weakening
 writer often still manages low speed, which would be a diagnosis and a
 workaround at once. **Every burn from here costs a blank, so change one thing
-at a time.** 32 blanks left.
+at a time.** **23 blanks left, counted 2026-09-12 20:25** (was 32 on 09-11; nine went in a day and a half — three loose discs discarded unread, two that burnt and would not read back, the blank spent on the failed 48x AmigaOS burn, and the burn-matrix attempts). The parked post-service queue needs four, so the budget is not a constraint on the plan; it is recorded so nobody has to guess.
 
 The ring-size lead (528 vs 666 slots) is retired: an independent writer fails
 the same way. No blank need be spent on it.
