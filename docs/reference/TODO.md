@@ -7,6 +7,53 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## `[P0]` HARDWARE TESTING IS SUSPENDED until the drive is serviced — Keith, 2026-09-12 20:19
+
+**"I think we need to stop any further testing until the drive has been
+serviced."** No burns, no censuses, no read sweeps, no disc identification —
+nothing that costs a disc or drive time — until the mechanism has been cleaned
+and re-lubricated. Software work, tests against the fake drive in
+`tests/test_burn_flow.c`, and CDEmu (`/dev/sr1`) are all unaffected.
+
+**Why it is the right call and not merely caution:** every question still open
+would be answered *through* a drive we already suspect of a mechanical fault,
+so a negative result could not be attributed and a positive one could not be
+trusted. The single-variable tests below are worth running — after service, not
+before.
+
+**Parked, ready to resume in this order:**
+
+1. **The AmigaOS ISO at `speed=16`.** One disc. Changes ONLY the speed against
+   the 48x burn that failed at LBA 203 076 on 2026-09-12. The write-speed table
+   now stands at 4 failures at 48x against 2 byte-exact passes at 16x, and this
+   is the test that promotes that from a pattern to a finding.
+2. **`cdrecord`, 16x, CD-DA.** Moves content alone against T1/T2, and it is the
+   axis that decides whether AccuDisc's own use case works at all.
+3. **A BOUNDED probe of the outer edge** — a handful of single-attempt reads
+   around LBA 330 000-347 000 on the ABBA disc, never a scan (see the 19:19
+   constraint below). The census was stopped at 330 525, ~10 350 sectors short
+   of the predicted step, so that hypothesis is untested rather than refuted.
+4. **`accudisc write` at 16x** — the first test of our OWN write path since the
+   reversal. Nothing has implicated it since cdrdao cleared it on 09-11.
+
+**Related standing constraint, Keith 2026-09-12 19:19:** no grinding read loops
+on damaged regions. A census across a failing area makes the drive read, fail,
+reset and retry indefinitely.
+
+**The service itself.** `private/research/incoming/2026-09-12-plextor-laser-repair.md`
+already carries it: §5 lubricants (MOLYKOTE EM-30L first choice — NLGI 1,
+silicone-free, and DuPont's own TDS reports no stress cracking on ABS/POM/PC,
+which is the governing constraint; Super Lube 21030 as the pragmatic UK
+alternative), §4 lens cleaning, §3 teardown with a photo walkthrough.
+
+**Do §5.0's free test FIRST, before buying anything:** with the drive open and
+unpowered, turn the worm/lead-screw by hand and run the sled through its full
+travel. Sam's CD FAQ: *"There should be no sticky positions or places where
+movement is noticeably more difficult."* If it is smooth end to end, the
+lubricant hypothesis is dead and nothing should be applied. That test costs
+nothing and could settle the question outright — and it probes the rail
+extremes directly, which is where Keith expects the dried grease to be.
+
 ## `[P0]` NEVER AGAIN: no starved-buffer burns — Keith, 2026-09-12
 
 **A standing rule, not a preference.** The starved-source arms (cells 3, 4, 5,
