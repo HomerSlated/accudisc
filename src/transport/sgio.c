@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <linux/cdrom.h>
 #include <scsi/sg.h>
 #include <stdio.h>
@@ -132,15 +133,82 @@ int adsc_transport_select_speed(adsc_transport *t, unsigned speed_x)
     return ACCUDISC_OK;
 }
 
-int adsc_transport_eject(adsc_transport *t)
+/* How long to wait for the tray to actually move before calling the eject a
+ * failure, and how often to look. Measured, not chosen: a clean eject on the
+ * PX-716A (2026-09-12) had the tray reported open 1.80 s after the ioctl
+ * returned, including the cost of a separate process opening the device to
+ * ask. 5 s is that with headroom for a slower mechanism; the poll exits the
+ * instant the tray moves, so a healthy drive never pays the cap. */
+#define ADSC_EJECT_VERIFY_MS 5000
+#define ADSC_EJECT_POLL_MS 100
+
+/* Is a disc still sitting in the drive? 1 = yes (definitely), 0 = no or the
+ * drive would not say. Only a POSITIVE answer is load-bearing — a drive that
+ * does not implement CDROM_DRIVE_STATUS, or that answers CDS_NO_INFO, must
+ * never be reported as having failed to eject on the strength of a shrug. */
+static int disc_still_present(int fd)
 {
+    int st = ioctl(fd, CDROM_DRIVE_STATUS, CDSL_CURRENT);
+
+    return st == CDS_DISC_OK;
+}
+
+int adsc_transport_eject(adsc_transport *t, char *why, size_t why_cap)
+{
+    int lock_errno = 0;
+    unsigned waited = 0;
+
     /* Holding the device open auto-locks the drive door (CDO_LOCK), and
      * CDROMEJECT silently no-ops against a locked door — so unlock first,
-     * exactly as eject(1)/util-linux do. The unlock is best-effort. */
-    (void)ioctl(t->fd, CDROM_LOCKDOOR, 0);
-    if (ioctl(t->fd, CDROMEJECT) < 0)
+     * exactly as eject(1)/util-linux do.
+     *
+     * The unlock is best-effort but NOT uninteresting: the kernel refuses it
+     * with EBUSY when use_count != 1 (cdrom_ioctl_lock_door), i.e. when a
+     * mounted filesystem or another process also holds the device. That is
+     * the single most useful thing we can tell the user when the tray then
+     * does not move, so keep the errno rather than discarding it. */
+    if (ioctl(t->fd, CDROM_LOCKDOOR, 0) < 0)
+        lock_errno = errno;
+
+    if (ioctl(t->fd, CDROMEJECT) < 0) {
+        if (why && why_cap)
+            snprintf(why, why_cap, "CDROMEJECT: %s", strerror(errno));
         return ACCUDISC_ERR_IO;
-    return ACCUDISC_OK;
+    }
+
+    /* Do not believe the return value. Measured on the PX-716A 2026-09-12
+     * with a second process holding /dev/sr0 open (the same use_count
+     * condition a mount creates): CDROMEJECT returns 0, no error is reported
+     * anywhere, and the tray stays shut — verified by polling the drive once
+     * a second for twelve seconds. A mount never goes away on its own, so
+     * this is a permanently wrong success, not a slow one. */
+    while (waited < ADSC_EJECT_VERIFY_MS) {
+        if (!disc_still_present(t->fd))
+            return ACCUDISC_OK;
+        usleep(ADSC_EJECT_POLL_MS * 1000);
+        waited += ADSC_EJECT_POLL_MS;
+    }
+    if (!disc_still_present(t->fd))
+        return ACCUDISC_OK;
+
+    if (why && why_cap) {
+        if (lock_errno == EBUSY)
+            snprintf(why, why_cap,
+                     "the drive accepted the eject but the disc is still "
+                     "loaded after %u.%us — the door is locked because "
+                     "something else has the device open; unmount it (or "
+                     "close whatever is using it) and try again",
+                     ADSC_EJECT_VERIFY_MS / 1000,
+                     (ADSC_EJECT_VERIFY_MS % 1000) / 100);
+        else
+            snprintf(why, why_cap,
+                     "the drive accepted the eject but the disc is still "
+                     "loaded after %u.%us (lock_door: %s)",
+                     ADSC_EJECT_VERIFY_MS / 1000,
+                     (ADSC_EJECT_VERIFY_MS % 1000) / 100,
+                     lock_errno ? strerror(lock_errno) : "ok");
+    }
+    return ACCUDISC_ERR_IO;
 }
 
 int adsc_transport_load(adsc_transport *t)

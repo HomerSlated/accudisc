@@ -98,8 +98,13 @@ int adsc_transport_exec(adsc_transport *t, adsc_cmd *cmd);
 int adsc_transport_select_speed(adsc_transport *t, unsigned speed_x);
 
 /* Tray control via the block-layer CDROM ioctls (CDROMEJECT / CDROMCLOSETRAY):
- * unprivileged for cdrom-group members, no CAP_SYS_RAWIO needed. */
-int adsc_transport_eject(adsc_transport *t);
+ * unprivileged for cdrom-group members, no CAP_SYS_RAWIO needed.
+ *
+ * eject VERIFIES the tray afterwards rather than believing the ioctl, and
+ * writes a human explanation into `why` (at most why_cap bytes, always
+ * NUL-terminated, left untouched on success) when it has one. See the comment
+ * on the definition for the measurement that made the verification necessary. */
+int adsc_transport_eject(adsc_transport *t, char *why, size_t why_cap);
 int adsc_transport_load(adsc_transport *t);
 
 /* Decode raw sense (fixed 0x70/0x71 and descriptor 0x72/0x73 formats) into

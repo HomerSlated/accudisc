@@ -431,10 +431,17 @@ int accudisc_eject(accudisc_device *dev)
 {
     if (!dev)
         return ACCUDISC_ERR_INVAL;
+    /* Clear both explanation channels first. The eject path issues no SCSI
+     * command, so whatever last_sense holds belongs to some earlier call —
+     * and a caller that prints sense in preference to last_io (the CLI does)
+     * would then attribute a stale CHECK CONDITION to this failure. */
+    dev->last_io[0] = '\0';
+    memset(&dev->last_sense, 0, sizeof(dev->last_sense));
     /* Block-layer CDROMEJECT: unprivileged for cdrom-group members, unlike
      * MMC START STOP UNIT over SG_IO (which the kernel filter can gate on
-     * CAP_SYS_RAWIO). */
-    return adsc_transport_eject(&dev->t);
+     * CAP_SYS_RAWIO). It is also not trustworthy on its own — see
+     * adsc_transport_eject, which verifies the tray moved. */
+    return adsc_transport_eject(&dev->t, dev->last_io, sizeof(dev->last_io));
 }
 
 int accudisc_load(accudisc_device *dev)

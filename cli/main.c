@@ -1178,6 +1178,31 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
     if (err != ACCUDISC_OK)
         return fail_dev(dev, "read toc", err);
 
+    /* The probe times CD-DA reads, so it needs somewhere to read CD-DA from.
+     * Without this the whole table came back `measured=0.00` with `ladder
+     * admitted=none`: well-formed, entirely zero, and silent about the drive
+     * having refused every read with 5/64/00 ILLEGAL MODE FOR THIS TRACK.
+     * That reads as a broken drive, which is the worst possible thing for an
+     * output to imply while being wrong (measured on a data-only disc,
+     * 2026-09-12). Refuse before touching the drive and say which it is.
+     *
+     * The check is "has an audio track", not "is an audio disc": a Mixed Mode
+     * disc is a legitimate target, and its data track shows up below as bands
+     * that report no figure rather than as a refusal here. */
+    unsigned audio_tracks = 0;
+    for (unsigned t = 0; t < toc.track_count; t++)
+        if (ACCUDISC_TRACK_IS_AUDIO(&toc.tracks[t]))
+            audio_tracks++;
+    if (audio_tracks == 0) {
+        fprintf(stderr, "accudisc: speeds: this disc has no audio track, and "
+                        "the probe measures speed by timing CD-DA reads — a "
+                        "drive refuses those on a data track, so every rung "
+                        "would report measured=0.00. Load an audio or Mixed "
+                        "Mode disc. Nothing here says anything about the "
+                        "drive.\n");
+        return 2;
+    }
+
     if (ncand == 0) {
         /* Default rungs: the common ladder, capped at the drive's page 2A
          * maximum (the claim is good enough to pick candidates; the timed
@@ -1326,6 +1351,35 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
         if (!shown)
             printf("none");
         putchar('\n');
+    }
+
+    /* A window that produced no figure had a reason, and the reason is not
+     * visible in an absent token. The pre-flight above rules out the whole-
+     * disc case, so what reaches here is the partial one — a Mixed Mode disc
+     * whose data track swallows some of the bands, or a span with unreadable
+     * sectors in it. Say how many and why, on stderr, so the missing
+     * `inner=`/`middle=`/`outer=` tokens above are read as "not measured
+     * here" rather than as a drive that stalled.
+     *
+     * Counted over the bands actually probed: a quick run has one band per
+     * rung, and counting three would invent two failures per rung. */
+    unsigned windows = (unsigned)ncand * points, blank = 0;
+    for (uint8_t i = 0; i < ncand; i++)
+        for (uint8_t b = 0; b < points; b++)
+            if (!rungs[i].band_cx[b])
+                blank++;
+    if (blank) {
+        accudisc_sense s;
+
+        fprintf(stderr, "accudisc: speeds: %u of %u windows returned no "
+                        "sectors and are reported without a figure, not as "
+                        "0.00 — on a Mixed Mode disc the windows that land in "
+                        "the data track cannot be timed", blank, windows);
+        accudisc_last_sense(dev, &s);
+        if (s.valid)
+            fprintf(stderr, " (last sense key=0x%x asc=0x%02x ascq=0x%02x)",
+                    s.key, s.asc, s.ascq);
+        fputc('\n', stderr);
     }
     return 0;
 }

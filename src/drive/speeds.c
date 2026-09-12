@@ -33,19 +33,32 @@ static double mono_now(void)
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
-/* Stream [lba, lba+n) audio-only; returns sectors actually read. */
+/* Stream [lba, lba+n) audio-only; returns sectors actually read, and reports
+ * WHY it stopped short in *err (ACCUDISC_OK when it did not).
+ *
+ * The rc used to be dropped on the floor, and a window that read nothing was
+ * indistinguishable from a window that read nothing INSTANTLY: both surfaced
+ * as `measured=0.00`. On a data-only disc that is every window of every rung,
+ * so the whole probe printed a well-formed table of zeroes and `ladder
+ * admitted=none` while the drive had refused each read with 5/64/00 ILLEGAL
+ * MODE FOR THIS TRACK — the drive answering correctly, read as a drive fault.
+ * (Measured on the PX-716A against a burnt Fedora ISO, 2026-09-12.) */
 static uint32_t stream_span(struct accudisc_device *dev, uint32_t lba,
-                            uint32_t n, uint8_t *buf)
+                            uint32_t n, uint8_t *buf, int *err)
 {
     uint32_t done = 0;
 
+    *err = ACCUDISC_OK;
     while (done < n) {
         uint32_t c = n - done < SPEEDS_CHUNK ? n - done : SPEEDS_CHUNK;
+        int rc = adsc_mmc_read_cd(dev, lba + done, c, ADSC_SECTOR_CDDA,
+                                  ACCUDISC_C2_NONE, ACCUDISC_SUB_NONE, buf,
+                                  ACCUDISC_BYTES_AUDIO);
 
-        if (adsc_mmc_read_cd(dev, lba + done, c, ADSC_SECTOR_CDDA,
-                             ACCUDISC_C2_NONE, ACCUDISC_SUB_NONE, buf,
-                             ACCUDISC_BYTES_AUDIO) != ACCUDISC_OK)
+        if (rc != ACCUDISC_OK) {
+            *err = rc;
             break;
+        }
         done += c;
     }
     return done;
@@ -215,6 +228,15 @@ int accudisc_probe_speed_ladder(accudisc_device *dev, uint32_t lba,
     if (!buf)
         return ACCUDISC_ERR_NOMEM;
 
+    /* A probe that timed NOTHING has not measured a slow drive, it has not
+     * measured. Keep the first read error so the caller is told which, rather
+     * than being handed zeroes to interpret. `read_any` is the discriminator
+     * and it is deliberately "any window anywhere": one readable window is
+     * enough to make the table a real (if partial) measurement, and the
+     * per-rung zeroes that remain are already reported as absent figures. */
+    int first_err = ACCUDISC_OK;
+    int read_any = 0;
+
     for (uint8_t i = 0; i < ncand; i++) {
         uint32_t want = (uint32_t)candidates[i] * 75;
         accudisc_speed_rung *r = &out[i];
@@ -250,11 +272,19 @@ int accudisc_probe_speed_ladder(accudisc_device *dev, uint32_t lba,
             /* Warm-up: let the drive recalibrate/spin at the new setting
              * and position the head at the window before the clock
              * starts. Also needed per band — the head has just seeked. */
-            stream_span(dev, wlba, SPEEDS_CHUNK, buf);
+            int rc = ACCUDISC_OK;
+
+            stream_span(dev, wlba, SPEEDS_CHUNK, buf, &rc);
 
             double t0 = mono_now();
-            uint32_t done = stream_span(dev, wlba + SPEEDS_CHUNK, want, buf);
+            uint32_t done = stream_span(dev, wlba + SPEEDS_CHUNK, want, buf,
+                                        &rc);
             double secs = mono_now() - t0;
+
+            if (done)
+                read_any = 1;
+            else if (rc != ACCUDISC_OK && first_err == ACCUDISC_OK)
+                first_err = rc;
 
             if (done && secs > 0) {
                 double cx = (double)done / secs / 75.0 * 100.0;
@@ -308,6 +338,8 @@ int accudisc_probe_speed_ladder(accudisc_device *dev, uint32_t lba,
     }
 
     free(buf);
+    if (!read_any && first_err != ACCUDISC_OK)
+        return first_err;
     adsc_speeds_admit(out, ncand, points, SPEEDS_ADMIT_K);
     return ACCUDISC_OK;
 }

@@ -27,7 +27,27 @@ tests cost discs and mechanism for a branch the fake drive in
 media-safe-writing plans below is withdrawn by this rule; a future write
 experiment is a normal fed burn or it does not happen.
 
-## `[P1]` THE WRITE LASER IS AT END OF LIFE — 4x fails too (2026-09-12)
+## `[P1]` WITHDRAWN — THE WRITE LASER IS **NOT** AT END OF LIFE (2026-09-12 13:30)
+
+**Disc T1 settles it: the drive writes.** `cdrecord -v dev=/dev/sr0 speed=16
+-tao -data` of a 665.1 MiB Fedora netinst ISO (340 534 sectors, 94.6% of the
+radius) ran at a steady 16.2-16.9x, fixated in 20.3 s and exited 0. The disc
+was then **ejected, reloaded and read back in full**: `disc_status=2`, one data
+track, `leadout 340536`, sha256 `55812cc1668f66389d8f88182d71362b7d2b232e6e286
+ff707ca274102414864` — **byte-identical to the ISO**. The drive's own self-test
+disc also reads clean (mean C1 8.23, better than disc 1's 10.92), and every
+vendor setting is stock (VariRec/GigaRec/SecuRec/SpeedRead off, PoweRec on, no
+CD entry ever written to the AutoStrategy DB) — we altered nothing.
+
+**So the verdict below is wrong and is withdrawn.** It was stated far too
+confidently on evidence that could not carry it: four failed burns that varied
+in **four** ways at once (write mode, speed, content, software), plus a
+self-test whose LED code says "write/read error" without saying under what
+conditions. What remains open is which of those four separates T1's success
+from the failures — the next single-variable test is `cdrecord -sao -data`, the
+SAME ISO at the SAME 16x, changing only DAO vs TAO. **Everything from here to
+the next heading is kept as the record of a mistaken conclusion, not as
+findings.**
 
 **The last cheap test is spent.** Keith burnt a CD-DA at **4x with cdrdao**
 after the 09-11 session: it completed with no visible error and **read BLANK
@@ -109,6 +129,12 @@ CD-Text, both Tocas still playing); CDEmu still exercises the write path for
 protocol and pipeline work, though never for media quality.
 
 ## `[P1]` The drive cannot reliably write — cdrdao fails too (2026-09-11)
+
+**Read the withdrawal above first.** The failures recorded here happened; the
+conclusion drawn from them — that the drive can no longer write — did not
+survive disc T1 on 2026-09-12. What this section is still good for is the list
+of *what failed and how*, which is the input to the single-variable tests that
+have yet to be run.
 
 **Established 2026-09-11 23:55: not our code.** `cdrdao write --speed 48`
 (generic MMC 2.0, nothing of ours in the path) failed on a fresh blank at 87%
@@ -361,6 +387,44 @@ production record at all**; this is that gap being paid.
   is not ours to set.
 - **it is a recovery path, so it must be tested by making it fire** — the house
   rule. A fallback nobody has watched trigger is not a fallback.
+
+**PARTLY OVERTAKEN 2026-09-12 (0.37.0): the ioctl now tells the truth about
+its own failure.** A separate `eject` bug turned up the same day. **Keith's
+report** was that he mounted the disc, ran `accudisc eject`, and it failed
+silently. **What was reproduced here** is the same kernel condition by a
+different route — `use_count != 1`, produced by holding `/dev/sr0` open in a
+second process, because `doas mount` needs a password this session cannot
+give. Under that: the kernel refuses `CDROM_LOCKDOOR` with `EBUSY`,
+`CDROMEJECT` returns **0 anyway**, and polling the drive once a second for
+twelve seconds shows the disc still loaded. `accudisc eject` reported success
+throughout, printing nothing.
+
+The mount case is the same `use_count` branch of `cdrom_ioctl_lock_door` and
+`cdrom_ioctl_eject`, but that is an inference from the kernel's source, not an
+observation — **the mount arm is unconfirmed.** One line confirms it now that
+the fix is in: `doas mount /dev/sr0 /mnt/iso && accudisc eject` should print
+the new diagnostic and exit 2.
+
+**`load` is deliberately NOT symmetric, and that is a decision worth revisiting
+rather than an oversight.** `accudisc_load` still believes `CDROMCLOSETRAY`.
+The obvious tidy-up is to give it the same post-condition, and it was
+considered and declined: `cdrom_ioctl_closetray` has no `use_count` check to
+fail, a mounted disc cannot have an open tray, and **no way was found to make
+the guard fire** — which puts it straight into the house rule about recovery
+paths nobody has watched trigger. A guard that has never failed is a guard
+whose failure branch is untested. If a drive is ever seen returning 0 from
+`CDROMCLOSETRAY` with the tray still open (a slot loader or a caddy is the
+likely place), that is the moment to add it. Note the measurement that does
+NOT bear on this: the first `accudisc disc` after a load took **20 s** on
+2026-09-12 and answered `reason=unreadable` — that is spin-up, already
+documented as "retry once", not the tray. It now
+re-checks the drive until the disc is gone or ~5 s pass, and returns
+`ACCUDISC_ERR_IO` with a sentence naming the likely cause. **That does not
+close this item** — the question here is a fallback for a drive that has
+stopped answering, and an eject that now fails *loudly* is exactly the
+precondition a fallback would need. (Line references above have moved:
+`accudisc_eject` is `src/device.c:430`, the ioctl path `src/transport/sgio.c`
+`adsc_transport_eject`.)
 
 **Diagnostic note worth keeping regardless of the decision:** the useful signal
 that night was **which class of command still worked**. No-data commands (TEST
@@ -5093,6 +5157,26 @@ read-only open, not a speed matter.
   on any offset delta.
 
 ## Probes / diagnostics
+
+- **`speeds` returned an all-zero ladder on a data disc — FIXED 0.37.0
+  (2026-09-12).** Keith ran it against a burnt Fedora ISO and got seven rungs
+  of `measured=0.00` and `ladder admitted=none`, which reads like a drive that
+  has stopped delivering data. It was the opposite: the probe times **CD-DA**
+  reads, and the drive was correctly refusing every one of them on a data
+  track with `5/64/00` ILLEGAL MODE FOR THIS TRACK (confirmed in the 0.36.0
+  `--debug` trace). The rc was dropped in `stream_span`, so "read nothing"
+  and "read nothing instantly" were the same output.
+
+  **The general shape, which is the reason this is worth keeping:** a probe
+  whose failure mode is a well-formed zero is
+  [[silent-narrowing]] again — the output cannot be distinguished from a real
+  measurement by anything downstream. Fixed in two layers, because either
+  alone leaves a gap: the library returns the drive's error when **no** window
+  anywhere read a sector, and the CLI refuses a disc with no audio track up
+  front. Neither covers **Mixed Mode**, where the check passes and only *some*
+  windows land in a data track — so a stderr line now counts the windows that
+  produced no figure, and the stdout tokens stay absent rather than becoming
+  `0.00`.
 
 - **A per-sector Q-CRC map, alongside the audio one. [P3], NICETY — Keith
   2026-07-26, "just a nicety, if possible, not an absolute necessity".** Today

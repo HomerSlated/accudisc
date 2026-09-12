@@ -402,7 +402,17 @@ disc with no ATIP (a pressed CD, or no recordable medium) prints
 and exits 3.
 .SS speeds
 Probe which speed settings the drive really honours, by timed streaming reads
-at each rung. One line per candidate:
+at each rung.
+.B Needs a disc with at least one audio track:
+rates are measured by streaming CD\-DA, which a drive refuses on a data track.
+A disc with no audio track is refused up front, with exit 2, rather than
+producing a table of
+.I measured=0.00
+that reads like a failing drive. A Mixed Mode disc is a valid target \(em the
+windows that land in its data track report no figure, and their number is
+noted on stderr.
+.PP
+One line per candidate:
 .PP
 .RS 4
 speed req=<x> page2a=<x> measured=<x.xx> [inner= middle= outer=] [min= max=]
@@ -565,6 +575,17 @@ fire C2 at all.
 Spin the spindle down. Does not eject.
 .SS eject
 Open the tray / unload the disc.
+.PP
+The exit code means
+.B the disc came out,
+not that the command was accepted. A mounted filesystem \(em or any other
+process holding the device open \(em stops the kernel unlocking the door, and
+.B CDROMEJECT
+then returns success while the tray stays shut. So the drive is re\-checked
+until the disc is gone or about five seconds have passed; a disc still loaded
+at that point is exit 2 with an explanation naming the likely cause. A
+successful eject therefore takes as long as the tray does (under two seconds
+on a PX\-716A).
 .SS load
 Close the tray / load the disc.
 .SS read

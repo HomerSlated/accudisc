@@ -27,7 +27,31 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 36 /* 0.36.0: A PER-COMMAND TRACE. Two open
+#define ACCUDISC_VERSION_MINOR 37 /* 0.37.0: TWO SILENT SUCCESSES CLOSED, both
+                                  * of them a call reporting OK for work that
+                                  * did not happen.
+                                  *
+                                  * accudisc_eject now VERIFIES the tray moved
+                                  * instead of believing CDROMEJECT, which
+                                  * returns 0 while the door is held by another
+                                  * opener (a mounted filesystem is the case
+                                  * that bit us). It returns ACCUDISC_ERR_IO
+                                  * with an explanation in accudisc_last_io()
+                                  * when the disc is still loaded afterwards,
+                                  * and takes up to ~5 s to say so. A caller
+                                  * treating eject as infallible now sees an
+                                  * error where it saw none — which is the
+                                  * point, and why this is a minor bump.
+                                  *
+                                  * accudisc_probe_speed_ladder returns the
+                                  * drive's read error when NO window in the
+                                  * whole probe read a sector, rather than a
+                                  * table of measured=0.00. A data-only disc
+                                  * refuses every CD-DA read (5/64/00) and used
+                                  * to produce an all-zero ladder that read as
+                                  * a failing drive.
+                                  *
+                                  * 0.36.0: A PER-COMMAND TRACE. Two open
                                   * flags, ACCUDISC_OPEN_TRACE and _TRACE_DATA,
                                   * print every command a handle sends and what
                                   * came back, through the existing log sink.
@@ -1901,8 +1925,22 @@ accudisc_classify_rotation(const accudisc_perf_desc *desc, uint32_t count);
  * drive rather than through block-layer quirks). */
 ACCUDISC_API int accudisc_spindle_stop(accudisc_device *dev);
 
-/* Open the tray / unload the disc (START STOP UNIT, LoEj=1 Start=0). Straight
- * to the drive, so it works without a mounted block device. */
+/* Open the tray / unload the disc. Block-layer CDROMEJECT, which needs no
+ * CAP_SYS_RAWIO for a member of the cdrom group.
+ *
+ * Since 0.37.0 the return value means THE DISC IS OUT, not "the ioctl was
+ * accepted", and the difference is not academic: with a mounted filesystem (or
+ * any second process) holding the device, the kernel refuses to unlock the
+ * door, CDROMEJECT returns 0 anyway, and the tray never moves. Measured on a
+ * PX-716A 2026-09-12 — twelve seconds of polling, disc still loaded, exit 0.
+ * So the disc is re-checked until it is gone or ~5 s have passed; a still-
+ * loaded disc is ACCUDISC_ERR_IO with a sentence in accudisc_last_io() naming
+ * the likely cause. A successful eject therefore BLOCKS for as long as the
+ * tray takes to open (1.8 s on that drive), which a caller sequencing
+ * eject -> load wanted anyway.
+ *
+ * Only a positive "the disc is still there" is treated as failure: a drive
+ * that cannot report its own status is believed rather than accused. */
 ACCUDISC_API int accudisc_eject(accudisc_device *dev);
 
 /* Close the tray / load the disc (START STOP UNIT, LoEj=1 Start=1). A slot
@@ -2705,6 +2743,20 @@ typedef struct accudisc_speed_rung {
                             * not its neighbours did. */
 } accudisc_speed_rung;
 
+/* Time each candidate speed over [lba, lba+count) and judge the rungs.
+ *
+ * THE SPAN MUST CONTAIN AUDIO. Rates are measured by streaming CD-DA sectors,
+ * so a window inside a data track is refused by the drive (5/64/00 ILLEGAL
+ * MODE FOR THIS TRACK on a PX-716A) and reports no figure. That is per-window
+ * and survivable — a Mixed Mode disc measures on its audio tracks and leaves
+ * the rest blank — but when NOT ONE window in the whole probe read a sector,
+ * since 0.37.0 the drive's own error is returned instead of ACCUDISC_OK. A
+ * data-only disc previously came back OK with every rung at measured=0.00 and
+ * an empty admitted ladder, which is indistinguishable from a drive that has
+ * stopped delivering data.
+ *
+ * Also ACCUDISC_ERR_INVAL when the span cannot give every rung a cache-fresh
+ * window in every band. */
 ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
                                              uint32_t lba, uint32_t count,
                                              const uint16_t *candidates,

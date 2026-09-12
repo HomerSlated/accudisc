@@ -48,8 +48,13 @@ struct accudisc_device {
 
     /* Cause of the most recent ACCUDISC_ERR_IO ("" if none yet). The companion
      * to last_sense: ERR_SENSE carries the drive's own explanation, ERR_IO
-     * carries the transport's. */
-    char last_io[96];
+     * carries the transport's.
+     *
+     * 96 held every adsc_io_detail() line, which is a field dump. Widened to
+     * 256 in 0.37.0 for the eject verification, whose whole value is a
+     * sentence a user can act on ("unmount it and try again"); truncating that
+     * at 96 would leave a diagnostic that stops mid-instruction. */
+    char last_io[256];
 
     /* Write health (0.34.0). Counts and times LIVE burns only — a simulate run
      * skips SEND OPC and never fires the laser, so it costs the medium nothing

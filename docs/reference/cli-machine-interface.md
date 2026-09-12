@@ -470,6 +470,21 @@ ground truth; `page2a` is shown so quantization/clamping is visible (e.g.
 a drive snapping req=16 to 8). The drive is left at the last candidate
 tested. Rungs with equal `measured` are one rung for ladder purposes.
 
+**`speeds` refuses a disc with no audio track (0.37.0), exit 2.** The rate is
+measured by timing CD-DA reads, so the probe needs somewhere to read CD-DA
+from; a drive answers a CD-DA read on a data track with CHECK CONDITION
+(5/64/00 ILLEGAL MODE FOR THIS TRACK on a PX-716A). Before 0.37.0 that
+produced a full, well-formed table of `measured=0.00` and `ladder
+admitted=none` on exit 0 — a correct drive rendered as a dead one. The refusal
+is exit 2 on the same grounds as `--require-tier` naming an unreachable tier:
+the question could not be put, which is not a negative answer.
+
+A **Mixed Mode** disc passes the check and is measured on its audio tracks.
+The windows that fall inside its data track report no figure, and a stderr
+line counts them — `N of M windows returned no sectors ...`, with the last
+sense appended when there is one. The stdout tokens are unchanged: a window
+that did not measure has no token, exactly as before, and never a `0.00`.
+
 **The three-band sweep is the DEFAULT as of 0.9.0.** Each rung is timed
 once in each third of the probed span, which defaults to the whole disc —
 so the thirds are inner/middle/outer. `--start` narrows the span and the
