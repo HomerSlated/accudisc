@@ -7,7 +7,45 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
-## `[P1]` THE DRIVE CANNOT RELIABLY WRITE — cdrdao fails too (2026-09-11)
+## `[P0]` NEVER AGAIN: no starved-buffer burns — Keith, 2026-09-12
+
+**A standing rule, not a preference.** The starved-source arms (cells 3, 4, 5,
+6 and any variant) drove ~3 600 BURN-Proof stop/start link operations through
+the pickup on each of eight discs. That is the most plausible thing to have
+finished a 21-year-old write laser. **Those tests, and anything like them, are
+never to be run again.** Every starved arm in the burn-matrix and
+media-safe-writing plans below is withdrawn by this rule; a future write
+experiment is a normal fed burn or it does not happen.
+
+## `[P1]` THE WRITE LASER IS AT END OF LIFE — 4x fails too (2026-09-12)
+
+**The last cheap test is spent.** Keith burnt a CD-DA at **4x with cdrdao**
+after the 09-11 session: it completed with no visible error and **read BLANK
+after eject+reload**. Low speed was the standard workaround for a weakening
+writer and the rung that produced two clean discs on 09-06, so its failure
+removes speed as a factor. Not software (cdrdao is independent), not the media
+(the same spindle both Tocas came from; ten discs off it still read), not disc
+recognition (reading measurably unchanged). **The drive writes marks it cannot
+read back, and its own power calibration takes ~20 s before reporting
+success.**
+
+Research commissioned 2026-09-12 into repair routes — donor pickups and
+cross-brand compatibility, the replacement procedure, lens-cleaning chemicals,
+worm/rail lubricant grades, the pots on the OPU, and the drive's built-in
+self-diagnostic — report to land in
+`private/research/incoming/2026-09-12-plextor-laser-repair.md`. Keith's
+starting source: `forum.redump.org/topic/40219/`. Note the second-hand market
+is spiking (Sony ending physical-media game production), so a replacement
+drive may be months away.
+
+**What this does NOT block:** everything read-side. The drive reads as well as
+it did on 09-07, and there are now ten known-content CD-Rs with bit-exact
+references plus pressed discs as a test corpus. The write engine itself is
+feature-complete and was hardware-proven (bit-exact burns 09-06, byte-exact
+CD-Text, both Tocas still playing); CDEmu still exercises the write path for
+protocol and pipeline work, though never for media quality.
+
+## `[P1]` The drive cannot reliably write — cdrdao fails too (2026-09-11)
 
 **Established 2026-09-11 23:55: not our code.** `cdrdao write --speed 48`
 (generic MMC 2.0, nothing of ours in the path) failed on a fresh blank at 87%
