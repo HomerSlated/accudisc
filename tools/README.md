@@ -31,6 +31,31 @@ gcc -o build/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudi
   CD track-CTRL classifier unconditionally, so it calls a DVD "CD-ROM (data)".
   Logical type must be gated on a CD profile (0x08/09/0A).*
 
+- **`discid.c`** — read-only. **Identify a disc the drive calls BLANK.** Four
+  independent routes, because the interesting discs defeat the first three:
+  READ DISC INFORMATION; all five READ TOC/PMA/ATIP formats (format 3, the PMA,
+  is written BEFORE the lead-in is finalised and can survive when the TOC does
+  not; format 4, ATIP, works on blank media and names the dye); READ TRACK
+  INFORMATION, whose `next_writable` is the field that separates a virgin blank
+  from a disc written but unreadable; and raw READ CD at a spread of LBAs,
+  which is decisive — content coming back means the disc IS written whatever
+  the TOC says. Twelve single-sector reads, so it is bounded: it never turns
+  into a scan. **Needs `CAP_SYS_RAWIO`.**
+
+  ```sh
+  gcc -O2 -o build/discid tools/discid.c -I include -I src \
+      build/src/libaccudisc.a -ldl
+  doas /usr/bin/setcap cap_sys_rawio=ep build/discid
+  flock /var/tmp/sr0.lock ./build/discid /dev/sr0
+  ```
+
+  *Measured 2026-09-12, and the reason this tool exists:* a disc it certified
+  virgin was then given 415 MB by cdrecord, every write returning GOOD, and
+  came back **byte-for-byte indistinguishable from the blank** — same
+  `status=0`, same absent TOC and PMA, same `5/21/00` at all twelve addresses —
+  except `next_writable` moved 0 → −150. "Reads blank" is a bookkeeping
+  failure, not a write failure.
+
 - **`readyprobe.c`** — read-only (bar the optional `--load`). **"Are you
   ready?"**: polls the MMC-5 §4.1.6.2 safe set — TEST UNIT READY, GET EVENT
   STATUS NOTIFICATION, GET CONFIGURATION — plus MECHANISM STATUS and READ DISC
