@@ -3217,7 +3217,13 @@ typedef struct accudisc_read_req {
 /* One delivered chunk. data holds nsec sectors, each sector_len bytes laid
  * out AUDIO (audio_len) + C2 (c2_len) + SUB (sub_len). Hard-unreadable
  * sectors arrive zero-filled with an all-ones C2 bitmap so the streams never
- * desync. The pointer is only valid during the call. */
+ * desync. The pointer is only valid during the call.
+ *
+ * That layout holds WHATEVER ORDER THE DRIVE SENT, since 0.39.0: a drive that
+ * delivers raw P-W before C2 (LITE-ON LH-20A1S; MMC requires C2 first) has its
+ * records rewritten before they reach you, the order read from the Q CRC. So
+ * slice by these fields and nothing else. The one combination that cannot be
+ * checked is C2 with formatted Q (ACCUDISC_SUB_Q): no CRC, delivered as sent. */
 typedef struct accudisc_chunk {
     uint32_t lba;
     uint32_t nsec;

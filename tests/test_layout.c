@@ -74,7 +74,9 @@ static void make_record_mmc(uint32_t lba, uint8_t *rec)
 static struct {
     int sub_first;          /* the LITE-ON order */
     int zero_sub;           /* P-W zero-filled: no evidence at either position */
-    int reject_rounded;     /* transport fails any transfer > the data */
+    int reject_rounded;     /* a transfer > the data fails: 1 = host error,
+                             * 2 = ILLEGAL REQUEST 5/24, 3 = one timeout then
+                             * normal (a marginal sector, not a refusal) */
     uint32_t c2_hot_lba;    /* this LBA's C2 field carries one fired bit */
     unsigned reads;
     uint32_t last_xfer;
@@ -84,8 +86,8 @@ static struct {
 int __real_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd);
 int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
 {
-    (void)dev;
     cmd->resid = 0;
+    cmd->driver_status = 0;
     if (cmd->cdb[0] != 0xBE) {
         if (cmd->dir == ADSC_XFER_IN && cmd->buf)
             memset(cmd->buf, 0, cmd->buf_len);
@@ -104,8 +106,22 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
     fk.reads++;
     fk.last_xfer = cmd->buf_len;
     fk.last_buf = cmd->buf;
-    if (fk.reject_rounded && cmd->buf_len > data)
-        return ACCUDISC_ERR_IO;
+    if (fk.reject_rounded && cmd->buf_len > data) {
+        switch (fk.reject_rounded) {
+        case 2:
+            memset(&dev->last_sense, 0, sizeof(dev->last_sense));
+            dev->last_sense.valid = 1;
+            dev->last_sense.key = 0x05;
+            dev->last_sense.asc = 0x24;
+            return ACCUDISC_ERR_SENSE;
+        case 3:
+            fk.reject_rounded = 0;
+            cmd->driver_status = 0x06;
+            return ACCUDISC_ERR_IO;
+        default:
+            return ACCUDISC_ERR_IO;
+        }
+    }
 
     int pio = (cmd->buf_len & 15u) != 0;
     uint32_t stride = pio ? (rec_len + 15u) & ~15u : rec_len;
@@ -335,6 +351,33 @@ static void test_rounding_fallback(void)
     assert(adsc_mmc_read_cd(dev, 500, 1, ADSC_SECTOR_CDDA, ADSC_C2_294,
                             ADSC_SUB_RAW, one, REC) == ACCUDISC_ERR_IO);
     assert(fk.reads == 2); /* proven handle: no second attempt doubling a timeout */
+
+    /* A DRIVE that objects with ILLEGAL REQUEST, not a host error: the exact
+     * retry must still fire, or even one-sector rescues (2742, not mod 16)
+     * would have no working path. */
+    dev = fresh_dev();
+    fk.reject_rounded = 2;
+    assert(adsc_mmc_read_cd(dev, 700, 1, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_RAW, one, REC) == ACCUDISC_OK);
+    assert(dev->xfer_exact == 1 && fk.reads == 2);
+    expect_mmc_records(one, 700, 1);
+
+    /* A TIMEOUT whose exact-length retry succeeds says nothing about length:
+     * retried, NOT latched, and the next read is rounded again. */
+    dev = fresh_dev();
+    fk.reject_rounded = 3;
+    assert(adsc_mmc_read_cd(dev, 800, 1, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_RAW, one, REC) == ACCUDISC_OK);
+    assert(fk.reads == 2 && dev->xfer_exact == 0);
+    assert(adsc_mmc_read_cd(dev, 801, 1, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_RAW, one, REC) == ACCUDISC_OK);
+    assert(fk.last_xfer == 2752 && dev->xfer_exact == -1);
+
+    /* Out-of-range modes are refused before anything indexes by them. */
+    assert(adsc_mmc_read_cd(dev, 1, 1, ADSC_SECTOR_CDDA, 7, ADSC_SUB_NONE,
+                            one, AUDIO) == ACCUDISC_ERR_INVAL);
+    assert(adsc_mmc_read_cd(dev, 1, 1, ADSC_SECTOR_CDDA, ADSC_C2_NONE, 5,
+                            one, AUDIO) == ACCUDISC_ERR_INVAL);
     free(buf);
 }
 

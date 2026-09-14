@@ -94,9 +94,10 @@ int adsc_mmc_read_toc_raw(struct accudisc_device *dev, unsigned format,
 static int read_cd_once(struct accudisc_device *dev, uint32_t lba,
                         uint32_t nsec, unsigned sector_type, unsigned c2,
                         unsigned sub, uint8_t *dst, uint32_t exact,
-                        uint32_t xfer)
+                        uint32_t xfer, int *timed_out)
 {
     adsc_cmd cmd = {0};
+    int rc;
 
     adsc_cdb_read_cd(cmd.cdb, lba, nsec, sector_type, c2, sub);
     cmd.cdb_len = 12;
@@ -108,8 +109,26 @@ static int read_cd_once(struct accudisc_device *dev, uint32_t lba,
      * in the buffer tail. Promote it to ACCUDISC_ERR_SHORT so callers fall
      * back to the per-sector path (or fail the sector) instead of streaming
      * stale contents as valid audio. The rounding slack is not data. */
-    return adsc_exec_check_short(adsc_dev_exec(dev, &cmd), cmd.resid,
-                                 xfer - exact);
+    rc = adsc_exec_check_short(adsc_dev_exec(dev, &cmd), cmd.resid,
+                               xfer - exact);
+    /* DRIVER_TIMEOUT: the classic marginal-sector failure, and one that says
+     * nothing about the transfer length (see adsc_io_detail). */
+    *timed_out = rc == ACCUDISC_ERR_IO && (cmd.driver_status & 0x0f) == 0x06;
+    return rc;
+}
+
+/* Could this failure of a ROUNDED READ CD be the rounding? A host/driver error
+ * (the transport refusing the transfer) or ILLEGAL REQUEST (the drive objecting
+ * to an allocation larger than its data — libata's "quite a few ATAPI devices
+ * choke" is about devices, and devices object with sense). Anything else — a
+ * medium error, not ready — is about the disc or the drive, and re-issuing it
+ * at the exact length would only double its cost. */
+static int rounding_suspect(const struct accudisc_device *dev, int rc)
+{
+    if (rc == ACCUDISC_ERR_IO)
+        return 1;
+    return rc == ACCUDISC_ERR_SENSE && dev->last_sense.valid &&
+           dev->last_sense.key == 0x05;
 }
 
 /* Put a combined C2 + raw P-W buffer into the standard's record order, or
@@ -162,7 +181,11 @@ int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
                      unsigned sector_type, unsigned c2, unsigned sub,
                      void *buf, uint32_t sector_len)
 {
-    if (sector_len != adsc_read_cd_sector_len(c2, sub) || nsec == 0 ||
+    /* c2 and sub are range-checked here, not only by their callers: c2 indexes
+     * dev->layout[], and adsc_read_cd_sector_len treats an out-of-range value
+     * as "no field", so it would pass the length check below. */
+    if (c2 > ADSC_C2_296 || sub > ADSC_SUB_Q ||
+        sector_len != adsc_read_cd_sector_len(c2, sub) || nsec == 0 ||
         nsec > UINT32_MAX / sector_len)
         return ACCUDISC_ERR_INVAL;
 
@@ -212,20 +235,31 @@ int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
         }
     }
 
-    int rc = read_cd_once(dev, lba, nsec, sector_type, c2, sub, dst, exact, xfer);
+    int timed_out = 0;
+    int rc = read_cd_once(dev, lba, nsec, sector_type, c2, sub, dst, exact,
+                          xfer, &timed_out);
 
-    /* A transport that rejects a transfer larger than the data (none measured)
-     * gets the exact length back, permanently for this handle. Only until a
-     * rounded read has once succeeded: after that an ERR_IO is the disc or the
-     * drive, and a second attempt would only double a timeout. */
-    if (rc == ACCUDISC_ERR_IO && xfer != exact && dev->xfer_exact == 0) {
+    /* A transport or drive that rejects a transfer larger than the data (none
+     * measured) gets the exact length back — and it must, because the engine's
+     * last resort is a ONE-sector read, and 2742 is not a multiple of 16 either:
+     * without this retry such a drive would have no working path at all.
+     *
+     * Only until a rounded read has once succeeded on the handle; after that a
+     * failure is the disc or the drive, and a second attempt only doubles it.
+     *
+     * The LATCH needs more than the exact retry succeeding. A timeout on a
+     * marginal sector can be followed by a successful re-read for reasons that
+     * have nothing to do with length; latching on that would put the rest of
+     * the rip back on PIO for a refusal that never happened. So a timeout is
+     * retried and forgotten. */
+    if (xfer != exact && dev->xfer_exact == 0 && rounding_suspect(dev, rc)) {
         int rc2 = read_cd_once(dev, lba, nsec, sector_type, c2, sub, buf,
-                               exact, exact);
-        if (rc2 == ACCUDISC_OK) {
+                               exact, exact, &(int){0});
+        if (rc2 == ACCUDISC_OK && !timed_out) {
             dev->xfer_exact = 1;
-            adsc_dev_log(dev, "READ CD: a transfer rounded to 16 bytes failed "
-                              "where the exact length succeeded; using exact "
-                              "lengths on this device");
+            adsc_dev_log(dev, "READ CD: a transfer rounded to 16 bytes was "
+                              "refused where the exact length succeeded; "
+                              "using exact lengths on this device");
         }
         rc = rc2;
         dst = buf;
