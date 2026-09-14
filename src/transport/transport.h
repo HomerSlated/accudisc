@@ -75,10 +75,17 @@ static inline uint32_t adsc_resid_clamp(int raw, uint32_t buf_len)
  * (resid != 0) left stale bytes in the buffer tail, so it is promoted to
  * ACCUDISC_ERR_SHORT rather than trusted; any non-OK rc passes through. NOT
  * for allocation-length commands (MODE SENSE, READ TOC, GET PERFORMANCE),
- * where a drive legitimately returns fewer bytes than requested. */
-static inline int adsc_exec_check_short(int rc, uint32_t resid)
+ * where a drive legitimately returns fewer bytes than requested.
+ *
+ * `slack` is how many bytes of the transfer were requested beyond the data
+ * the command can return — READ CD rounds its transfer up to a multiple of 16
+ * (see adsc_mmc_read_cd) — and a residual up to that is not a short read. One
+ * byte more is. On the libata host where the rounding was measured, resid came
+ * back 0 at slack 6, 8, 10 and 14 alike, so a drive cannot exercise this
+ * branch there; tests/test_resid.c is where it is falsified. */
+static inline int adsc_exec_check_short(int rc, uint32_t resid, uint32_t slack)
 {
-    if (rc == ACCUDISC_OK && resid != 0)
+    if (rc == ACCUDISC_OK && resid > slack)
         return ACCUDISC_ERR_SHORT;
     return rc;
 }

@@ -1,7 +1,9 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "mmc.h"
+#include "../cdda/layout.h"
 
 /* Copy a fixed-width INQUIRY string field, right-trimming spaces. */
 static void copy_trim(char *dst, const uint8_t *src, unsigned n)
@@ -89,26 +91,156 @@ int adsc_mmc_read_toc_raw(struct accudisc_device *dev, unsigned format,
     return ACCUDISC_OK;
 }
 
-int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
-                     unsigned sector_type, unsigned c2, unsigned sub,
-                     void *buf, uint32_t sector_len)
+static int read_cd_once(struct accudisc_device *dev, uint32_t lba,
+                        uint32_t nsec, unsigned sector_type, unsigned c2,
+                        unsigned sub, uint8_t *dst, uint32_t exact,
+                        uint32_t xfer)
 {
     adsc_cmd cmd = {0};
-
-    if (sector_len != adsc_read_cd_sector_len(c2, sub))
-        return ACCUDISC_ERR_INVAL;
 
     adsc_cdb_read_cd(cmd.cdb, lba, nsec, sector_type, c2, sub);
     cmd.cdb_len = 12;
     cmd.dir = ADSC_XFER_IN;
-    cmd.buf = buf;
-    cmd.buf_len = nsec * sector_len;
+    cmd.buf = dst;
+    cmd.buf_len = xfer;
     cmd.timeout_ms = ADSC_TIMEOUT_READ_MS;
     /* READ CD is exact-length: a GOOD-status short transfer leaves stale bytes
      * in the buffer tail. Promote it to ACCUDISC_ERR_SHORT so callers fall
      * back to the per-sector path (or fail the sector) instead of streaming
-     * stale contents as valid audio. */
-    return adsc_exec_check_short(adsc_dev_exec(dev, &cmd), cmd.resid);
+     * stale contents as valid audio. The rounding slack is not data. */
+    return adsc_exec_check_short(adsc_dev_exec(dev, &cmd), cmd.resid,
+                                 xfer - exact);
+}
+
+/* Put a combined C2 + raw P-W buffer into the standard's record order, or
+ * refuse it. See src/cdda/layout.h for what the evidence is and why. */
+static int read_cd_layout(struct accudisc_device *dev, unsigned c2,
+                          uint8_t *buf, uint32_t nsec, uint32_t sector_len)
+{
+    uint32_t c2_len = sector_len - ACCUDISC_BYTES_AUDIO - ACCUDISC_BYTES_SUB_RAW;
+    adsc_layout_verdict v;
+
+    adsc_layout_inspect(buf, nsec, sector_len, c2_len, &v);
+
+    /* Every record after the first is displaced. The audio reads GOOD and the
+     * drive reported nothing, so this is the only place it can be caught — and
+     * a caller that falls back to single-sector reads (the engine does) gets
+     * correct records, because one record cannot be displaced. */
+    if (v.misframed) {
+        snprintf(dev->last_io, sizeof(dev->last_io),
+                 "READ CD delivered records at a %u-byte stride, not %u; "
+                 "refused rather than sliced wrong", v.misframed, sector_len);
+        adsc_dev_trace_note(dev, "%s", dev->last_io);
+        return ACCUDISC_ERR_IO;
+    }
+
+    /* Latch only on more than one agreeing record: a CRC-16 collision in one
+     * record is ~1 in 65 536, and a latched layout is what an evidence-free
+     * buffer (damaged P-W) is sorted by later. One record still decides for
+     * itself. */
+    uint32_t votes = v.hits_mmc > v.hits_sub ? v.hits_mmc : v.hits_sub;
+
+    if (v.layout && votes >= 2 && dev->layout[c2] != v.layout) {
+        if (v.layout == ADSC_LAYOUT_SUB_FIRST || dev->layout[c2])
+            adsc_dev_log(dev, "READ CD C2+subchannel: drive delivers %s; "
+                              "records are returned in MMC order "
+                              "(audio, C2, subchannel)",
+                         v.layout == ADSC_LAYOUT_SUB_FIRST
+                             ? "subchannel BEFORE C2 (not MMC order)"
+                             : "MMC order");
+        dev->layout[c2] = (uint8_t)v.layout;
+    }
+
+    int use = v.layout ? v.layout : dev->layout[c2];
+
+    if (use == ADSC_LAYOUT_SUB_FIRST)
+        adsc_layout_to_mmc(buf, nsec, sector_len, c2_len);
+    return ACCUDISC_OK;
+}
+
+int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
+                     unsigned sector_type, unsigned c2, unsigned sub,
+                     void *buf, uint32_t sector_len)
+{
+    if (sector_len != adsc_read_cd_sector_len(c2, sub) || nsec == 0 ||
+        nsec > UINT32_MAX / sector_len)
+        return ACCUDISC_ERR_INVAL;
+
+    /* TRANSFER LENGTH IS ROUNDED UP TO A MULTIPLE OF 16 (0.39.0).
+     *
+     * libata's atapi_check_dma() refuses DMA for an ATAPI transfer whose byte
+     * count is not a multiple of 16 ("Quite a few ATAPI devices choke on such
+     * DMA requests") and sends it by PIO instead. On PIO a LITE-ON LH-20A1S
+     * pads every READ CD record to 16 bytes — 2742 -> 2752, 2646 -> 2656 — with
+     * GOOD status, so every record after the first lands 10 bytes further on
+     * and the tail is truncated. A whole Tracy Chapman rip verified 0/11 that
+     * way. Measured 2026-09-14: 16- and 8-sector C2+sub reads (multiples of 16)
+     * clean on fresh ranges, 15- and 23-sector reads displaced; and the same 23,
+     * 15, 3 and 1-sector reads with the transfer rounded up came back correct,
+     * GOOD, resid 0. Audio alone (2352 = 16 x 147) was never affected.
+     *
+     * Rounding the TRANSFER, not choosing sector counts, is what covers every
+     * READ CD at once: sized chunks, the short last chunk, one-sector rescue
+     * re-reads, probes, and any caller's chunk_sectors.
+     *
+     * The rounded transfer never touches the caller's buffer. The kernel hands
+     * back all of dxfer_len (measured: a sentinel-filled buffer came back
+     * overwritten to the end), and callers allocate exactly nsec * sector_len. */
+    uint32_t exact = nsec * sector_len;
+    uint32_t xfer = exact;
+    uint8_t *dst = buf;
+
+    /* xfer_exact: 0 = untested, -1 = a rounded read has succeeded, 1 = the
+     * transport refused rounding on this handle. */
+    if (dev->xfer_exact != 1 && (exact & 15u) && exact <= UINT32_MAX - 15u) {
+        uint32_t want = (exact + 15u) & ~15u;
+
+        if (dev->xfer_bounce_cap < want) {
+            uint8_t *nb = realloc(dev->xfer_bounce, want);
+
+            if (nb) {
+                dev->xfer_bounce = nb;
+                dev->xfer_bounce_cap = want;
+            }
+        }
+        /* No bounce buffer: read exactly, as before 0.39.0. It is a lost
+         * optimisation on most hosts and a misframing the layout check below
+         * will refuse on this one — never a silent overrun. */
+        if (dev->xfer_bounce_cap >= want) {
+            xfer = want;
+            dst = dev->xfer_bounce;
+        }
+    }
+
+    int rc = read_cd_once(dev, lba, nsec, sector_type, c2, sub, dst, exact, xfer);
+
+    /* A transport that rejects a transfer larger than the data (none measured)
+     * gets the exact length back, permanently for this handle. Only until a
+     * rounded read has once succeeded: after that an ERR_IO is the disc or the
+     * drive, and a second attempt would only double a timeout. */
+    if (rc == ACCUDISC_ERR_IO && xfer != exact && dev->xfer_exact == 0) {
+        int rc2 = read_cd_once(dev, lba, nsec, sector_type, c2, sub, buf,
+                               exact, exact);
+        if (rc2 == ACCUDISC_OK) {
+            dev->xfer_exact = 1;
+            adsc_dev_log(dev, "READ CD: a transfer rounded to 16 bytes failed "
+                              "where the exact length succeeded; using exact "
+                              "lengths on this device");
+        }
+        rc = rc2;
+        dst = buf;
+        xfer = exact;
+    }
+    if (rc != ACCUDISC_OK)
+        return rc;
+    if (xfer != exact) {
+        memcpy(buf, dst, exact);
+        dev->xfer_exact = -1; /* proven: never fall back on this handle */
+    }
+
+    if (c2 != ADSC_C2_NONE && sub == ADSC_SUB_RAW)
+        return read_cd_layout(dev, c2, buf, nsec, sector_len);
+    return ACCUDISC_OK;
 }
 
 int adsc_mmc_mode_sense10(struct accudisc_device *dev, unsigned page,

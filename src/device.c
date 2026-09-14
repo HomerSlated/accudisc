@@ -128,6 +128,7 @@ void accudisc_close(accudisc_device *dev)
         return;
     accudisc_driver_detach(dev);
     adsc_transport_close(&dev->t);
+    free(dev->xfer_bounce);
     free(dev);
 }
 

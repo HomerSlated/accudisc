@@ -40,11 +40,17 @@ int adsc_mmc_read_toc_raw(struct accudisc_device *dev, unsigned format,
                           uint8_t **out, uint32_t *out_len);
 
 /* One READ CD for nsec sectors into buf (nsec * sector_len bytes, where
- * sector_len must equal adsc_read_cd_sector_len(c2, sub)). Per-sector field
- * order is AUDIO, C2, SUB (probed on PX-716A; matches redumper
- * SectorOrder::DATA_C2_SUB — reprobe per drive before trusting). Returns
+ * sector_len must equal adsc_read_cd_sector_len(c2, sub)). Returns
  * ACCUDISC_ERR_SHORT if the drive completes with GOOD status but transfers
- * fewer than nsec*sector_len bytes — buf is then partly stale and untrusted. */
+ * fewer than nsec*sector_len bytes — buf is then partly stale and untrusted.
+ *
+ * buf always comes back AUDIO | C2 | SUB, the MMC order, whatever the drive
+ * sent: a C2 + raw P-W read whose Q CRCs show the drive delivered SUB before
+ * C2 (LITE-ON LH-20A1S) is rewritten in place (0.39.0). One whose records sit
+ * at the wrong stride returns ACCUDISC_ERR_IO with the reason in last_io;
+ * re-read it one sector at a time. C2 with formatted Q (SUB_Q) has no CRC to
+ * read the order from and is passed through as delivered. The transfer is
+ * rounded up to a multiple of 16 bytes internally; see the .c for why. */
 int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
                      unsigned sector_type, unsigned c2, unsigned sub,
                      void *buf, uint32_t sector_len);

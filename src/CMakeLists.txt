@@ -28,6 +28,7 @@ set(ACCUDISC_SOURCES
     read/accubuf.c
     write/fifo.c
     cdda/crc16.c
+    cdda/layout.c
     cdda/subq.c
     cdda/scan.c
     cdda/index_map.c

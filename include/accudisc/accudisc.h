@@ -27,7 +27,51 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 38 /* 0.38.0: DRIVE READINESS. Until now nothing
+#define ACCUDISC_VERSION_MINOR 39 /* 0.39.0: READ CD RECORDS ARE NOW WHAT THE
+                                  * STRIDE SAYS THEY ARE, ON TWO COUNTS. Both
+                                  * were found on a LITE-ON LH-20A1S (9L08,
+                                  * SATA), where a whole C2 + raw P-W rip came
+                                  * back GOOD, reported no errors, and verified
+                                  * 0/11 against AccurateRip.
+                                  *
+                                  * (1) THE TRANSFER IS ROUNDED UP TO A MULTIPLE
+                                  * OF 16 BYTES. libata sends an ATAPI transfer
+                                  * that is not one by PIO, and on PIO that drive
+                                  * pads every record to 16 bytes (2742 -> 2752),
+                                  * displacing all but the first of each chunk.
+                                  * The engine's default 23 x 2742 chunk was such
+                                  * a transfer. Rounded transfers go DMA and come
+                                  * back correct (measured at 1, 3, 15 and 23
+                                  * sectors). Every READ CD is covered, whatever
+                                  * its sector count, and the caller's buffer is
+                                  * never the one rounded against. A buffer whose
+                                  * Q frames sit at the wrong stride anyway is
+                                  * REFUSED (ACCUDISC_ERR_IO, reason in
+                                  * accudisc_last_io) and the engine re-reads it
+                                  * one sector at a time.
+                                  *
+                                  * (2) SUB-BEFORE-C2 DRIVES ARE NORMALISED. MMC
+                                  * requires AUDIO | C2 | SUB; that drive (and 8
+                                  * of redumper's 55 combined-read drives) sends
+                                  * AUDIO | SUB | C2. The order is read from the
+                                  * Q CRC and every record is returned in MMC
+                                  * order, so accudisc_chunk's audio/c2/sub
+                                  * offsets stay true for every consumer. Before
+                                  * this, on such a drive every sector counted as
+                                  * C2-flagged and no Q frame verified. SUB_Q has
+                                  * no CRC to read the order from and is passed
+                                  * through unchanged.
+                                  *
+                                  * NO declaration or struct moves. What moves is
+                                  * behaviour, and on an affected drive it moves
+                                  * a caveat verdict input: sectors_flagged falls
+                                  * from every sector to the real count. That is
+                                  * a semantic change to a CONTRACT field, hence
+                                  * a minor bump. On a drive that was already
+                                  * correct nothing observable changes except
+                                  * speed (DMA instead of PIO).
+                                  *
+                                  * 0.38.0: DRIVE READINESS. Until now nothing
                                   * in this library ever asked the drive
                                   * whether it was ready; the first command
                                   * after a media change simply raced the

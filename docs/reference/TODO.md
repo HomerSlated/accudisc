@@ -74,6 +74,62 @@ tests cost discs and mechanism for a branch the fake drive in
 media-safe-writing plans below is withdrawn by this rule; a future write
 experiment is a normal fed burn or it does not happen.
 
+## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), five items left open
+
+A LITE-ON LH-20A1S (9L08, SATA) — the first drive other than the PX-716A this
+library has read with — ripped Tracy Chapman through `c2+sub_raw` with GOOD
+status everywhere and verified **0/11** against AccurateRip. cdda2img found it
+(correspondence §186–§192); an audio-only rip of the same disc on the same drive
+was byte-exact. Two independent defects, both now fixed in `adsc_mmc_read_cd`:
+
+1. **libata PIO fallback.** `atapi_check_dma()` refuses DMA for an ATAPI transfer
+   that is not a multiple of 16 bytes. The engine's default chunk (23 × 2742 =
+   63 066) is not, so it went PIO, and on PIO this drive pads every record to 16
+   bytes (2742 → 2752; the pad is `00 00` + 8 stale audio bytes), displacing all
+   but the first record of each chunk. Measured on fresh ranges: 16- and 8-sector
+   chunks clean, 15- and 23-sector chunks displaced. **Fix:** the transfer is
+   rounded up to a multiple of 16 through a per-device bounce buffer (the kernel
+   returns all of `dxfer_len`, so rounding against the caller's exact-size buffer
+   would be an overrun); one exact-length retry latches rounding off if a
+   transport ever rejects it. A buffer whose Q still sits at a wrong stride is
+   refused with `ACCUDISC_ERR_IO`, and the engine's single-sector fallback reads it
+   correctly.
+2. **Sub-before-C2.** The drive sends AUDIO | SUB | C2; MMC-4/5/6 make AUDIO | C2 |
+   SUB normative, and the whole stack slices by it. On that drive every sector
+   counted as C2-flagged and no Q frame verified. **Fix:** the order is read from
+   the Q CRC (`src/cdda/layout.c`) and each record is rewritten into MMC order, so
+   `accudisc_chunk`'s offsets stay true for every consumer. No drive table — the
+   order varies with firmware, command and track type (redumper #431, #78).
+
+Verified: `tests/test_layout.c` (a fake drive that pads on PIO and orders sub
+first; each of rounding, reordering, refusal and bounce-buffer use was removed in
+turn and a test failed), and on the real drive with the rebuilt library — three
+fresh 92-sector ranges at 40x in 23-sector chunks: audio identical to audio-only
+reads 92/92 each, `sectors_flagged` 0, `c2_bits` 0, Q 84/92, 92/92, 91/92 (before:
+flagged 92/92, Q ≈0).
+
+**Open:**
+- `[P2]` **Reads without raw subchannel have no in-read witness** for a
+  misframing on some other transport (USB bridges have their own rules). The seam
+  check would catch it, but only with `overlap_sectors ≥ 1`, and callers default to
+  0. Whether the engine should force overlap when `sub` is not RAW is a design
+  decision for Keith — not taken here (correspondence §191, 2026-09-14g).
+- `[P2]` **The rounded transfer is unverified on the PX-716A**, which is suspended.
+  Its 23 × 2742 chunks read correctly by PIO for months; they now go DMA with up
+  to 15 bytes of slack. Both failure modes are guarded — a transport error gets an
+  exact-length retry and a latch, and a misframed C2+sub buffer is refused — but
+  the first read after the service should be a C2+sub chunk compared against an
+  audio-only read, before any rip is trusted.
+- `[P3]` **C2 + formatted Q (`SUB_Q`)** carries no CRC to read the order from and
+  is passed through as delivered; on a sub-first drive it is still wrong. Refuse
+  it on such a drive, or leave it? Nothing in-tree uses it for ripping.
+- `[P3]` **Some PIO-sized reads came back clean** (repeat reads of a
+  just-read range). Cache-served data in one DRQ block is the unverified guess;
+  it does not affect the fix.
+- `[P3]` **One unit.** The drive was bought second-hand. Padding to a 16-byte
+  boundary looks like firmware, but a second LH-20A1S is the only way to rule out
+  a unit fault. Say so in anything that names the model.
+
 ## `[P1]` WITHDRAWN — THE WRITE LASER IS **NOT** AT END OF LIFE (2026-09-12 13:30)
 
 **Disc T1 settles it: the drive writes.** `cdrecord -v dev=/dev/sr0 speed=16

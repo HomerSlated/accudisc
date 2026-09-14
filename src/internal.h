@@ -68,6 +68,28 @@ struct accudisc_device {
      * at 96 would leave a diagnostic that stops mid-instruction. */
     char last_io[256];
 
+    /* READ CD transfer shaping (0.39.0), owned by adsc_mmc_read_cd.
+     *
+     * `xfer_bounce` backs any READ CD whose nsec * sector_len is not a multiple
+     * of 16: libata refuses ATAPI DMA for such a transfer and falls back to
+     * PIO, and on PIO a LITE-ON LH-20A1S pads every record to 16 bytes (2742
+     * -> 2752), displacing all but the first. The transfer is rounded up — but
+     * the kernel writes the WHOLE dxfer_len, and every caller allocates exactly
+     * nsec * sector_len, so the rounded transfer lands here and is copied out.
+     * Rounding against the caller's own buffer would be a silent heap overrun
+     * that ASan cannot see (copy_to_user writes past its redzones).
+     * `xfer_exact`: 0 = untested, -1 = a rounded READ CD has succeeded on this
+     * handle, 1 = a rounded transfer failed at the transport where the exact
+     * one succeeded, so rounding is off for the handle's lifetime.
+     *
+     * `layout[c2]` is the combined C2 + raw P-W record order for that C2 mode
+     * (ADSC_LAYOUT_*, src/cdda/layout.h), latched on positive evidence and
+     * never on its absence. */
+    uint8_t *xfer_bounce;
+    uint32_t xfer_bounce_cap;
+    int xfer_exact;
+    uint8_t layout[3];
+
     /* Write health (0.34.0). Counts and times LIVE burns only — a simulate run
      * skips SEND OPC and never fires the laser, so it costs the medium nothing
      * and must not appear here. See accudisc_write_health in the public header
