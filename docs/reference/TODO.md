@@ -117,9 +117,21 @@ shift flag on either path, and anchoring without a slip each failed a test.
   stable, signal-carrying neighbour within two sectors keeps its flagged copy — a
   lost rescue, not a wrong splice. Whether that costs real recoveries in clustered
   damage (track 9's 129509-129512) is what the drive verification shows.
-- `[P2]` **Verify on the drive.** One bounded read of the same four spans with the
-  rebuilt library, scored against the container, claimed on sr0 first (protocol
-  with cdda2img, 2026-09-16d).
+- ~~`[P2]` **Verify on the drive.**~~ **Done 2026-09-16 19:06, 0.42.0**, same four spans,
+  scored byte-exactly against the PX-716A container (correspondence 2026-09-16f).
+  **Run A (`--verify 3`):** 809 sectors, 36 wrong, **every one C2-fired**; no shifted
+  delivery; `slips=3`, settled with no wrong copy (one `SUSPECT` that was right).
+  The 113069-71 slip did not recur this time, so the anchor path was not exercised
+  there on hardware; the tests carry that. **Run B (`--c2-retries 3`, no verify):**
+  no shifted `RECOVERED`, but the **chunk transfers themselves** at 113068 and 113092
+  landed 48 and 96 bytes late: 31 sectors wrong, C2-clean, map `OK`, `slips=0`.
+- `[P1]` **A single-pass read has no position witness on this drive.** Run B above:
+  whole chunks delivered late with clean C2 and state `OK`. Nothing in a single
+  pass can see a sub-frame slip — C2 decodes it cleanly, Q stays in frame, and
+  `slips` only counts comparisons that were made. Only `verify_passes >= 2` or
+  `overlap_sectors` compares two transfers. This is new evidence for the open
+  decision in the misframing section below (force overlap when `sub` is not RAW), and it now applies with raw
+  sub too, since Q cannot see a 48-byte slip. Keith's decision.
 
 ## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), formatted Q 0.40.0 (2026-09-16), four items left open
 
