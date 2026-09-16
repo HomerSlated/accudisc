@@ -74,6 +74,47 @@ tests cost discs and mechanism for a branch the fake drive in
 media-safe-writing plans below is withdrawn by this rule; a future write
 experiment is a normal fed burn or it does not happen.
 
+## `[P1]` READ CD slips that reproduce — consensus BUILT 0.41.0 (2026-09-16), `c2_retries` OPEN
+
+**Found on the LITE-ON LH-20A1S** during a single-drive recovery measurement (Tracy
+Chapman, `read --verify 3 --c2f --map-file` over the four spans that differ from
+the PX-716A container, scored byte-exactly against it; correspondence 2026-09-16c).
+Over 809 sectors C2 located 39 of 42 wrong sectors. The 3 it missed, 113069-113071,
+were not damage: they sat **96 bytes (24 samples) late**, delivered `RECOVERED`,
+while the engine counted `slips=62` on that span.
+
+**Cause (fake-drive reproduction, same pattern on the old engine: `ELLLEEEE`, all
+`RECOVERED`, `slips=11`).** `consensus()` accepted any reread byte-matching any
+earlier copy. Single-sector rereads of the slipped address landed late *every*
+time, so two agreed and the slip confirmed itself. The shift was detected by
+`adsc_shift_find` and only counted. Q cannot see a 24-sample slip (one Q frame
+spans 588 samples), and the drive reports `accurate_stream yes` regardless.
+
+**Built 0.41.0.** A shift-related disagreement is settled by `anchor_position`:
+reread the sector with its neighbours in one transfer; accept a copy only when
+two such reads agree and each lines up with another transfer's copy of a
+neighbour carrying alignment signal (not constant, not equal to itself under a
+shift). Both alignments corroborated, or neither, is `SUSPECT`. It is a vote among
+transfers starting at different addresses, with the single-sector reread (the
+kind that reproduced the slip) given no vote; a displacement every transfer shares
+is beyond it, and the caller's absolute gate still decides. `tests/test_consensus.c`
+covers the regression, conflicting anchors, silent and periodic neighbours, plain
+and unsettled damage (no anchoring spent), and the seam path, each also with
+failing rereads. Accepting any match, ignoring a conflict, one corroboration,
+counting the target itself, dropping either signal check, dropping the carried
+shift flag on either path, and anchoring without a slip each failed a test.
+
+**Open:**
+- `[P1]` **`c2_retries` launders a slip the same way.** `c2_rescue` keeps the reread
+  with the fewest C2 bits; a shifted, C2-clean single-sector reread replaces a
+  flagged sector and is marked `RECOVERED` with `slips` not even incremented.
+  Reproduced against the same fake (chunk copy of one sector C2-flagged, its
+  rereads late and clean). This is the path a flagged-span recovery rung would
+  lean on, so it matters for single-drive recovery. Not built: awaiting Keith.
+- `[P2]` **Verify on the drive.** One bounded read of the same four spans with the
+  rebuilt library, scored against the container, claimed on sr0 first (protocol
+  with cdda2img, 2026-09-16d).
+
 ## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), formatted Q 0.40.0 (2026-09-16), four items left open
 
 A LITE-ON LH-20A1S (9L08, SATA) — the first drive other than the PX-716A this

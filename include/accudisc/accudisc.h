@@ -27,7 +27,44 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 40 /* 0.40.0: C2 + FORMATTED Q IS NORMALISED
+#define ACCUDISC_VERSION_MINOR 41 /* 0.41.0: A SLIP NO LONGER CONFIRMS ITSELF.
+                                  * Found on a LITE-ON LH-20A1S (2026-09-16):
+                                  * a --verify 3 read of a damaged span
+                                  * delivered three sectors 96 bytes (24
+                                  * samples) late, marked RECOVERED, while
+                                  * counting slips on the span. consensus()
+                                  * took any reread matching any earlier copy,
+                                  * and single-sector rereads of that address
+                                  * landed late EVERY time, so two agreed.
+                                  *
+                                  * A disagreement that is a pure shift (from
+                                  * the verify or seam comparison, or among the
+                                  * rereads) is now settled by ANCHORING: the
+                                  * sector is reread with its neighbours in one
+                                  * transfer, and a copy is accepted only when
+                                  * two such reads agree and each lines up with
+                                  * another transfer's copy of a neighbour that
+                                  * carries alignment signal (not silent, not
+                                  * self-similar under a shift). Two alignments
+                                  * both corroborated, or none, is SUSPECT.
+                                  * Disagreements with no shift go through
+                                  * consensus exactly as before.
+                                  *
+                                  * NO declaration or struct moves. What moves
+                                  * is the meaning of RECOVERED and SUSPECT for
+                                  * slips, and sectors_recovered /
+                                  * sectors_suspect with it — SUSPECT is a
+                                  * caveat verdict input, hence a minor bump.
+                                  * A slipped copy that was delivered RECOVERED
+                                  * is now delivered correct (RECOVERED) or as
+                                  * the primary read had it (SUSPECT).
+                                  *
+                                  * NOT covered: c2_retries. Its rescue keeps
+                                  * the reread with the fewest C2 bits, and a
+                                  * shifted C2-clean reread still wins it.
+                                  * Reproduced; open in TODO.md.
+                                  *
+                                  * 0.40.0: C2 + FORMATTED Q IS NORMALISED
                                   * TOO. The LITE-ON LH-20A1S sends AUDIO | Q |
                                   * C2 for C2 + ACCUDISC_SUB_Q, as it does for
                                   * raw P-W (measured 2026-09-16, 16/16 sectors
@@ -2919,6 +2956,21 @@ ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
 #define ACCUDISC_MAP_RECOVERED 0x4 /* problem seen, clean/agreeing copy won */
 #define ACCUDISC_MAP_SUSPECT   0x5 /* reads disagree — best-effort delivered */
 
+/* RECOVERED IS NOT "VERIFIED", AND SINCE 0.41.0 A SLIP IS SETTLED DIFFERENTLY.
+ * When two copies of a sector differ by a pure shift (a positioning slip, which
+ * C2 cannot see and Q cannot see below one frame), agreement between rereads is
+ * no longer accepted: a slip REPRODUCES, and single-sector rereads of the same
+ * address were measured landing 96 bytes late every time. Such a sector is
+ * RECOVERED only when two reads of it TOGETHER WITH ITS NEIGHBOURS agree, each
+ * lining up with another transfer's copy of a neighbour; otherwise SUSPECT.
+ * That is a vote among transfers starting at different addresses. It does not
+ * beat a displacement every transfer shares; an absolute gate (AccurateRip,
+ * CTDB) in the caller still decides whether the audio is right.
+ *
+ * c2_retries does NOT have this protection yet: a C2-clean reread that is
+ * shifted replaces the sector and is marked RECOVERED (see docs/reference/
+ * TODO.md, READ CD slips). */
+
 /* ONE BYTE, SO A HIGHER STATE MASKS A LOWER ONE THAT ALSO APPLIES. The engine
  * classifies hard > suspect > recovered > C2 > ok, and only the winner is
  * stored. The reachable case: a sector recovered by consensus whose winning
@@ -3137,7 +3189,10 @@ typedef struct accudisc_read_req {
     uint8_t verify_passes; /* >= 2: reread every chunk with cache defeat and
                             * compare audio; disagreeing sectors resolved by
                             * consensus (any two identical independent reads),
-                            * else delivered best-effort as SUSPECT */
+                            * else delivered best-effort as SUSPECT. A
+                            * disagreement that is a pure SHIFT is settled by
+                            * neighbour-anchored reads instead (0.41.0; see
+                            * ACCUDISC_MAP_RECOVERED) */
     uint8_t overlap_sectors; /* boundary overlap check: extend each chunk
                             * read by k trailing sectors and compare them
                             * against the next chunk's head — catches drive
@@ -3313,7 +3368,10 @@ typedef struct accudisc_read_stats {
     uint64_t slips;           /* disagreements that were a pure positional
                                * shift (reads identical modulo offset) — the
                                * C2-invisible slip class; a nonzero count on
-                               * a drive says: use overlap checking */
+                               * a drive says: use overlap checking. Counted
+                               * where the verify and seam comparisons find
+                               * them; since 0.41.0 each is settled by
+                               * anchoring, not by agreement */
     /* Q-subchannel health, counted only for --sub raw reads over the sector
      * data actually delivered. The subchannel has no CIRC (C1/C2) protection —
      * a per-frame CRC-16 is its only integrity check, and it fails

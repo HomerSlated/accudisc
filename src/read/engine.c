@@ -36,6 +36,11 @@
 #define ADSC_SPAN_MAX (ADSC_CHUNK_MAX + ADSC_OVERLAP_MAX)
 /* Independent samples kept during consensus (the two passes + extras). */
 #define ADSC_SAMPLES_MAX 6
+/* Context reads (sector + neighbours, one transfer) spent anchoring a sector
+ * whose copies differ by a pure shift. Two must agree, so four leaves room for
+ * one failed read and one that corroborates nothing. */
+#define ADSC_ANCHOR_READS 4
+#define ADSC_ANCHOR_SPAN 3
 
 static uint8_t sev_log2(uint32_t v)
 {
@@ -183,6 +188,8 @@ struct rd {
     uint8_t *flush;   /* cache-defeat throwaway, one audio sector */
     uint8_t *scratch; /* one sector, rescue/consensus candidate */
     uint8_t *samples; /* ADSC_SAMPLES_MAX sectors, consensus memory */
+    uint8_t *context; /* ADSC_ANCHOR_SPAN sectors, one anchoring read */
+    uint8_t *anchored; /* one sector, the first corroborated copy */
     accudisc_read_stats st;
 };
 
@@ -326,9 +333,6 @@ static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
     *bits = best;
 }
 
-/* Two reads disagreed on this sector. Collect further independent reads
- * until any two audio payloads (among everything seen) match byte-for-byte;
- * the agreeing read replaces the sector. 1 = recovered, 0 = suspect. */
 /* Rescue a sector whose Q reported the drive was somewhere else.
  *
  * DELIBERATELY NOT consensus(). consensus() seeds its first sample with the
@@ -370,8 +374,140 @@ static int qpos_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
     return 0;
 }
 
+/* One transfer's copy of a run of sectors, as delivered — the reference an
+ * anchoring read is compared against. hard[] marks zero-filled sectors, which
+ * are not a copy of anything. */
+struct adsc_ref {
+    uint32_t lba;
+    uint32_t n;
+    const uint8_t *data;
+    const uint8_t *hard;
+};
+
+/* Can a byte-exact match against this sector say anything about ALIGNMENT?
+ * Not if it is constant (silence matches itself at every offset), and not if
+ * it equals itself shifted — a copy read a few samples off would match it just
+ * as well. */
+static int alignment_signal(const uint8_t *a)
+{
+    int32_t d;
+    uint32_t i;
+
+    for (i = 1; i < ACCUDISC_BYTES_AUDIO && a[i] == a[0]; i++)
+        ;
+    if (i == ACCUDISC_BYTES_AUDIO)
+        return 0;
+    return !adsc_shift_find(a, a, &d);
+}
+
+/* Does this context read line up with a DIFFERENT transfer? True when one of
+ * its neighbour sectors byte-matches another transfer's copy of that neighbour,
+ * and that copy carries enough signal for the match to fix an alignment. */
+static int corroborated(struct rd *r, const uint8_t *ctx, uint32_t w0,
+                        uint32_t target, const struct adsc_ref *refs,
+                        unsigned nref)
+{
+    for (uint32_t k = 0; k < ADSC_ANCHOR_SPAN; k++) {
+        uint32_t m = w0 + k;
+
+        if (m == target)
+            continue;
+        for (unsigned i = 0; i < nref; i++) {
+            const struct adsc_ref *ref = &refs[i];
+
+            if (!ref->data || m < ref->lba || m - ref->lba >= ref->n ||
+                (ref->hard && ref->hard[m - ref->lba]))
+                continue;
+            const uint8_t *rs = ref->data + (size_t)(m - ref->lba) * r->sector_len;
+
+            if (adsc_audio_diff(ctx + (size_t)k * r->sector_len, rs) == 0 &&
+                alignment_signal(rs))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+/* POSITION ANCHOR for a sector whose copies differ by a pure shift.
+ *
+ * Agreement between reads cannot settle a slip, because a slip REPRODUCES: on a
+ * LITE-ON LH-20A1S (2026-09-16) single-sector rereads of 113069-113071 came back
+ * 96 bytes late every time, two of them agreed, and consensus delivered them
+ * RECOVERED. See qpos_rescue for the same lesson at sector scale. Q cannot help
+ * here — 24 samples stays inside one Q frame.
+ *
+ * What can: reading the sector TOGETHER WITH ITS NEIGHBOURS in one transfer. A
+ * transfer is internally continuous, so if a neighbour in it byte-matches a
+ * different transfer's copy of that neighbour, the two transfers share an
+ * alignment, and the target sector in it is a copy at that alignment.
+ *
+ * A copy is accepted only when two such corroborated reads agree on it. If two
+ * corroborated reads DISAGREE, both alignments have support from some transfer
+ * and there is nothing left to choose between them: return 0, and the caller
+ * marks the sector SUSPECT.
+ *
+ * WHAT THIS IS, stated so nobody reads more into a RECOVERED: a vote among
+ * multi-sector transfers that START AT DIFFERENT ADDRESSES, with the one kind of
+ * read that reproduced the slip (single-sector, at the sector's own address)
+ * given no vote. It beats a slip that is tied to a start address, which is the
+ * one measured. It does not beat a displacement that every transfer touching
+ * the region shares, including one that outnumbers the transfers that landed
+ * true: those corroborate each other, and no read can tell. Only an absolute
+ * gate (AccurateRip/CTDB, in the caller) can. */
+static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
+                           const struct adsc_ref *refs, unsigned nref,
+                           unsigned *attempts)
+{
+    static const int32_t start[] = { -1, -2, 0 };
+    unsigned agree = 0;
+
+    for (unsigned a = 0; a < ADSC_ANCHOR_READS; a++) {
+        int64_t w = (int64_t)lba + start[a % 3];
+
+        if (w < 0)
+            continue;
+        uint32_t w0 = (uint32_t)w;
+
+        cache_defeat(r, lba);
+        if (adsc_mmc_read_cd(r->dev, w0, ADSC_ANCHOR_SPAN, r->sector_type,
+                             r->req->c2, r->req->sub, r->context,
+                             r->sector_len) != ACCUDISC_OK)
+            continue;
+        r->st.rereads++;
+        (*attempts)++;
+        if (!corroborated(r, r->context, w0, lba, refs, nref))
+            continue;
+
+        const uint8_t *x = r->context + (size_t)(lba - w0) * r->sector_len;
+
+        if (agree == 0) {
+            memcpy(r->anchored, x, r->sector_len);
+            agree = 1;
+        } else if (adsc_audio_diff(r->anchored, x) == 0) {
+            agree++;
+        } else {
+            return 0; /* two alignments corroborated: undecidable */
+        }
+        if (agree >= 2) {
+            memcpy(sec, r->anchored, r->sector_len);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Two reads disagreed on this sector. Collect further independent reads until
+ * any two audio payloads (among everything seen) match byte-for-byte; the
+ * agreeing read replaces the sector. 1 = recovered, 0 = suspect.
+ *
+ * Unless the disagreement is a SLIP — any two copies related by a pure shift,
+ * known on entry (`shifted`) or found among the rereads. Then agreement is not
+ * evidence (a slip reproduces), and the sector is settled by anchor_position
+ * against the transfers in refs, or not at all. */
 static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
-                     const uint8_t *alt, unsigned *attempts)
+                     const uint8_t *alt, int shifted,
+                     const struct adsc_ref *refs, unsigned nref,
+                     unsigned *attempts)
 {
     unsigned count = 0;
 
@@ -389,21 +525,33 @@ static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
             continue;
         r->st.rereads++;
         *attempts = a;
+        int matched = 0;
+
         for (unsigned i = 0; i < count; i++) {
-            if (adsc_audio_diff(r->scratch,
-                                r->samples + (size_t)i * r->sector_len)
-                == 0) {
-                memcpy(sec, r->scratch, r->sector_len);
-                return 1;
-            }
+            const uint8_t *smp = r->samples + (size_t)i * r->sector_len;
+            int32_t sh;
+
+            if (adsc_audio_diff(r->scratch, smp) == 0)
+                matched = 1;
+            else if (!shifted && adsc_shift_find(r->scratch, smp, &sh))
+                shifted = 1;
         }
+        if (matched && !shifted) {
+            memcpy(sec, r->scratch, r->sector_len);
+            return 1;
+        }
+        if (matched)
+            break; /* agreement, but among copies a slip has been seen in */
         if (count < ADSC_SAMPLES_MAX) {
             memcpy(r->samples + (size_t)count * r->sector_len, r->scratch,
                    r->sector_len);
             count++;
         }
     }
-    return 0;
+    if (!shifted)
+        return 0;
+    ladder_restore(r);
+    return anchor_position(r, lba, sec, refs, nref, attempts);
 }
 
 int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
@@ -535,16 +683,23 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     uint8_t *buf2 = passes > 1 ? malloc((size_t)chunk * r.sector_len) : NULL;
     uint8_t *prev_ext =
         overlap ? malloc((size_t)overlap * r.sector_len) : NULL;
+    /* The chunk as its own transfer delivered it, before any sector in buf is
+     * replaced — a reference for anchoring (see anchor_position). */
+    uint8_t *prim = (passes > 1 || overlap)
+                        ? malloc((size_t)chunk * r.sector_len) : NULL;
     r.flush = malloc(ACCUDISC_BYTES_AUDIO);
     r.scratch = malloc(r.sector_len);
     r.samples = malloc((size_t)ADSC_SAMPLES_MAX * r.sector_len);
+    r.context = malloc((size_t)ADSC_ANCHOR_SPAN * r.sector_len);
+    r.anchored = malloc(r.sector_len);
     int rc = ACCUDISC_OK;
 
     uint8_t prev_ext_hard[ADSC_OVERLAP_MAX];
     uint32_t prev_ext_n = 0;
 
-    if (!buf || !r.flush || !r.scratch || !r.samples ||
-        (passes > 1 && !buf2) || (overlap && !prev_ext)) {
+    if (!buf || !r.flush || !r.scratch || !r.samples || !r.context ||
+        !r.anchored || (passes > 1 && !buf2) || (overlap && !prev_ext) ||
+        ((passes > 1 || overlap) && !prim)) {
         rc = ACCUDISC_ERR_NOMEM;
         goto out;
     }
@@ -591,6 +746,8 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
         ladder_restore(&r);
         read_span(&r, lba, n + ext, buf, hard, n);
+        if (prim)
+            memcpy(prim, buf, (size_t)n * r.sector_len);
 
         /* Q-POSITION CHECK — the drive's own account of where it was.
          *
@@ -677,11 +834,16 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             if (diff == 0)
                 continue;
             int32_t sh;
-            if (adsc_shift_find(sec, alt, &sh))
+            int shifted = adsc_shift_find(sec, alt, &sh);
+            if (shifted)
                 r.st.slips++;
             diffb[s] = diff;
             unsigned used = 0;
-            if (consensus(&r, lba + s, sec, alt, &used)) {
+            const struct adsc_ref refs[2] = {
+                { lba, n, prim, hard },
+                { lba, prev_ext_n, prev_ext, prev_ext_hard },
+            };
+            if (consensus(&r, lba + s, sec, alt, shifted, refs, 2, &used)) {
                 recov[s] = 1;
                 att[s] += used;
             } else {
@@ -733,15 +895,21 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
                 if (!hard2[s] && diff == 0)
                     continue; /* confirmed */
+                int shifted = 0;
                 if (!hard2[s]) {
                     int32_t sh;
-                    if (adsc_shift_find(sec, alt, &sh))
+                    shifted = adsc_shift_find(sec, alt, &sh);
+                    if (shifted)
                         r.st.slips++;
                 }
                 diffb[s] = diff;
                 unsigned used = 0;
-                if (consensus(&r, lba + s, sec, hard2[s] ? NULL : alt,
-                              &used)) {
+                const struct adsc_ref refs[2] = {
+                    { lba, n, prim, hard },
+                    { lba, n, buf2, hard2 },
+                };
+                if (consensus(&r, lba + s, sec, hard2[s] ? NULL : alt, shifted,
+                              refs, 2, &used)) {
                     recov[s] = 1;
                     att[s] += used;
                     if (r.c2_len)
@@ -857,6 +1025,9 @@ out:
     free(buf);
     free(buf2);
     free(prev_ext);
+    free(prim);
+    free(r.context);
+    free(r.anchored);
     free(r.flush);
     free(r.scratch);
     free(r.samples);

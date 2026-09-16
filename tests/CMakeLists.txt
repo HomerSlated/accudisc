@@ -34,7 +34,7 @@ foreach(t test_version test_cdb test_sense test_toc test_map test_decode
         test_cdtext_encode test_discinfo test_alloc_even test_uncap test_plan
         test_abi test_speeds test_rs16 test_rs16_kat test_ctdb_api
         test_write_offset test_accubuf test_write_health test_trace test_ready
-        test_layout)
+        test_layout test_consensus)
     add_executable(${t} ${t}.c)
     # test_accubuf drives the ring's own threads; the others do not care.
     target_link_libraries(${t} PRIVATE accudisc_static Threads::Threads)
@@ -97,6 +97,8 @@ add_test(NAME test_offsets_ambiguous COMMAND test_offsets_ambiguous)
 # lands in the test's __wrap_adsc_dev_exec. (--wrap reaches mmc.o's reference
 # because the definition lives in a different object, device.o.)
 target_link_options(test_layout PRIVATE -Wl,--wrap=adsc_dev_exec)
+# The same seam for the read engine's consensus against a fake drive that slips.
+target_link_options(test_consensus PRIVATE -Wl,--wrap=adsc_dev_exec)
 
 add_executable(test_burn_flow test_burn_flow.c
                ${PROJECT_SOURCE_DIR}/src/write/burn.c
