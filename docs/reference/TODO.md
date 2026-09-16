@@ -74,7 +74,7 @@ tests cost discs and mechanism for a branch the fake drive in
 media-safe-writing plans below is withdrawn by this rule; a future write
 experiment is a normal fed burn or it does not happen.
 
-## `[P1]` READ CD slips that reproduce — consensus BUILT 0.41.0 (2026-09-16), `c2_retries` OPEN
+## `[P1]` READ CD slips that reproduce — consensus BUILT 0.41.0, `c2_retries` BUILT 0.42.0 (2026-09-16), drive verification open
 
 **Found on the LITE-ON LH-20A1S** during a single-drive recovery measurement (Tracy
 Chapman, `read --verify 3 --c2f --map-file` over the four spans that differ from
@@ -105,12 +105,18 @@ counting the target itself, dropping either signal check, dropping the carried
 shift flag on either path, and anchoring without a slip each failed a test.
 
 **Open:**
-- `[P1]` **`c2_retries` launders a slip the same way.** `c2_rescue` keeps the reread
-  with the fewest C2 bits; a shifted, C2-clean single-sector reread replaces a
-  flagged sector and is marked `RECOVERED` with `slips` not even incremented.
-  Reproduced against the same fake (chunk copy of one sector C2-flagged, its
-  rereads late and clean). This is the path a flagged-span recovery rung would
-  lean on, so it matters for single-drive recovery. Not built: awaiting Keith.
+- ~~`[P1]` **`c2_retries` launders a slip the same way.**~~ **BUILT 0.42.0.**
+  `c2_rescue` kept the reread with the fewest C2 bits; a slip that reproduces is a
+  clean decode of the wrong samples, so a late copy replaced a flagged sector as
+  `RECOVERED`, uncounted in `slips` (reproduced on the 0.41.0 engine: `EEELEEEE`).
+  Every candidate is now a 3-sector context read, eligible only if `corroborated()`
+  against the chunk as first delivered; fewest bits among eligible copies wins.
+  Tests: late context reads refused, aligned ones accepted, silent neighbours
+  refused. Dropping the corroboration, passing no references, and not allocating
+  the first-delivered copy each failed a test. **Cost:** a flagged sector with no
+  stable, signal-carrying neighbour within two sectors keeps its flagged copy — a
+  lost rescue, not a wrong splice. Whether that costs real recoveries in clustered
+  damage (track 9's 129509-129512) is what the drive verification shows.
 - `[P2]` **Verify on the drive.** One bounded read of the same four spans with the
   rebuilt library, scored against the container, claimed on sr0 first (protocol
   with cdda2img, 2026-09-16d).

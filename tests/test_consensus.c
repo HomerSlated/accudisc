@@ -41,6 +41,8 @@ static struct {
                               * byte, so no two ever agree */
     int periodic_bg;         /* with signal_only: the silence is instead a
                               * pattern repeating every LATE bytes */
+    uint32_t c2_hot_lba;     /* C2 fires on this sector in CHUNK transfers only;
+                              * every reread of it decodes clean */
     uint32_t single_fail_lo; /* single-sector reads of [lo, hi) fail */
     uint32_t single_fail_hi;
     unsigned singles;
@@ -113,6 +115,8 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
             o[1000] ^= 0x5A;
         if (noise >= 2)
             o[100 + 13 * noise] ^= 0xA5;
+        if (c2 == 1 && nsec != 1 && nsec != 3 && lba + s == fk.c2_hot_lba)
+            memset(o + S, 0xFF, 4); /* 32 fired bits */
     }
     return ACCUDISC_OK;
 }
@@ -393,6 +397,79 @@ static void test_seam_slip_is_anchored(void)
     assert((map[5] & 15) == ACCUDISC_MAP_RECOVERED);
 }
 
+/* ---- c2_retries ---------------------------------------------------------- */
+
+/* THE SECOND PATH. The chunk copy of 20003 is C2-flagged; every reread of it
+ * decodes clean. Single-sector rereads land late, and so do the context reads,
+ * so no clean copy lines up with anything. Before this fix c2_rescue kept the
+ * late clean reread: RECOVERED, zero bits, slips not counted. Now nothing
+ * eligible exists, and the flagged copy is delivered as flagged. */
+static void test_c2_rescue_refuses_unaligned_copy(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.c2_hot_lba = 20003;
+    fk.single_late_lo = 20003;
+    fk.single_late_hi = 20004;
+    fk.anchor_mode = 1;
+    req.lba = 20000;
+    req.count = 8;
+    req.c2_retries = 3;
+    accudisc_read_stats st = run(&req, map);
+
+    show("c2 rescue, late", &st, map, 8);
+    assert(memcmp(out.verdict, "EEEEEEEE", 8) == 0);
+    assert((map[3] & 15) == ACCUDISC_MAP_C2);
+    assert(st.sectors_recovered == 0 && st.sectors_flagged == 1);
+    assert(fk.anchor_reads > 0);
+}
+
+/* ... and the rescue still WORKS when a clean copy lines up: context reads land
+ * true, so the clean reread replaces the flagged one, RECOVERED, zero bits. */
+static void test_c2_rescue_accepts_aligned_copy(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.c2_hot_lba = 20003;
+    fk.single_late_lo = 20003;
+    fk.single_late_hi = 20004;
+    req.lba = 20000;
+    req.count = 8;
+    req.c2_retries = 3;
+    accudisc_read_stats st = run(&req, map);
+
+    show("c2 rescue, aligned", &st, map, 8);
+    assert(memcmp(out.verdict, "EEEEEEEE", 8) == 0);
+    assert((map[3] & 15) == ACCUDISC_MAP_RECOVERED);
+    assert(st.sectors_recovered == 1 && st.sectors_flagged == 0);
+}
+
+/* A clean copy whose neighbours are silent cannot be lined up, whichever way
+ * the context reads land: here they land late, and a late clean copy must not
+ * be spliced on the strength of silence. */
+static void test_c2_rescue_silent_neighbours(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.c2_hot_lba = 20002;
+    fk.signal_only = 20002;
+    fk.anchor_mode = 1;
+    req.lba = 20000;
+    req.count = 5;
+    req.c2_retries = 3;
+    accudisc_read_stats st = run(&req, map);
+
+    show("c2 rescue, silent", &st, map, 5);
+    assert(out.verdict[2] == 'E');
+    assert((map[2] & 15) == ACCUDISC_MAP_C2 && st.sectors_recovered == 0);
+}
+
 int main(void)
 {
     test_reproducing_slip_is_anchored();
@@ -402,5 +479,8 @@ int main(void)
     test_plain_disagreement_needs_no_anchor();
     test_unsettled_damage_is_not_anchored();
     test_seam_slip_is_anchored();
+    test_c2_rescue_refuses_unaligned_copy();
+    test_c2_rescue_accepts_aligned_copy();
+    test_c2_rescue_silent_neighbours();
     return 0;
 }

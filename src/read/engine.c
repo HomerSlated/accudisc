@@ -309,30 +309,6 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
     }
 }
 
-/* Hunt for a C2-clean copy of a flagged sector; the read with the fewest
- * fired bits wins and replaces the sector wholesale. */
-static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
-                      uint32_t *bits, unsigned *attempts)
-{
-    uint32_t best = *bits;
-
-    *attempts = 0;
-    for (unsigned a = 1; a <= r->req->c2_retries && best > 0; a++) {
-        ladder_speed(r, a);
-        cache_defeat(r, lba);
-        if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
-            continue;
-        r->st.rereads++;
-        *attempts = a;
-        uint32_t b = popcount_buf(r->scratch + r->audio_len, r->c2_len);
-        if (b < best) {
-            memcpy(sec, r->scratch, r->sector_len);
-            best = b;
-        }
-    }
-    *bits = best;
-}
-
 /* Rescue a sector whose Q reported the drive was somewhere else.
  *
  * DELIBERATELY NOT consensus(). consensus() seeds its first sample with the
@@ -494,6 +470,62 @@ static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
         }
     }
     return 0;
+}
+
+/* Hunt for a C2-clean copy of a flagged sector; the read with the fewest
+ * fired bits wins and replaces the sector wholesale.
+ *
+ * EVERY CANDIDATE IS A CONTEXT READ, AND MUST LINE UP (0.41.0). This used to
+ * reread the sector alone and keep the fewest bits. A slip that reproduces at
+ * the address (LITE-ON LH-20A1S, 2026-09-16: single-sector rereads 96 bytes
+ * late every time) is a clean decode of the WRONG samples — zero C2 bits — so
+ * it won outright, replaced the sector and was marked RECOVERED, with nothing
+ * counting it as a slip. Fewer bits says a copy decoded better, never that it
+ * is the right copy.
+ *
+ * So a candidate is the sector read with its neighbours in one transfer, and it
+ * is eligible only if corroborated() — a neighbour byte-matches another
+ * transfer's copy that carries alignment signal. One corroborated read is
+ * enough here, unlike anchor_position, because C2 already ranks the copies; the
+ * neighbours only settle where they are. The cost of that rule: a flagged
+ * sector whose neighbours within two sectors are all unstable or silent cannot
+ * be lined up, and keeps its flagged copy. That is a lost rescue, not a wrong
+ * delivery, and it is the right way round. */
+static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *bits,
+                      unsigned *attempts, const struct adsc_ref *refs,
+                      unsigned nref)
+{
+    static const int32_t start[] = { -1, -2, 0 };
+    uint32_t best = *bits;
+
+    *attempts = 0;
+    for (unsigned a = 1; a <= r->req->c2_retries && best > 0; a++) {
+        int64_t w = (int64_t)lba + start[(a - 1) % 3];
+
+        if (w < 0)
+            w = lba;
+        uint32_t w0 = (uint32_t)w;
+
+        ladder_speed(r, a);
+        cache_defeat(r, lba);
+        if (adsc_mmc_read_cd(r->dev, w0, ADSC_ANCHOR_SPAN, r->sector_type,
+                             r->req->c2, r->req->sub, r->context,
+                             r->sector_len) != ACCUDISC_OK)
+            continue;
+        r->st.rereads++;
+        *attempts = a;
+        if (!corroborated(r, r->context, w0, lba, refs, nref))
+            continue;
+
+        const uint8_t *x = r->context + (size_t)(lba - w0) * r->sector_len;
+        uint32_t b = popcount_buf(x + r->audio_len, r->c2_len);
+
+        if (b < best) {
+            memcpy(sec, x, r->sector_len);
+            best = b;
+        }
+    }
+    *bits = best;
 }
 
 /* Two reads disagreed on this sector. Collect further independent reads until
@@ -685,7 +717,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         overlap ? malloc((size_t)overlap * r.sector_len) : NULL;
     /* The chunk as its own transfer delivered it, before any sector in buf is
      * replaced — a reference for anchoring (see anchor_position). */
-    uint8_t *prim = (passes > 1 || overlap)
+    uint8_t *prim = (passes > 1 || overlap || req->c2_retries)
                         ? malloc((size_t)chunk * r.sector_len) : NULL;
     r.flush = malloc(ACCUDISC_BYTES_AUDIO);
     r.scratch = malloc(r.sector_len);
@@ -699,7 +731,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
     if (!buf || !r.flush || !r.scratch || !r.samples || !r.context ||
         !r.anchored || (passes > 1 && !buf2) || (overlap && !prev_ext) ||
-        ((passes > 1 || overlap) && !prim)) {
+        ((passes > 1 || overlap || req->c2_retries) && !prim)) {
         rc = ACCUDISC_ERR_NOMEM;
         goto out;
     }
@@ -863,8 +895,12 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                     continue;
                 uint32_t before = bits[s];
                 unsigned used = 0;
+                const struct adsc_ref refs[2] = {
+                    { lba, n, prim, hard },
+                    { lba, prev_ext_n, prev_ext, prev_ext_hard },
+                };
                 c2_rescue(&r, lba + s, buf + (size_t)s * r.sector_len,
-                          &bits[s], &used);
+                          &bits[s], &used, refs, 2);
                 if (bits[s] == 0 && before > 0) {
                     recov[s] = 1;
                     att[s] += used;

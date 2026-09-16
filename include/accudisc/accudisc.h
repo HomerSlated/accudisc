@@ -27,7 +27,35 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 41 /* 0.41.0: A SLIP NO LONGER CONFIRMS ITSELF.
+#define ACCUDISC_VERSION_MINOR 42 /* 0.42.0: c2_retries CANNOT SPLICE A SLIP.
+                                  * 0.41.0 left it open, reproduced: c2_rescue
+                                  * kept the reread with the fewest C2 bits, and
+                                  * a slip that reproduces at the address is a
+                                  * CLEAN decode of the wrong samples, so a late
+                                  * copy won, replaced a flagged sector, was
+                                  * marked RECOVERED, and was not counted in
+                                  * slips. Fewer bits means a better decode,
+                                  * never the right position.
+                                  *
+                                  * Every rescue candidate is now the sector
+                                  * read with its neighbours in one transfer,
+                                  * eligible only if a neighbour byte-matches
+                                  * the chunk as first delivered and carries
+                                  * alignment signal (0.41.0's test). Fewest
+                                  * bits among eligible copies wins; one
+                                  * eligible read suffices, since C2 ranks them.
+                                  *
+                                  * Cost: a flagged sector with no stable,
+                                  * signal-carrying neighbour within two sectors
+                                  * keeps its flagged copy (map C2, counted in
+                                  * sectors_flagged) where it was RECOVERED
+                                  * before — a lost rescue instead of a possible
+                                  * wrong splice. sectors_flagged is a caveat
+                                  * verdict input, hence a minor bump. Each
+                                  * candidate read is 3 sectors instead of 1;
+                                  * the seek count is unchanged.
+                                  *
+                                  * 0.41.0: A SLIP NO LONGER CONFIRMS ITSELF.
                                   * Found on a LITE-ON LH-20A1S (2026-09-16):
                                   * a --verify 3 read of a damaged span
                                   * delivered three sectors 96 bytes (24
@@ -62,7 +90,7 @@ extern "C" {
                                   * NOT covered: c2_retries. Its rescue keeps
                                   * the reread with the fewest C2 bits, and a
                                   * shifted C2-clean reread still wins it.
-                                  * Reproduced; open in TODO.md.
+                                  * [Fixed by 0.42.0.]
                                   *
                                   * 0.40.0: C2 + FORMATTED Q IS NORMALISED
                                   * TOO. The LITE-ON LH-20A1S sends AUDIO | Q |
@@ -2967,9 +2995,10 @@ ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
  * beat a displacement every transfer shares; an absolute gate (AccurateRip,
  * CTDB) in the caller still decides whether the audio is right.
  *
- * c2_retries does NOT have this protection yet: a C2-clean reread that is
- * shifted replaces the sector and is marked RECOVERED (see docs/reference/
- * TODO.md, READ CD slips). */
+ * c2_retries has the same protection since 0.42.0: a C2-clean reread replaces a
+ * flagged sector only when it was read with its neighbours and one of them lines
+ * up with the chunk as first delivered. A flagged sector whose neighbours
+ * cannot be lined up (unstable or silent) keeps its flagged copy and stays C2. */
 
 /* ONE BYTE, SO A HIGHER STATE MASKS A LOWER ONE THAT ALSO APPLIES. The engine
  * classifies hard > suspect > recovered > C2 > ok, and only the winner is
