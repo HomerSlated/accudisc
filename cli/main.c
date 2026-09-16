@@ -2373,8 +2373,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     if (subq_path && req.sub != ACCUDISC_SUB_RAW) {
         /* The library refuses this too (ERR_INVAL); caught here so the message
          * names the flag rather than making the user map an error code back to
-         * it. --sub q is drive-formatted and already CRC-gated inside the
-         * drive, so the lane would report the drive's opinion as ours. */
+         * it. The lane is measured over raw P-W only: formatted Q's CRC is
+         * optional in MMC, and a drive does not gate on it. */
         fprintf(stderr, "accudisc: --subq-map-file requires --sub raw\n");
         return 1;
     }

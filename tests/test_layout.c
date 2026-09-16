@@ -1,5 +1,5 @@
-/* READ CD record layout (0.39.0): the sub-before-C2 order and the 16-byte
- * transfer rounding, against a fake drive that behaves the way a LITE-ON
+/* READ CD record layout (0.39.0, formatted Q 0.40.0): the sub-before-C2 order
+ * and the 16-byte transfer rounding, against a fake drive that behaves the way a LITE-ON
  * LH-20A1S 9L08 on libata was measured to behave on 2026-09-14.
  *
  * The fake has to be able to be wrong in the ways the drive was, or it proves
@@ -11,6 +11,11 @@
  *     caller's own buffer an overrun;
  *   - PIO (not a multiple of 16): every record padded to 16 bytes with `00 00`
  *     plus the previous record's audio bytes 696-703, truncated at dxfer_len.
+ *
+ * Formatted Q is what the drive was measured to send on 2026-09-16: bytes 0-11
+ * the same frame raw P-W carries, CRC included, and non-zero junk in 12-13 where
+ * MMC says pad. `blank_crc` models the other lawful drive, which leaves the
+ * optional CRC 00h.
  *
  * Audio is a position-derived pattern, and every Q frame carries its own LBA
  * with a valid CRC, so a displaced, reordered or wrongly-sliced record cannot
@@ -29,7 +34,9 @@
 #define AUDIO 2352u
 #define SUB 96u
 #define C2 294u
+#define FQ 16u
 #define REC (AUDIO + C2 + SUB)
+#define REC_Q (AUDIO + C2 + FQ)
 
 /* ---- disc content -------------------------------------------------------- */
 
@@ -42,20 +49,39 @@ static uint8_t audio_byte(uint32_t lba, uint32_t i)
 
 static uint8_t to_bcd(unsigned v) { return (uint8_t)((v / 10) << 4 | (v % 10)); }
 
-/* Raw interleaved P-W for one sector: Q at bit 6 carries ADR 1 with the
- * absolute MSF of `lba` and a valid CRC; R-W are all ones, P is zero — the
- * pattern the drive actually returned. `broken` flips a Q bit. */
-static void make_sub(uint32_t lba, int broken, uint8_t raw[96])
+/* The 12-byte Q frame for one sector: ADR 1, the absolute MSF of `lba` and a
+ * valid CRC. `broken` flips a Q bit. */
+static void make_q(uint32_t lba, int broken, uint8_t q[12])
 {
-    uint8_t q[12] = {0};
     uint32_t a = lba + 150;
 
+    memset(q, 0, 12);
     q[0] = 0x01; q[1] = 0x01; q[2] = 0x01;
     q[7] = to_bcd(a / 4500); q[8] = to_bcd((a / 75) % 60); q[9] = to_bcd(a % 75);
     uint16_t crc = (uint16_t)~adsc_crc16(q, 10);
     q[10] = (uint8_t)(crc >> 8); q[11] = (uint8_t)crc;
     if (broken)
         q[4] ^= 0x10;
+}
+
+/* Formatted Q as the LH-20A1S sends it: the frame, then junk in 12-13 (it sent
+ * 51 77 and c2 e4), zero in 14-15. `blank_crc` leaves 10-11 at 00h, which MMC-5
+ * Table 368 also allows. */
+static void make_fq(uint32_t lba, int blank_crc, uint8_t fq[16])
+{
+    make_q(lba, 0, fq);
+    if (blank_crc)
+        fq[10] = fq[11] = 0;
+    fq[12] = 0x51; fq[13] = 0x77; fq[14] = 0; fq[15] = 0;
+}
+
+/* Raw interleaved P-W for one sector: Q at bit 6 carries the frame above; R-W
+ * are all ones, P is zero — the pattern the drive actually returned. */
+static void make_sub(uint32_t lba, int broken, uint8_t raw[96])
+{
+    uint8_t q[12];
+
+    make_q(lba, broken, q);
     for (unsigned i = 0; i < 96; i++)
         raw[i] = (uint8_t)(0x3F | (((q[i >> 3] >> (7 - (i & 7))) & 1) << 6));
 }
@@ -69,11 +95,21 @@ static void make_record_mmc(uint32_t lba, uint8_t *rec)
     make_sub(lba, 0, rec + AUDIO + C2);
 }
 
+/* The same for C2 + formatted Q. */
+static void make_record_mmc_q(uint32_t lba, int blank_crc, uint8_t *rec)
+{
+    for (uint32_t i = 0; i < AUDIO; i++)
+        rec[i] = audio_byte(lba, i);
+    memset(rec + AUDIO, 0, C2);
+    make_fq(lba, blank_crc, rec + AUDIO + C2);
+}
+
 /* ---- the fake drive ------------------------------------------------------ */
 
 static struct {
     int sub_first;          /* the LITE-ON order */
     int zero_sub;           /* P-W zero-filled: no evidence at either position */
+    int blank_crc;          /* formatted Q with its optional CRC left 00h */
     int reject_rounded;     /* a transfer > the data fails: 1 = host error,
                              * 2 = ILLEGAL REQUEST 5/24, 3 = one timeout then
                              * normal (a marginal sector, not a refusal) */
@@ -140,6 +176,10 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
             if (fk.zero_sub) memset(tmp, 0, SUB); else make_sub(cur, 0, tmp);
             memcpy(rec + o, tmp, SUB); o += SUB;
         }
+        if (sub == 2 && fk.sub_first) {
+            make_fq(cur, fk.blank_crc, rec + o);
+            o += FQ;
+        }
         if (c2) {
             /* clean disc: zero C2, except one fired bit on the chosen LBA */
             if (fk.c2_hot_lba && cur == fk.c2_hot_lba)
@@ -150,8 +190,10 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
             if (fk.zero_sub) memset(tmp, 0, SUB); else make_sub(cur, 0, tmp);
             memcpy(rec + o, tmp, SUB); o += SUB;
         }
-        if (sub == 2)
-            o += 16u;
+        if (sub == 2 && !fk.sub_first) {
+            make_fq(cur, fk.blank_crc, rec + o);
+            o += FQ;
+        }
         if (pio && stride > rec_len && s + 1 < nsec) {
             /* the pad: 00 00, then 8 stale bytes of this record's audio */
             for (uint32_t i = 0; i < 8 && o + 2 + i < stride; i++)
@@ -171,6 +213,20 @@ static struct accudisc_device *fresh_dev(void)
     memset(&dev, 0, sizeof(dev));
     memset(&fk, 0, sizeof(fk));
     return &dev;
+}
+
+static void expect_mmc_records_q(const uint8_t *buf, uint32_t lba,
+                                 uint32_t nsec, int blank_crc)
+{
+    uint8_t want[REC_Q];
+
+    for (uint32_t s = 0; s < nsec; s++) {
+        make_record_mmc_q(lba + s, blank_crc, want);
+        if (memcmp(buf + (size_t)s * REC_Q, want, REC_Q) != 0) {
+            fprintf(stderr, "formatted-Q record %u (lba %u) differs\n", s, lba + s);
+            assert(0 && "formatted-Q record not in MMC order at the MMC stride");
+        }
+    }
 }
 
 static void expect_mmc_records(const uint8_t *buf, uint32_t lba, uint32_t nsec)
@@ -251,11 +307,13 @@ static void test_inspect(void)
     adsc_layout_inspect(a, n, REC, C2, &v);
     assert(v.hits_mmc == 8 && v.misframed == 0 && v.layout == ADSC_LAYOUT_MMC);
 
-    /* A record that is not raw-P-W shaped is left alone. */
+    /* A record shape that is neither raw P-W nor formatted Q is left alone. */
     build_buffer(a, 1, 2, 1, REC, 2 * REC);
     memcpy(b, a, 2 * REC);
-    adsc_layout_to_mmc(b, 2, AUDIO + C2 + 16, C2);
+    adsc_layout_to_mmc(b, 2, AUDIO + C2 + 17, C2);
     assert(memcmp(a, b, 2 * REC) == 0);
+    adsc_layout_inspect(a, 2, AUDIO + C2 + 17, C2, &v);
+    assert(v.layout == ADSC_LAYOUT_UNKNOWN && v.hits_mmc == 0 && v.hits_sub == 0);
 
     free(a);
     free(b);
@@ -284,7 +342,9 @@ static void test_read_sub_first_rounded(void)
         expect_mmc_records(buf, lba, n);
         free(buf);
     }
-    assert(dev->layout[ADSC_C2_294] == ADSC_LAYOUT_SUB_FIRST);
+    assert(dev->layout[ADSC_C2_294][ADSC_SUB_RAW] == ADSC_LAYOUT_SUB_FIRST);
+    /* ... and says nothing about formatted Q, a different command. */
+    assert(dev->layout[ADSC_C2_294][ADSC_SUB_Q] == ADSC_LAYOUT_UNKNOWN);
 }
 
 static void test_read_mmc_drive_untouched(void)
@@ -295,7 +355,7 @@ static void test_read_mmc_drive_untouched(void)
     assert(adsc_mmc_read_cd(dev, 100, 23, ADSC_SECTOR_CDDA, ADSC_C2_294,
                             ADSC_SUB_RAW, buf, REC) == ACCUDISC_OK);
     expect_mmc_records(buf, 100, 23);
-    assert(dev->layout[ADSC_C2_294] == ADSC_LAYOUT_MMC);
+    assert(dev->layout[ADSC_C2_294][ADSC_SUB_RAW] == ADSC_LAYOUT_MMC);
     free(buf);
 }
 
@@ -392,7 +452,7 @@ static void test_no_evidence_uses_latch(void)
     fk.zero_sub = 1;
     assert(adsc_mmc_read_cd(dev, 9, 4, ADSC_SECTOR_CDDA, ADSC_C2_294,
                             ADSC_SUB_RAW, buf, REC) == ACCUDISC_OK);
-    assert(dev->layout[ADSC_C2_294] == ADSC_LAYOUT_UNKNOWN);
+    assert(dev->layout[ADSC_C2_294][ADSC_SUB_RAW] == ADSC_LAYOUT_UNKNOWN);
     for (uint32_t s = 0; s < 4; s++)
         for (uint32_t i = 0; i < AUDIO; i++)
             assert(buf[(size_t)s * REC + i] == audio_byte(9 + s, i));
@@ -419,6 +479,155 @@ static void test_other_combos(void)
     assert(adsc_mmc_read_cd(dev, 80000, 27, ADSC_SECTOR_CDDA, ADSC_C2_NONE,
                             ADSC_SUB_NONE, a, AUDIO) == ACCUDISC_OK);
     assert(fk.last_xfer == 27u * AUDIO && fk.last_buf == a);
+}
+
+/* ---- C2 + formatted Q (0.40.0) -------------------------------------------- */
+
+static void build_buffer_q(uint8_t *buf, uint32_t lba, uint32_t nsec,
+                           int sub_first, int blank_crc, uint32_t stride,
+                           uint32_t cap)
+{
+    uint8_t rec[REC_Q + 16];
+
+    memset(buf, 0, cap);
+    for (uint32_t s = 0; s < nsec; s++) {
+        memset(rec, 0, sizeof(rec));
+        for (uint32_t i = 0; i < AUDIO; i++)
+            rec[i] = audio_byte(lba + s, i);
+        make_fq(lba + s, blank_crc, rec + AUDIO + (sub_first ? 0 : C2));
+        for (uint32_t i = 0; i < stride && (size_t)s * stride + i < cap; i++)
+            buf[(size_t)s * stride + i] = rec[i];
+    }
+}
+
+static void test_inspect_formatted_q(void)
+{
+    uint32_t n = 23, cap = n * REC_Q;
+    uint8_t *a = malloc(cap), *b = malloc(cap);
+    uint8_t zero[FQ] = {0};
+    adsc_layout_verdict v;
+
+    /* THE ZERO WINDOW. On a clean disc the losing position is all-zero C2, so a
+     * detector that credited a zero window would decide a clean disc by the
+     * absence of data. Ten zero bytes complement to FFFF against a stored 0000. */
+    assert(adsc_layout_q_hits(zero, FQ, 1, FQ, 0, FQ) == 0);
+    /* and the measured junk in 12-13 does not stop a real frame verifying */
+    make_fq(40000, 0, b);
+    assert(adsc_layout_q_hits(b, FQ, 1, FQ, 0, FQ) == 1);
+    make_fq(40000, 1, b);
+    assert(adsc_layout_q_hits(b, FQ, 1, FQ, 0, FQ) == 0);
+    /* sub_len other than 96 or 16 counts nothing */
+    make_fq(40000, 0, b);
+    assert(adsc_layout_q_hits(b, FQ, 1, FQ, 0, 12) == 0);
+
+    build_buffer_q(a, 40000, n, 0, 0, REC_Q, cap);
+    adsc_layout_inspect(a, n, REC_Q, C2, &v);
+    assert(v.layout == ADSC_LAYOUT_MMC && v.hits_mmc == n && v.hits_sub == 0);
+    assert(v.misframed == 0);
+
+    build_buffer_q(b, 40000, n, 1, 0, REC_Q, cap);
+    adsc_layout_inspect(b, n, REC_Q, C2, &v);
+    assert(v.layout == ADSC_LAYOUT_SUB_FIRST && v.hits_sub == n && v.hits_mmc == 0);
+    assert(v.misframed == 0);
+
+    /* Normalised, the sub-first buffer is the MMC one byte for byte: Q at +2646,
+     * C2 at +2352. */
+    adsc_layout_to_mmc(b, n, REC_Q, C2);
+    assert(memcmp(a, b, cap) == 0);
+
+    /* A drive that omits the optional CRC: no evidence either way. */
+    build_buffer_q(b, 40000, n, 1, 1, REC_Q, cap);
+    adsc_layout_inspect(b, n, REC_Q, C2, &v);
+    assert(v.layout == ADSC_LAYOUT_UNKNOWN && v.hits_mmc == 0 && v.hits_sub == 0);
+    assert(v.misframed == 0);
+
+    /* PIO padding for this record size is 2662 -> 2672, in both orders. */
+    for (int sf = 0; sf < 2; sf++) {
+        build_buffer_q(b, 50000, n, sf, 0, 2672, cap);
+        adsc_layout_inspect(b, n, REC_Q, C2, &v);
+        assert(v.misframed == 2672 && v.layout == ADSC_LAYOUT_UNKNOWN);
+    }
+
+    free(a);
+    free(b);
+}
+
+static void test_read_formatted_q(void)
+{
+    struct accudisc_device *dev = fresh_dev();
+    uint32_t sizes[] = {23, 7, 1, 8};
+
+    /* The LH-20A1S: Q before C2. 23 x 2662 is not a multiple of 16, so rounded. */
+    fk.sub_first = 1;
+    for (size_t k = 0; k < sizeof sizes / sizeof sizes[0]; k++) {
+        uint32_t n = sizes[k], lba = 40000 + 1000 * (uint32_t)k;
+        uint8_t *buf = malloc((size_t)n * REC_Q);
+
+        assert(adsc_mmc_read_cd(dev, lba, n, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                                ADSC_SUB_Q, buf, REC_Q) == ACCUDISC_OK);
+        assert(fk.last_xfer % 16 == 0);
+        expect_mmc_records_q(buf, lba, n, 0);
+        free(buf);
+    }
+    assert(dev->layout[ADSC_C2_294][ADSC_SUB_Q] == ADSC_LAYOUT_SUB_FIRST);
+    assert(dev->layout[ADSC_C2_294][ADSC_SUB_RAW] == ADSC_LAYOUT_UNKNOWN);
+
+    /* An MMC-order drive is left as it is. */
+    dev = fresh_dev();
+    uint8_t *buf = malloc(23u * REC_Q);
+    assert(adsc_mmc_read_cd(dev, 100, 23, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_Q, buf, REC_Q) == ACCUDISC_OK);
+    expect_mmc_records_q(buf, 100, 23, 0);
+    assert(dev->layout[ADSC_C2_294][ADSC_SUB_Q] == ADSC_LAYOUT_MMC);
+
+    /* Rounding forced off: the fake pads to 2672 and the read is refused. */
+    dev = fresh_dev();
+    fk.sub_first = 1;
+    dev->xfer_exact = 1;
+    assert(adsc_mmc_read_cd(dev, 20010, 23, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_Q, buf, REC_Q) == ACCUDISC_ERR_IO);
+    assert(fk.last_xfer == 23u * REC_Q);
+    assert(strstr(dev->last_io, "2672") != NULL);
+    free(buf);
+}
+
+/* A drive that omits formatted Q's CRC gives no evidence. A raw P-W verdict on
+ * the same handle is a different command and must NOT decide it; an earlier
+ * formatted-Q verdict for the same modes does. */
+static void test_formatted_q_blank_crc_latch(void)
+{
+    struct accudisc_device *dev = fresh_dev();
+    uint8_t raw[4u * REC];
+    uint8_t *buf = malloc(4u * REC_Q);
+
+    fk.sub_first = 1;
+    assert(adsc_mmc_read_cd(dev, 9, 4, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_RAW, raw, REC) == ACCUDISC_OK);
+    assert(dev->layout[ADSC_C2_294][ADSC_SUB_RAW] == ADSC_LAYOUT_SUB_FIRST);
+
+    fk.blank_crc = 1;
+    assert(adsc_mmc_read_cd(dev, 9, 4, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_Q, buf, REC_Q) == ACCUDISC_OK);
+    assert(dev->layout[ADSC_C2_294][ADSC_SUB_Q] == ADSC_LAYOUT_UNKNOWN);
+    /* passed through as delivered: Q still at +2352 */
+    for (uint32_t s = 0; s < 4; s++) {
+        uint8_t fq[FQ];
+
+        make_fq(9 + s, 1, fq);
+        assert(memcmp(buf + (size_t)s * REC_Q + AUDIO, fq, FQ) == 0);
+    }
+
+    /* A formatted-Q read with the CRC present latches; a later blank one then
+     * follows the latch. */
+    fk.blank_crc = 0;
+    assert(adsc_mmc_read_cd(dev, 60, 4, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_Q, buf, REC_Q) == ACCUDISC_OK);
+    assert(dev->layout[ADSC_C2_294][ADSC_SUB_Q] == ADSC_LAYOUT_SUB_FIRST);
+    fk.blank_crc = 1;
+    assert(adsc_mmc_read_cd(dev, 70, 4, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_Q, buf, REC_Q) == ACCUDISC_OK);
+    expect_mmc_records_q(buf, 70, 4, 1);
+    free(buf);
 }
 
 /* ---- the whole engine, as cdda2img's rip called it ----------------------- */
@@ -503,6 +712,57 @@ static void test_engine_end_to_end(void)
     assert(st.subq_ok == 92);
 }
 
+static int check_sink_q(void *user, const accudisc_chunk *c)
+{
+    uint8_t want[REC_Q];
+
+    (void)user;
+    ck.shape_ok &= c->sector_len == REC_Q && c->audio_len == AUDIO &&
+                   c->c2_len == C2 && c->sub_len == FQ;
+    for (uint32_t s = 0; s < c->nsec; s++) {
+        make_record_mmc_q(c->lba + s, 0, want);
+        /* the hot bit is the referent below; compare everything else */
+        if (fk.c2_hot_lba && c->lba + s == fk.c2_hot_lba)
+            want[AUDIO + 17] = 0x80;
+        ck.bad += memcmp(c->data + (size_t)s * c->sector_len, want, REC_Q) != 0;
+    }
+    ck.sectors += c->nsec;
+    return 0;
+}
+
+/* The engine with C2 + formatted Q against the Q-first fake. Before 0.40.0 the
+ * C2 popcount read the Q frame, so every sector was flagged; one fired bit is
+ * the referent that zero flagged is not an absence. */
+static void test_engine_formatted_q(void)
+{
+    for (int hot = 0; hot < 2; hot++) {
+        struct accudisc_device *dev = fresh_dev();
+        accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+        accudisc_read_stats st = ACCUDISC_READ_STATS_INIT;
+
+        fk.sub_first = 1;
+        fk.c2_hot_lba = hot ? 40041 : 0;
+        memset(&ck, 0, sizeof(ck));
+        ck.shape_ok = 1;
+        req.lba = 40000;
+        req.count = 92;
+        req.c2 = ACCUDISC_C2_PTRS;
+        req.sub = ACCUDISC_SUB_Q;
+        req.buffer_bytes = ACCUDISC_BUFFER_NONE;
+
+        assert(accudisc_read_cdda(dev, &req, check_sink_q, NULL, &st) ==
+               ACCUDISC_OK);
+        assert(ck.shape_ok && ck.sectors == 92);
+        if (ck.bad)
+            fprintf(stderr, "formatted Q hot=%d: %u bad records\n", hot, ck.bad);
+        assert(ck.bad == 0);
+        assert(st.hard_errors == 0 && st.sectors_read == 92);
+        assert(st.sectors_flagged == (hot ? 1u : 0u));
+        if (hot)
+            assert(st.first_flagged_lba == 40041 && st.c2_bits == 1);
+    }
+}
+
 int main(void)
 {
     test_engine_end_to_end();
@@ -513,5 +773,9 @@ int main(void)
     test_rounding_fallback();
     test_no_evidence_uses_latch();
     test_other_combos();
+    test_inspect_formatted_q();
+    test_read_formatted_q();
+    test_formatted_q_blank_crc_latch();
+    test_engine_formatted_q();
     return 0;
 }

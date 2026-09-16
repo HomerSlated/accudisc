@@ -74,7 +74,7 @@ tests cost discs and mechanism for a branch the fake drive in
 media-safe-writing plans below is withdrawn by this rule; a future write
 experiment is a normal fed burn or it does not happen.
 
-## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), five items left open
+## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), formatted Q 0.40.0 (2026-09-16), four items left open
 
 A LITE-ON LH-20A1S (9L08, SATA) — the first drive other than the PX-716A this
 library has read with — ripped Tracy Chapman through `c2+sub_raw` with GOOD
@@ -120,9 +120,28 @@ flagged 92/92, Q ≈0).
   exact-length retry and a latch, and a misframed C2+sub buffer is refused — but
   the first read after the service should be a C2+sub chunk compared against an
   audio-only read, before any rip is trusted.
-- `[P3]` **C2 + formatted Q (`SUB_Q`)** carries no CRC to read the order from and
-  is passed through as delivered; on a sub-first drive it is still wrong. Refuse
-  it on such a drive, or leave it? Nothing in-tree uses it for ripping.
+- ~~`[P3]` **C2 + formatted Q (`SUB_Q`)** carries no CRC to read the order from~~
+  **BUILT 0.40.0 (2026-09-16).** The premise was false. MMC-5 Table 368 makes
+  formatted Q's CRC (bytes 10-11) *optional*, and the LH-20A1S fills it. Measured
+  with raw READ CDs at LBA 40000 and 120000, 8 sectors each, every transfer a
+  multiple of 16: C2 + formatted Q comes back **audio | Q | C2** (16/16), and its
+  bytes 0-11 are identical to the Q de-interleaved from a raw P-W read of the same
+  sectors — including LBA 120007, whose frame fails CRC (AMIN `0x26`→`0x66`), so
+  the drive does not gate on it either. The order is now read from that CRC and
+  normalised; the latch is keyed by C2 *and* sub mode (`layout[c2][sub]`).
+  `tests/test_layout.c` gained the zero-window, blank-CRC, PIO-2672, latch-scope
+  and engine cases. Dispatching raw-only, reading formatted Q as raw, keying the
+  latch by C2 alone, ignoring the CRC and restricting `to_mmc` to raw P-W each
+  failed a test. On the real drive with the rebuilt CLI, `read --start 40000
+  --count 23 --sub q` (one rounded 61 226 → 61 232-byte transfer): C2-flagged 0,
+  the Q-first log line fired, and the delivered Q bytes 0-11 and audio equal the
+  raw capture on 8/8 sectors; all 23 frames CRC-valid with absolute MSF = LBA.
+- `[P3]` **Formatted Q from a drive that leaves its CRC `00h`** gives no evidence
+  and is delivered as sent unless the same handle already has a C2 + formatted Q
+  verdict. A time-code vote (absolute MSF ≈ LBA + 150, BCD-valid) could decide it,
+  but no such drive is to hand to falsify it against, so it is not built. What
+  would settle it: one such drive, one C2 + formatted Q read beside a formatted-Q
+  -only read.
 - `[P3]` **Some PIO-sized reads came back clean** (repeat reads of a
   just-read range). Cache-served data in one DRQ block is the unverified guess;
   it does not affect the fix.
@@ -5526,7 +5545,10 @@ notification behind it.
      is the natural home.
   3. **"Not captured" needs a state distinct from "ok".** Q is only meaningful
      with `--sub raw`; the engine's own comment notes `SUB_Q` is CRC-gated
-     inside the drive, so there is no verdict to report on that path. Without a
+     inside the drive, so there is no verdict to report on that path. [That
+     premise is FALSE — corrected 2026-09-16: formatted Q's CRC is optional in
+     MMC and the LH-20A1S passes a failing frame through. The refusal stands,
+     for "not built", not "impossible".] Without a
      distinct value, absence renders as health — the same defect as
      `disc_status` returning 0 instead of -1 when unobtainable.
   4. **`--map` rendering needs its own legend**, reusing the worst-state-in-

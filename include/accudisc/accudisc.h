@@ -27,7 +27,40 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 39 /* 0.39.0: READ CD RECORDS ARE NOW WHAT THE
+#define ACCUDISC_VERSION_MINOR 40 /* 0.40.0: C2 + FORMATTED Q IS NORMALISED
+                                  * TOO. The LITE-ON LH-20A1S sends AUDIO | Q |
+                                  * C2 for C2 + ACCUDISC_SUB_Q, as it does for
+                                  * raw P-W (measured 2026-09-16, 16/16 sectors
+                                  * at LBA 40000 and 120000). 0.39.0 passed that
+                                  * combination through, on the claim that
+                                  * formatted Q has no CRC. It was false: MMC-5
+                                  * Table 368 makes the CRC in bytes 10-11
+                                  * OPTIONAL, and that drive fills it with the
+                                  * same CRC raw P-W carries. The order is now
+                                  * read from it exactly as for raw P-W, and the
+                                  * records are returned in MMC order.
+                                  *
+                                  * A drive that leaves the CRC 00h gives no
+                                  * evidence: its buffer follows an earlier
+                                  * verdict for the same C2 + SUB_Q modes on the
+                                  * handle, and without one is passed through as
+                                  * delivered. A raw P-W verdict does not decide
+                                  * it, since the order belongs to the command.
+                                  *
+                                  * Also corrected: the claim that SUB_Q is
+                                  * "CRC-gated inside the drive". That drive
+                                  * passed a Q frame whose CRC fails. The
+                                  * subq_map refusal for SUB_Q stands; only its
+                                  * stated reason was wrong.
+                                  *
+                                  * NO declaration or struct moves. On an
+                                  * affected drive sectors_flagged falls from
+                                  * every sector to the real count with C2 +
+                                  * SUB_Q, and the 16 bytes at sub_len are Q —
+                                  * a semantic change to a contract field, hence
+                                  * a minor bump, as for 0.39.0.
+                                  *
+                                  * 0.39.0: READ CD RECORDS ARE NOW WHAT THE
                                   * STRIDE SAYS THEY ARE, ON TWO COUNTS. Both
                                   * were found on a LITE-ON LH-20A1S (9L08,
                                   * SATA), where a whole C2 + raw P-W rip came
@@ -60,7 +93,8 @@ extern "C" {
                                   * this, on such a drive every sector counted as
                                   * C2-flagged and no Q frame verified. SUB_Q has
                                   * no CRC to read the order from and is passed
-                                  * through unchanged.
+                                  * through unchanged. [WRONG, corrected by
+                                  * 0.40.0: its CRC is optional, not absent.]
                                   *
                                   * NO declaration or struct moves. What moves is
                                   * behaviour, and on an affected drive it moves
@@ -3219,11 +3253,13 @@ typedef struct accudisc_read_req {
  * sectors arrive zero-filled with an all-ones C2 bitmap so the streams never
  * desync. The pointer is only valid during the call.
  *
- * That layout holds WHATEVER ORDER THE DRIVE SENT, since 0.39.0: a drive that
- * delivers raw P-W before C2 (LITE-ON LH-20A1S; MMC requires C2 first) has its
- * records rewritten before they reach you, the order read from the Q CRC. So
- * slice by these fields and nothing else. The one combination that cannot be
- * checked is C2 with formatted Q (ACCUDISC_SUB_Q): no CRC, delivered as sent. */
+ * That layout holds WHATEVER ORDER THE DRIVE SENT: a drive that delivers the
+ * subchannel before C2 (LITE-ON LH-20A1S; MMC requires C2 first) has its
+ * records rewritten before they reach you, the order read from the Q CRC — raw
+ * P-W since 0.39.0, formatted Q since 0.40.0. So slice by these fields and
+ * nothing else. The one case that cannot be checked is formatted Q from a drive
+ * that omits its CRC, which MMC permits: it follows an earlier C2 + formatted Q
+ * verdict on the same handle, or is delivered as sent. */
 typedef struct accudisc_chunk {
     uint32_t lba;
     uint32_t nsec;

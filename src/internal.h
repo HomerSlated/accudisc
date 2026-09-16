@@ -82,13 +82,15 @@ struct accudisc_device {
      * handle, 1 = a rounded transfer failed at the transport where the exact
      * one succeeded, so rounding is off for the handle's lifetime.
      *
-     * `layout[c2]` is the combined C2 + raw P-W record order for that C2 mode
-     * (ADSC_LAYOUT_*, src/cdda/layout.h), latched on positive evidence and
-     * never on its absence. */
+     * `layout[c2][sub]` is the combined C2 + subchannel record order for that
+     * pair of modes (ADSC_LAYOUT_*, src/cdda/layout.h), latched on positive
+     * evidence and never on its absence. Keyed by BOTH modes since 0.40.0: the
+     * order is a property of the command, not the drive, so a raw P-W read's
+     * verdict is not evidence about a formatted-Q read. */
     uint8_t *xfer_bounce;
     uint32_t xfer_bounce_cap;
     int xfer_exact;
-    uint8_t layout[3];
+    uint8_t layout[3][3];
 
     /* Write health (0.34.0). Counts and times LIVE burns only — a simulate run
      * skips SEND OPC and never fires the laser, so it costs the medium nothing

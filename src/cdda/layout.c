@@ -5,6 +5,7 @@
 #include <accudisc/accudisc.h>
 
 #define SUB_RAW 96u
+#define SUB_Q 16u
 #define AUDIO 2352u
 
 /* Probe no further than this many extra bytes per record. The one padding
@@ -13,28 +14,41 @@
 #define MISFRAME_SPAN 16u
 #define MISFRAME_MIN_SECTORS 4u
 
-/* The library's own Q extraction and CRC, not a second copy of them. */
-static int q_valid(const uint8_t *raw)
+/* The library's own Q extraction and CRC, not a second copy of them. Formatted
+ * Q is already the 12-byte frame; only its CRC (bytes 10-11) is optional, and
+ * a drive that leaves it 00h fails here, as it must — no evidence. */
+static int q_valid(const uint8_t *sub, uint32_t sub_len)
 {
     uint8_t q[12];
     accudisc_q qd;
 
-    accudisc_sub_extract_q(raw, q);
+    if (sub_len == SUB_RAW)
+        accudisc_sub_extract_q(sub, q);
+    else
+        memcpy(q, sub, sizeof(q));
     accudisc_q_parse(q, &qd);
     return qd.crc_ok;
 }
 
+static int sub_len_ok(uint32_t sub_len)
+{
+    return sub_len == SUB_RAW || sub_len == SUB_Q;
+}
+
 uint32_t adsc_layout_q_hits(const uint8_t *buf, uint32_t buf_len,
-                            uint32_t nsec, uint32_t stride, uint32_t sub_off)
+                            uint32_t nsec, uint32_t stride, uint32_t sub_off,
+                            uint32_t sub_len)
 {
     uint32_t hits = 0;
 
+    if (!sub_len_ok(sub_len))
+        return 0;
     for (uint32_t s = 0; s < nsec; s++) {
         uint64_t at = (uint64_t)s * stride + sub_off;
 
-        if (at + SUB_RAW > buf_len)
+        if (at + sub_len > buf_len)
             break;
-        hits += (uint32_t)q_valid(buf + at);
+        hits += (uint32_t)q_valid(buf + at, sub_len);
     }
     return hits;
 }
@@ -59,8 +73,15 @@ void adsc_layout_inspect(const uint8_t *buf, uint32_t nsec,
     uint32_t len = nsec * sector_len;
 
     memset(v, 0, sizeof(*v));
-    v->hits_mmc = adsc_layout_q_hits(buf, len, nsec, sector_len, AUDIO + c2_len);
-    v->hits_sub = adsc_layout_q_hits(buf, len, nsec, sector_len, AUDIO);
+    if (sector_len < AUDIO + c2_len)
+        return;
+    uint32_t sub_len = sector_len - AUDIO - c2_len;
+
+    if (!sub_len_ok(sub_len))
+        return;
+    v->hits_mmc = adsc_layout_q_hits(buf, len, nsec, sector_len, AUDIO + c2_len,
+                                     sub_len);
+    v->hits_sub = adsc_layout_q_hits(buf, len, nsec, sector_len, AUDIO, sub_len);
     v->layout = winner(v->hits_mmc, v->hits_sub);
 
     uint32_t best = v->hits_mmc > v->hits_sub ? v->hits_mmc : v->hits_sub;
@@ -77,8 +98,9 @@ void adsc_layout_inspect(const uint8_t *buf, uint32_t nsec,
          stride++) {
         for (unsigned order = 0; order < 2; order++) {
             uint32_t off = order ? AUDIO : AUDIO + c2_len;
-            uint32_t h = adsc_layout_q_hits(buf, len, nsec, stride, off) -
-                         (uint32_t)q_valid(buf + off);
+            uint32_t h =
+                adsc_layout_q_hits(buf, len, nsec, stride, off, sub_len) -
+                (uint32_t)q_valid(buf + off, sub_len);
 
             if (h * 2 >= tail && h >= 2) {
                 v->misframed = stride;
@@ -94,16 +116,20 @@ void adsc_layout_to_mmc(uint8_t *buf, uint32_t nsec, uint32_t sector_len,
 {
     uint8_t sub[SUB_RAW];
 
-    /* Only a raw-P-W record is laid out AUDIO + c2 + 96. Called on anything
-     * else (formatted Q is 16 bytes) the 96-byte moves would cross into the
-     * next record, so refuse by doing nothing. */
-    if (sector_len != AUDIO + c2_len + SUB_RAW)
+    /* Only a record laid out AUDIO + c2 + (96 or 16) is ours to move. Called on
+     * any other shape the moves would cross into the next record, so refuse by
+     * doing nothing. */
+    if (sector_len < AUDIO + c2_len)
+        return;
+    uint32_t sub_len = sector_len - AUDIO - c2_len;
+
+    if (!sub_len_ok(sub_len))
         return;
     for (uint32_t s = 0; s < nsec; s++) {
         uint8_t *rec = buf + (size_t)s * sector_len + AUDIO;
 
-        memcpy(sub, rec, SUB_RAW);
-        memmove(rec, rec + SUB_RAW, c2_len);
-        memcpy(rec + c2_len, sub, SUB_RAW);
+        memcpy(sub, rec, sub_len);
+        memmove(rec, rec + sub_len, c2_len);
+        memcpy(rec + c2_len, sub, sub_len);
     }
 }

@@ -3,9 +3,9 @@
 
 #include <stdint.h>
 
-/* READ CD record layout for a combined C2 + raw P-W read — which of the two
- * trailing fields the drive delivers first, and whether the records sit at the
- * stride the CDB asked for. Pure functions over a buffer; no drive access, so
+/* READ CD record layout for a combined C2 + subchannel read, raw P-W or
+ * formatted Q — which of the two trailing fields the drive delivers first, and
+ * whether the records sit at the stride the CDB asked for. Pure functions over a buffer; no drive access, so
  * every branch is reachable from a test.
  *
  * WHY THIS EXISTS. MMC-4/5/6 make the order normative ("shall transfer ... C2
@@ -14,8 +14,18 @@
  * delivers AUDIO | SUB | C2 instead, measured 2026-09-14, and 8 of redumper's
  * 55 combined-read drives do the same. The order also varies with firmware and
  * command on the same model, so no drive table can hold it. Only the content
- * can: raw P-W carries a CRC-16 over each Q frame, and a CRC that verifies at
- * one candidate position and not the other says where the subchannel is. */
+ * can: a Q frame carries a CRC-16, and a CRC that verifies at one candidate
+ * position and not the other says where the subchannel is.
+ *
+ * FORMATTED Q (16 B) TOO, since 0.40.0. The same LITE-ON sends AUDIO | Q | C2
+ * for C2 + formatted Q (measured 2026-09-16, 16/16 sectors). MMC-5 Table 368
+ * makes the CRC in bytes 10-11 OPTIONAL — present or 00h — rather than absent,
+ * and that drive fills it: its formatted Q bytes 0-11 were identical to the Q
+ * de-interleaved from raw P-W, including a frame that failed CRC. So the check
+ * is the same one, on bytes 0-11 taken directly. Bytes 12-15 are never looked
+ * at; MMC calls 12-14 pad, and that drive puts non-zero bytes there. A drive
+ * that omits the CRC gives no evidence at either position, and its buffer is
+ * UNKNOWN like any other buffer without evidence. */
 
 enum {
     ADSC_LAYOUT_UNKNOWN = 0,
@@ -23,11 +33,14 @@ enum {
     ADSC_LAYOUT_SUB_FIRST = 2  /* AUDIO | SUB | C2 */
 };
 
-/* Number of records in buf (nsec at stride) whose raw P-W, taken at sub_off
- * within the record, carries a CRC-valid Q frame. Records whose window would
- * run past buf_len are not counted. */
+/* Number of records in buf (nsec at stride) whose subchannel, taken at sub_off
+ * within the record, carries a CRC-valid Q frame. sub_len is 96 (raw P-W: Q is
+ * de-interleaved first) or 16 (formatted Q: bytes 0-11 are the frame); any
+ * other value counts nothing. Records whose window would run past buf_len are
+ * not counted. */
 uint32_t adsc_layout_q_hits(const uint8_t *buf, uint32_t buf_len,
-                            uint32_t nsec, uint32_t stride, uint32_t sub_off);
+                            uint32_t nsec, uint32_t stride, uint32_t sub_off,
+                            uint32_t sub_len);
 
 typedef struct adsc_layout_verdict {
     int layout;            /* ADSC_LAYOUT_*: what THIS buffer shows */
@@ -36,7 +49,8 @@ typedef struct adsc_layout_verdict {
     uint32_t misframed;    /* 0, or the stride the records actually sit at */
 } adsc_layout_verdict;
 
-/* Read what a buffer of nsec records at sector_len (2352 + c2_len + 96) shows.
+/* Read what a buffer of nsec records at sector_len (2352 + c2_len + sub_len,
+ * sub_len 96 or 16) shows. Any other shape is UNKNOWN and not misframed.
  *
  * `layout` is decided by EVIDENCE in this buffer only: hits at one position and
  * none (or a clear minority) at the other. A buffer with no CRC-valid Q at
@@ -59,7 +73,8 @@ void adsc_layout_inspect(const uint8_t *buf, uint32_t nsec,
                          adsc_layout_verdict *v);
 
 /* Rewrite every record of a SUB_FIRST buffer into the standard's order, in
- * place, so every consumer slicing AUDIO | C2 | SUB stays correct. */
+ * place, so every consumer slicing AUDIO | C2 | SUB stays correct. A record
+ * shape other than 2352 + c2_len + (96 or 16) is left untouched. */
 void adsc_layout_to_mmc(uint8_t *buf, uint32_t nsec, uint32_t sector_len,
                         uint32_t c2_len);
 

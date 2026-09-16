@@ -131,12 +131,16 @@ static int rounding_suspect(const struct accudisc_device *dev, int rc)
            dev->last_sense.key == 0x05;
 }
 
-/* Put a combined C2 + raw P-W buffer into the standard's record order, or
- * refuse it. See src/cdda/layout.h for what the evidence is and why. */
+/* Put a combined C2 + subchannel buffer (raw P-W or formatted Q) into the
+ * standard's record order, or refuse it. See src/cdda/layout.h for what the
+ * evidence is and why. */
 static int read_cd_layout(struct accudisc_device *dev, unsigned c2,
-                          uint8_t *buf, uint32_t nsec, uint32_t sector_len)
+                          unsigned sub, uint8_t *buf, uint32_t nsec,
+                          uint32_t sector_len)
 {
-    uint32_t c2_len = sector_len - ACCUDISC_BYTES_AUDIO - ACCUDISC_BYTES_SUB_RAW;
+    uint32_t sub_len = sub == ADSC_SUB_RAW ? ACCUDISC_BYTES_SUB_RAW
+                                           : ACCUDISC_BYTES_SUB_Q;
+    uint32_t c2_len = sector_len - ACCUDISC_BYTES_AUDIO - sub_len;
     adsc_layout_verdict v;
 
     adsc_layout_inspect(buf, nsec, sector_len, c2_len, &v);
@@ -155,22 +159,24 @@ static int read_cd_layout(struct accudisc_device *dev, unsigned c2,
 
     /* Latch only on more than one agreeing record: a CRC-16 collision in one
      * record is ~1 in 65 536, and a latched layout is what an evidence-free
-     * buffer (damaged P-W) is sorted by later. One record still decides for
-     * itself. */
+     * buffer (damaged Q, a drive that omits formatted Q's optional CRC) is
+     * sorted by later. One record still decides for itself. */
     uint32_t votes = v.hits_mmc > v.hits_sub ? v.hits_mmc : v.hits_sub;
+    uint8_t *latch = &dev->layout[c2][sub];
 
-    if (v.layout && votes >= 2 && dev->layout[c2] != v.layout) {
-        if (v.layout == ADSC_LAYOUT_SUB_FIRST || dev->layout[c2])
-            adsc_dev_log(dev, "READ CD C2+subchannel: drive delivers %s; "
+    if (v.layout && votes >= 2 && *latch != v.layout) {
+        if (v.layout == ADSC_LAYOUT_SUB_FIRST || *latch)
+            adsc_dev_log(dev, "READ CD C2+%s: drive delivers %s; "
                               "records are returned in MMC order "
                               "(audio, C2, subchannel)",
+                         sub == ADSC_SUB_RAW ? "raw P-W" : "formatted Q",
                          v.layout == ADSC_LAYOUT_SUB_FIRST
                              ? "subchannel BEFORE C2 (not MMC order)"
                              : "MMC order");
-        dev->layout[c2] = (uint8_t)v.layout;
+        *latch = (uint8_t)v.layout;
     }
 
-    int use = v.layout ? v.layout : dev->layout[c2];
+    int use = v.layout ? v.layout : *latch;
 
     if (use == ADSC_LAYOUT_SUB_FIRST)
         adsc_layout_to_mmc(buf, nsec, sector_len, c2_len);
@@ -181,8 +187,8 @@ int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
                      unsigned sector_type, unsigned c2, unsigned sub,
                      void *buf, uint32_t sector_len)
 {
-    /* c2 and sub are range-checked here, not only by their callers: c2 indexes
-     * dev->layout[], and adsc_read_cd_sector_len treats an out-of-range value
+    /* c2 and sub are range-checked here, not only by their callers: they index
+     * dev->layout[][], and adsc_read_cd_sector_len treats an out-of-range value
      * as "no field", so it would pass the length check below. */
     if (c2 > ADSC_C2_296 || sub > ADSC_SUB_Q ||
         sector_len != adsc_read_cd_sector_len(c2, sub) || nsec == 0 ||
@@ -272,8 +278,8 @@ int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
         dev->xfer_exact = -1; /* proven: never fall back on this handle */
     }
 
-    if (c2 != ADSC_C2_NONE && sub == ADSC_SUB_RAW)
-        return read_cd_layout(dev, c2, buf, nsec, sector_len);
+    if (c2 != ADSC_C2_NONE && sub != ADSC_SUB_NONE)
+        return read_cd_layout(dev, c2, sub, buf, nsec, sector_len);
     return ACCUDISC_OK;
 }
 

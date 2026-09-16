@@ -44,13 +44,17 @@ int adsc_mmc_read_toc_raw(struct accudisc_device *dev, unsigned format,
  * ACCUDISC_ERR_SHORT if the drive completes with GOOD status but transfers
  * fewer than nsec*sector_len bytes — buf is then partly stale and untrusted.
  *
- * buf always comes back AUDIO | C2 | SUB, the MMC order, whatever the drive
- * sent: a C2 + raw P-W read whose Q CRCs show the drive delivered SUB before
- * C2 (LITE-ON LH-20A1S) is rewritten in place (0.39.0). One whose records sit
- * at the wrong stride returns ACCUDISC_ERR_IO with the reason in last_io;
- * re-read it one sector at a time. C2 with formatted Q (SUB_Q) has no CRC to
- * read the order from and is passed through as delivered. The transfer is
- * rounded up to a multiple of 16 bytes internally; see the .c for why. */
+ * buf comes back AUDIO | C2 | SUB, the MMC order, whatever the drive sent: a
+ * C2 + subchannel read whose Q CRCs show the drive delivered SUB before C2
+ * (LITE-ON LH-20A1S, for raw P-W and formatted Q alike) is rewritten in place
+ * (raw P-W 0.39.0, formatted Q 0.40.0). One whose records sit at the wrong
+ * stride returns ACCUDISC_ERR_IO with the reason in last_io; re-read it one
+ * sector at a time. The exception is formatted Q from a drive that omits its
+ * CRC, which MMC-5 Table 368 permits: with no CRC-valid frame at either
+ * position the order is taken from an earlier read of the same modes on this
+ * handle, and without one the buffer is passed through as delivered. The
+ * transfer is rounded up to a multiple of 16 bytes internally; see the .c for
+ * why. */
 int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
                      unsigned sector_type, unsigned c2, unsigned sub,
                      void *buf, uint32_t sector_len);

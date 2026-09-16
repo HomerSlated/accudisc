@@ -441,10 +441,12 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         return ACCUDISC_ERR_INVAL;
     if (req->c2 > ACCUDISC_C2_PTRS_BEB || req->sub > ACCUDISC_SUB_Q)
         return ACCUDISC_ERR_INVAL;
-    /* The Q health lane needs the raw P-W frame to run its own CRC over. SUB_Q
-     * is drive-formatted and already CRC-gated inside the drive, so we would be
-     * reporting the drive's opinion as our measurement; SUB_NONE has nothing to
-     * measure at all. Refuse both rather than fill the map with a single state —
+    /* The Q health lane runs over raw P-W only. SUB_Q is not measured: MMC-5
+     * Table 368 makes formatted Q's CRC optional, so a drive may send nothing to
+     * check, and the lane was never built for the drives that do. It is NOT
+     * "gated inside the drive" — this comment used to say so, and a LITE-ON
+     * LH-20A1S passed a frame with a failing CRC straight through (measured
+     * 2026-09-16). SUB_NONE has nothing to measure at all. Refuse both rather than fill the map with a single state —
      * a lane that is uniform because nothing was measured is indistinguishable,
      * to a renderer, from a lane that is uniform because the disc is perfect.
      *
@@ -769,8 +771,8 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             r.st.c2_bits += bits[s];
 
             /* Q-subchannel CRC health of the delivered sector. Raw P-W only;
-             * the drive-formatted Q path (SUB_Q) is already CRC-gated in the
-             * drive. This is independent of the C2 audio stats — a clean-audio
+             * formatted Q (SUB_Q) is not counted — its CRC is optional in MMC,
+             * and drives do not gate on it (see the subq_map refusal above). This is independent of the C2 audio stats — a clean-audio
              * sector can still carry a corrupt Q frame (lost pregap/index). */
             if (r.sub_len == ACCUDISC_BYTES_SUB_RAW) {
                 const uint8_t *sub =
