@@ -417,6 +417,7 @@ static void test_c2_rescue_refuses_unaligned_copy(void)
     req.lba = 20000;
     req.count = 8;
     req.c2_retries = 3;
+    req.verify_passes = 2; /* required since 0.43.0 */
     accudisc_read_stats st = run(&req, map);
 
     show("c2 rescue, late", &st, map, 8);
@@ -440,6 +441,7 @@ static void test_c2_rescue_accepts_aligned_copy(void)
     req.lba = 20000;
     req.count = 8;
     req.c2_retries = 3;
+    req.verify_passes = 2; /* required since 0.43.0 */
     accudisc_read_stats st = run(&req, map);
 
     show("c2 rescue, aligned", &st, map, 8);
@@ -463,11 +465,36 @@ static void test_c2_rescue_silent_neighbours(void)
     req.lba = 20000;
     req.count = 5;
     req.c2_retries = 3;
+    req.verify_passes = 2; /* required since 0.43.0 */
     accudisc_read_stats st = run(&req, map);
 
     show("c2 rescue, silent", &st, map, 5);
     assert(out.verdict[2] == 'E');
     assert((map[2] & 15) == ACCUDISC_MAP_C2 && st.sectors_recovered == 0);
+}
+
+/* No position witness, no rescue: c2_retries without verify_passes >= 2 is
+ * refused before any read (0.43.0). */
+static void test_c2_rescue_requires_verify(void)
+{
+    static struct accudisc_device dev;
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    memset(&fk, 0, sizeof(fk));
+    req.lba = 20000;
+    req.count = 8;
+    req.c2 = ACCUDISC_C2_PTRS;
+    req.buffer_bytes = ACCUDISC_BUFFER_NONE;
+    req.c2_retries = 3;
+    for (unsigned v = 0; v < 2; v++) {
+        req.verify_passes = (uint8_t)v;
+        assert(accudisc_read_cdda(&dev, &req, NULL, NULL, NULL) ==
+               ACCUDISC_ERR_INVAL);
+    }
+    assert(fk.chunk_reads == 0 && fk.anchor_reads == 0);
+    req.verify_passes = 2;
+    assert(accudisc_read_cdda(&dev, &req, NULL, NULL, NULL) == ACCUDISC_OK);
+    free(dev.xfer_bounce);
 }
 
 int main(void)
@@ -482,5 +509,6 @@ int main(void)
     test_c2_rescue_refuses_unaligned_copy();
     test_c2_rescue_accepts_aligned_copy();
     test_c2_rescue_silent_neighbours();
+    test_c2_rescue_requires_verify();
     return 0;
 }

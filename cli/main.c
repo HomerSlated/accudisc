@@ -155,7 +155,8 @@ static void usage(FILE *to)
         "  --chunk N      sectors per READ CD (default: max under 64 KiB)\n"
         "  --retries K    per-sector attempts on failed chunks (default 2)\n"
         "  --c2-retries N hunt a C2-clean copy of each flagged sector with\n"
-        "                 up to N cache-defeated rereads (default 0 = off)\n"
+        "                 up to N cache-defeated rereads (default 0 = off);\n"
+        "                 requires --verify 2 or more\n"
         "  --verify P     read everything P times (cache-defeated); sectors\n"
         "                 whose reads disagree are resolved by consensus or\n"
         "                 marked suspect (default 1 = off)\n"
@@ -2368,6 +2369,13 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
     }
     if (sub_path && req.sub == ACCUDISC_SUB_NONE) {
         fprintf(stderr, "accudisc: --subf requires --sub raw|q\n");
+        return 1;
+    }
+    if (req.c2_retries && req.verify_passes < 2) {
+        /* The library refuses this too (ERR_INVAL, 0.43.0); named here so the
+         * message says which flag is missing. */
+        fprintf(stderr, "accudisc: --c2-retries requires --verify 2 or more "
+                        "(a single pass cannot see a positioning slip)\n");
         return 1;
     }
     if (subq_path && req.sub != ACCUDISC_SUB_RAW) {

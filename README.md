@@ -294,6 +294,7 @@ req.lba = 0;
 req.count = 4000;
 req.c2 = ACCUDISC_C2_PTRS;
 req.c2_retries = 8;
+req.verify_passes = 2;          /* required with c2_retries since 0.43.0 */
 req.status_map = map;           /* req.count bytes, or NULL */
 
 int rc = accudisc_read_cdda(dev, &req, sink, pcm, &st);

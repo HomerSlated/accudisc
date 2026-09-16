@@ -132,7 +132,7 @@ shift flag on either path, and anchoring without a slip each failed a test.
   one `RECOVERED`. (First reported as "no shifted RECOVERED": the check was exact
   equality under shift, which a shifted copy carrying damage cannot pass. Caught by
   cdda2img.)
-- `[P1]` **A single-pass read has no position witness on this drive.** Run B above:
+- `[P1]` **A single-pass read has no position witness on this drive.** **DECIDED for `c2_retries`, BUILT 0.43.0:** Keith chose to refuse `c2_retries` without `verify_passes >= 2` (ERR_INVAL; CLI names the flag; RECOVERY.md R1 struck). Plain single-pass reads and forced overlap remain open. Run B above:
   whole chunks delivered late with clean C2 and state `OK`. Nothing in a single
   pass can see a sub-frame slip — C2 decodes it cleanly, Q stays in frame, and
   `slips` only counts comparisons that were made. Only `verify_passes >= 2` or

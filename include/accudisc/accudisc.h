@@ -27,7 +27,24 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 42 /* 0.42.0: c2_retries CANNOT SPLICE A SLIP.
+#define ACCUDISC_VERSION_MINOR 43 /* 0.43.0: c2_retries REQUIRES
+                                  * verify_passes >= 2, else ERR_INVAL (CLI:
+                                  * --c2-retries needs --verify 2+). Keith's
+                                  * ruling, 2026-09-16, on hardware evidence:
+                                  * a single-pass read on a LITE-ON LH-20A1S
+                                  * delivered whole chunks 48 and 96 bytes late
+                                  * with clean C2, and a rescue lined up with the
+                                  * late chunk and marked a late sector
+                                  * RECOVERED. A rescue anchors to the chunk as
+                                  * delivered; only a second transfer can check
+                                  * that chunk's position.
+                                  *
+                                  * A caller that set c2_retries alone now gets
+                                  * ERR_INVAL where the read used to run: a
+                                  * refusal of a previously accepted request,
+                                  * hence a minor bump. No declaration moves.
+                                  *
+                                  * 0.42.0: c2_retries CANNOT SPLICE A SLIP.
                                   * 0.41.0 left it open, reproduced: c2_rescue
                                   * kept the reread with the fewest C2 bits, and
                                   * a slip that reproduces at the address is a
@@ -3211,7 +3228,8 @@ typedef struct accudisc_read_req {
                         * afterwards. Contrast accudisc_pregap_scan_opts.speed_x,
                         * which does restore on every exit path. */
     /* accuracy strategy (all off = single-pass fast read): */
-    uint8_t c2_retries;    /* cache-defeated rereads hunting a C2-clean copy
+    uint8_t c2_retries;    /* REQUIRES verify_passes >= 2 since 0.43.0, else
+                            * ERR_INVAL. cache-defeated rereads hunting a C2-clean copy
                             * of each flagged sector (requires c2 != NONE);
                             * best read wins, whole sector replaced so
                             * AUDIO/C2/SUB stay single-read aligned */

@@ -636,6 +636,17 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     if (req->subq_map && req->sub != ACCUDISC_SUB_RAW)
         return ACCUDISC_ERR_INVAL;
 
+    /* c2_retries NEEDS A POSITION WITNESS (0.43.0, Keith's ruling 2026-09-16).
+     * A rescue candidate is lined up against the chunk as first delivered, and
+     * on a LITE-ON LH-20A1S a single-pass chunk transfer itself landed 48 and 96
+     * bytes late with clean C2: the rescue then lined up with the late chunk and
+     * labelled a late sector RECOVERED. Nothing inside one pass can see a slip
+     * under one Q frame. A second transfer of the same sectors can, so the
+     * rescue is refused without one rather than allowed to certify a position
+     * it has no way to check. */
+    if (req->c2_retries && req->verify_passes < 2)
+        return ACCUDISC_ERR_INVAL;
+
     /* REMOVED IN 0.6.0: a refusal to capture subchannel while the vendor
      * read-speed uncap was authoritatively on, overridable via
      * req->allow_unsafe. Keith's ruling, 2026-08-09.

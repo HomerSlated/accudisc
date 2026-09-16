@@ -136,7 +136,8 @@ read options:
   --chunk N      sectors per READ CD (default: max under 64 KiB)
   --retries K    per-sector attempts on failed chunks (default 2)
   --c2-retries N hunt a C2-clean copy of each flagged sector with
-                 up to N cache-defeated rereads (default 0 = off)
+                 up to N cache-defeated rereads (default 0 = off);
+                 requires --verify 2 or more
   --verify P     read everything P times (cache-defeated); sectors
                  whose reads disagree are resolved by consensus or
                  marked suspect (default 1 = off)
