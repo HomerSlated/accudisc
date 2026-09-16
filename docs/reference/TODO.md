@@ -123,8 +123,15 @@ shift flag on either path, and anchoring without a slip each failed a test.
   delivery; `slips=3`, settled with no wrong copy (one `SUSPECT` that was right).
   The 113069-71 slip did not recur this time, so the anchor path was not exercised
   there on hardware; the tests carry that. **Run B (`--c2-retries 3`, no verify):**
-  no shifted `RECOVERED`, but the **chunk transfers themselves** at 113068 and 113092
-  landed 48 and 96 bytes late: 31 sectors wrong, C2-clean, map `OK`, `slips=0`.
+  the **chunk transfers themselves** at 113068 and 113092 landed 48 and 96 bytes late:
+  31 sectors wrong, C2-clean, map `OK`, `slips=0`. And one rescue INHERITED that
+  shift: 113098 was delivered `RECOVERED`, +48 bytes with 2 damaged bytes. The
+  rescue anchors to the chunk as first delivered, so when that chunk is late, a
+  corroborated copy is late with it — the documented limit (a displacement the
+  reference shares), met on hardware. It did not introduce a shift; it did label
+  one `RECOVERED`. (First reported as "no shifted RECOVERED": the check was exact
+  equality under shift, which a shifted copy carrying damage cannot pass. Caught by
+  cdda2img.)
 - `[P1]` **A single-pass read has no position witness on this drive.** Run B above:
   whole chunks delivered late with clean C2 and state `OK`. Nothing in a single
   pass can see a sub-frame slip — C2 decodes it cleanly, Q stays in frame, and
