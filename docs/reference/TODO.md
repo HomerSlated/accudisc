@@ -422,6 +422,43 @@ discarded, so over-condemning costs reads and never costs yield.
   directly, and it is the cheapest arm of the lot. Run it first: it calibrates
   every other number here.
 
+  **Three constraints without which that arm returns `C = infinity` while
+  looking clean** (cdda2img, 208):
+
+  1. **Every span must contain a site whose FRESH reads are known to differ.**
+     The arm's inference is *same bytes => cached*, which holds only where a
+     fresh read would have differed. On clean media it does not: 18c measured
+     0 wrong of 24 000 sectors over six transfers, so fresh and cached reads
+     are byte-identical there. A zero-flush sweep on clean media reports "still
+     cached" at every size and concludes `C = infinity`, with no symptom at
+     all. Use 113068-113116, where cache-defeated reads differ by 22-49 of 49.
+  2. **Anchor at the START of the span and grow FORWARD.** cdda2img said grow
+     around it rather than sliding; anchoring at the start is better still. For
+     the damaged sectors to survive to the second read, the data read AFTER
+     them must be under `C` — so the quantity that matters is the SUFFIX, not
+     the span. Growing symmetrically makes the suffix about half the span and
+     the arm would report roughly `2C`. Anchored at the start, suffix = span
+     minus 49, and the threshold is `C` directly.
+  3. **Score "does ANY sector differ", never a differing fraction.** The
+     damaged 49 are a shrinking share as the span grows — 100% at 49 sectors,
+     2.5% at 2000 — so a fraction falls monotonically for reasons that have
+     nothing to do with the cache and would read exactly like a threshold.
+     Expect the differing sectors to lie in the damaged part; if they appear
+     outside it, that is a separate and more interesting finding.
+
+  **Correction to this entry's own bracket.** It read "49 sectors was fully
+  cached, and 2000 sectors evicted", which imports a datum that does not exist:
+  the 2000-sector figure was a FLUSH pushed past a 112 kB span, not a span that
+  self-evicted, and no 2000-sector span has been read back to back. Both ends
+  still bound `C` — a resident 112 kB survived with nothing in between, and
+  5.5 MB of distant reading displaced it, so `C` is between 112 kB and about
+  5.6 MB — but by two different mechanisms, and the sentence conflated them.
+
+  **cdda2img's `C` prediction:** 1.5-2.5 MB (the advertised buffer) unless the
+  buffer is segmented per stream, in which case a few hundred kB and both the
+  `~C` and `C-S` models collapse toward "small and flat". Near even odds on
+  the segmented outcome.
+
   **Pre-registrations, both before any read.** AccuDisc: approximately constant
   at about the cache size — recorded first and NOT retrospectively improved,
   though we now consider cdda2img's reasoning better than our own and expect to
