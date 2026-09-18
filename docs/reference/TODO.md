@@ -326,6 +326,13 @@ discarded, so over-condemning costs reads and never costs yield.
   not needed to produce a wrong read (they could still make it worse). The
   discriminating test is no-sub against sub, alternated and replicated.
 
+  **How to read that test, fixed BEFORE it runs (cdda2img, 215).** At n=4 per
+  arm, against a first-pass spread from 49/49 right to 45/49 wrong, it can
+  CONFIRM the sub-geometry hypothesis but cannot CLEAR it. Overlapping
+  distributions are recorded as "no detectable effect at n=4", never as
+  "exonerated"; separated ones count as real support. Both sides predicted
+  overlap. Not yet authorised.
+
 ### The two items to build, in order
 
 1. **`[P1]` Widen the seam check.** `engine.c:868` runs `s < prev_ext_n` and
