@@ -290,10 +290,35 @@ discarded, so over-condemning costs reads and never costs yield.
   in 0.44.0's tail padding (`reserved0` covers it, never read).
 - **Evidence:** fake drive only, including a step INSIDE a transfer
   (`chunk_late_from`). 13 mutations across both items, all caught by exit code.
-- **OPEN: hardware verification.** No LITE-ON read has run on 0.44/0.45. The
-  decisive run is the 113068 span with `--c2-witness`, scored against the
-  container: it should turn the 31 wrong-but-OK sectors into exact or SUSPECT.
-  Keith's call.
+- **HARDWARE VERIFICATION RUN 2026-09-18 22:40 (correspondence 18v/18w;
+  `private/bench/2026-09-18-ladder-hw/`). The ladder helps, and a second
+  transfer is NOT a witness in this region.** Raw 113022-113136, 115 sectors,
+  three reps per arm. FALSE-OK means a WRONG sector marked OK:
+
+  | arm | false-OK /115 | false-RECOVERED | exact | time |
+  |---|---|---|---|---|
+  | single pass | 79, 60, 79 | 0-3 | 4-23 | 2-8 s |
+  | `--overlap 4` | 80, 79, 70 | 0 | 4-13 | 2 s, **0 rereads** |
+  | `--c2-witness` | 14, 38, 46 | 6-7 | 24-25 | 48-94 s |
+  | `--verify 2` | 25, 33, 13 | 5-9 | 24-25 | 55-105 s |
+
+  Predicted "near zero" for the witness; wrong. It cut false-OK by about half.
+  `--verify 2` has the same limit. Overlap did nothing because no seam ever
+  disagreed.
+
+  **Why (diagnostic, 4 fresh reads kept):** the reads are neither cached (they
+  differ in 34-102 sectors) nor identical, yet every one is exact ONLY for
+  113022-113025 and wrong from 113026 on, far beyond the damage map. The
+  displacement ramps (0 -> 48 -> 72 -> 120 -> 144 bytes, in multiples of 24)
+  and resets to 0 at FIXED DISC POSITIONS, 113053 / 113095 / 113123, in all
+  four reads, not at transfer boundaries. The slip sizes vary from read to read
+  but the pattern repeats, so independent transfers often agree on the SAME
+  wrong bytes. **No relative check can certify this region on this drive,
+  `--verify 2` included**; RECOVERY.md's invariant, met on hardware.
+
+  **Unexplained change:** Tuesday's `--verify 3` read of 113068-113116 was
+  49/49 exact with ZERO C2 flags. Today the same sectors carry 13-15 flags per
+  read and almost never read right. Disc, drive or conditions: not isolated.
 
 ### The two items to build, in order
 
