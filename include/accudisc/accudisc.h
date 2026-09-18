@@ -27,7 +27,17 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 43 /* 0.43.0: c2_retries REQUIRES
+#define ACCUDISC_VERSION_MINOR 44 /* 0.44.0: overlap_sectors WIDENS. A seam
+                                  * mismatch now gives BOTH adjacent chunks a
+                                  * second, cache-defeated transfer and settles
+                                  * every sector in them (RECOVERED/SUSPECT),
+                                  * where it used to repair only the seam and
+                                  * deliver the rest of a displaced transfer
+                                  * marked OK. To reach the chunk BEHIND the
+                                  * seam, the sink now receives each chunk one
+                                  * chunk after it is read (accudisc_sink_fn).
+                                  * No struct or signature change.
+                                  * Previously 0.43.0: c2_retries REQUIRES
                                   * verify_passes >= 2, else ERR_INVAL (CLI:
                                   * --c2-retries needs --verify 2+). Keith's
                                   * ruling, 2026-09-16, on hardware evidence:
@@ -3242,27 +3252,37 @@ typedef struct accudisc_read_req {
                             * ACCUDISC_MAP_RECOVERED) */
     uint8_t overlap_sectors; /* boundary overlap check: extend each chunk
                             * read by k trailing sectors and compare them
-                            * against the next chunk's head. Mismatches go to
-                            * consensus. 0 = off; clamped to 8.
+                            * against the next chunk's head. 0 = off; clamped
+                            * to 8.
                             *
-                            * NOT A POSITION CHECK ON THE TRANSFER, and today
-                            * it can leave a map that is WORSE than no check at
-                            * all. A mismatch condemns only the SEAM sectors —
-                            * nothing propagates outward — but the fault it
-                            * detects displaces the WHOLE transfer. So a chunk
-                            * delivered 48 bytes late yields ~2 SUSPECT sectors
-                            * at the seam and ~20 wrong ones still marked OK,
-                            * and sectors_flagged counts the two. A caller that
-                            * accepts OK and rejects SUSPECT is worse off with
-                            * this on than off: off leaves no assurance, on
-                            * leaves a FALSE one.
+                            * A MISMATCH CONDEMNS BOTH TRANSFERS, NOT THE SEAM
+                            * (0.44.0). A seam that disagrees says one of the
+                            * two adjacent chunk transfers landed somewhere
+                            * else, and a displaced transfer is displaced past
+                            * the sectors the seam compared. So both chunks get
+                            * a second, cache-defeated transfer and every
+                            * sector in them is confirmed, settled by consensus
+                            * (RECOVERED) or marked SUSPECT. Any difference
+                            * triggers it, not only a clean shift. Chunks with
+                            * clean seams cost nothing extra. To reach the chunk
+                            * BEHIND the seam, every chunk is now delivered to
+                            * the sink one chunk later than it is read (see
+                            * accudisc_sink_fn).
                             *
-                            * Do not read this field as evidence the transfer
-                            * landed where it was asked to. Only verify_passes
-                            * >= 2 carries that today. Measured on a LITE-ON
-                            * LH-20A1S 2026-09-16; cdda2img stated the
-                            * consequence (correspondence 200). The widening
-                            * fix is queued — this text goes when it lands. */
+                            * Until 0.44.0 a mismatch condemned only the seam
+                            * sectors, and a transfer delivered 48 bytes late
+                            * went out as ~2 repaired sectors and ~20 wrong
+                            * ones marked OK — a map worse than no check at
+                            * all (LITE-ON LH-20A1S, 2026-09-16; correspondence
+                            * 200).
+                            *
+                            * STILL NOT A POSITION CHECK ON EVERY SECTOR. It
+                            * sees a displacement only where one reaches a
+                            * seam. The measured fault is a step function whose
+                            * runs ignore chunk boundaries, so a displaced run
+                            * that starts and ends between two seams is never
+                            * compared with anything. Only verify_passes >= 2
+                            * compares every sector. */
     /* speed ladder for problem-sector rereads: rescue/consensus attempt n
      * runs at ladder[min(n-1, len-1)] (e.g. {32,16,8,4} — descend toward
      * slow, careful reads). Pick rungs that differ from speed_x: consensus
@@ -3398,7 +3418,15 @@ typedef struct accudisc_chunk {
     uint32_t sub_len;
 } accudisc_chunk;
 
-/* Return 0 to continue; nonzero cancels the read (ACCUDISC_ERR_CANCELLED). */
+/* Return 0 to continue; nonzero cancels the read (ACCUDISC_ERR_CANCELLED).
+ *
+ * ONE CHUNK BEHIND THE READ, since 0.44.0. A chunk is handed to the sink —
+ * and its status_map / subq_map bytes settle — only after the NEXT chunk has
+ * been read and the seam between them checked, because a seam mismatch can
+ * change the chunk behind it (see overlap_sectors). Chunks still arrive in
+ * address order, each exactly once, and the last is delivered when the read
+ * ends. What changes: a map byte stays PENDING about one chunk longer, and a
+ * cancel also drops the one chunk read but not yet delivered. */
 typedef int (*accudisc_sink_fn)(void *user, const accudisc_chunk *chunk);
 
 typedef struct accudisc_read_stats {

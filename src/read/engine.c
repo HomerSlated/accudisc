@@ -360,6 +360,21 @@ struct adsc_ref {
     const uint8_t *hard;
 };
 
+/* Everything the engine knows about one chunk between reading it and
+ * delivering it. Two of these alternate: the chunk being read, and the one
+ * held back until the next seam has been checked (see accudisc_read_cdda). */
+struct adsc_chunk_state {
+    int live;        /* holds a chunk not yet delivered */
+    int witnessed;   /* has had a second, cache-defeated transfer compared */
+    uint32_t lba, n;
+    uint8_t *buf;    /* (chunk + overlap) sectors: the chunk, then extension */
+    uint8_t *prim;   /* the chunk as first delivered, or NULL */
+    uint8_t hard[ADSC_SPAN_MAX];
+    uint8_t recov[ADSC_CHUNK_MAX], susp[ADSC_CHUNK_MAX];
+    unsigned att[ADSC_CHUNK_MAX];
+    uint32_t bits[ADSC_CHUNK_MAX], diffb[ADSC_CHUNK_MAX];
+};
+
 /* Can a byte-exact match against this sector say anything about ALIGNMENT?
  * Not if it is constant (silence matches itself at every offset), and not if
  * it equals itself shifted — a copy read a few samples off would match it just
@@ -586,6 +601,143 @@ static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
     return anchor_position(r, lba, sec, refs, nref, attempts);
 }
 
+/* ONE WITNESSED PASS over a chunk already in buf: re-read it as a separate,
+ * cache-defeated transfer into buf2 and hold every sector against it. A sector
+ * that matches is confirmed; one that differs goes to consensus, anchored
+ * against both transfers when the two copies are a shift apart. prim is the
+ * chunk as its own transfer first delivered it.
+ *
+ * This is the verify pass, and it is also what a seam mismatch buys when the
+ * caller asked for no verify passes. The second transfer is a real disc access
+ * on the LITE-ON LH-20A1S — measured 2026-09-18, a 1-sector cache_defeat forced
+ * a fresh read 12/12 — so agreement here is agreement between two reads, not a
+ * read and its cached echo. It is still a RELATIVE check: two transfers that
+ * share one displacement agree, and only the caller's absolute gate can tell. */
+static void witness_pass(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
+                         const uint8_t *prim, const uint8_t *hard,
+                         uint8_t *buf2, uint8_t *hard2, uint8_t *recov,
+                         uint8_t *susp, unsigned *att, uint32_t *bits,
+                         uint32_t *diffb)
+{
+    ladder_restore(r);
+    cache_defeat(r, lba);
+    read_span(r, lba, n, buf2, hard2, 0);
+    for (uint32_t s = 0; s < n; s++) {
+        if (hard[s] || susp[s])
+            continue;
+        uint8_t *sec = buf + (size_t)s * r->sector_len;
+        const uint8_t *alt = buf2 + (size_t)s * r->sector_len;
+        uint32_t diff = hard2[s] ? 0 : adsc_audio_diff(sec, alt);
+
+        if (!hard2[s] && diff == 0)
+            continue; /* confirmed */
+        int shifted = 0;
+        if (!hard2[s]) {
+            int32_t sh;
+            shifted = adsc_shift_find(sec, alt, &sh);
+            if (shifted)
+                r->st.slips++;
+        }
+        diffb[s] = diff;
+        unsigned used = 0;
+        const struct adsc_ref refs[2] = {
+            { lba, n, prim, hard },
+            { lba, n, buf2, hard2 },
+        };
+        if (consensus(r, lba + s, sec, hard2[s] ? NULL : alt, shifted, refs,
+                      2, &used)) {
+            recov[s] = 1;
+            att[s] += used;
+            if (r->c2_len)
+                bits[s] = popcount_buf(sec + r->audio_len, r->c2_len);
+        } else {
+            susp[s] = 1;
+        }
+    }
+}
+
+/* Classify, account, publish and deliver one chunk. Priority: hard > suspect >
+ * recovered > C2 > ok. Returns nonzero when the sink refused it. */
+static int publish(struct rd *r, struct adsc_chunk_state *c,
+                   accudisc_sink_fn sink, void *user,
+                   struct adsc_accubuf *ab, int ab_live)
+{
+    const accudisc_read_req *req = r->req;
+
+    for (uint32_t s = 0; s < c->n; s++) {
+        uint32_t cur = c->lba + s;
+        uint32_t idx = cur - req->lba;
+
+        if (c->hard[s]) {
+            map_store(req->status_map, idx, ACCUDISC_MAP_HARD);
+            /* No frame was delivered — the sector is zero-filled. Saying so
+             * is the whole reason this lane belongs in the engine: a
+             * zero-filled Q frame FAILS CRC-16, so anyone recomputing this
+             * downstream records fabricated Q damage here. */
+            map_store(req->subq_map, idx, ACCUDISC_SUBQ_NO_AUDIO);
+            continue;
+        }
+        r->st.sectors_read++;
+        r->st.c2_bits += c->bits[s];
+
+        /* Q-subchannel CRC health of the delivered sector. Raw P-W only;
+         * formatted Q (SUB_Q) is not counted — its CRC is optional in MMC,
+         * and drives do not gate on it (see the subq_map refusal above). This
+         * is independent of the C2 audio stats — a clean-audio sector can
+         * still carry a corrupt Q frame (lost pregap/index). */
+        if (r->sub_len == ACCUDISC_BYTES_SUB_RAW) {
+            const uint8_t *sub = c->buf + (size_t)s * r->sector_len +
+                                 r->audio_len + r->c2_len;
+            uint8_t q[12];
+            accudisc_q qd;
+
+            accudisc_sub_extract_q(sub, q);
+            accudisc_q_parse(q, &qd);
+            r->st.subq_total++;
+            if (qd.crc_ok)
+                r->st.subq_ok++;
+
+            map_store(req->subq_map, idx, adsc_subq_byte(&qd, cur));
+        }
+
+        if (c->bits[s]) {
+            r->st.sectors_flagged++;
+            if (c->bits[s] > r->st.max_bits_sector)
+                r->st.max_bits_sector = c->bits[s];
+            if (r->st.first_flagged_lba < 0)
+                r->st.first_flagged_lba = cur;
+            r->st.last_flagged_lba = cur;
+        }
+        if (c->susp[s]) {
+            r->st.sectors_suspect++;
+            map_store(req->status_map, idx,
+                      adsc_map_suspect_byte(c->diffb[s]));
+        } else if (c->recov[s]) {
+            r->st.sectors_recovered++;
+            map_store(req->status_map, idx,
+                      adsc_map_recovered_byte(c->att[s]));
+        } else if (c->bits[s]) {
+            map_store(req->status_map, idx, adsc_map_c2_byte(c->bits[s]));
+        } else {
+            map_store(req->status_map, idx, ACCUDISC_MAP_OK);
+        }
+    }
+    c->live = 0;
+
+    if (!sink)
+        return 0;
+    accudisc_chunk out = {
+        .lba = c->lba,
+        .nsec = c->n,
+        .data = c->buf,
+        .sector_len = r->sector_len,
+        .audio_len = r->audio_len,
+        .c2_len = r->c2_len,
+        .sub_len = r->sub_len,
+    };
+    return ab_live ? adsc_accubuf_push(ab, &out) : sink(user, &out);
+}
+
 int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                        accudisc_sink_fn sink, void *user,
                        accudisc_read_stats *stats)
@@ -722,14 +874,33 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
     memset(&ab, 0, sizeof(ab));
 
-    uint8_t *buf = malloc((size_t)(chunk + overlap) * r.sector_len);
-    uint8_t *buf2 = passes > 1 ? malloc((size_t)chunk * r.sector_len) : NULL;
+    /* TWO CHUNK SLOTS, AND DELIVERY ONE CHUNK LATE (0.44.0). A chunk is
+     * classified, published to the maps and handed to the sink only after the
+     * NEXT chunk's seam check has run. The seam is the only place a displaced
+     * transfer shows itself when there are no verify passes, and it shows
+     * itself on BOTH sides: a mismatch says one of the two adjacent transfers
+     * landed somewhere else, and not which. Until 0.44.0 the chunk behind the
+     * seam had already been delivered, so the check could repair the two
+     * sectors it compared and nothing else — the rest of a displaced transfer
+     * went out marked OK. Holding one chunk back is what lets the seam reach
+     * it. See the seam check below. */
+    int need_prim = passes > 1 || overlap || req->c2_retries;
+    struct adsc_chunk_state slot[2];
+
+    memset(slot, 0, sizeof(slot));
+    for (unsigned i = 0; i < 2; i++) {
+        slot[i].buf = malloc((size_t)(chunk + overlap) * r.sector_len);
+        /* The chunk as its own transfer delivered it, before any sector in buf
+         * is replaced — a reference for anchoring (see anchor_position). */
+        slot[i].prim =
+            need_prim ? malloc((size_t)chunk * r.sector_len) : NULL;
+    }
+    struct adsc_chunk_state *cur = &slot[0], *pend = &slot[1];
+    uint8_t *buf2 = (passes > 1 || overlap)
+                        ? malloc((size_t)chunk * r.sector_len) : NULL;
     uint8_t *prev_ext =
         overlap ? malloc((size_t)overlap * r.sector_len) : NULL;
-    /* The chunk as its own transfer delivered it, before any sector in buf is
-     * replaced — a reference for anchoring (see anchor_position). */
-    uint8_t *prim = (passes > 1 || overlap || req->c2_retries)
-                        ? malloc((size_t)chunk * r.sector_len) : NULL;
+    uint8_t hard2[ADSC_CHUNK_MAX];
     r.flush = malloc(ACCUDISC_BYTES_AUDIO);
     r.scratch = malloc(r.sector_len);
     r.samples = malloc((size_t)ADSC_SAMPLES_MAX * r.sector_len);
@@ -740,9 +911,10 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     uint8_t prev_ext_hard[ADSC_OVERLAP_MAX];
     uint32_t prev_ext_n = 0;
 
-    if (!buf || !r.flush || !r.scratch || !r.samples || !r.context ||
-        !r.anchored || (passes > 1 && !buf2) || (overlap && !prev_ext) ||
-        ((passes > 1 || overlap || req->c2_retries) && !prim)) {
+    if (!slot[0].buf || !slot[1].buf || !r.flush || !r.scratch ||
+        !r.samples || !r.context || !r.anchored ||
+        ((passes > 1 || overlap) && !buf2) || (overlap && !prev_ext) ||
+        (need_prim && (!slot[0].prim || !slot[1].prim))) {
         rc = ACCUDISC_ERR_NOMEM;
         goto out;
     }
@@ -777,10 +949,20 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                            ? (remaining - n < overlap ? remaining - n
                                                       : overlap)
                            : 0;
-        uint8_t hard[ADSC_SPAN_MAX], hard2[ADSC_CHUNK_MAX];
-        uint8_t recov[ADSC_CHUNK_MAX] = {0}, susp[ADSC_CHUNK_MAX] = {0};
-        unsigned att[ADSC_CHUNK_MAX] = {0};
-        uint32_t bits[ADSC_CHUNK_MAX] = {0}, diffb[ADSC_CHUNK_MAX] = {0};
+        /* This chunk's state lives in its slot, because it outlives this
+         * iteration: it is delivered at the end of the NEXT one. */
+        cur->lba = lba;
+        cur->n = n;
+        cur->witnessed = 0;
+        memset(cur->recov, 0, sizeof(cur->recov));
+        memset(cur->susp, 0, sizeof(cur->susp));
+        memset(cur->att, 0, sizeof(cur->att));
+        memset(cur->bits, 0, sizeof(cur->bits));
+        memset(cur->diffb, 0, sizeof(cur->diffb));
+        uint8_t *buf = cur->buf, *prim = cur->prim, *hard = cur->hard;
+        uint8_t *recov = cur->recov, *susp = cur->susp;
+        unsigned *att = cur->att;
+        uint32_t *bits = cur->bits, *diffb = cur->diffb;
 
         if (req->cancel && *req->cancel) {
             rc = ACCUDISC_ERR_CANCELLED;
@@ -866,7 +1048,10 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
         /* Boundary overlap check: the previous chunk read past its seam;
          * those extension sectors must byte-match this chunk's head. A
-         * mismatch means one of the two reads slipped — consensus decides. */
+         * mismatch means one of the two TRANSFERS landed somewhere else —
+         * consensus settles the sectors compared, and the widening below
+         * settles the rest of both transfers. */
+        int seam_bad = 0;
         for (uint32_t s = 0; s < prev_ext_n && s < n; s++) {
             if (prev_ext_hard[s] || hard[s] || susp[s])
                 continue;
@@ -876,6 +1061,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
             if (diff == 0)
                 continue;
+            seam_bad = 1;
             int32_t sh;
             int shifted = adsc_shift_find(sec, alt, &sh);
             if (shifted)
@@ -928,120 +1114,48 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
          * caller's layer (multiple reads at different speed_x). Pick ladder
          * rungs that differ from speed_x so the deciding votes really are
          * speed-diverse. */
-        for (unsigned pass = 2; pass <= passes; pass++) {
-            ladder_restore(&r);
-            cache_defeat(&r, lba);
-            read_span(&r, lba, n, buf2, hard2, 0);
-            for (uint32_t s = 0; s < n; s++) {
-                if (hard[s] || susp[s])
-                    continue;
-                uint8_t *sec = buf + (size_t)s * r.sector_len;
-                const uint8_t *alt = buf2 + (size_t)s * r.sector_len;
-                uint32_t diff =
-                    hard2[s] ? 0 : adsc_audio_diff(sec, alt);
+        for (unsigned pass = 2; pass <= passes; pass++)
+            witness_pass(&r, lba, n, buf, prim, hard, buf2, hard2, recov, susp,
+                         att, bits, diffb);
+        if (passes > 1)
+            cur->witnessed = 1;
 
-                if (!hard2[s] && diff == 0)
-                    continue; /* confirmed */
-                int shifted = 0;
-                if (!hard2[s]) {
-                    int32_t sh;
-                    shifted = adsc_shift_find(sec, alt, &sh);
-                    if (shifted)
-                        r.st.slips++;
-                }
-                diffb[s] = diff;
-                unsigned used = 0;
-                const struct adsc_ref refs[2] = {
-                    { lba, n, prim, hard },
-                    { lba, n, buf2, hard2 },
-                };
-                if (consensus(&r, lba + s, sec, hard2[s] ? NULL : alt, shifted,
-                              refs, 2, &used)) {
-                    recov[s] = 1;
-                    att[s] += used;
-                    if (r.c2_len)
-                        bits[s] = popcount_buf(sec + r.audio_len, r.c2_len);
-                } else {
-                    susp[s] = 1;
-                }
+        /* THE SEAM WIDENS (0.44.0). A seam that disagreed says one of the two
+         * adjacent transfers landed somewhere else, and a displaced transfer is
+         * displaced beyond the sectors the seam compared. Measured on a LITE-ON
+         * LH-20A1S, 2026-09-18: the displacement is a step function whose runs
+         * ignore chunk boundaries (+24 for 14 sectors, then +48 mid-chunk), so
+         * the seam cannot say how far it reaches, only that it is there. So
+         * BOTH transfers get a witnessed pass — the held-back chunk behind the
+         * seam and this one — and every sector in them is settled or SUSPECT.
+         * Before this, overlap_sectors repaired the two sectors it compared and
+         * delivered up to ~20 displaced ones per transfer marked OK: a map worse
+         * than no check at all.
+         *
+         * ANY difference triggers it, not only a clean shift: a displaced copy
+         * that also carries damage fails the exact-shift test. The trigger only
+         * decides where to spend a second transfer; a wrongly condemned sector
+         * is re-read, never discarded, so it errs wide. With verify passes the
+         * chunk is already witnessed, and this costs nothing more. */
+        if (seam_bad) {
+            if (pend->live && !pend->witnessed) {
+                witness_pass(&r, pend->lba, pend->n, pend->buf, pend->prim,
+                             pend->hard, buf2, hard2, pend->recov, pend->susp,
+                             pend->att, pend->bits, pend->diffb);
+                pend->witnessed = 1;
+            }
+            if (!cur->witnessed) {
+                witness_pass(&r, lba, n, buf, prim, hard, buf2, hard2, recov,
+                             susp, att, bits, diffb);
+                cur->witnessed = 1;
             }
         }
 
-        /* Classify, account, publish. Priority: hard > suspect > recovered
-         * > C2 > ok. */
-        for (uint32_t s = 0; s < n; s++) {
-            uint32_t cur = lba + s;
-            uint32_t idx = cur - req->lba;
-
-            if (hard[s]) {
-                map_store(req->status_map, idx, ACCUDISC_MAP_HARD);
-                /* No frame was delivered — the sector is zero-filled. Saying so
-                 * is the whole reason this lane belongs in the engine: a
-                 * zero-filled Q frame FAILS CRC-16, so anyone recomputing this
-                 * downstream records fabricated Q damage here. */
-                map_store(req->subq_map, idx, ACCUDISC_SUBQ_NO_AUDIO);
-                continue;
-            }
-            r.st.sectors_read++;
-            r.st.c2_bits += bits[s];
-
-            /* Q-subchannel CRC health of the delivered sector. Raw P-W only;
-             * formatted Q (SUB_Q) is not counted — its CRC is optional in MMC,
-             * and drives do not gate on it (see the subq_map refusal above). This is independent of the C2 audio stats — a clean-audio
-             * sector can still carry a corrupt Q frame (lost pregap/index). */
-            if (r.sub_len == ACCUDISC_BYTES_SUB_RAW) {
-                const uint8_t *sub =
-                    buf + (size_t)s * r.sector_len + r.audio_len + r.c2_len;
-                uint8_t q[12];
-                accudisc_q qd;
-
-                accudisc_sub_extract_q(sub, q);
-                accudisc_q_parse(q, &qd);
-                r.st.subq_total++;
-                if (qd.crc_ok)
-                    r.st.subq_ok++;
-
-                map_store(req->subq_map, idx, adsc_subq_byte(&qd, cur));
-            }
-
-            if (bits[s]) {
-                r.st.sectors_flagged++;
-                if (bits[s] > r.st.max_bits_sector)
-                    r.st.max_bits_sector = bits[s];
-                if (r.st.first_flagged_lba < 0)
-                    r.st.first_flagged_lba = cur;
-                r.st.last_flagged_lba = cur;
-            }
-            if (susp[s]) {
-                r.st.sectors_suspect++;
-                map_store(req->status_map, idx,
-                          adsc_map_suspect_byte(diffb[s]));
-            } else if (recov[s]) {
-                r.st.sectors_recovered++;
-                map_store(req->status_map, idx,
-                          adsc_map_recovered_byte(att[s]));
-            } else if (bits[s]) {
-                map_store(req->status_map, idx, adsc_map_c2_byte(bits[s]));
-            } else {
-                map_store(req->status_map, idx, ACCUDISC_MAP_OK);
-            }
-        }
-
-        if (sink) {
-            accudisc_chunk out = {
-                .lba = lba,
-                .nsec = n,
-                .data = buf,
-                .sector_len = r.sector_len,
-                .audio_len = r.audio_len,
-                .c2_len = r.c2_len,
-                .sub_len = r.sub_len,
-            };
-            if ((ab_live ? adsc_accubuf_push(&ab, &out)
-                         : sink(user, &out)) != 0) {
-                rc = ACCUDISC_ERR_CANCELLED;
-                goto out;
-            }
+        /* The seam behind the held-back chunk has now been checked from both
+         * sides: deliver it. */
+        if (pend->live && publish(&r, pend, sink, user, &ab, ab_live) != 0) {
+            rc = ACCUDISC_ERR_CANCELLED;
+            goto out;
         }
 
         /* Stash the extension as the seam sample for the next chunk. */
@@ -1052,8 +1166,18 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         }
         prev_ext_n = ext;
 
+        cur->live = 1;
+        struct adsc_chunk_state *t = pend;
+        pend = cur;
+        cur = t;
+
         lba += n;
         remaining -= n;
+    }
+    /* The last chunk has no seam ahead of it. */
+    if (pend->live && publish(&r, pend, sink, user, &ab, ab_live) != 0) {
+        rc = ACCUDISC_ERR_CANCELLED;
+        goto out;
     }
     ladder_restore(&r);
 
@@ -1069,10 +1193,12 @@ out:
         r.st.buffer_peak_chunks = ab.peak_count;
         r.st.buffer_stalls = ab.stalls;
     }
-    free(buf);
+    for (unsigned i = 0; i < 2; i++) {
+        free(slot[i].buf);
+        free(slot[i].prim);
+    }
     free(buf2);
     free(prev_ext);
-    free(prim);
     free(r.context);
     free(r.anchored);
     free(r.flush);

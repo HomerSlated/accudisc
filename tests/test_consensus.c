@@ -354,12 +354,24 @@ static void test_unsettled_damage_is_not_anchored(void)
     assert(st.sectors_suspect == 1 && st.slips == 0 && fk.anchor_reads == 0);
 }
 
-/* The seam path. Chunks of 4 with 2 sectors of overlap, no verify: the first
- * chunk's transfer (with its extension) lands late, the second lands true, and
- * single-sector rereads of the seam land late every time. Before 0.41.0 the seam
- * check "confirmed" the late extension into the second chunk's head. Only the
- * seam sectors are asserted: without verify passes nothing CAN see that the
- * first chunk itself is late, and this test does not pretend otherwise. */
+/* No sector may come out displaced with a map byte that says it is fine. That
+ * is the defect overlap_sectors had until the seam check widened: it found a
+ * displaced transfer, repaired the two sectors it compared, and delivered the
+ * rest of that transfer as OK. */
+static void assert_no_false_ok(const uint8_t *map, uint32_t n)
+{
+    for (uint32_t i = 0; i < n; i++)
+        assert(out.verdict[i] == 'E' ||
+               (map[i] & 15) == ACCUDISC_MAP_SUSPECT);
+}
+
+/* The seam path, BACKWARD. Chunks of 4 with 2 sectors of overlap, no verify:
+ * the first chunk's transfer (with its extension) lands late, the second lands
+ * true, and single-sector rereads of the seam land late every time. Before
+ * 0.41.0 the seam check "confirmed" the late extension into the second chunk's
+ * head. Before the seam widened, the seam sectors came out right and the first
+ * chunk's own four came out LATE marked OK: the seam check had seen that
+ * transfer displaced, and the chunk had already been delivered. */
 static void test_seam_slip_is_anchored(void)
 {
     accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
@@ -380,6 +392,10 @@ static void test_seam_slip_is_anchored(void)
     assert((map[4] & 15) == ACCUDISC_MAP_RECOVERED);
     assert((map[5] & 15) == ACCUDISC_MAP_RECOVERED);
     assert(fk.anchor_reads > 0);
+    for (uint32_t i = 0; i < 4; i++) /* the chunk BEHIND the seam */
+        assert(out.verdict[i] == 'E' &&
+               (map[i] & 15) == ACCUDISC_MAP_RECOVERED);
+    assert_no_false_ok(map, 12);
 
     /* Every single-sector reread of the seam FAILS: the only evidence of the
      * slip is the pair the seam check itself compared, so it must be carried
@@ -395,6 +411,102 @@ static void test_seam_slip_is_anchored(void)
     assert(out.verdict[4] == 'E' && out.verdict[5] == 'E');
     assert((map[4] & 15) == ACCUDISC_MAP_RECOVERED);
     assert((map[5] & 15) == ACCUDISC_MAP_RECOVERED);
+    assert_no_false_ok(map, 12);
+}
+
+/* The seam path, FORWARD. Now the SECOND chunk's transfer lands late: its head
+ * (20004-20005) mismatches the first chunk's extension, and 20006-20007 are late
+ * in the same transfer but were never compared with anything. Before the seam
+ * widened they came out LATE marked OK — at the real chunk of 23 with overlap
+ * 4, nineteen sectors per displaced transfer. */
+static void test_seam_slip_widens_forward(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.chunk_late_on = 2;
+    req.lba = 20000;
+    req.count = 12;
+    req.chunk_sectors = 4;
+    req.overlap_sectors = 2;
+    accudisc_read_stats st = run(&req, map);
+
+    show("seam slip, forward", &st, map, 12);
+    for (uint32_t i = 0; i < 12; i++)
+        assert(out.verdict[i] == 'E');
+    for (uint32_t i = 4; i < 8; i++) /* the displaced transfer, all of it */
+        assert((map[i] & 15) == ACCUDISC_MAP_RECOVERED);
+    assert_no_false_ok(map, 12);
+    /* Two bad seams (the late transfer's own extension disagrees with the
+     * chunk after it), and a chunk is witnessed ONCE: three chunk transfers,
+     * then chunks 1 and 2 at the first seam and only chunk 3 at the second. */
+    assert(fk.chunk_reads == 6);
+
+    /* The displaced transfer is the LAST chunk: no later seam can reach back
+     * and repair it, so only the witness of the chunk AHEAD of the seam does.
+     * At the end of every read, this is the only protection there is. */
+    memset(&fk, 0, sizeof(fk));
+    memset(map, 0, sizeof(map));
+    fk.chunk_late_on = 2;
+    req.count = 8;
+    st = run(&req, map);
+
+    show("seam slip, last chunk", &st, map, 8);
+    for (uint32_t i = 0; i < 8; i++)
+        assert(out.verdict[i] == 'E');
+    assert_no_false_ok(map, 8);
+}
+
+/* The seam's only evidence is DAMAGED as well as displaced. One sector of
+ * overlap, and the second transfer's copy of it is late AND has a flipped byte,
+ * so it is not an exact shift of the first transfer's copy — which is what a
+ * displaced read of a damaged area looks like (18k: "best alignment, with
+ * damage"). The widening must still fire: a trigger that waits for a clean
+ * shift would miss exactly the transfers it exists for, and deliver 20005-20007
+ * late marked OK. */
+static void test_seam_widens_on_damaged_evidence(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.chunk_late_on = 2;
+    fk.noise_lba = 20004; /* chunk transfer #2 flips a byte here */
+    req.lba = 20000;
+    req.count = 8; /* the late transfer is LAST: no later seam to rescue it */
+    req.chunk_sectors = 4;
+    req.overlap_sectors = 1;
+    accudisc_read_stats st = run(&req, map);
+
+    show("seam, damaged evidence", &st, map, 8);
+    for (uint32_t i = 0; i < 8; i++)
+        assert(out.verdict[i] == 'E');
+    for (uint32_t i = 5; i < 8; i++)
+        assert((map[i] & 15) == ACCUDISC_MAP_RECOVERED);
+    assert_no_false_ok(map, 8);
+}
+
+/* The widening is a COST: it re-reads only where a seam disagreed. A clean read
+ * with overlap must issue one transfer per chunk and nothing more, or the
+ * trigger has quietly become a second pass over everything. */
+static void test_clean_seams_cost_nothing(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    req.lba = 20000;
+    req.count = 12;
+    req.chunk_sectors = 4;
+    req.overlap_sectors = 2;
+    accudisc_read_stats st = run(&req, map);
+
+    show("clean seams", &st, map, 12);
+    assert(fk.chunk_reads == 3 && fk.anchor_reads == 0 && fk.singles == 0);
+    assert(st.rereads == 0);
+    for (uint32_t i = 0; i < 12; i++)
+        assert(out.verdict[i] == 'E' && (map[i] & 15) == ACCUDISC_MAP_OK);
 }
 
 /* ---- c2_retries ---------------------------------------------------------- */
@@ -506,6 +618,9 @@ int main(void)
     test_plain_disagreement_needs_no_anchor();
     test_unsettled_damage_is_not_anchored();
     test_seam_slip_is_anchored();
+    test_seam_slip_widens_forward();
+    test_seam_widens_on_damaged_evidence();
+    test_clean_seams_cost_nothing();
     test_c2_rescue_refuses_unaligned_copy();
     test_c2_rescue_accepts_aligned_copy();
     test_c2_rescue_silent_neighbours();
