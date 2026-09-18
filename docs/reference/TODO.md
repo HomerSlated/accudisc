@@ -378,9 +378,24 @@ discarded, so over-condemning costs reads and never costs yield.
   `anchor_position` candidates and `c2_rescue` context reads may be comparing
   CACHED COPIES**, and 0.41-0.43 rest on rereads being independent. Run A's
   `--verify 3` did find disagreements, so it is not wholly ineffective — but
-  that is not the property the design needs. Measure: read a span, reread it
-  after a 1-sector distant read, and compare against the same reread after a
-  5.5 MB distant read. Next measurement to run.
+  that is not the property the design needs. Next measurement to run.
+
+  **Design.** Sweep the flush at 1, 8, 64, 512, 2048 sectors against a fixed
+  span; report the smallest flush that changes the delivered bytes.
+
+  **Measure it at TWO span sizes (49 and 400 sectors), because the functional
+  form must be tested rather than assumed.** cdda2img asked for a ratio (flush
+  bytes per span byte) so they can transfer it to their caller-sized spans
+  (206). A ratio is a guess about the mechanism, and the likelier mechanism
+  predicts something else: to evict a span of S bytes from an LRU cache of size
+  C you must push roughly C bytes of new data through it, whatever S is — so
+  the threshold should be **roughly CONSTANT at about the cache size**, not
+  proportional to the span. Two span sizes distinguish a constant from a ratio;
+  one cannot, and would hand them a number that silently assumes the answer.
+  Same error shape as both denominator faults earlier today.
+
+  **Pre-registered:** the threshold will be approximately constant across the
+  two span sizes, at roughly this drive's cache size. Recorded before the read.
 
 ## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), formatted Q 0.40.0 (2026-09-16), four items left open
 
