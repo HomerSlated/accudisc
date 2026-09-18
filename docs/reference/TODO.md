@@ -189,13 +189,17 @@ shift flag on either path, and anchoring without a slip each failed a test.
     7 CRC-bad — so this is no longer mechanism. The hedge in the paragraph above
     is retired: Q does not see a sub-sector slip, and now we have watched it not
     see one.
-  - **The span is a FIXED FUNCTION OF ITS ADDRESS.** All ten reads are
-    byte-identical. Not "slips reproduce" — no number of rereads can help, and
-    consensus among rereads of the same address is structurally incapable of
-    catching it. Anchoring works only because neighbours come from transfers
-    starting at different addresses. Note this is a DIFFERENT KIND of quantity
-    from the clean-media bound above: that is a rate, this is a deterministic
-    property of a location. They are not comparable.
+  - ~~**The span is a FIXED FUNCTION OF ITS ADDRESS.** All ten reads are
+    byte-identical.~~ **RETRACTED 2026-09-18 the same evening: DRIVE-CACHE
+    ARTEFACT.** The span is ~115 kB of audio against a cache of roughly 2 MB
+    and the ten reads were issued back to back with nothing in between.
+    Measured directly: three back-to-back reads differ in **0/49** sectors;
+    with a 5.5 MB distant read in between the same read differs in **36/49**,
+    and again in **9/49**. The determinism was ours, not the drive's. The
+    confound was controlled for in the clean-span run that morning (alternating
+    spans, 9.4 MB each) and then not carried into the damaged-span run four
+    hours later. cdda2img had already changed their algorithm on it (203) and
+    were told to change it back (18k).
   - **31 sectors delivered wrong with `status_map == OK`**, exactly reproducing
     run B's 31 on an engine three versions newer. C2 flagged 13; the other 31
     are clean decodes of the wrong samples.
@@ -344,7 +348,39 @@ discarded, so over-condemning costs reads and never costs yield.
   what the libata mod-16 bug looked like. One clean difference in the overlap
   refutes cdda2img.
 
-  Keith's call; one claim, about a minute of drive time.
+  **RUN 2026-09-18, and it did not answer the question.** Arms differ from one
+  another at the target sectors (A vs C 49/49, B vs C 25/49, C vs D 47/49) —
+  but with IDENTICAL parameters and a flush between, reads differ from each
+  other by **22 to 49 of 49**. Within-arm variance is as large as between-arm
+  variance, so the design cannot separate a start effect from run-to-run noise:
+  it had no replication. **The start-address question stays OPEN and needs a
+  replicated, paired design.** cdda2img's prediction (position-locked, bytes
+  identical across starts) IS refuted — cache-defeated re-reads are not
+  identical. Ours is not confirmed.
+
+  **What the run did establish, and it is the worst news of the day.** Seven
+  cache-defeated reads at identical parameters, scored against the container:
+  exact sectors 0, 0, 0, 3, 0, 0, 0 of 49; union across all seven **3/49**;
+  **majority vote 0/49**; and **23/49 sectors had 4+ of 7 reads agreeing on a
+  value that was wrong every time**. Re-reading this span does not converge on
+  the truth — it produces varied wrong answers that agree with each other.
+  Any acceptance rule resting on agreement alone accepts those 23 confidently.
+
+  **One hopeful number, NOT to be designed against yet:** arm A (start 113060,
+  -8) scored **20/49 exact** against 0-3 for every read at start 113068. Far
+  outside the same-start range, but n=1 per arm against a within-arm spread of
+  22-49 — the same error this entry just recorded. Replicate before believing.
+
+- **`[P0]` Is `cache_defeat` effective on this drive?** `engine.c:243` is ONE
+  1-sector read 5000 sectors away. Whether that evicts a ~115 kB span from a
+  ~2 MB cache is now unknown, and a 5.5 MB distant read demonstrably does what
+  a back-to-back read does not. **If it is insufficient, verify passes,
+  `anchor_position` candidates and `c2_rescue` context reads may be comparing
+  CACHED COPIES**, and 0.41-0.43 rest on rereads being independent. Run A's
+  `--verify 3` did find disagreements, so it is not wholly ineffective — but
+  that is not the property the design needs. Measure: read a span, reread it
+  after a 1-sector distant read, and compare against the same reread after a
+  5.5 MB distant read. Next measurement to run.
 
 ## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), formatted Q 0.40.0 (2026-09-16), four items left open
 
