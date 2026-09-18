@@ -371,7 +371,7 @@ discarded, so over-condemning costs reads and never costs yield.
   outside the same-start range, but n=1 per arm against a within-arm spread of
   22-49 — the same error this entry just recorded. Replicate before believing.
 
-- **`[P0]` Is `cache_defeat` effective on this drive?** `engine.c:243` is ONE
+- ~~**`[P0]` Is `cache_defeat` effective on this drive?**~~ **ANSWERED 2026-09-18 20:57: YES, on the LITE-ON — see the result block at the end of this entry.** `engine.c:243` is ONE
   1-sector read 5000 sectors away. Whether that evicts a ~115 kB span from a
   ~2 MB cache is now unknown, and a 5.5 MB distant read demonstrably does what
   a back-to-back read does not. **If it is insufficient, verify passes,
@@ -507,6 +507,38 @@ discarded, so over-condemning costs reads and never costs yield.
   fitted model — that is this same mistake one level up. A conservative
   constant costs a fixed number of wasted sectors and cannot be wrong in the
   unsafe direction.
+
+  **RESULT (2026-09-18 20:47-20:57, frozen design + a replication pass;
+  correspondence 18s; data in `private/bench/2026-09-18-liteon-cache-defeat/`):**
+
+  | arm | pairs | fresh (bytes changed) |
+  |---|---|---|
+  | 1 sector, 5000 away — exactly `engine.c:243`, S=49 | 3 | **3/3** |
+  | 1 sector, far (LBA 40000), S = 49/400/800 | 9 | **9/9** |
+  | engine `--verify 2` over the site | 3 | **3/3** (15/17/15 slips) |
+
+  **`cache_defeat` works on this drive:** a pass after the 1-sector defeat is
+  not a cached copy of the previous one, so the 0.41-0.43 witness is real here.
+  One drive, one disc. **Limit of the metric:** "any sector differs" proves the
+  pass was not WHOLLY cached and cannot exclude PARTIAL caching, because two
+  fresh reads of this site agree on 22-40 of 49 sectors anyway. Read 2 at the
+  engine distance took 0.53 s against 1.4 s after a far flush, most likely
+  because the seek back was shorter (unmeasured).
+
+  **The cache is not plain LRU, so all three models failed.** Zero flush,
+  replicated 3x: S = 49..196 cached 15/15, S = 400/800 fresh 6/6, so there is a
+  size limit between 196 and 400 sectors (461-919 kB audio, not bisected). Yet
+  ONE sector read elsewhere displaced a 49-sector span 12/12. Under LRU, one
+  sector could displace one sector at most. What fits is a cache INVALIDATED BY
+  A NON-SEQUENTIAL READ, the fourth outcome posted before the read (18r). Both
+  pre-registered predictions are wrong: the flush threshold is flat at 1
+  sector, and neither `~C` nor `C-S` enters into it.
+
+  **Phase 1's `C = 159` was an artefact, caught by the edge replication:** the
+  repeated S=165 came back cached. Every "fresh" result below 200 sectors had a
+  first read of about 6 s, and every cached one about 2.4 s. A slow first read
+  invalidated the cache 4/4 times in phase 1. The cause is unknown and was not
+  controlled for; the replication never produced a slow first read.
 
 ## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), formatted Q 0.40.0 (2026-09-16), four items left open
 
