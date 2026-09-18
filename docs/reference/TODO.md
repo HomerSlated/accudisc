@@ -180,11 +180,25 @@ shift flag on either path, and anchoring without a slip each failed a test.
   (run B 113068: reproduces +48/+96) before use. Tuesday's published figures
   are unaffected — only the note was wrong.
 
-  **Still unmeasured:** whether the Q-position check sees a slip WHEN ONE
-  HAPPENS. Today's run put it live on this drive for the first time
-  (`subq_total` non-zero throughout) and it stayed silent, which is correct on
-  clean media and proves nothing about a slip. Mechanism says it cannot see a
-  sub-sector one. That needs a damaged span with `--sub raw`; Keith's call.
+  **MEASURED the same day, and it settles the Q question.** 49 sectors at raw
+  113068 (run B's span), ten single-pass reads with `--sub raw` + `subq_map`:
+
+  - **Q is blind to this fault. Measured, 10/10.** 44 of 49 sectors delivered
+    displaced; `subq_misposition = 0` every time and the per-sector lane holds
+    ZERO `ACCUDISC_SUBQ_MISPOSITION`. The check was live — `subq_total=49`,
+    7 CRC-bad — so this is no longer mechanism. The hedge in the paragraph above
+    is retired: Q does not see a sub-sector slip, and now we have watched it not
+    see one.
+  - **The span is a FIXED FUNCTION OF ITS ADDRESS.** All ten reads are
+    byte-identical. Not "slips reproduce" — no number of rereads can help, and
+    consensus among rereads of the same address is structurally incapable of
+    catching it. Anchoring works only because neighbours come from transfers
+    starting at different addresses. Note this is a DIFFERENT KIND of quantity
+    from the clean-media bound above: that is a rate, this is a deterministic
+    property of a location. They are not comparable.
+  - **31 sectors delivered wrong with `status_map == OK`**, exactly reproducing
+    run B's 31 on an engine three versions newer. C2 flagged 13; the other 31
+    are clean decodes of the wrong samples.
 
 - `[P1]` **A seam mismatch condemns only the seam.** `engine.c:868` runs
   `s < prev_ext_n` and nothing propagates, so a chunk that landed 48 bytes late
@@ -195,6 +209,86 @@ shift flag on either path, and anchoring without a slip each failed a test.
   Same missing widening, and the same mechanism the C2 trigger above needs.
   Told cdda2img not to read `overlap_sectors` as a position check until this
   lands (correspondence 199.2).
+
+## `[P1]` The escalation ladder for spec-breaking drives — SPEC, not yet built
+
+Keith's shape (2026-09-18): rip at full speed assuming no errors, escalate to
+slower/more intensive methods only when an error actually occurs, and confine
+any compensation to drives that misbehave so the proven Plextor path is
+untouched. The clean-media result supports it — healthy media costs nothing.
+Two things have to change for the trigger to work.
+
+### The premise that was WRONG, and the one that replaces it
+
+At 17:38 this was framed as "the fault is the TRANSFER that carried the flag,
+so widen the C2 flag from the sector to the transfer". **The 113068 measurement
+falsifies that.** Displacement varies WITHIN a single transfer:
+
+    chunk 0  LBA 113068  [24 x14][48 x9]
+    chunk 1  LBA 113091  [48][0 x4][48 x14][96 x4]
+    chunk 2  LBA 113114  [96][0][0]
+
+The fault is a **step function in position** whose runs do not align with chunk
+boundaries — +24 for 14 sectors, then +48 mid-chunk, a 4-sector island that is
+CORRECT, then +48 again, then +96 across the chunk 1/2 boundary. Run B's
+"chunks landed 48 and 96 bytes late" was a coarse summary of per-sector
+displacement that happened to cluster, not a per-transfer offset.
+
+So transfer granularity is not the fault's granularity, and cannot be justified
+as matching it. What survives is weaker and sufficient:
+
+> **The trigger is a COST OPTIMISER, not a correctness mechanism.** Correctness
+> comes from the witness. The trigger only decides where to spend one. So
+> UNDER-triggering is the only correctness risk, and over-triggering costs time
+> on damaged discs alone. Err wide, deliberately.
+
+### Measured trigger candidates, on the 113068 span
+
+| rule | wrong caught | good sectors needlessly condemned |
+|---|---|---|
+| condemn the TRANSFER containing a C2 flag | 43/44 | up to 22 per flag |
+| margin +/-2 around each C2 flag | 28/44 | 2 |
+| margin +/-4 (= `ADSC_QPOS_MARGIN`) | 41/44 | 3 |
+| **margin +/-8** | **44/44** | 5 |
+| margin +/-16 | 44/44 | 5 |
+
+The transfer rule misses raw 113114. **Do not lean on that counterexample** —
+113114 sits in a 3-sector runt chunk created by `--count 49`, and the +96 run
+113110-113114 straddles that boundary, so different chunk alignment moves it.
+It is n=1 and boundary-adjacent. The within-transfer variance above is the
+finding that decides this, and that is n=30 in one read, reproduced 10/10.
+
+**A margin is alignment-independent and the transfer rule is not** — a chunk is
+3 to 23 sectors depending only on where the read started. That is the real
+argument for a margin.
+
+**But no local margin is provably sufficient**, and +/-8 must NOT be adopted
+because it scored 44/44 here — that is gating on a scanned maximum, which this
+project has been burnt by before. The longest displaced run measured is 14
+sectors and nothing signals where a run ends. Pick the margin from the cost
+asymmetry instead: a condemned sector is RE-READ WITH A WITNESS, never
+discarded, so over-condemning costs reads and never costs yield.
+
+### The two items to build, in order
+
+1. **`[P1]` Widen the seam check.** `engine.c:868` runs `s < prev_ext_n` and
+   nothing propagates. Same missing widening as the trigger above, and it is
+   the smaller change: it makes `overlap_sectors` honest and removes the header
+   warning added in 907ca8d. The Q-position check twenty lines up is the model.
+2. **`[P1]` C2-triggered witnessed re-read.** On a C2 flag, re-read a window
+   around it with a position witness before delivery; full speed and a single
+   pass everywhere else. Gate it on a per-device latch so a drive that has never
+   slipped never pays — detected BEHAVIOURALLY like the layout latch
+   (`mmc/mmc.c`), never from a model-name table. Asymmetry to respect: a
+   one-shot probe proves misframing (deterministic, every transfer) but CANNOT
+   prove absence of slips (intermittent), so the detector must be continuous.
+
+### Open before building 2
+
+- Margin size: decide from the cost asymmetry, not from this span's maximum.
+- Whether a displaced run can start with NO C2 flag anywhere near it. The
+  clean-media bound (<=0.29% of transfers, 95%) is the only evidence, and it
+  measures a different population from a damaged span.
 
 ## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), formatted Q 0.40.0 (2026-09-16), four items left open
 
