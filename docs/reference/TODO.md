@@ -459,6 +459,42 @@ discarded, so over-condemning costs reads and never costs yield.
   `~C` and `C-S` models collapse toward "small and flat". Near even odds on
   the segmented outcome.
 
+  **THE TRANSITION IS A STEP, not a ramp** (cdda2img 209, derived; verified
+  here by simulating a strict-LRU cache). Span `[0,S)` read twice back to back,
+  damaged sectors at the head: at the end of read 1 the cache holds the last
+  `min(S,C)` bytes, and during read 2 each fresh byte evicts one LRU byte, so
+  the eviction front `(S-C)+p` and the read front `p` advance together. For
+  `S > C` the eviction front starts ahead and stays ahead — every byte is
+  already gone before it is reached. For `S <= C` nothing needs evicting.
+
+      C=100: S=99 -> 99/99 hits   S=100 -> 100/100   S=101 -> 0/101   S=400 -> 0/400
+
+  No intermediate regime at all. Two consequences:
+
+  - **SEARCH BY BISECTION, not a fixed ladder.** A step means the transition
+    span size IS `C`, so double from 49 sectors until the damaged sectors
+    differ, then bisect. About 10-14 read-pairs pins `C` to one span step,
+    where a 5-rung ladder would only bracket it within a factor of 4.
+  - **The SHAPE is a free second result and it discriminates architectures.**
+    If the transition ramps instead of stepping, this model is wrong, and the
+    likely causes — read-ahead, or a segmented per-stream buffer — are exactly
+    the ones that also collapse `C-S` and `~C` together. Record the shape, not
+    just the threshold. **Prediction (both sides): a step.**
+
+  **If the step holds, the mitigation may be free.** A span sized above `C` is
+  fresh by construction, needing no flush at all — cheaper than flushing and
+  needing nothing from the engine. NOT adopted: it is a consequence of an
+  unmeasured model, which is the mistake this whole entry records. But if `C`
+  comes back small, caller spans may already exceed it and the concern
+  evaporates for the sizes actually read.
+
+  cdda2img caught one of their own here worth recording, same family as the
+  other four: their first mitigation was "pad the span past `C` so the
+  un-witnessed tail is only padding", which assumes the cached region STAYS
+  cached during read 2 when read 2's own head evicts it as it goes. The
+  tail-pad idea and the step result are the same calculation done carelessly
+  and carefully.
+
   **Pre-registrations, both before any read.** AccuDisc: approximately constant
   at about the cache size — recorded first and NOT retrospectively improved,
   though we now consider cdda2img's reasoning better than our own and expect to
