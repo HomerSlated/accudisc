@@ -3266,9 +3266,18 @@ typedef struct accudisc_read_req {
      * 48x that made the combination look dangerous was never reachable on an
      * audio disc. It occupied padding beside ladder_len, so its removal does
      * not move any following field. */
-    uint8_t *status_map;        /* count bytes, or NULL; see status map above */
+    /* count bytes, or NULL; see status map above.
+     *
+     * INDEXED RELATIVE TO THE REQUEST: byte i is sector `lba + i`, not
+     * sector i. Both readings satisfy "count bytes", and a caller whose
+     * reads all start at LBA 0 cannot tell them apart — the first span read
+     * at a non-zero lba is where an absolute-indexed caller would fault.
+     * Spelled out because cdda2img had to read `engine.c` to find it
+     * (correspondence 199.1). Same for subq_map below. */
+    uint8_t *status_map;
     const volatile int *cancel; /* poll: nonzero aborts at the next chunk; or NULL */
-    /* count bytes, or NULL; see the Q-subchannel health map above. Requires
+    /* count bytes, or NULL; see the Q-subchannel health map above. Indexed
+     * relative to the request, exactly as status_map above. Requires
      * sub == ACCUDISC_SUB_RAW — anything else is ACCUDISC_ERR_INVAL.
      *
      * Appended here rather than beside status_map, where it belongs by meaning:

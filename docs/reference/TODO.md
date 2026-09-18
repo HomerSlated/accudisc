@@ -133,12 +133,68 @@ shift flag on either path, and anchoring without a slip each failed a test.
   equality under shift, which a shifted copy carrying damage cannot pass. Caught by
   cdda2img.)
 - `[P1]` **A single-pass read has no position witness on this drive.** **DECIDED for `c2_retries`, BUILT 0.43.0:** Keith chose to refuse `c2_retries` without `verify_passes >= 2` (ERR_INVAL; CLI names the flag; RECOVERY.md R1 struck). Plain single-pass reads and forced overlap remain open. Run B above:
-  whole chunks delivered late with clean C2 and state `OK`. Nothing in a single
-  pass can see a sub-frame slip — C2 decodes it cleanly, Q stays in frame, and
-  `slips` only counts comparisons that were made. Only `verify_passes >= 2` or
-  `overlap_sectors` compares two transfers. This is new evidence for the open
-  decision in the misframing section below (force overlap when `sub` is not RAW), and it now applies with raw
-  sub too, since Q cannot see a 48-byte slip. Keith's decision.
+  whole chunks delivered late with clean C2 and state `OK`, and `slips` read 0
+  because `slips` counts comparisons that were made. Only `verify_passes >= 2`
+  or `overlap_sectors` compares two transfers.
+
+  **The C2 half of that is measured; the Q half is not.** Runs A and B captured
+  NO raw subchannel — the CLI's "subchannel Q" summary line is gated on
+  `st.subq_total` (`cli/main.c:2691`) and is absent from both `.err` files — so
+  the Q-position check, gated on `ACCUDISC_BYTES_SUB_RAW` (`engine.c:806`), never
+  ran. Q was not blind here; Q was not asked. **Corrected 2026-09-18**, having
+  first been written as if run B had exercised it.
+
+  Q still cannot close this gap, but on MECHANISM rather than measurement: the
+  check compares `adsc_q_position_lba(&qd)` against `lba + s`, a WHOLE-SECTOR
+  test, and a record whose audio is 48 bytes (12 samples) late still carries the
+  Q frame naming its own sector. The quantum is 588 samples and the fault is
+  under it. Requiring raw sub would close whole-sector re-acquisition (17/17 on
+  the PX-716A) and would not touch a sub-sector slip. Unmeasured on this drive:
+  one read over a clean span with `--verify 2 --sub raw` would put the check live
+  here for the first time.
+
+  This is new evidence for the open decision in the misframing section below
+  (force overlap when `sub` is not RAW), and it now applies with raw sub too.
+  Keith's decision.
+
+- `[P1]` **MEASURED 2026-09-18: this drive does NOT slip on clean media.**
+  `private/bench/2026-09-18-liteon-clean-span/`. Two spans at different radii
+  (40000-43999, 80000-83999), read ALTERNATELY so the ~2 MB drive cache cannot
+  serve a repeat of a 9.4 MB span: **three independent full-speed single-pass
+  transfers each, 24 000 sector-deliveries, ZERO wrong** scored byte-exactly
+  against the PX-716A container. A `--verify 2` run over the same span: 0 wrong,
+  4000/4000 `OK`. `--sub raw` and no-sub deliveries are byte-identical, so
+  subchannel capture costs alignment nothing.
+
+  **Every slip ever measured on this drive sits inside or beside a C2-flagged
+  damage span** (locator run's three; run B's chunks at 113068/113092). So C2 is
+  a usable ESCALATION TRIGGER, and Keith's preferred shape — full speed, assume
+  clean, escalate on an actual error — survives without taxing healthy media.
+  What it needs is the trigger's SCOPE fixed: a C2 flag currently condemns the
+  SECTOR, and the fault is the TRANSFER that carried it.
+
+  **Scoring key correction:** the container offset is `98506 + N*2352 - 24`,
+  MINUS 24. The handoff note said `+24`; a `+24` scorer calls a perfect span
+  100% wrong "at shift -48", which reads exactly like a uniform slip. Validated
+  against a known-negative (run A 113068: 49/49 exact) and a known-positive
+  (run B 113068: reproduces +48/+96) before use. Tuesday's published figures
+  are unaffected — only the note was wrong.
+
+  **Still unmeasured:** whether the Q-position check sees a slip WHEN ONE
+  HAPPENS. Today's run put it live on this drive for the first time
+  (`subq_total` non-zero throughout) and it stayed silent, which is correct on
+  clean media and proves nothing about a slip. Mechanism says it cannot see a
+  sub-sector one. That needs a damaged span with `--sub raw`; Keith's call.
+
+- `[P1]` **A seam mismatch condemns only the seam.** `engine.c:868` runs
+  `s < prev_ext_n` and nothing propagates, so a chunk that landed 48 bytes late
+  gives two `SUSPECT` sectors at the seam and ~20 wrong ones still `OK` in the
+  same displaced transfer. The Q-position check twenty lines above does the
+  opposite, widening by `ADSC_QPOS_MARGIN` doubled, with the reason written in:
+  "being one sector short leaks exactly the corruption this exists to catch".
+  Same missing widening, and the same mechanism the C2 trigger above needs.
+  Told cdda2img not to read `overlap_sectors` as a position check until this
+  lands (correspondence 199.2).
 
 ## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), formatted Q 0.40.0 (2026-09-16), four items left open
 
