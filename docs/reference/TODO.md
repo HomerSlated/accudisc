@@ -287,8 +287,39 @@ discarded, so over-condemning costs reads and never costs yield.
 
 - Margin size: decide from the cost asymmetry, not from this span's maximum.
 - Whether a displaced run can start with NO C2 flag anywhere near it. The
-  clean-media bound (<=0.29% of transfers, 95%) is the only evidence, and it
-  measures a different population from a damaged span.
+  clean-media bound is the only evidence, and it measures a different
+  population from a damaged span.
+
+  **State that bound precisely, because its first justification was wrong.** It
+  was adopted as "the trial unit is the transfer, because the fault displaces a
+  transfer" — which the 113068 shift map falsifies. It survives on a different
+  footing (cdda2img, correspondence 203): we observed **0 of 1044 transfers
+  containing ANY displaced sector**, so 3/1044 bounds *P(a clean transfer
+  contains at least one displaced sector) <= 0.29%*. That is a property OF a
+  transfer, stays well defined whatever the sub-transfer structure is, and is
+  conservative — a finer true trial unit only tightens it. It must NEVER be
+  read as "0.29% of transfers slip".
+
+- **`[P1]` UNTESTED ON HARDWARE, and the whole anchoring design rests on it:
+  does a DIFFERENT START ADDRESS deliver different bytes for the same sectors?**
+  Raised by cdda2img (203). The ten reads at 113068 varied nothing: same start,
+  same count, same speed. So "fixed function of its address" is measured;
+  "a different start address changes the bytes" is INFERRED, and it is the
+  inference `anchor_position` (0.41.0) and every splice rung depend on.
+
+  **The evidence we have points the WRONG WAY.** Run A never exercised the
+  anchor path on hardware (the 113069-71 slip did not recur), and in run B the
+  c2_rescue context reads — which DO start at different addresses — produced a
+  copy that corroborated the late chunk, delivering 113098 `RECOVERED` at +48.
+  A differently-started transfer landed at the same displacement. That is one
+  location and an indirect reading, not a refutation, but it is not
+  reassurance either.
+
+  **Cheap decisive test:** read 113068-113116 from starts 113060, 113064 and
+  113068 and compare the overlapping sectors. If a different start does not
+  change the bytes, `anchor_position` cannot rescue this span and neither can
+  cdda2img's rung — which is worth knowing before their H1, not after. Keith's
+  call; one claim, under a minute of drive time.
 
 ## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), formatted Q 0.40.0 (2026-09-16), four items left open
 
