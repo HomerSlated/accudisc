@@ -132,7 +132,7 @@ def test_struct_sizes_match_api_plan():
     table and the ABI rules were reasoned about, so a silent change should
     fail something.
     """
-    assert ffi.sizeof("accudisc_read_req") == 72   # 64 -> 72 in 0.22.0
+    assert ffi.sizeof("accudisc_read_req") == 80   # 64 -> 72 in 0.22.0, 72 -> 80 in 0.45.0
     assert ffi.sizeof("accudisc_read_stats") == 160  # 136 -> 144 in 0.7.0,
                                                      # 144 -> 160 in 0.22.0
     assert ffi.sizeof("accudisc_chunk") == 32

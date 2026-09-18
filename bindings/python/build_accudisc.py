@@ -627,6 +627,8 @@ typedef struct accudisc_read_req {
     const volatile int *cancel;
     uint8_t *subq_map;
     uint32_t buffer_bytes;
+    uint8_t reserved0[4];
+    uint8_t c2_witness;
     ...;
 } accudisc_read_req;
 

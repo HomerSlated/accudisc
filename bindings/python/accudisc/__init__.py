@@ -3172,8 +3172,17 @@ class Device:
         subq_map: bool | Any = False,
         cancel: Cancel | None = None,
         buffer_bytes: int = 0,
+        c2_witness: bool = False,
     ) -> ReadResult:
         """Stream ``count`` sectors from ``lba`` to ``sink``.
+
+        ``c2_witness`` (0.45.0, off by default, needs ``c2`` other than
+        ``C2.NONE`` or the read raises): where C2 fires, that chunk and both
+        neighbouring chunks get a second, cache-defeated transfer and every
+        sector in them is confirmed, RECOVERED or SUSPECT. For drives that
+        deliver displaced audio with CLEAN C2 near damage (measured on a
+        LITE-ON LH-20A1S). A relative check, not a verification; see
+        ``c2_witness`` in accudisc.h.
 
         ``sink`` may be ``None`` to read for status and stats only. It receives
         a :class:`Chunk`; return normally to continue, raise to cancel — the
@@ -3272,6 +3281,7 @@ class Device:
         req.c2_retries = c2_retries
         req.verify_passes = verify_passes
         req.overlap_sectors = overlap_sectors
+        req.c2_witness = 1 if c2_witness else 0
 
         keepalive: list = []
         if speed_ladder:

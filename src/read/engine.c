@@ -799,6 +799,12 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     if (req->c2_retries && req->verify_passes < 2)
         return ACCUDISC_ERR_INVAL;
 
+    /* c2_witness is triggered BY C2. Without C2 capture it could never fire,
+     * and a caller who asked for it would get a plain single pass with nothing
+     * to say so — refused rather than silently inert (0.45.0). */
+    if (req->c2_witness && req->c2 == ACCUDISC_C2_NONE)
+        return ACCUDISC_ERR_INVAL;
+
     /* REMOVED IN 0.6.0: a refusal to capture subchannel while the vendor
      * read-speed uncap was authoritatively on, overridable via
      * req->allow_unsafe. Keith's ruling, 2026-08-09.
@@ -884,7 +890,8 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
      * sectors it compared and nothing else — the rest of a displaced transfer
      * went out marked OK. Holding one chunk back is what lets the seam reach
      * it. See the seam check below. */
-    int need_prim = passes > 1 || overlap || req->c2_retries;
+    int need_wit = passes > 1 || overlap || req->c2_witness;
+    int need_prim = need_wit || req->c2_retries;
     struct adsc_chunk_state slot[2];
 
     memset(slot, 0, sizeof(slot));
@@ -896,8 +903,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             need_prim ? malloc((size_t)chunk * r.sector_len) : NULL;
     }
     struct adsc_chunk_state *cur = &slot[0], *pend = &slot[1];
-    uint8_t *buf2 = (passes > 1 || overlap)
-                        ? malloc((size_t)chunk * r.sector_len) : NULL;
+    uint8_t *buf2 = need_wit ? malloc((size_t)chunk * r.sector_len) : NULL;
     uint8_t *prev_ext =
         overlap ? malloc((size_t)overlap * r.sector_len) : NULL;
     uint8_t hard2[ADSC_CHUNK_MAX];
@@ -913,7 +919,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
     if (!slot[0].buf || !slot[1].buf || !r.flush || !r.scratch ||
         !r.samples || !r.context || !r.anchored ||
-        ((passes > 1 || overlap) && !buf2) || (overlap && !prev_ext) ||
+        (need_wit && !buf2) || (overlap && !prev_ext) ||
         (need_prim && (!slot[0].prim || !slot[1].prim))) {
         rc = ACCUDISC_ERR_NOMEM;
         goto out;
@@ -942,6 +948,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
     uint32_t lba = req->lba;
     uint32_t remaining = req->count;
+    int witness_next = 0; /* c2_witness: the previous chunk had a C2 flag */
     while (remaining > 0) {
         uint32_t n = remaining < chunk ? remaining : chunk;
         /* Extension only exists when another chunk will follow it. */
@@ -1080,10 +1087,13 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             }
         }
 
+        int c2_hit = 0;
         for (uint32_t s = 0; s < n; s++)
-            if (!hard[s] && r.c2_len)
+            if (!hard[s] && r.c2_len) {
                 bits[s] = popcount_buf(buf + (size_t)s * r.sector_len +
                                        r.audio_len, r.c2_len);
+                c2_hit |= bits[s] != 0;
+            }
 
         /* C2-guided rescue: hunt a clean copy of every flagged sector. */
         if (req->c2_retries && r.c2_len) {
@@ -1137,19 +1147,27 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
          * decides where to spend a second transfer; a wrongly condemned sector
          * is re-read, never discarded, so it errs wide. With verify passes the
          * chunk is already witnessed, and this costs nothing more. */
-        if (seam_bad) {
-            if (pend->live && !pend->witnessed) {
-                witness_pass(&r, pend->lba, pend->n, pend->buf, pend->prim,
-                             pend->hard, buf2, hard2, pend->recov, pend->susp,
-                             pend->att, pend->bits, pend->diffb);
-                pend->witnessed = 1;
-            }
-            if (!cur->witnessed) {
-                witness_pass(&r, lba, n, buf, prim, hard, buf2, hard2, recov,
-                             susp, att, bits, diffb);
-                cur->witnessed = 1;
-            }
+        /* THE C2 TRIGGER (0.45.0, req->c2_witness, opt-in). A C2 flag
+         * condemns its own chunk and BOTH neighbours: the one held back
+         * behind it, and — through witness_next — the one read after it. The
+         * slipped sectors are the ones C2 does not flag, so the flag marks
+         * where to look, not what is wrong. See accudisc.h c2_witness. */
+        int c2_trig = req->c2_witness && c2_hit;
+        int wit_pend = seam_bad || c2_trig;
+        int wit_cur = seam_bad || c2_trig || witness_next;
+
+        if (wit_pend && pend->live && !pend->witnessed) {
+            witness_pass(&r, pend->lba, pend->n, pend->buf, pend->prim,
+                         pend->hard, buf2, hard2, pend->recov, pend->susp,
+                         pend->att, pend->bits, pend->diffb);
+            pend->witnessed = 1;
         }
+        if (wit_cur && !cur->witnessed) {
+            witness_pass(&r, lba, n, buf, prim, hard, buf2, hard2, recov,
+                         susp, att, bits, diffb);
+            cur->witnessed = 1;
+        }
+        witness_next = c2_trig;
 
         /* The seam behind the held-back chunk has now been checked from both
          * sides: deliver it. */

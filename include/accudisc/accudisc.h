@@ -27,7 +27,16 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 44 /* 0.44.0: overlap_sectors WIDENS. A seam
+#define ACCUDISC_VERSION_MINOR 45 /* 0.45.0: accudisc_read_req.c2_witness,
+                                  * OPT-IN (Keith, 2026-09-18): where C2 fires,
+                                  * that chunk and both neighbours get a second
+                                  * transfer and every sector is settled. For
+                                  * drives that slip on damage; the proven
+                                  * single-pass path is unchanged when off.
+                                  * read_req 72 -> 80: reserved0 covers 0.44.0's
+                                  * tail padding, never read, so garbage there
+                                  * cannot switch the new field on.
+                                  * Previously 0.44.0: overlap_sectors WIDENS. A seam
                                   * mismatch now gives BOTH adjacent chunks a
                                   * second, cache-defeated transfer and settles
                                   * every sector in them (RECOVERED/SUSPECT),
@@ -3394,6 +3403,45 @@ typedef struct accudisc_read_req {
      * the steady state cannot speak to that. Defaulting it off meant the
      * protection was absent exactly when nobody was thinking about it, which
      * is when it is needed. */
+    uint8_t reserved0[4]; /* NEVER READ. These four bytes were tail padding
+                           * through 0.44.0, and padding is not guaranteed to
+                           * be zero in a caller's struct, so a field placed
+                           * here could not be told from garbage: `size` would
+                           * be 72 either way. c2_witness below starts at 72
+                           * instead, where an older caller's shorter struct is
+                           * zero-extended and cannot switch it on by accident.
+                           * Leave zero; the library ignores it. */
+    uint8_t c2_witness;
+    /* 0.45.0, OPT-IN, needs c2 != ACCUDISC_C2_NONE (else ACCUDISC_ERR_INVAL):
+     * when C2 fires anywhere in a chunk, that chunk AND BOTH NEIGHBOURING
+     * CHUNKS get one second, cache-defeated transfer, and every sector in them
+     * is confirmed, settled by consensus (RECOVERED), or SUSPECT.
+     *
+     * FOR DRIVES THAT SLIP ON DAMAGE. On a LITE-ON LH-20A1S a single pass
+     * delivered displaced audio with CLEAN C2 and a map saying OK (2026-09-18:
+     * 31 of 49 sectors at one damaged site). Every slip measured on that drive
+     * sat in or beside a C2-flagged span, and clean media never slipped, so C2
+     * is where to spend a second look — but the slipped sectors themselves are
+     * the ones C2 does NOT flag. Hence the reach: the displacement is a step
+     * function whose runs ignore chunk boundaries, so a flag condemns whole
+     * neighbouring chunks, at least one chunk (23 sectors at the default size)
+     * either side, against a longest measured run of 14. That margin is chosen
+     * on COST, not fitted to that run: a condemned sector is re-read, never
+     * discarded, so erring wide costs reads and never costs audio.
+     *
+     * OFF BY DEFAULT, and that is Keith's ruling (2026-09-18): a drive that
+     * does not slip — the PX-716A this library was proven on — keeps its
+     * proven single-pass path, and the caller, who knows its drive, turns this
+     * on. Nothing here detects the drive, because nothing CAN from one pass: a
+     * single-pass read never compares two transfers, so it never sees a slip.
+     *
+     * Costs nothing on a clean disc (no C2, no trigger). On a damaged one, up
+     * to three chunk transfers per flagged chunk, each chunk at most once,
+     * plus consensus rereads for every sector the second transfer disagrees
+     * with. STILL RELATIVE: two transfers that share one displacement agree,
+     * and only an absolute gate (AccurateRip/CTDB, in the caller) can tell.
+     * Not a position check on every sector — a slip with no C2 flag within a
+     * chunk of it is not seen. verify_passes >= 2 is. */
 } accudisc_read_req;
 
 /* One delivered chunk. data holds nsec sectors, each sector_len bytes laid

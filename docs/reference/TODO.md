@@ -214,7 +214,7 @@ shift flag on either path, and anchoring without a slip each failed a test.
   Told cdda2img not to read `overlap_sectors` as a position check until this
   lands (correspondence 199.2).
 
-## `[P1]` The escalation ladder for spec-breaking drives — SPEC, not yet built
+## `[P1]` The escalation ladder for spec-breaking drives — BUILT 0.44.0 (seam) and 0.45.0 (C2 trigger), 2026-09-18; hardware verification open
 
 Keith's shape (2026-09-18): rip at full speed assuming no errors, escalate to
 slower/more intensive methods only when an error actually occurs, and confine
@@ -272,6 +272,28 @@ project has been burnt by before. The longest displaced run measured is 14
 sectors and nothing signals where a run ends. Pick the margin from the cost
 asymmetry instead: a condemned sector is RE-READ WITH A WITNESS, never
 discarded, so over-condemning costs reads and never costs yield.
+
+### Status (2026-09-18)
+
+- **Item 1 BUILT 0.44.0 (`f538f2c`, tests `0b4d194`).** A seam that disagrees
+  at all gives BOTH adjacent chunks one witnessed pass. Reaching the chunk
+  behind the seam needed a hold-back: every chunk is published one chunk after
+  it is read (`accudisc_sink_fn` documents the timing change). The verify pass
+  is extracted as `witness_pass()`.
+- **Item 2 BUILT 0.45.0: `accudisc_read_req.c2_witness`, CLI `--c2-witness`,
+  Python `read(c2_witness=True)`.** Keith's ruling: **caller opts in**, off by
+  default, so the PX-716A keeps its proven path. The self-switching latch was
+  dropped because it cannot work: a single pass never compares two transfers,
+  so it never sees a slip. Reach is whole neighbouring chunks either side
+  (23 sectors at the default chunk size, longest measured run 14), chosen on
+  cost. Refused without C2. `read_req` grew 72 -> 80 so the field does not sit
+  in 0.44.0's tail padding (`reserved0` covers it, never read).
+- **Evidence:** fake drive only, including a step INSIDE a transfer
+  (`chunk_late_from`). 13 mutations across both items, all caught by exit code.
+- **OPEN: hardware verification.** No LITE-ON read has run on 0.44/0.45. The
+  decisive run is the 113068 span with `--c2-witness`, scored against the
+  container: it should turn the 31 wrong-but-OK sectors into exact or SUSPECT.
+  Keith's call.
 
 ### The two items to build, in order
 

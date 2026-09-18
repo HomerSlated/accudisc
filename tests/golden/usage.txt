@@ -138,6 +138,9 @@ read options:
   --c2-retries N hunt a C2-clean copy of each flagged sector with
                  up to N cache-defeated rereads (default 0 = off);
                  requires --verify 2 or more
+  --c2-witness   where C2 fires, re-read that chunk and both
+                 neighbours and check every sector; for drives
+                 that slip on damage (off by default; needs C2)
   --verify P     read everything P times (cache-defeated); sectors
                  whose reads disagree are resolved by consensus or
                  marked suspect (default 1 = off)

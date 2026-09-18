@@ -571,6 +571,135 @@ static void test_clean_seams_cost_nothing(void)
         assert(out.verdict[i] == 'E' && (map[i] & 15) == ACCUDISC_MAP_OK);
 }
 
+/* ---- c2_witness (0.45.0) ------------------------------------------------- */
+
+static accudisc_read_stats run_c2w(uint32_t count, int c2_witness, uint8_t *map)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    req.lba = 20000;
+    req.count = count;
+    req.chunk_sectors = 4;
+    req.c2_witness = (uint8_t)c2_witness;
+    return run(&req, map);
+}
+
+/* THE CASE IT EXISTS FOR. Chunk 2's transfer lands late, and C2 fires on ONE of
+ * its sectors (20005). The other three late sectors are clean decodes of the
+ * wrong samples: without the trigger they go out LATE marked OK. With it, the
+ * flag condemns chunk 2 and both neighbours, and every sector comes out exact.
+ * Transfers: 3 primaries plus ONE witness per chunk = 6. */
+static void test_c2_witness_catches_the_unflagged(void)
+{
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.chunk_late_on = 2;
+    fk.c2_hot_lba = 20005;
+    accudisc_read_stats st = run_c2w(12, 1, map);
+
+    show("c2 witness", &st, map, 12);
+    for (uint32_t i = 0; i < 12; i++)
+        assert(out.verdict[i] == 'E');
+    for (uint32_t i = 4; i < 8; i++)
+        assert((map[i] & 15) == ACCUDISC_MAP_RECOVERED);
+    assert_no_false_ok(map, 12);
+    assert(fk.chunk_reads == 6);
+}
+
+/* THE PROVEN PATH IS UNTOUCHED WITHOUT IT (Keith, 2026-09-18). Same damage,
+ * c2_witness off: one transfer per chunk and not one reread, exactly as
+ * before — and the three unflagged late sectors go out marked OK, which is
+ * the defect a caller opts in to fix. Asserted so that nobody turns this on
+ * by default without meaning to. */
+static void test_c2_witness_off_is_the_old_path(void)
+{
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.chunk_late_on = 2;
+    fk.c2_hot_lba = 20005;
+    accudisc_read_stats st = run_c2w(12, 0, map);
+
+    show("c2 witness OFF", &st, map, 12);
+    assert(fk.chunk_reads == 3 && fk.anchor_reads == 0 && st.rereads == 0);
+    assert(out.verdict[4] == 'L' && (map[4] & 15) == ACCUDISC_MAP_OK);
+}
+
+/* REACH, BACKWARD: the displaced transfer carries NO flag; the flag is in the
+ * chunk after it. Chunk 1 lands late and clean; C2 fires in chunk 2. Only the
+ * witness of the chunk held back behind the flag can catch chunk 1. */
+static void test_c2_witness_reaches_back(void)
+{
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.chunk_late_on = 1;
+    fk.c2_hot_lba = 20005;
+    accudisc_read_stats st = run_c2w(12, 1, map);
+
+    show("c2 witness, back", &st, map, 12);
+    for (uint32_t i = 0; i < 4; i++)
+        assert(out.verdict[i] == 'E' &&
+               (map[i] & 15) == ACCUDISC_MAP_RECOVERED);
+    assert_no_false_ok(map, 12);
+}
+
+/* REACH, FORWARD: the flag is in chunk 2 and the displaced transfer is chunk
+ * 3's, read AFTER it. Transfer order: #1 chunk 1, #2 chunk 2 (flag), #3 and #4
+ * the witnesses of chunks 1 and 2, #5 chunk 3 — which lands late. Only the
+ * carried trigger (witness_next) can catch it. */
+static void test_c2_witness_reaches_forward(void)
+{
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.chunk_late_on = 5;
+    fk.c2_hot_lba = 20005;
+    accudisc_read_stats st = run_c2w(12, 1, map);
+
+    show("c2 witness, forward", &st, map, 12);
+    for (uint32_t i = 8; i < 12; i++)
+        assert(out.verdict[i] == 'E' &&
+               (map[i] & 15) == ACCUDISC_MAP_RECOVERED);
+    assert_no_false_ok(map, 12);
+}
+
+/* Free on a clean disc: no C2, no trigger, one transfer per chunk. */
+static void test_c2_witness_clean_costs_nothing(void)
+{
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    accudisc_read_stats st = run_c2w(12, 1, map);
+
+    show("c2 witness, clean", &st, map, 12);
+    assert(fk.chunk_reads == 3 && fk.anchor_reads == 0 && st.rereads == 0);
+    for (uint32_t i = 0; i < 12; i++)
+        assert(out.verdict[i] == 'E' && (map[i] & 15) == ACCUDISC_MAP_OK);
+}
+
+/* Triggered BY C2, so without C2 capture it could never fire: refused before
+ * any read rather than silently inert. */
+static void test_c2_witness_requires_c2(void)
+{
+    static struct accudisc_device dev;
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    memset(&fk, 0, sizeof(fk));
+    req.lba = 20000;
+    req.count = 8;
+    req.buffer_bytes = ACCUDISC_BUFFER_NONE;
+    req.c2_witness = 1;
+    req.c2 = ACCUDISC_C2_NONE;
+    assert(accudisc_read_cdda(&dev, &req, NULL, NULL, NULL) ==
+           ACCUDISC_ERR_INVAL);
+    assert(fk.chunk_reads == 0);
+    req.c2 = ACCUDISC_C2_PTRS;
+    assert(accudisc_read_cdda(&dev, &req, NULL, NULL, NULL) == ACCUDISC_OK);
+    free(dev.xfer_bounce);
+}
+
 /* ---- c2_retries ---------------------------------------------------------- */
 
 /* THE SECOND PATH. The chunk copy of 20003 is C2-flagged; every reread of it
@@ -685,6 +814,12 @@ int main(void)
     test_seam_step_inside_transfer();
     test_seam_runt_last_chunk();
     test_clean_seams_cost_nothing();
+    test_c2_witness_catches_the_unflagged();
+    test_c2_witness_off_is_the_old_path();
+    test_c2_witness_reaches_back();
+    test_c2_witness_reaches_forward();
+    test_c2_witness_clean_costs_nothing();
+    test_c2_witness_requires_c2();
     test_c2_rescue_refuses_unaligned_copy();
     test_c2_rescue_accepts_aligned_copy();
     test_c2_rescue_silent_neighbours();

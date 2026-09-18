@@ -157,6 +157,9 @@ static void usage(FILE *to)
         "  --c2-retries N hunt a C2-clean copy of each flagged sector with\n"
         "                 up to N cache-defeated rereads (default 0 = off);\n"
         "                 requires --verify 2 or more\n"
+        "  --c2-witness   where C2 fires, re-read that chunk and both\n"
+        "                 neighbours and check every sector; for drives\n"
+        "                 that slip on damage (off by default; needs C2)\n"
         "  --verify P     read everything P times (cache-defeated); sectors\n"
         "                 whose reads disagree are resolved by consensus or\n"
         "                 marked suspect (default 1 = off)\n"
@@ -2328,6 +2331,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             req.retries = (uint8_t)strtol(optv, NULL, 0);
         else if (opt_val(argv, argc, &i, "--c2-retries", &optv, &optbad))
             req.c2_retries = (uint8_t)strtol(optv, NULL, 0);
+        else if (!strcmp(a, "--c2-witness"))
+            req.c2_witness = 1;
         else if (opt_val(argv, argc, &i, "--verify", &optv, &optbad))
             req.verify_passes = (uint8_t)strtol(optv, NULL, 0);
         else if (opt_val(argv, argc, &i, "--overlap", &optv, &optbad))
@@ -2379,6 +2384,12 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
          * message says which flag is missing. */
         fprintf(stderr, "accudisc: --c2-retries requires --verify 2 or more "
                         "(a single pass cannot see a positioning slip)\n");
+        return 1;
+    }
+    if (req.c2_witness && req.c2 == ACCUDISC_C2_NONE) {
+        /* The library refuses this too (ERR_INVAL, 0.45.0): the trigger IS
+         * C2, so with --no-c2 it could never fire. */
+        fprintf(stderr, "accudisc: --c2-witness requires C2 (drop --no-c2)\n");
         return 1;
     }
     if (subq_path && req.sub != ACCUDISC_SUB_RAW) {
@@ -2712,7 +2723,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         fprintf(stderr, "  Q MISPOSITION    : %llu sectors whose valid Q named "
                         "a DIFFERENT LBA than requested\n",
                 (unsigned long long)st.subq_misposition);
-    if (req.c2_retries || req.verify_passes >= 2 || req.overlap_sectors)
+    if (req.c2_retries || req.verify_passes >= 2 || req.overlap_sectors ||
+        req.c2_witness)
         fprintf(stderr, "  accuracy         : %llu recovered, %llu suspect, "
                         "%llu extra reads, %llu slips\n",
                 (unsigned long long)st.sectors_recovered,

@@ -57,7 +57,16 @@ _Static_assert(sizeof(accudisc_speed_rung) == 20,
  * updating the number below, bumping ACCUDISC_VERSION_MINOR so the .so version
  * moves with the layout, and adding a row to API_PLAN §8. Tripping these is a
  * reminder, not a defect. */
-_Static_assert(sizeof(accudisc_read_req) == 72, "read_req grew — see above");
+_Static_assert(sizeof(accudisc_read_req) == 80, "read_req grew — see above");
+/* 0.45.0: 72 -> 80. c2_witness is DELIBERATELY not in 0.44.0's tail padding
+ * at 68: padding is not guaranteed zero in a caller's struct, and `size`
+ * would read 72 for old and new alike, so garbage there would switch it on.
+ * reserved0 fills 68-71 and is never read; c2_witness sits at 72, beyond an
+ * old caller's declared end, where the import zero-extends it. */
+_Static_assert(offsetof(accudisc_read_req, reserved0) == 68,
+               "read_req: reserved0 must cover 0.44.0's padding");
+_Static_assert(offsetof(accudisc_read_req, c2_witness) == 72,
+               "read_req: c2_witness must sit past 0.44.0's end");
 _Static_assert(sizeof(accudisc_read_stats) == 160, "read_stats grew — see above");
 
 /* 0.22.0 moved these: read_req 64 -> 72 (buffer_bytes, plus the padding it
@@ -225,6 +234,21 @@ int main(void)
         rc = adsc_abi_import(&dst, sizeof dst, src, longlen);
         ck(rc == ACCUDISC_ERR_ABI,
            "import: long struct with a SET tail field is refused, not dropped");
+    }
+
+    /* ---- import: a 0.44.0 caller (72 bytes) with GARBAGE in what was its
+     * tail padding. The C standard does not zero padding, so a real caller's
+     * bytes 68-71 may hold anything. They must not reach c2_witness: that
+     * would silently switch a re-read strategy on, and with c2 == NONE turn
+     * the read into ERR_INVAL for a caller that changed nothing. ---- */
+    {
+        const uint32_t oldlen = 72;
+        memset(src, 0, sizeof src);
+        memcpy(src, &oldlen, sizeof oldlen);
+        memset(src + 68, 0xFF, 4);
+        rc = adsc_abi_import(&dst, sizeof dst, src, oldlen);
+        ck(rc == ACCUDISC_OK && dst.c2_witness == 0,
+           "import: 0.44.0 caller's garbage padding does not set c2_witness");
     }
 
     /* ---- import: an ABSURD size must be refused BEFORE the tail is scanned.
