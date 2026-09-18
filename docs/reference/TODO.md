@@ -394,8 +394,46 @@ discarded, so over-condemning costs reads and never costs yield.
   one cannot, and would hand them a number that silently assumes the answer.
   Same error shape as both denominator faults earlier today.
 
-  **Pre-registered:** the threshold will be approximately constant across the
-  two span sizes, at roughly this drive's cache size. Recorded before the read.
+  **THREE bins, not two, and the discriminating question is DIRECTION.**
+  cdda2img (207) supplied the model both of us had missed: under LRU the span
+  occupies part of the cache it is being evicted from, so eviction happens at
+  about `C - S`, not `C`. At C = 2048 kB:
+
+  | model | 49 sec (112 kB) | 400 sec (919 kB) | 800 sec (1838 kB) | direction |
+  |---|---|---|---|---|
+  | capacity-dominated (`~C`) | 2048 | 2048 | 2048 | flat |
+  | LRU with span resident (`~C-S`) | 1936 | 1129 | 210 | **falls** |
+  | proportional (withdrawn) | — | rises 8.2x | — | rises |
+
+  **A `C-S` result scored on a constant-vs-proportional axis bins as "roughly
+  constant"** — 1936 vs 1129 is 1.7x where proportional predicted 8.2x — and
+  the resulting "constant at about the cache size" would UNDER-FLUSH long
+  spans. That is the unsafe direction: a partially evicted span returns a mix
+  of cached and fresh sectors, which is indistinguishable from a partially
+  reproducing fault. So score on **up / flat / down**, never on "did it
+  change".
+
+  **Add a third span size (800 sectors) and a fourth arm that measures `C`
+  directly.** Three points test whether the fall is linear rather than merely
+  present. And the `C-S` model makes a sharp prediction worth using: a span
+  LARGER than the cache cannot stay resident, so **back-to-back rereads with NO
+  flush at all should start differing once the span exceeds `C`**. Sweeping
+  span size with zero flush therefore measures the effective cache size
+  directly, and it is the cheapest arm of the lot. Run it first: it calibrates
+  every other number here.
+
+  **Pre-registrations, both before any read.** AccuDisc: approximately constant
+  at about the cache size — recorded first and NOT retrospectively improved,
+  though we now consider cdda2img's reasoning better than our own and expect to
+  lose. cdda2img: the threshold FALLS as the span grows (`C-S`-like), with the
+  caveat that a segmented buffer with a small per-stream allocation collapses
+  both predictions toward "small and flat".
+
+  **What gets used, whichever way it falls:** the largest flush over the span
+  sizes tested, applied unconditionally. Not a per-span flush computed from a
+  fitted model — that is this same mistake one level up. A conservative
+  constant costs a fixed number of wasted sectors and cannot be wrong in the
+  unsafe direction.
 
 ## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), formatted Q 0.40.0 (2026-09-16), four items left open
 
