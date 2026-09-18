@@ -32,6 +32,10 @@
 static struct {
     int chunk_late_on;       /* 1-based chunk-transfer index read LATE; 0 none */
     int chunk_all_late;      /* every chunk transfer LATE */
+    uint32_t chunk_late_from;/* with chunk_late_on: only sectors at index >= this
+                              * WITHIN that transfer are late. The measured fault
+                              * is a step function inside a transfer, not a
+                              * uniform shift of the whole of it (18g). */
     uint32_t single_late_lo; /* single-sector reads of [lo, hi) LATE, always */
     uint32_t single_late_hi;
     int anchor_mode;         /* 0 exact, 1 always late, 2 alternate exact/late */
@@ -107,7 +111,10 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
     memset(cmd->buf, 0, cmd->buf_len);
     for (uint32_t s = 0; s < nsec; s++) {
         uint8_t *o = (uint8_t *)cmd->buf + (size_t)s * rec;
-        uint64_t base = (uint64_t)(lba + s) * S + (uint64_t)shift;
+        int sh = shift;
+        if (sh && nsec != 1 && nsec != 3 && s < fk.chunk_late_from)
+            sh = 0; /* the step has not happened yet in this transfer */
+        uint64_t base = (uint64_t)(lba + s) * S + (uint64_t)sh;
 
         for (uint32_t i = 0; i < S; i++)
             o[i] = disc_byte(base + i);
@@ -487,6 +494,61 @@ static void test_seam_widens_on_damaged_evidence(void)
     assert_no_false_ok(map, 8);
 }
 
+/* The step inside a transfer, which is the shape of the fault actually
+ * measured: chunk 1's transfer is exact for its first two sectors and late from
+ * the third on, through its extension. The seam fires, and the witness must
+ * settle PER SECTOR: 20002-20003 repaired, 20000-20001 confirmed as they were.
+ * A widening that condemned the transfer wholesale would mark the good two
+ * RECOVERED (or worse, SUSPECT) — the item-2 C2 trigger leans on this too. */
+static void test_seam_step_inside_transfer(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.chunk_late_on = 1;
+    fk.chunk_late_from = 2;
+    req.lba = 20000;
+    req.count = 12;
+    req.chunk_sectors = 4;
+    req.overlap_sectors = 2;
+    accudisc_read_stats st = run(&req, map);
+
+    show("seam, step in transfer", &st, map, 12);
+    for (uint32_t i = 0; i < 12; i++)
+        assert(out.verdict[i] == 'E');
+    assert((map[0] & 15) == ACCUDISC_MAP_OK && (map[1] & 15) == ACCUDISC_MAP_OK);
+    for (uint32_t i = 2; i < 6; i++)
+        assert((map[i] & 15) == ACCUDISC_MAP_RECOVERED);
+    assert_no_false_ok(map, 12);
+}
+
+/* A RUNT last chunk with overlap on: count 10 in chunks of 4 leaves 2. That
+ * exercises the extension at the tail (chunk 2 extends by only what remains),
+ * the final publish with n < chunk, and the hold-back's last-chunk path at
+ * once — the shape 113114 had (a 3-sector runt from --count 49). The runt's own
+ * transfer lands late. */
+static void test_seam_runt_last_chunk(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.chunk_late_on = 3;
+    req.lba = 20000;
+    req.count = 10;
+    req.chunk_sectors = 4;
+    req.overlap_sectors = 2;
+    accudisc_read_stats st = run(&req, map);
+
+    show("seam, runt last chunk", &st, map, 10);
+    for (uint32_t i = 0; i < 10; i++)
+        assert(out.verdict[i] == 'E');
+    assert((map[8] & 15) == ACCUDISC_MAP_RECOVERED &&
+           (map[9] & 15) == ACCUDISC_MAP_RECOVERED);
+    assert_no_false_ok(map, 10);
+}
+
 /* The widening is a COST: it re-reads only where a seam disagreed. A clean read
  * with overlap must issue one transfer per chunk and nothing more, or the
  * trigger has quietly become a second pass over everything. */
@@ -620,6 +682,8 @@ int main(void)
     test_seam_slip_is_anchored();
     test_seam_slip_widens_forward();
     test_seam_widens_on_damaged_evidence();
+    test_seam_step_inside_transfer();
+    test_seam_runt_last_chunk();
     test_clean_seams_cost_nothing();
     test_c2_rescue_refuses_unaligned_copy();
     test_c2_rescue_accepts_aligned_copy();
