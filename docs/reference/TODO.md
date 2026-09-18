@@ -315,11 +315,36 @@ discarded, so over-condemning costs reads and never costs yield.
   location and an indirect reading, not a refutation, but it is not
   reassurance either.
 
-  **Cheap decisive test:** read 113068-113116 from starts 113060, 113064 and
-  113068 and compare the overlapping sectors. If a different start does not
-  change the bytes, `anchor_position` cannot rescue this span and neither can
-  cdda2img's rung — which is worth knowing before their H1, not after. Keith's
-  call; one claim, under a minute of drive time.
+  **The test, in four arms.** Three vary the start address (113060, 113064,
+  113068, comparing the overlapping sectors); the fourth keeps start 113068
+  and varies `speed_x`. cdda2img added the fourth (204) and it is what makes
+  the test decisive — three start-varied arms alone cannot separate "the bytes
+  are a function of DISC POSITION" from "the bytes are a function of the READ
+  PARAMETERS, of which start is one", and those have opposite consequences.
+
+  | start | speed | outcome | reading |
+  |---|---|---|---|
+  | varied | fixed | differs | alignment matters; anchoring works as designed |
+  | varied | fixed | identical | inconclusive alone — see next two rows |
+  | fixed | varied | differs | not position-locked; diversify SPEED, not start |
+  | fixed | varied | identical | **position-locked: no re-read strategy on this drive recovers this span** |
+
+  The last row is the one nobody has tested and the one that decides whether
+  any ladder is worth building here. If it holds, the damage at these sites is
+  unrecoverable by re-reading on this drive, and the effort belongs in CTDB
+  parity and AccurateRip offset matching — the exits that never re-read.
+
+  **Pre-registered predictions, both before the read.** AccuDisc: a different
+  start DOES change the bytes (on nothing better than 0.41.0's design
+  assumption). cdda2img: it does NOT, on two grounds — 113098 is the only time
+  anything has varied the start on this disc and it inherited the same +48;
+  and the step function's shape (a correct 4-sector island mid-run, boundaries
+  ignoring chunk edges) reads as the drive losing and regaining sync at fixed
+  places on the disc rather than as a transfer-alignment artefact, which is
+  what the libata mod-16 bug looked like. One clean difference in the overlap
+  refutes cdda2img.
+
+  Keith's call; one claim, about a minute of drive time.
 
 ## `[P1]` READ CD misframing on a second drive — BUILT 0.39.0 (2026-09-14), formatted Q 0.40.0 (2026-09-16), four items left open
 
