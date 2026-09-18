@@ -316,9 +316,15 @@ discarded, so over-condemning costs reads and never costs yield.
   wrong bytes. **No relative check can certify this region on this drive,
   `--verify 2` included**; RECOVERY.md's invariant, met on hardware.
 
-  **Unexplained change:** Tuesday's `--verify 3` read of 113068-113116 was
-  49/49 exact with ZERO C2 flags. Today the same sectors carry 13-15 flags per
-  read and almost never read right. Disc, drive or conditions: not isolated.
+  ~~**Unexplained change:** Tuesday's `--verify 3` read of 113068-113116 was
+  49/49 exact with ZERO C2 flags...~~ **WITHDRAWN the same evening
+  (correspondence 214/18x):** it compared Tuesday's BEST first pass with today's.
+  On Tuesday, runs A and B sent the IDENTICAL first-pass request (C2, no sub,
+  0.42.0): A's pass 1 was right (0 C2, 4 extra reads over 3 passes), B's was
+  45/49 wrong with 10 flagged. Run-to-run variance in pass 1 alone covers
+  Tuesday-versus-today, and B also shows sub geometry and the 0.44 engine are
+  not needed to produce a wrong read (they could still make it worse). The
+  discriminating test is no-sub against sub, alternated and replicated.
 
 ### The two items to build, in order
 
