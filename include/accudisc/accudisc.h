@@ -3242,10 +3242,27 @@ typedef struct accudisc_read_req {
                             * ACCUDISC_MAP_RECOVERED) */
     uint8_t overlap_sectors; /* boundary overlap check: extend each chunk
                             * read by k trailing sectors and compare them
-                            * against the next chunk's head — catches drive
-                            * slips at chunk seams that back-to-back reads
-                            * can't see. Mismatches go to consensus.
-                            * 0 = off; clamped to 8 */
+                            * against the next chunk's head. Mismatches go to
+                            * consensus. 0 = off; clamped to 8.
+                            *
+                            * NOT A POSITION CHECK ON THE TRANSFER, and today
+                            * it can leave a map that is WORSE than no check at
+                            * all. A mismatch condemns only the SEAM sectors —
+                            * nothing propagates outward — but the fault it
+                            * detects displaces the WHOLE transfer. So a chunk
+                            * delivered 48 bytes late yields ~2 SUSPECT sectors
+                            * at the seam and ~20 wrong ones still marked OK,
+                            * and sectors_flagged counts the two. A caller that
+                            * accepts OK and rejects SUSPECT is worse off with
+                            * this on than off: off leaves no assurance, on
+                            * leaves a FALSE one.
+                            *
+                            * Do not read this field as evidence the transfer
+                            * landed where it was asked to. Only verify_passes
+                            * >= 2 carries that today. Measured on a LITE-ON
+                            * LH-20A1S 2026-09-16; cdda2img stated the
+                            * consequence (correspondence 200). The widening
+                            * fix is queued — this text goes when it lands. */
     /* speed ladder for problem-sector rereads: rescue/consensus attempt n
      * runs at ladder[min(n-1, len-1)] (e.g. {32,16,8,4} — descend toward
      * slow, careful reads). Pick rungs that differ from speed_x: consensus

@@ -143,7 +143,10 @@ read options:
                  marked suspect (default 1 = off)
   --overlap K    boundary overlap check: extend each chunk by K
                  sectors and verify the seam against the next chunk
-                 (default 0 = off, max 8)
+                 (default 0 = off, max 8). THE SEAM ONLY: a
+                 mismatch marks the seam sectors, not the rest of
+                 the transfer that carried them, so this is not
+                 evidence the read landed where it was asked
   --ladder LIST  speed ladder for problem-sector rereads, e.g.
                  32,16,8,4 — attempt n runs at the n-th speed;
                  pass speed is restored for streaming
