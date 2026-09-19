@@ -7,6 +7,33 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## `[P0]` DEVELOPMENT IS PAUSED until the PX-716A is serviced — Keith, 2026-09-19 17:17
+
+**"I'll need to pause any further development until I can properly service the
+Plextor, as the LITE-ON is basically unusable for our purposes. It's a marginal
+device which may work for reading undamaged discs, but not much else."**
+
+This is a *capability* pause, not a suspension of the kind above: the only drive
+that can validate read work is out of service, and the substitute cannot. Do not
+start hardware-dependent work, and do not propose reads on either drive, until
+Keith says the Plextor is back. Software that needs no disc is unaffected.
+
+**The evidence, measured 2026-09-19 (bench notes, same date).** One disc (Tracy
+Chapman), one library, one afternoon, scored against AccurateRip:
+
+| capture | AR |
+|---|---|
+| **PX-716A, our single pass, 271.9 s** | **10/11** — fails track 8 only |
+| LITE-ON 9L08, 40x | 3/11, and 2/11 on another run |
+| LITE-ON 9L09 under CUERipper Secure (Windows) | 3/11 |
+| LITE-ON 9L09, 16x, and 8x | 0/11 |
+
+cdda2img's own PX-716A rip the same hour: 10/11 pre-repair, track 8 `DAMAGED`,
+**11/11 after CTDB parity**. Our single-pass read reproduces that exactly through
+a different program. **The disc has one damaged track. The LITE-ON is the fault.**
+
+Flashing it 9L08 -> 9L09 changed nothing material. It is going to be sold.
+
 ## `[P0]` HARDWARE TESTING IS SUSPENDED until the drive is serviced — Keith, 2026-09-12 20:19
 
 **"I think we need to stop any further testing until the drive has been
@@ -302,6 +329,52 @@ shift flag on either path, and anchoring without a slip each failed a test.
   Same missing widening, and the same mechanism the C2 trigger above needs.
   Told cdda2img not to read `overlap_sectors` as a position check until this
   lands (correspondence 199.2).
+
+## `[P1]` The LITE-ON slips whole CIRC frames, and no relative check can see it — MEASURED 2026-09-19, closes the `--overlap` question
+
+**Authorised single arm, reading rule frozen before the run.** 0.45.0, 9L09, 16x,
+`--overlap 2`, one variable against the same read without it. Outcome **(c)**, the
+pre-registered decisive-against case: track 4 came back with **zero** non-OK
+sectors and the slip site `LBA 49663` marked `OK`. AccurateRip 0/11. The accuracy
+lane's 475 detected slips were **all** in tracks 7 and 8, where C2 was already
+firing hardest; at the silent site it reported nothing. Cost 986.2 s against
+385.2 s — **2.56x**, not the ~9.5% the chunk arithmetic predicts (2821 extra
+reads). **Do not re-propose `--overlap` as a defence against this class.**
+
+**The defect.** Track 4 slips at `LBA 49663` on every read that slips at all —
+the site is fixed by disc position — while the magnitude varies per read: −12,
+−12, −6 across three reads, and one 40x read did not slip at all. Every shift
+observed anywhere on this disc is a multiple of **6 samples = 24 bytes = one CIRC
+frame's audio payload**. Drives lose and regain whole frames; search in that
+quantum, never in samples.
+
+**Why nothing relative can catch it, and why this is closed by construction.**
+Within one read the shift is **constant across all ~380 chunk boundaries** from
+49663 to the end of the track. Had the displacement been introduced per transfer
+it would reset at each boundary; it does not. The displacement is a property of
+the **disc position, not the transfer**. So chunk-boundary overlap compares a
+shifted tail against an equally shifted head and finds agreement, and
+`verify_passes`/`c2_witness` re-read the same position and collect the same
+displacement — the 8x/9L08 and 16x/9L09 captures are **byte-identical** through
+this region, across a firmware flash. A majority vote over any number of passes
+returns the corrupt result with full confidence. **Only an absolute gate sees
+this**, which is RECOVERY.md's invariant measured on hardware rather than argued.
+
+**C2 on a good drive is an excellent locator.** The PX-716A flagged exactly
+**one** sector on the whole disc, `LBA 112738`, inside track 8 — the only track
+it failed. One flag, one bad track, no false positives, no false negatives. That
+is the locator role working exactly as RECOVERY.md §4.2 assumes.
+
+**METHOD TRAP, cost me two wrong conclusions in one session.** An EAC-style log's
+`[ACF56416], AccurateRip returned [5259C789]` prints **our v1** and, on a miss,
+**AccurateRip's v2**. Scoring those returned values as v1 makes every damaged
+track look unrecoverable and a good drive look broken; I reported "the disc is
+damaged and nothing can read it" on that basis, and it was false. Separately,
+AccurateRip's first-track skip is **2939 samples, not 5x588=2940** (verified by
+exhaustive sweep; `(lo=2939, m=i+1)` is the unique solution). **Validate any
+scorer against a capture already known good before scoring anything with it** —
+a well-formed hex string is not a correct one, and only cdda2img's independent
+output could contradict mine. Working scorer: `private/bench/ar_score.py`.
 
 ## `[P1]` The escalation ladder for spec-breaking drives — BUILT 0.44.0 (seam) and 0.45.0 (C2 trigger), 2026-09-18; hardware verification open
 
