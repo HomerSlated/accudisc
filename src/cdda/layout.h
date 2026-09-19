@@ -11,11 +11,22 @@
  * WHY THIS EXISTS. MMC-4/5/6 make the order normative ("shall transfer ... C2
  * Error flags, Sub-channel"), and the whole library — engine, binding, every
  * consumer's slicer — was written against it. A LITE-ON LH-20A1S (9L08)
- * delivers AUDIO | SUB | C2 instead, measured 2026-09-14, and 8 of redumper's
- * 55 combined-read drives do the same. The order also varies with firmware and
- * command on the same model, so no drive table can hold it. Only the content
- * can: a Q frame carries a CRC-16, and a CRC that verifies at one candidate
- * position and not the other says where the subchannel is.
+ * delivers AUDIO | SUB | C2 instead, measured 2026-09-14, and 6 of the 66
+ * combined-read rows in redumper's drive database do the same (counted
+ * 2026-09-19 against snapshot 856faf2; an earlier "8 of 55" here was a naive
+ * grep that also counted the enum declaration and the string-map entry).
+ *
+ * THE TRAIT TRACKS FIRMWARE, NOT VENDOR OR CHIPSET, so no drive table can hold
+ * it — and redumper's own data is the proof. SH-D163B and SH-D162C are adjacent
+ * TSSTcorp models carrying the same KREON firmware from the same author, and
+ * they DISAGREE on the order. All 27 MediaTek-tagged rows there use the
+ * standard order, yet this LH-20A1S is independently confirmed MediaTek
+ * (MT1899E, CdrInfo/Gough teardowns) and swaps. redumper itself has no runtime
+ * detection in its rip path — a database lookup plus a manual
+ * --drive-sector-order override — and this drive is absent from that database
+ * altogether, so it would be misparsed there. Only the content
+ * can decide: a Q frame carries a CRC-16, and a CRC that verifies at one
+ * candidate position and not the other says where the subchannel is.
  *
  * FORMATTED Q (16 B) TOO, since 0.40.0. The same LITE-ON sends AUDIO | Q | C2
  * for C2 + formatted Q (measured 2026-09-16, 16/16 sectors). MMC-5 Table 368

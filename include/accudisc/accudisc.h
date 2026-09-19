@@ -185,8 +185,9 @@ extern "C" {
                                   * one sector at a time.
                                   *
                                   * (2) SUB-BEFORE-C2 DRIVES ARE NORMALISED. MMC
-                                  * requires AUDIO | C2 | SUB; that drive (and 8
-                                  * of redumper's 55 combined-read drives) sends
+                                  * requires AUDIO | C2 | SUB; that drive (and 6
+                                  * of the 66 combined-read rows in redumper's
+                                  * drive database at 856faf2) sends
                                   * AUDIO | SUB | C2. The order is read from the
                                   * Q CRC and every record is returned in MMC
                                   * order, so accudisc_chunk's audio/c2/sub

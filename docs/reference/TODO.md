@@ -132,7 +132,62 @@ shift flag on either path, and anchoring without a slip each failed a test.
   one `RECOVERED`. (First reported as "no shifted RECOVERED": the check was exact
   equality under shift, which a shifted copy carrying damage cannot pass. Caught by
   cdda2img.)
-- `[P1]` **A single-pass read has no position witness on this drive.** **DECIDED for `c2_retries`, BUILT 0.43.0:** Keith chose to refuse `c2_retries` without `verify_passes >= 2` (ERR_INVAL; CLI names the flag; RECOVERY.md R1 struck). Plain single-pass reads and forced overlap remain open. Run B above:
+- `[P1]` **A single-pass read has no position witness on this drive.** **DECIDED for `c2_retries`, BUILT 0.43.0:** Keith chose to refuse `c2_retries` without `verify_passes >= 2` (ERR_INVAL; CLI names the flag; RECOVERY.md R1 struck).
+
+  **CLOSED 2026-09-19 — a plain single-pass read gets NO forced witness. Keith:**
+  *"the first pass has to be high speed and assume no errors, otherwise this tool
+  becomes unusably slow. So unless there's a second code path reserved only for
+  known broken or low quality drives, then no."* This settles both halves that
+  were left open here — plain single-pass reads AND forced overlap. Do not
+  re-propose either as a default; a witness is something the caller asks for, or
+  something an error triggers, never something a clean first pass pays for.
+
+  **It also reopens 0.43.0's gate, which is mis-scoped against that ruling.**
+  `verify_passes >= 2` is a WHOLE-RUN setting: to enable a recovery feature that
+  acts only where C2 fired, it doubles the read of every clean sector. Estimated
+  from the 2026-09-19 full-disc map (162892 sectors, 21-sector chunks): a
+  `c2_witness` defence covers the same chunks for 966 extra sector-reads against
+  162892 for `verify_passes 2` — **169x cheaper** for the same coverage.
+  `c2_witness` is sound as the substitute, by construction rather than by hope:
+  `c2_hit` is latched at `engine.c:1090` BEFORE `c2_rescue` runs at 1099, so every
+  chunk where the rescue could have spliced anything is witnessed, and
+  `witness_pass` does not skip `recov[]` sectors (`engine.c:626` skips only
+  `hard`/`susp`), so a bad splice can still be condemned afterwards.
+  **PROPOSED, NOT BUILT:** accept `c2_retries` when `verify_passes >= 2` **OR**
+  `c2_witness` is set. Keith's call.
+
+  **DECIDED 2026-09-19 09:56 — POSTURE B. The outer rung of the ladder belongs to
+  the CALLER, not the library.** A cheap full-speed first pass with C2 only; the
+  caller gates it on AccurateRip/CTDB; whatever fails is re-invoked over a NARROW
+  LBA range with every heavy flag on. Measured on the 2026-09-19 map: a +/-200
+  sector margin covers the damage in 3 spans / 2447 sectors = **1.50% of the
+  disc**, so `verify_passes` being whole-run stops mattering — the run is 1.5% of
+  a disc. **Posture B needs NO code change.** The 0.43.0 relaxation above is
+  needed only for Posture A (escalation inside one whole-disc invocation) and is
+  therefore deprioritised, not withdrawn.
+
+- `[P0]` **`cache_defeat` makes WHOLE-RUN verify passes pathological, measured
+  2026-09-19.** `witness_pass` (`engine.c:623`) calls `cache_defeat`, which reads
+  one sector `ADSC_FLUSH_DISTANCE` = 5000 sectors away (`engine.c:242-250`). With
+  `verify_passes >= 2` that is a 5000-sector seek away and back for EVERY chunk.
+  Measured on the LITE-ON, whole disc, `--verify 2 --c2-retries 4 --c2-witness
+  --overlap 2 --ladder 40,32,24,16,8,4`: **13.9% in ~2 h = 3.1 sectors/s = 6.7 s
+  per 21-sector chunk, projecting 14.4 hours** — against 456.7 sectors/s for the
+  same disc single-pass, i.e. **145x slower**. The seek dominates; `c2_witness`
+  adds nothing here because `engine.c:1130` already sets `witnessed` when
+  `passes > 1`.
+  This is the SAME failure mode already documented at `engine.c:258-264` (the
+  4129-sector data track that "turned a read into an hours-long seek storm") —
+  it has now been hit a second time, structurally, from a different direction.
+  It is not a bug in `cache_defeat`, which is correct and necessary (the cache is
+  not LRU; a far read is what defeats it). It is an argument that a per-chunk
+  cache defeat is only affordable at narrow scope — i.e. Posture B.
+  **Open:** whether a cheaper defeat exists for the streaming case (a shorter
+  distance, or reusing the natural forward motion of the read instead of a
+  dedicated seek). Do NOT weaken the defeat without re-running the 2026-09-18
+  cache calibration that established 1 sector at 5000 works 12/12.
+
+  Run B above:
   whole chunks delivered late with clean C2 and state `OK`, and `slips` read 0
   because `slips` counts comparisons that were made. Only `verify_passes >= 2`
   or `overlap_sectors` compares two transfers.
@@ -156,6 +211,40 @@ shift flag on either path, and anchoring without a slip each failed a test.
   This is new evidence for the open decision in the misframing section below
   (force overlap when `sub` is not RAW), and it now applies with raw sub too.
   Keith's decision.
+
+- `[P1]` **THE DRIVE WAS POOR AT DAMAGED-MEDIA READING WHEN NEW — period review,
+  found by Keith 2026-09-19.** CdrInfo's contemporary LH-20A1S review scored its
+  CD error-correction test on the **ABEX TCD-721R, a deliberately damaged test
+  disc**: *"Extremely high error total count, very high Loudness levels and far
+  too many skipped samples. It is no wonder that the drive is awarded the very
+  low score of 55.8. This is one of the worst performances we have seen with this
+  disc."* On the CD-Check audio disc it played tracks 1-3 correctly and failed 4-5
+  — *"An average performance."* Overall: *"The drive does not appear to be very
+  good when it comes to CD error correction."*
+  <https://www.cdrinfo.com/d7/content/lite-lh20a1s?page=2>
+
+  **This corroborates our own profile from an independent, contemporaneous
+  source, and it converges with the other period review.** CDRLabs tested the
+  sibling LH-20A1H on a CLEAN pressed disc and reported "DAE Quality: 10" with 0
+  errors. Clean media fine, damaged media bad — which is exactly what we measured
+  (0 slips in 24000 clean-media deliveries; silent 24-byte-multiple displacement
+  on the damaged span).
+
+  **Two limits on how far this evidence reaches.** (1) DAE error-correction
+  scores measure AUDIBLE artefacts — skips, muting, loudness — i.e. playback
+  quality, not extraction correctness. No benchmark of that era measured silent
+  positional displacement, which is our actual fault. A drive can score well by
+  concealing smoothly. (2) It says nothing about this morning's 25 -> 2035
+  degradation, which is a within-drive, within-disc, same-binary change over
+  2.5 h. A 2007 review of a new unit cannot speak to that. **Both facts stand
+  independently: the drive was mediocre when new AND it got worse today.**
+
+  **Consequence for the drive-worth-it question:** the cooldown test is still
+  worth running, but it no longer DECIDES anything. Even a full recovery to ~25
+  C2-flagged leaves a drive that scored 55.8 on damaged media when new, whose
+  chipset generation (MT1899E) no preservation project has ever evaluated, and
+  which appears in none of redump.org's three trust tiers. It is not a suitable
+  reference for recovery work.
 
 - `[P1]` **MEASURED 2026-09-18: this drive does NOT slip on clean media.**
   `private/bench/2026-09-18-liteon-clean-span/`. Two spans at different radii
@@ -331,7 +420,9 @@ discarded, so over-condemning costs reads and never costs yield.
   CONFIRM the sub-geometry hypothesis but cannot CLEAR it. Overlapping
   distributions are recorded as "no detectable effect at n=4", never as
   "exonerated"; separated ones count as real support. Both sides predicted
-  overlap. Not yet authorised.
+  overlap. ~~Not yet authorised.~~ **AUTHORISED by Keith 2026-09-19 08:54**,
+  to run once the drive is free. The reading rule above is frozen and was
+  written before authorisation — do not revise it after seeing the data.
 
 ### The two items to build, in order
 
