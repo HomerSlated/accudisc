@@ -287,6 +287,22 @@ int accudisc_write_governor_get(accudisc_device *dev, int *on,
                                 uint32_t *recommended_kbps);
 int accudisc_write_governor_set(accudisc_device *dev, int on);
 
+#define ACCUDISC_VSET_OK ...
+#define ACCUDISC_VSET_HAS_NUM ...
+#define ACCUDISC_VSET_NO_DISC ...
+#define ACCUDISC_VENDOR_SETTINGS_MAX ...
+typedef struct accudisc_vendor_setting {
+    char key[32];
+    char label[32];
+    char value[64];
+    int64_t num;
+    uint32_t flags;
+    uint32_t reserved;
+} accudisc_vendor_setting;
+int accudisc_vendor_settings(accudisc_device *dev,
+                             accudisc_vendor_setting *out, uint32_t elem_size,
+                             uint32_t cap, uint32_t *n);
+
 int accudisc_set_speed(accudisc_device *dev, unsigned speed_x);
 /* NOTE the order and the units: max first, current second, both kB/s. */
 int accudisc_get_speed(accudisc_device *dev, unsigned *max_kbps,
@@ -506,6 +522,14 @@ typedef enum accudisc_c2_verdict {
     ...
 } accudisc_c2_verdict;
 
+typedef enum accudisc_features_medium {
+    ACCUDISC_FEATURES_MEDIUM_UNKNOWN,
+    ACCUDISC_FEATURES_MEDIUM_AUDIO,
+    ACCUDISC_FEATURES_MEDIUM_NONE,
+    ACCUDISC_FEATURES_MEDIUM_NO_AUDIO,
+    ...
+} accudisc_features_medium;
+
 typedef struct accudisc_features {
     uint8_t feature_present;
     uint8_t current;
@@ -525,6 +549,7 @@ typedef struct accudisc_features {
     uint8_t test_write_claimed;
     uint8_t governor_known;
     uint8_t governor_on;
+    uint8_t medium;
     uint32_t governor_recommended_kbps;
     ...;
 } accudisc_features;

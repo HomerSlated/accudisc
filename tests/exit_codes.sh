@@ -44,6 +44,7 @@ cmd_write:write
 cmd_write_offset:write-offset
 cmd_disc:disc
 cmd_verify:verify
+cmd_settings:settings
 report_offset:offset
 dump_blob:read'
 

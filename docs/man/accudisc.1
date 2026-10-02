@@ -275,11 +275,26 @@ as a floor rather than a total.
 Probe drive capability. Flags may be combined; a bare invocation is equivalent
 to
 .BR \-\-all .
+The first line is always
+.RI \(lq medium\ kind=...\ profile=...\ reason=... \(rq
+(the fields of
+.BR disc ,
+with
+.I tray=
+when no disc is loaded), and the lines below it answer for that state. The
+functional reads need audio to read: with an empty tray each
+.I combo
+line reads
+.B no\-disc
+and with a blank, data or non\-CD disc it reads
+.BR no\-audio .
+Neither is a failure of the drive; the reads were not sent, and the verdict is
+.BR C2_UNVERIFIED .
 .RS 4
 .TP
 .B \-\-c2
 The C2 boolean question. Prints the CD Read feature descriptor, one
-.RI \(lq combo\ <name>\ ok|failed \(rq
+.RI \(lq combo\ <name>\ ok|failed|no\-disc|no\-audio \(rq
 line for each of
 .IR c2 ,
 .IR sub_raw ,
@@ -363,6 +378,38 @@ A bare
 is a request for that end state and therefore
 .BR persists ;
 it is not restored on exit.
+.SS settings
+Report the drive's persisted vendor settings and life counters. Requires
+.BR \-\-driver .
+.B The report is read-only:
+every command it issues is a GET, no setting changes and no disc is touched.
+Attaching the driver is not: the Plextor selftest writes SpeedRead back to the
+value it just read (no net change), as it does for any command run with
+.BR \-\-driver . For
+Plextor the query set is that of QPxTool's
+.BR "cdvdcontrol \-c" :
+Hide-CDR, SingleSession, SpeedRead, PoweREC, GigaREC, VariREC, SecuREC, Silent
+mode, AutoStrategy, the DVD+R settings, the TLA, and the EEPROM's discs-loaded
+and CD/DVD read/write operating times. Prints one line per setting,
+.PP
+.RS 4
+setting <key> ok|unanswered|no\-disc <num|\-> <value...>
+.RE
+.PP
+with the value last so it may contain spaces. It works with or without a disc:
+the first line is always
+.BR medium ,
+what is loaded, and the values that describe the loaded disc read
+.B no\-disc
+with an empty tray, which does not affect the exit status.
+.B unanswered
+is not OFF: the drive refused that query, a transport failure stopped the
+queries after it, or the counter's location is unknown for this model. Exit 3
+when anything went unanswered, exit 2 when no attached driver offers the
+report. Reading
+.B life.cd_write
+before and after a burn shows whether the drive actually spent the time in
+write mode.
 .SS speed\-uncap [on|off]
 Report or set the vendor read-speed uncap (Plextor: SpeedRead), which lifts the
 firmware's CD read-speed ceiling. Requires

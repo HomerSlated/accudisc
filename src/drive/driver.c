@@ -46,7 +46,13 @@ static const accudisc_driver *load_driver(struct accudisc_device *dev,
     entry = (accudisc_driver_entry_fn)dlsym(*handle,
                                             ACCUDISC_DRIVER_ENTRY_SYMBOL);
     drv = entry ? entry() : NULL;
-    if (!drv || drv->abi != ACCUDISC_DRIVER_ABI || !drv->name ||
+    /* A range, not an equality: ABI 6 only appended a slot, so an ABI-4
+     * descriptor is a valid prefix (driver.h). Slots newer than the driver's
+     * ABI are gated at their call sites on drv->abi, never on NULL alone — an
+     * older descriptor is SHORTER, and reading past its end is not NULL, it is
+     * whatever follows it in the driver's .rodata. */
+    if (!drv || drv->abi < ACCUDISC_DRIVER_ABI_MIN ||
+        drv->abi > ACCUDISC_DRIVER_ABI || !drv->name ||
         !drv->match || !drv->selftest) {
         adsc_dev_log(dev, "driver %s: %s", path,
                      entry ? "ABI mismatch or malformed descriptor"
@@ -99,6 +105,17 @@ static int attach_verified(struct accudisc_device *dev,
                               "not evidence about the drive",
                          drv->name, io);
 
+        {
+            /* The sense, when there is one: "refused" alone cannot tell a
+             * drive saying no (and why) from anything else. */
+            accudisc_sense s;
+
+            accudisc_last_sense(dev, &s);
+            if (s.valid)
+                adsc_dev_log(dev, "driver %s: selftest's last sense "
+                                  "%X/%02X/%02X", drv->name, s.key, s.asc,
+                             s.ascq);
+        }
         adsc_dev_log(dev, "driver %s: selftest failed on %s %s — "
                           "staying on generic MMC",
                      drv->name, dev->id.vendor, dev->id.product);
@@ -263,6 +280,74 @@ int accudisc_write_governor_set(accudisc_device *dev, int on)
      * since detached; the governor has no probe with that contract and adding
      * a half-used cache would be a second source of truth for the same bit. */
     return dev->drv->write_governor_set(&dev->host, on ? 1 : 0);
+}
+
+int accudisc_vendor_settings(accudisc_device *dev,
+                             accudisc_vendor_setting *out, uint32_t elem_size,
+                             uint32_t cap, uint32_t *n)
+{
+    uint32_t total = 0;
+    int rc;
+
+    if (!dev || !n || (cap && !out))
+        return ACCUDISC_ERR_INVAL;
+    *n = 0;
+    if (elem_size != sizeof(accudisc_vendor_setting))
+        return ACCUDISC_ERR_ABI;
+    /* abi first: settings_get does not exist in an ABI-4 descriptor at all. */
+    if (dev->drv && dev->drv->abi < 6) {
+        /* Said out loud, because the likely cause is not "this drive has no
+         * settings": a development build without ACCUDISC_DRIVER_DIR finds the
+         * INSTALLED, older driver, and the caller would otherwise be told a
+         * vendor driver is required while one is plainly attached. */
+        adsc_dev_log(dev, "driver %s is ABI %u and predates the settings "
+                          "report (ABI 6) — point ACCUDISC_DRIVER_DIR at a "
+                          "current build, or reinstall", dev->drv->name,
+                     (unsigned)dev->drv->abi);
+        return ACCUDISC_ERR_UNSUPPORTED;
+    }
+    if (!dev->drv || !dev->drv->settings_get)
+        return ACCUDISC_ERR_UNSUPPORTED;
+    if (cap)
+        memset(out, 0, (size_t)cap * sizeof(*out));
+
+    /* What is loaded, once, from the read-only MMC probe that answers with an
+     * empty tray too. It becomes the report's first entry and is handed to the
+     * driver, so the output describes the tray as it is rather than printing
+     * disc-specific figures for a disc that is not there. */
+    {
+        accudisc_disc_probe dp;
+        int prc = accudisc_probe_disc(dev, &dp);
+        accudisc_vendor_setting m;
+
+        memset(&m, 0, sizeof(m));
+        snprintf(m.key, sizeof(m.key), "medium");
+        snprintf(m.label, sizeof(m.label), "Medium");
+        if (prc != ACCUDISC_OK) {
+            snprintf(m.value, sizeof(m.value),
+                     "could not be determined (rc %d)", prc);
+        } else if (dp.reason == ACCUDISC_DISC_WHY_NO_MEDIUM) {
+            m.flags = ACCUDISC_VSET_OK | ACCUDISC_VSET_HAS_NUM;
+            m.num = 0;
+            snprintf(m.value, sizeof(m.value), "none (tray %s)",
+                     accudisc_tray_state_str(dp.tray));
+        } else {
+            m.flags = ACCUDISC_VSET_OK | ACCUDISC_VSET_HAS_NUM;
+            m.num = 1;
+            snprintf(m.value, sizeof(m.value), "%s (%s, profile 0x%04X)",
+                     accudisc_disc_kind_str(dp.kind),
+                     accudisc_disc_reason_str(dp.reason),
+                     (unsigned)dp.profile);
+        }
+        if (cap)
+            out[0] = m;
+        rc = dev->drv->settings_get(&dev->host, &dev->id,
+                                    prc == ACCUDISC_OK ? &dp : NULL,
+                                    cap ? out + 1 : NULL, cap ? cap - 1 : 0,
+                                    &total);
+    }
+    *n = total + 1;
+    return rc;
 }
 
 int accudisc_speed_uncap_set(accudisc_device *dev, int on)

@@ -34,7 +34,7 @@ foreach(t test_version test_cdb test_sense test_toc test_map test_decode
         test_cdtext_encode test_discinfo test_alloc_even test_uncap test_plan
         test_abi test_speeds test_rs16 test_rs16_kat test_ctdb_api
         test_write_offset test_accubuf test_write_health test_trace test_ready
-        test_layout test_consensus)
+        test_layout test_consensus test_wparams test_features)
     add_executable(${t} ${t}.c)
     # test_accubuf drives the ring's own threads; the others do not care.
     target_link_libraries(${t} PRIVATE accudisc_static Threads::Threads)
@@ -49,6 +49,18 @@ endforeach()
 # output to compare and no test to fail. This one aborts if assert() is inert.
 add_executable(test_assert test_assert.c)
 add_test(NAME test_assert COMMAND test_assert)
+
+# The Plextor settings report (0.46.0). Outside the loop because it compiles the
+# SHIPPED driver source itself — drivers are dlopen'd modules, never part of
+# accudisc_static — and drives it through a mock host. It links the library too,
+# for accudisc_vendor_settings' ABI-4 gating; the two share no symbols.
+add_executable(test_plextor_settings test_plextor_settings.c
+               ${PROJECT_SOURCE_DIR}/drivers/plextor/plextor.c)
+target_link_libraries(test_plextor_settings PRIVATE accudisc_static
+                      Threads::Threads)
+target_include_directories(test_plextor_settings PRIVATE
+                           ${PROJECT_SOURCE_DIR}/src)
+add_test(NAME test_plextor_settings COMMAND test_plextor_settings)
 
 # The version CMake actually built with, so test_version.c can compare the
 # header's macros against it instead of against themselves.
@@ -99,6 +111,12 @@ add_test(NAME test_offsets_ambiguous COMMAND test_offsets_ambiguous)
 target_link_options(test_layout PRIVATE -Wl,--wrap=adsc_dev_exec)
 # The same seam for the read engine's consensus against a fake drive that slips.
 target_link_options(test_consensus PRIVATE -Wl,--wrap=adsc_dev_exec)
+# And for the page 05 round trip against drives that answer GOOD and do not
+# hold the page: only what MODE SENSE returns afterwards tells them apart.
+target_link_options(test_wparams PRIVATE -Wl,--wrap=adsc_dev_exec)
+# And for the feature probe in each tray state: "not applicable" must mean the
+# smoke reads were NOT SENT, which only a fake that counts them can show.
+target_link_options(test_features PRIVATE -Wl,--wrap=adsc_dev_exec)
 
 add_executable(test_burn_flow test_burn_flow.c
                ${PROJECT_SOURCE_DIR}/src/write/burn.c

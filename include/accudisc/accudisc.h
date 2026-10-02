@@ -27,7 +27,20 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 45 /* 0.45.0: accudisc_read_req.c2_witness,
+#define ACCUDISC_VERSION_MINOR 47 /* 0.47.0: accudisc_features.medium — what
+                                  * the functional probe HAD to work with. With
+                                  * no disc, or a disc with no audio to read,
+                                  * the smoke reads are not issued and their
+                                  * ok_* zeros are "not asked", never "failed".
+                                  * The field sits in existing padding: sizeof
+                                  * and every offset are unchanged.
+                                  * Previously 0.46.0: accudisc_vendor_settings — a
+                                  * READ-ONLY report of the drive's persisted
+                                  * vendor settings and life counters (Plextor:
+                                  * the query set of QPxTool's `cdvdcontrol -c`).
+                                  * Driver ABI 6 appends the slot; the library
+                                  * still accepts ABI-4 drivers.
+                                  * Previously 0.45.0: accudisc_read_req.c2_witness,
                                   * OPT-IN (Keith, 2026-09-18): where C2 fires,
                                   * that chunk and both neighbours get a second
                                   * transfer and every sector is settled. For
@@ -2001,6 +2014,81 @@ ACCUDISC_API int accudisc_write_governor_get(accudisc_device *dev, int *on,
                                              uint32_t *recommended_kbps);
 ACCUDISC_API int accudisc_write_governor_set(accudisc_device *dev, int on);
 
+/* ---- vendor settings report (driver capability) ----------------------------
+ * The drive's PERSISTED vendor settings and life counters, as one flat list —
+ * for Plextor exactly what QPxTool's `cdvdcontrol -c` reports: Hide-CDR,
+ * SingleSession, SpeedRead, PoweREC, GigaREC, VariREC, SecuREC, Silent mode,
+ * DVD+R bitsetting, DVD+R(W) test write, AutoStrategy, and the EEPROM's
+ * discs-loaded and operating-time counters.
+ *
+ * WHY IT EXISTS. A used drive carries its previous owner's settings, and some
+ * of them change what a burn does without any MMC-level software being able to
+ * see it — a VariREC power offset moves the laser power that OPC arrives at.
+ * 2026-09-28 a second-hand PX-716A burned two discs blank and this was the
+ * first thing that had to be excluded; it took a third-party tool to do it.
+ *
+ * THE REPORT IS READ-ONLY. Every command it issues is a vendor GET (plus the
+ * library's read-only MMC disc probe). It changes no setting, touches no disc,
+ * and fires no laser. Setting any of these is a separate, explicit caller
+ * action and is not offered here.
+ * The ATTACH that must precede it is not a GET: the Plextor driver's selftest
+ * writes SpeedRead back to the value it just read (read/set/re-read, no net
+ * change), on every accudisc_driver_attach, for every purpose.
+ *
+ * The list is VENDOR-NEUTRAL in shape: a driver decides which keys exist. Keys
+ * are stable machine identifiers ("varirec.cd", "life.cd_write"); `label` and
+ * `value` are for people. A key is never reused with a different meaning.
+ *
+ * WORKS WITH OR WITHOUT A DISC. The drive's settings live in the drive, so an
+ * empty tray answers them all. The first entry is always the library's own
+ * `medium` — what is loaded, from the read-only disc probe (profile, disc
+ * status, TOC) — and the few values that describe the LOADED DISC rather than
+ * the drive (Plextor: PoweREC's recommended speed, the disc's GigaREC rate)
+ * carry ACCUDISC_VSET_NO_DISC with an empty tray instead of a number that
+ * would mean nothing.
+ *
+ * "COULD NOT ASK" IS NOT "OFF". An entry whose query failed is still listed,
+ * without ACCUDISC_VSET_OK, and its value says why. A caller must test the flag
+ * before reading anything into the value — an unanswered VariREC is exactly
+ * the case where assuming OFF would hide the answer being looked for. */
+#define ACCUDISC_VSET_OK      0x01u /* the drive answered; value is real */
+#define ACCUDISC_VSET_HAS_NUM 0x02u /* `num` carries the value as a number */
+#define ACCUDISC_VSET_NO_DISC 0x04u /* describes the LOADED DISC and none is
+                                     * loaded: not applicable, not a failure
+                                     * (never set together with _OK) */
+
+/* Enough for every key any driver defines today, with room to grow; a caller
+ * sizing its array from this never needs a second call. */
+#define ACCUDISC_VENDOR_SETTINGS_MAX 64
+
+typedef struct accudisc_vendor_setting {
+    char key[32];    /* stable id, e.g. "varirec.cd"; NUL-terminated */
+    char label[32];  /* human label, e.g. "VariRec CD" */
+    char value[64];  /* human value, e.g. "OFF", "9:45:21", or why unanswered */
+    int64_t num;     /* numeric form iff flags & ACCUDISC_VSET_HAS_NUM:
+                      * seconds for operating times, a count for discs loaded,
+                      * kB/s for a rate, 0/1 for a switch, the signed step for
+                      * a VariREC power */
+    uint32_t flags;  /* ACCUDISC_VSET_* */
+    uint32_t reserved;
+} accudisc_vendor_setting;
+
+/* Fill out[0..cap) with the drive's vendor settings; *n receives the TOTAL the
+ * driver produced, which may exceed cap (then only cap were written — size the
+ * array with ACCUDISC_VENDOR_SETTINGS_MAX and this never happens).
+ *
+ * elem_size must be sizeof(accudisc_vendor_setting) as the caller compiled it;
+ * anything else is ACCUDISC_ERR_ABI, so a caller built against a different
+ * layout is refused instead of misreading the array.
+ *
+ * ACCUDISC_ERR_UNSUPPORTED without an attached driver offering the capability
+ * (including a driver built for ABI 4, which predates it). A per-setting
+ * failure is NOT an error return: it is an entry without ACCUDISC_VSET_OK. */
+ACCUDISC_API int accudisc_vendor_settings(accudisc_device *dev,
+                                          accudisc_vendor_setting *out,
+                                          uint32_t elem_size, uint32_t cap,
+                                          uint32_t *n);
+
 /* Whether the uncap's state is KNOWN. Every value here is now authoritative or
  * absent; there is no hedged one.
  *
@@ -2702,8 +2790,29 @@ ACCUDISC_API const char *accudisc_tray_state_str(unsigned tray);
 typedef enum accudisc_c2_verdict {
     ACCUDISC_C2_UNSUPPORTED = 0, /* C2 read fails outright */
     ACCUDISC_C2_SUPPORTED   = 1, /* advertised and functional */
-    ACCUDISC_C2_UNVERIFIED  = 2  /* reads succeed but not advertised — don't trust */
+    ACCUDISC_C2_UNVERIFIED  = 2  /* could not be established either way: reads
+                                  * succeed but the feature is not advertised,
+                                  * OR there was nothing to read (see
+                                  * accudisc_features.medium) — don't trust */
 } accudisc_c2_verdict;
+
+/* What the functional smoke reads had to work with (accudisc_features.medium,
+ * 0.47.0). The smoke reads are CD-DA reads, so they answer a question about the
+ * DRIVE only when there is audio to read. Without it they used to be issued
+ * anyway, fail for want of a disc, and be reported as five failed combos — the
+ * same well-formed, wrong answer as a figure printed for an empty tray. */
+typedef enum {
+    ACCUDISC_FEATURES_MEDIUM_UNKNOWN  = 0, /* the disc could not be classified
+                                            * (or a pre-0.47.0 library): the
+                                            * smoke reads were issued and ok_*
+                                            * are what came back */
+    ACCUDISC_FEATURES_MEDIUM_AUDIO    = 1, /* audio present: smoke reads ran
+                                            * against the first audio track */
+    ACCUDISC_FEATURES_MEDIUM_NONE     = 2, /* no disc: smoke reads NOT issued */
+    ACCUDISC_FEATURES_MEDIUM_NO_AUDIO = 3  /* a disc with nothing to smoke-read
+                                            * (blank, data-only, not a CD):
+                                            * smoke reads NOT issued */
+} accudisc_features_medium;
 
 typedef struct accudisc_features {
     uint8_t feature_present; /* CD Read feature descriptor returned */
@@ -2758,7 +2867,20 @@ typedef struct accudisc_features {
      * docs/reference/TODO.md on the phantom 48x. */
     uint8_t governor_known;      /* a driver answered; 0 = not asked/no driver */
     uint8_t governor_on;         /* meaningful only when governor_known */
-    uint32_t governor_recommended_kbps; /* 0 = not reported */
+
+    /* ---- WHAT WAS LOADED — 0.47.0, in what was padding (offset 18).
+     *
+     * accudisc_features_medium. When it is NONE or NO_AUDIO the five ok_*
+     * flags above are zero because the reads were NEVER SENT, c2_verdict is
+     * UNVERIFIED, and a consumer must report them as not applicable. The
+     * claims (feature_present .. test_write_claimed) and the governor state
+     * are read either way; `current` and `mastering_current` describe the
+     * loaded medium and are 0 without one by the drive's own account. */
+    uint8_t medium;
+
+    uint32_t governor_recommended_kbps; /* 0 = not reported. Describes the
+                                         * LOADED medium, so it is 0 when
+                                         * medium is NONE */
 } accudisc_features;
 
 ACCUDISC_API int accudisc_probe_features(accudisc_device *dev,

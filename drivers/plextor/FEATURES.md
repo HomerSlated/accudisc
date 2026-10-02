@@ -87,7 +87,7 @@ zone SpeedRead produces — which is a reason to check whether SpeedRead (or any
 high-inner-RPM condition) was in fact active, not proof that it was. Q-health
 counters in the read summary are needed to settle it by re-running the rip with
 SpeedRead verified off.
-| 2 | **Write Strategy / AutoStrategy** | `0xE4` read / `0xE5` write | ☑ | ◐ | GET-verified: AutoStrategy currently ON (resp[2]&0x0F=1). Enable/disable = `0xE4` CDB[2]=`0x10\|state`. Strategy DB read `0xE4` CDB[1]=0x02 CDB[2]=0x03; custom strategy push = `0xE5`. Manual write-strategy needs AutoStrategy OFF. Effects need a burn. |
+| 2 | **Write Strategy / AutoStrategy** | `0xE4` read / `0xE5` write | ☑ | ◐ | GET-verified: AutoStrategy currently **AUTO** (resp[2]&0x0F=1). *Corrected 0.46.0: this said "ON". QPxTool's `AS_*` values are OFF=0, AUTO=1, and FORCED=4 / ON=8 exist only on the PX-755/760; `cdvdcontrol -c` prints `AUTO [1]` for this drive.* Enable/disable = `0xE4` CDB[2]=`0x10\|state`. Strategy DB read `0xE4` CDB[1]=0x02 CDB[2]=0x03; custom strategy push = `0xE5`. Manual write-strategy needs AutoStrategy OFF. Effects need a burn. |
 
 ### AutoStrategy strategy database — DECODED on hardware 2026-09-04
 
@@ -166,6 +166,26 @@ dumped. The OPC-resolved power was never persisted anywhere by design.
 | 9 | **Test Write / simulation** (DVD+) | `0xE9` MODE, page `0x21` | ☑ | ☑ | GET-verified (off). |
 | 10 | **PoweRec** (optimal write power) | `0xED` (MODE2) | ☑ | ☑ | GET-verified: ON, recommended-speed field = `ntoh16(resp[4..5])`. CDB[1]=00 GET, CDB[2]=00, len at CDB[9]=0x08. |
 | 11 | **Q-Check** (C1/C2/PI-PO/jitter/beta) | `0xEA` | ☑ | ☑ | Already implemented in `plextor.c` (subcmds 0x15/0x16/0x17). The one shipping feature. |
+
+## Settings report (0.46.0, read-only)
+
+`accudisc --driver auto settings` / `accudisc_vendor_settings()` issues exactly
+the GET set of QPxTool's `cdvdcontrol -c`, in its order: EEPROM blocks 0 and 1
+(`0xF1 01 idx 0100`: TLA at block-0 0x29; discs loaded, CD/DVD read/write
+seconds at block-1 0x20/0x22/0x26/0x2A/0x2E), then 0xE9 pages 01, BB, 0xED
+mode 0, 0xE9 pages 04, 02 (CD), 08 (CDB[3]=04), D5, 02 (DVD), 22 (0A, 0E),
+then 0xE4 (CDB[1]=0), then 0xE9 page 21 — 14 commands. Not sent, because `-c`
+does not send them: silent pages 06/07 (the 4/00/00 path in row 6) and 0xEB.
+The EEPROM layout is gated to PX-714/716/755/760; other models get the life
+keys as unanswered rather than decoded from a guessed offset. A transport
+failure stops all remaining queries. **Works with an empty tray** (2026-09-28):
+the library's `medium` entry comes first, and `powerec.recommended` /
+`gigarec.disc` read `no-disc`. The attach selftest is now disc-independent —
+SpeedRead read / set-to-current / re-read — because the 0xEA counter-scan proof
+it used before is **refused with an empty tray** (measured on the new PX-716A),
+which left every disc-independent feature unattached. The counter scan remains
+the fallback for a Plextor that refuses the SpeedRead page. **Hardware verification against
+`cdvdcontrol -c` on the same drive is owed** (see TODO).
 
 ## Not consumer features (present in the opcode inventory; noted for safety)
 

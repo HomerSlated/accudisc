@@ -226,11 +226,31 @@ int main(int argc, char **argv)
                        (ti[6] >> 5) & 1, ti[7] & 1);
                 /* The length is the identification. A burn's extent is far more
                  * specific than anything else recoverable from a disc whose
-                 * lead-in is gone. */
-                if (nwa <= 0)
-                    printf("   => next writable address is the START of the "
-                           "programme area (LBA %d): the drive believes "
-                           "NOTHING is recorded\n", nwa);
+                 * lead-in is gone.
+                 *
+                 * WHAT 0 AND -150 DO NOT MEAN (corrected 2026-10-02). This
+                 * tool was written believing that a virgin blank reports 0 and
+                 * a written-but-unrecognised one -150. MMC-5 Table 509 says
+                 * otherwise: on a BLANK track the address is the first block
+                 * after the pre-gap (0) under track-at-once and the first
+                 * block after the lead-in (-150) under session-at-once. So the
+                 * figure reports the WRITE TYPE in mode page 05, which a burn
+                 * leaves set and which this drive keeps across a tray cycle,
+                 * and says nothing about whether marks exist. And with NWA_V
+                 * clear the field is not valid at all, which is what a
+                 * finished, closed disc reports. */
+                int nwa_v = ti[7] & 1, blank = (ti[6] >> 6) & 1;
+
+                if (!nwa_v)
+                    printf("   => next_writable is NOT VALID (NWA_V=0): the "
+                           "track is not writable, as on a finished disc. "
+                           "Not evidence of a blank\n");
+                else if (nwa <= 0)
+                    printf("   => the drive treats this track as %s and would "
+                           "start writing at LBA %d. 0 vs -150 follows the "
+                           "write type in mode page 05 (TAO vs SAO), NOT "
+                           "whether the disc carries marks\n",
+                           blank ? "BLANK" : "writable", nwa);
                 else if (nwa > start)
                     printf("   => %d sectors appear to be RECORDED "
                            "(%d:%02d:%02d)\n", nwa - start,

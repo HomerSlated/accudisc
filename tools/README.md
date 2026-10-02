@@ -53,8 +53,24 @@ gcc -o build/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudi
   virgin was then given 415 MB by cdrecord, every write returning GOOD, and
   came back **byte-for-byte indistinguishable from the blank** — same
   `status=0`, same absent TOC and PMA, same `5/21/00` at all twelve addresses —
-  except `next_writable` moved 0 → −150. "Reads blank" is a bookkeeping
-  failure, not a write failure.
+  except `next_writable` moved 0 → −150.
+
+  **CORRECTED 2026-10-02: that last field is not evidence of writing, and this
+  tool cannot separate "written but unrecognised" from "never written".** MMC-5
+  Table 509 defines the address on a blank track as the first block after the
+  pre-gap (0) under track-at-once and the first block after the lead-in (−150)
+  under session-at-once. It follows the write type in mode page 05, which a
+  burn leaves set and which the PX-716A keeps across a tray cycle (measured the
+  same day with `wparamsprobe`). So 0 → −150 recorded that a burn had been
+  ATTEMPTED in SAO, nothing more. (From the spec, not yet measured by toggling
+  the page on one blank.) What the tool does establish is the positive case:
+  content coming back from the raw reads means the disc is written.
+
+  **What does separate them is another load.** On 2026-10-02 a 4x burn read
+  `kind=BLANK disc_status=0` after eject + load, and three hours and several
+  tray cycles later read `kind=AUDIO disc_status=2` and ripped 11/11 against
+  AccurateRip with no repair. The disc was good throughout; the drive had
+  failed to recognise it at that load.
 
 - **`readyprobe.c`** — read-only (bar the optional `--load`). **"Are you
   ready?"**: polls the MMC-5 §4.1.6.2 safe set — TEST UNIT READY, GET EVENT
@@ -75,6 +91,25 @@ gcc -o build/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudi
 
   First results, and the readiness-gate design they rewrote, are in
   `docs/reference/TODO.md`.
+
+- **`wparamsprobe.c`** — **does the drive hold the page 05 a burn sends?**
+  MODE SELECTs the burn's own write-parameters page (it calls the function the
+  burn calls), MODE SENSEs it straight back in the same handle, and compares
+  the whole page, printing the page before, as sent and after. It does this
+  twice — Test Write ON, then OFF — because a single round trip against a page
+  that already holds the values cannot tell an applied select from a dropped
+  one. Written for the burns of 2026-09-28 and 2026-10-02 that completed
+  cleanly and read blank after a reload, which is what a silently unapplied
+  page would look like. Changes the drive's write-parameter registers and then
+  selects back the page it found; needs no disc and writes none. `--cdtext`
+  asks for data block type 3; `--debug` traces every CDB and data phase. Exit
+  0 = held both ways, 1 = the drive did not hold what it was sent, 2 = a
+  command failed. Ran unprivileged against CDEmu; on a real drive give it the
+  burn's privilege first (`doas /usr/bin/setcap cap_sys_rawio=ep
+  build/wparamsprobe`), since MODE SELECT is data-OUT and `speedprobe.c`
+  measured the kernel's SG filter refusing data-OUT without it.
+  Does **not** cover a drive that resets the page on SET CD SPEED or SEND OPC,
+  which a burn sends afterwards; only a read-back inside the burn does.
 
 - **`speedprobe.c`** — SET STREAMING (0xB6) flag-bit harness: does GET
   PERFORMANCE reflect a set ceiling; does Exact (0x02) work; does real RDD

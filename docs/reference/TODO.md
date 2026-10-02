@@ -7,6 +7,246 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## `[P0]` ALL BURNS PAUSED until the USB-IDE bridge is replaced — Keith, 2026-09-28
+
+**2026-10-02, 20:10 — THE 4x BURN WAS A GOOD DISC. "Blank on reload" is not a
+verdict on a burn.** The disc burned at 4x on the original unit at ~17:00, which
+read `kind=BLANK disc_status=0` after eject + load, reads `kind=AUDIO
+disc_status=2 audio_tracks=11` three hours and several tray cycles later, on
+the same drive, and rips **11 of 11 against AccurateRip with no repair** at 8x.
+The 16x disc re-ripped at 8x is also 11 of 11 direct, so its track 1 damage at
+18:19 belonged to the 40x read, not the burn.
+
+| disc (Keith's labels) | burn | first reload | now, read on the original unit |
+|---|---|---|---|
+| #1 | 40x, **replacement** unit, PSU power, 10-02 | blank, on the replacement | blank (status 0, every read `5/21/00`) |
+| #2 | 4x, original unit, PSU power | **blank** | **AUDIO, 11/11 AccurateRip direct** |
+| #3 | 16x, original unit, PSU power | AUDIO | AUDIO, 11/11 AccurateRip direct |
+
+The mapping of discs to burns is Keith's labelling after the fact; the claim
+that does not depend on it is that two of today's three burns are perfect discs
+and one of those two read blank at its first reload.
+
+What this changes:
+
+- **On 10-02 the original unit wrote correctly at 4x and at 16x.** The fault
+  seen at 17:12 was the drive failing to recognise a written CD-R at load. The
+  by-date table below therefore overstates the after-column: every row in it
+  that says "blank" (1b, cdrdao 4x, and 4c/4e before it) is a disc that was
+  never shown to be bad, only shown to read blank at the loads that were tried.
+  The mid-burn aborts and the 40x disc's 44.8% concealment are a different
+  kind of evidence and stand.
+- **A limit on that, from cdda2img (correspondence §223).** 11 of 11 against
+  AccurateRip verifies the programme area. It does not show the lead-in was
+  written as well as the audio: a disc whose lead-in is marginal for
+  recognition and whose programme area is perfect would look exactly like #2.
+  So "the drive failed to recognise a good disc" and "the drive wrote a
+  marginal lead-in" are not yet separated, and the fault may still be on the
+  write side for that one region.
+- **It runs both ways.** 4a read and verified on 09-07 and read blank from
+  09-09; #2 read blank and then read. Recognition of a written CD-R at load is
+  intermittent on this drive. Why is not known.
+- **`tools/discid` cannot separate "written" from "never written"**, and the
+  claim that it could (`next_writable` 0 → −150, 09-12) is withdrawn: per MMC-5
+  Table 509 that figure follows the write type in mode page 05. The 09-12
+  "415 MB written yet reads virgin" finding loses its only on-disc evidence;
+  #2 now carries that conclusion on better evidence.
+- **The replacement unit's record is three blanks and no pass: 16x and 4x on
+  the brick (09-28), 40x on PSU power (10-02).** The two 09-28 discs were read
+  at one load each and have since been discarded (Keith), so they can never be
+  re-examined. #1 has read blank on two drives, which is more than #2's single
+  blank reading but is still two loads. And 40x is a speed at which the
+  original unit also produced a bad disc (09-23). **The replacement has never
+  burned at 16x on PSU power**, the one condition with a clean record here, and
+  has not been probed for page 05.
+
+Free check, Keith's call: #1 on another load (one `accudisc disc`, no long
+reads). For the replacement, when it is next attached: `wparamsprobe` first
+(free), and any burn at `--speed 16`, judged on more than one load.
+
+**2026-10-02, 18:19 — the owed burn was run and it is a good disc.** Original
+unit, PC PSU power, the Innostor bridge for data, Ritek CD-R,
+`cdda2img burn --speed 16`. After eject + load: `kind=AUDIO disc_status=2
+audio_tracks=11`. Ripped back at 40x: **10 of 11 tracks match AccurateRip
+directly**; track 1 `DAMAGED` (4 flagged), repaired by CTDB parity to 11 of 11
+at confidence 200. Whether track 1's bad bytes are in the burn or in that read
+is not established.
+
+What it settles, for the original unit: our write path and session-at-once
+work on real media today; the bridge's data path is sound; 16x is 4 of 4. What
+it does not settle: why 4x and 40-48x have failed since 09-11 (see the table
+below — they worked on 09-06); whether the brick ever mattered (the earlier
+16x passes were on the brick, so nothing says it did); and the replacement
+unit, whose 16x burn on the brick read blank. The pause above was
+conditioned on replacing the bridge, which this result does not call for on
+this unit — lifting it is Keith's decision.
+
+**2026-10-02 — a burn on PC PSU power also reads blank, and it was on the
+ORIGINAL unit.** (Corrected the same day: this entry first attributed the burn
+to the replacement. The drive on the bench is the original — Keith, and its DVD
+life counters are unchanged from the 09-12 reading.) The drive's Molex was fed
+from the PC PSU through a SATA→Molex adapter, the bridge's own Molex
+disconnected, the bridge carrying data only. `cdda2img burn` with no `--speed`,
+so the burn went out at cdda2img's default of **4x**; Ritek CD-R; clean exit;
+blank after eject + load.
+
+| unit | burn | speed | drive power | result |
+|---|---|---|---|---|
+| replacement | 09-28, first | 16x | bridge brick | blank on reload |
+| replacement | 09-28, second | 4x (default) | bridge brick | blank on reload |
+| original | 10-02 | 4x (default) | PC PSU | blank on reload |
+
+**Power is excluded for the 10-02 burn**: 4x is the drive's lowest draw and the
+supply was the PC's. "The original unit is fine and the brick was to blame" is
+therefore not supported by its first test — but that test was at 4x, where
+nothing has passed since 09-11, and not at 16x, where this unit has kept
+passing. The
+replacement has never been run on PSU power.
+
+**Test Write is excluded on the original unit, through this bridge.**
+`tools/wparamsprobe` with a blank loaded: Test Write ON read back ON, then OFF
+read back OFF, the whole 52-byte page identical to what was sent both times. So
+the MODE SELECT is applied, and the bridge delivers its data-out phase intact.
+Not covered: a reset of the page by SET CD SPEED or SEND OPC, and the
+replacement unit, whose two discs are the ones with the test-write signature.
+
+**The life counter cannot isolate the burn.** CD write time reads 3:03:54
+against 2:35:00 on 09-12 (taken before that day's 16x burns). The 28 m 54 s
+between them spans every burn since, so it neither confirms nor denies that
+the 10-02 burn spent time in write mode. It needs a reading immediately before
+and after one burn.
+
+**CORRECTED 2026-10-02 18:40 — the original unit's record splits by DATE, not
+by speed.** An earlier version of this paragraph said the unit "burns at 16x
+and nowhere else" and that 4x "has never produced a good disc". Both were
+false: they were built from the 09-11/12 failure table and never checked
+against the burn matrix, whose own entries are further down this file. The
+record, from those entries and the 09-07 read-verify pass:
+
+| speed | through 09-06 | from 09-11 |
+|---|---|---|
+| 4x | discs 5, 6: bit-exact (both starved arms, BURN-Proof on) | cdrdao 09-12, ours 10-02 on PSU power: 0 of 2 |
+| 16x | 09-05: 0 of 209 034 000 samples differ | `cdrecord` twice 09-12, ours 10-02 on PSU power: 3 of 3 |
+| 32x | Toca #2 (09-03): plays | — |
+| 40x | — | ours 09-23: 44.8% concealed, TOC present |
+| 48x | Toca #1 (09-02), discs 1, 2, 3, 4b, 4d: good; 4a aborted, 4c and 4e blank — all three in the starved cell 4 | 1b blank (ours, fed), cdrdao abort, `cdrecord` abort: 0 of 3 fed; plus 4f abort in the starved cell 4 |
+
+**So the drive could burn at 4x, 32x and 48x until 09-06 and has burned only at
+16x since 09-11.** The cause is not established. What the record excludes for
+the after-column: our write path (cdrdao and `cdrecord` fail the same speeds),
+the bridge brick for 4x (10-02 failed on PSU power), the bridge data path
+(16x passes through it, and so did 48x on 09-06), Test Write at the select
+(probe above), and the Ritek spindle as a general cause (the same stock burned
+at every speed on 09-06, and a Taiyo Yuden failed on 09-12). What is left is a
+change in the drive between 09-06 and 09-11. The only recorded event in that
+window is the burn matrix itself: eleven discs in a day, lifetime CD-write time
+from 1 h 04 m to 2 h 35 m. That is a coincidence in time, not a mechanism, and
+the 09-12 note already rated "the link cycling wore the laser out" as weakly
+supported. Fitting a write-power fault: ~20 s SEND OPC on both traced burns,
+and the 40x disc's weak-mark signature. Not fitting its simplest form: 4x,
+which needs the least power, fails as well.
+
+**A change of media between 09-06 and 09-11** (raised by cdda2img,
+correspondence §221) would fit the same table, and is not supported for that
+window: the spindle was counted down continuously (36 on 09-06, 33 on 09-09, 32
+on 09-11, 23 on 09-12), every burn's ATIP through 09-09 and disc T2's on 09-12
+read `97:15:17` / `79:59:70` / Ritek, and a Taiyo Yuden failed on 09-11. Not
+covered: variation within the spindle (ATIP names the dye class, not the
+batch), and the 10-02 discs, whose ATIP was not read.
+
+(Counted by one rule on both sides: cell 4, the starved-noise condition, made
+coasters before and after and is set apart in both columns.)
+
+(Both measurements proposed here at 18:40 are superseded by the 20:10 entry
+at the top: the 4x disc turned out to be good, `discid`'s −150 criterion was
+unsound, and the 16x disc's track 1 re-ripped clean at 8x.)
+
+The replacement is a separate question. Its 16x and 4x burns on the brick read
+blank; it has not been probed for page 05 and has never run on PSU power.
+
+A replacement PX-716A (fw 1.11) arrived and burned **two discs blank-on-reload
+out of two** (16x and 4x, fresh spindle media): every command GOOD, the
+post-burn session memory reporting an 11-track audio disc, a virgin blank after
+eject + load. The same signature as the old unit's failures, on a second,
+independent drive. Excluded without drive time: Test Write (page 05 bit 4 is
+cleared on every live burn), bridge resets during the second burn (kernel log
+clean for its whole duration), and a previous owner's persisted settings
+(VariREC/GigaREC/SecuREC all off).
+
+**Two live hypotheses — power, and an unapplied write mode.** cdda2img's
+reply (correspondence §220) weakened power: the second burn was at 4x, the
+drive's lowest draw, and the new unit failed at 16x too, where the old unit
+passed twice on the same supply. And the new unit's discs are EMPTY after a
+clean exit — the signature of a test write — where the old unit's 09-23 disc was
+written badly but had a TOC. Hence the page 05 read-back item below.
+
+**Power, the first hypothesis**, shared by both drives. The drives sit bare
+on the desk behind an Innostor 1f75:0611 USB-IDE adapter whose own 12 V-only
+brick (2 A / 24 W) also feeds the drive's Molex, with +5 V made on the adapter.
+Drive label +5V 1.7A / +12V 2.0A; Plextor's own PX-716UF manual gives 2.8 A
+peak at 12 V for the same mechanism. The old unit's 09-12 self-test "failed with
+the IDE cable off" — with the power still connected, so it never excluded this.
+**The old unit is therefore probably functional (Keith) and is not for sale.**
+The LITE-ON is unaffected (native SATA, PSU-powered).
+
+Next, in Keith's order: (1) drive powered from the PC PSU via a SATA→Molex
+adapter, bridge for data only — one fed 16x burn, eject/reload, `disc`; (2) if
+the bridge still fails, a period USB 2.0 ATAPI bridge, with a supply rated for
+the 2.8 A peak (primary source: Plextor's PX-716UF user manual, power
+specification). Then one fed 16x
+burn per drive. Around each burn, `accudisc --driver auto settings` before and
+after: `life.cd_write` must advance by about the burn's duration.
+
+## `[P1]` Read page 05 back after every MODE SELECT in the burn — proposed 2026-09-28
+
+`adsc_write_set_params` MODE SELECTs the write parameters and never reads them
+back (`adsc_write_get_params` exists with no caller). Proposed: MODE SENSE page
+05 immediately after, before the blank check and OPC, and abort BEFORE touching
+the disc unless it reads write type DAO with Test Write 0 (and the requested
+BUFE). One read-only command per burn; the next burn on any bridge then tells a
+drive that ignored the MODE SELECT (a silent test write) from a physical write
+failure, without spending a blank on the question. Awaiting Keith.
+
+**2026-10-02 — the round trip exists; the burn does not call it yet.**
+`adsc_write_params_roundtrip` (`src/write/wparams.c`) selects the page through
+the same code path as the burn, reads it back and compares the whole page, and
+`tools/wparamsprobe.c` runs it standalone with no disc. Two things it reports
+that the original proposal did not ask for: bytes outside the burn's own fields
+that read back different (a bridge mangling the data-out phase), and the case
+where the page already held the requested values, in which a match proves
+nothing — so the probe toggles Test Write on and then off. `tests/test_wparams.c`
+runs it against fake drives that answer GOOD and do not hold the page. The burn
+path is
+unchanged. **Run on the original PX-716A on 10-02, blank loaded: held both ways,
+whole page** (see the `[P0]` entry above). Still open, and only a read-back
+inside the burn closes it: a drive
+that resets page 05 on SET CD SPEED or SEND OPC, both of which follow the
+MODE SELECT.
+
+## DONE 0.47.0 — `accudisc features` matches the tray state — Keith, 2026-09-28
+
+`features` prints a `medium` line first, and the functional combos read
+`no-disc` or `no-audio` when the reads were not sent (`accudisc_features.medium`
+in the library, `Features.smoke_reads_ran` in Python). Found on the way: a
+blank or data disc used to yield a confident `C2_UNSUPPORTED`; Mixed Mode
+smoke-read the data track at LBA 0; the governor's recommended rate was passed
+on with an empty tray. `tests/test_features.c` runs each tray state against a
+fake drive and asserts the reads were NOT SENT, not merely not reported.
+**Built and tested on the fake and on an empty CDEmu drive only — not yet run
+on the PX-716A in any tray state.** Lesson kept: "failed" must mean a question
+was asked.
+
+## `[P2]` Verify `settings` (0.46.0) against `cdvdcontrol -c` on hardware
+
+Built and unit-tested against a mock whose fixtures encode QPxTool's reading of
+the responses — the same reading the driver uses, so the test proves
+self-consistency, not correctness. Owed: `cdvdcontrol -d /dev/sr0 -c` then
+`accudisc --driver auto settings`, back to back, field by field. An EMPTY tray
+is sufficient since the disc-aware rework: the two disc keys then read
+`no-disc` and every other key must match. Pages 01 and 22 deserve the closest
+look: QPxTool frames those with the length at CDB[9], we use CDB[10] like every
+other 0xE9 page.
+
 ## `[P0]` DEVELOPMENT IS PAUSED until the PX-716A is serviced — Keith, 2026-09-19 17:17
 
 **"I'll need to pause any further development until I can properly service the

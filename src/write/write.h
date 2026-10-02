@@ -30,6 +30,60 @@ int adsc_write_set_params(struct accudisc_device *dev,
 int adsc_write_get_params(struct accudisc_device *dev,
                           struct adsc_write_params *out);
 
+/* ---- page 05 round trip ----------------------------------------------------
+ * MODE SELECT the page exactly as a burn would, MODE SENSE it straight back,
+ * and compare. A MODE SELECT that returns GOOD is not evidence that the drive
+ * holds the page: firmware may ignore a field, and a bridge may deliver a data
+ * phase that is not the one we sent. Three burns that completed cleanly and
+ * read blank after a reload (2026-09-28, 2026-10-02) are what a silently
+ * unapplied page -- Test Write still set -- would look like, and until this
+ * existed nothing in the tree could tell that from a physical write failure.
+ *
+ * Touches the drive's registers only: no disc is needed, none is written.
+ * Both commands share one open handle so that nothing else can change the page
+ * between them. Do NOT assume the page resets on eject: on a PX-716A
+ * (2026-10-02) the page found at open, after a burn and a tray cycle, was
+ * already DAO with BURN-Proof on -- so it either survives the tray cycle or is
+ * that drive's default, and which is not established. */
+#define ADSC_WPARAMS_PAGE_MAX 56u
+
+enum {
+    ADSC_WPRT_STAGE_SELECT = 1, /* failed sensing or selecting the page */
+    ADSC_WPRT_STAGE_READBACK,   /* selected; the read-back failed */
+    ADSC_WPRT_STAGE_DONE        /* all three captures are valid */
+};
+
+struct adsc_wparams_roundtrip {
+    /* The page only, from its page-code byte. `before` is what the drive held,
+     * `sent` what went down the wire, `after` what it then reported. */
+    uint8_t  before[ADSC_WPARAMS_PAGE_MAX];
+    uint8_t  sent[ADSC_WPARAMS_PAGE_MAX];
+    uint8_t  after[ADSC_WPARAMS_PAGE_MAX];
+    uint32_t before_len, sent_len, after_len;
+    uint32_t diff_bytes; /* bytes of `after` that differ from `sent` */
+    uint8_t  stage;      /* ADSC_WPRT_STAGE_*: how far it got */
+    uint8_t  page_ok;    /* the whole page read back as sent */
+    uint8_t  fields_ok;  /* write type, Test Write, BUFE, multisession, data
+                          * block type and session format read back as sent */
+    uint8_t  changed;    /* `sent` differed from `before`. When 0 a match
+                          * proves NOTHING: an applied select and a dropped
+                          * one read back the same */
+    uint8_t  ignored;    /* asked for a change, got `before` back unaltered */
+};
+
+/* Returns ACCUDISC_OK when the round trip COMPLETED -- the verdict is in *rt,
+ * and a completed round trip with page_ok == 0 still returns OK. An error
+ * means a command failed; rt->stage says which and the captures up to that
+ * stage are valid. */
+int adsc_write_params_roundtrip(struct accudisc_device *dev,
+                                const struct adsc_write_params *wp,
+                                struct adsc_wparams_roundtrip *rt);
+
+/* Put a captured page back (the probe's pop for its own push). `page` is a
+ * capture from the struct above; the mode header is re-read from the drive. */
+int adsc_write_params_restore(struct accudisc_device *dev,
+                              const uint8_t *page, uint32_t page_len);
+
 /* Disc state relevant to writing (from READ DISC INFORMATION). */
 struct adsc_disc_info {
     int erasable;     /* 1 = CD-RW, 0 = CD-R */

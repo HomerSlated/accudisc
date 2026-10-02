@@ -33,9 +33,24 @@
 extern "C" {
 #endif
 
-/* Bumped on any incompatible change to this file; the library refuses
- * drivers built against a different ABI. */
-#define ACCUDISC_DRIVER_ABI 4
+/* Bumped on any change to this file; the library refuses drivers built
+ * against an ABI outside [ACCUDISC_DRIVER_ABI_MIN, ACCUDISC_DRIVER_ABI].
+ *
+ * ABI 6 (0.46.0) appended settings_get and changed nothing before it, so an
+ * ABI-4 driver's descriptor is a valid PREFIX of an ABI-6 one: the library
+ * accepts it and simply never reads the slot it does not have. That matters
+ * in practice — a development build with no ACCUDISC_DRIVER_DIR falls back to
+ * the INSTALLED driver directory, and refusing an older installed driver
+ * would drop the device to generic MMC with nothing but a log line to say so.
+ * A change that is not a pure append must raise ACCUDISC_DRIVER_ABI_MIN. */
+#define ACCUDISC_DRIVER_ABI 6
+/* ABI 5 IS SKIPPED, never to be reused. It existed only in an uncommitted
+ * local install on 2026-09-28, whose settings_get lacked the `disc` argument.
+ * A library that called that driver with today's signature would hand it the
+ * probe struct as its output array — silent stack corruption, not an error. So
+ * the slot is read only from abi >= 6, and a stray ABI-5 driver is treated
+ * like an ABI-4 one: attached, with no settings report. */
+#define ACCUDISC_DRIVER_ABI_MIN 4
 
 typedef enum accudisc_host_dir {
     ACCUDISC_HOST_NONE = 0,
@@ -112,6 +127,24 @@ typedef struct accudisc_driver {
     int (*write_governor_get)(const accudisc_host *host, int *on,
                               uint32_t *recommended_kbps);
     int (*write_governor_set)(const accudisc_host *host, int on);
+
+    /* Capability: report the drive's persisted vendor settings and life
+     * counters (see accudisc_vendor_settings). Appended in ABI 6 (5 is skipped,
+     * see above); the library reads it only from a driver declaring abi >= 6.
+     *
+     * STRICTLY READ-ONLY: GETs only. Fill out[0..cap), set *n to the total
+     * produced (may exceed cap). A failed query is an entry without
+     * ACCUDISC_VSET_OK, not a failed call; return non-OK only when nothing
+     * could be asked at all. `id` is the identified drive, for model-gated
+     * layouts (e.g. where a counter lives in EEPROM). `disc` is the library's
+     * probe of what is loaded, or NULL when it could not be obtained: values
+     * that describe the loaded disc are reported ACCUDISC_VSET_NO_DISC when
+     * its reason is ACCUDISC_DISC_WHY_NO_MEDIUM, and the driver may use its
+     * profile to pick units (CD vs DVD speed factors). */
+    int (*settings_get)(const accudisc_host *host, const accudisc_drive_id *id,
+                        const accudisc_disc_probe *disc,
+                        accudisc_vendor_setting *out, uint32_t cap,
+                        uint32_t *n);
 } accudisc_driver;
 
 /* The symbol every driver .so must export. */

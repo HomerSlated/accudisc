@@ -50,6 +50,13 @@ Exit 3 per subcommand:
   A missing `--bin` is exit 1, and `--require-tier` naming a tier the drive
   cannot reach is exit 2 — the question could not be put, which is not a
   caveat about the disc.
+- `settings`: the report completed, but at least one setting went
+  **unanswered** (`setting <key> unanswered …`) — the drive refused that query,
+  a transport failure stopped the queries after it, or the driver cannot place
+  that counter for this model. Every key is still listed. It is exit 3 rather
+  than 0 because an unanswered VariREC is precisely the setting someone runs
+  this to rule out; reading it as OFF would hide the answer. No driver, or a
+  driver without the capability, is exit 2.
 - `offset`: no source holds this drive (`read_offset unknown`, nothing else), or
   the candidates disagree (`read_offset unknown`, then `conflict N` and one
   `value <signed> <sources>` line per candidate). Both are *absence of a usable
@@ -312,10 +319,61 @@ tray. It must not gate a rip; AccurateRip and CTDB remain the absolute checks
 
 ## `features` output (stdout)
 
-Newline-delimited `key value` / `combo <name> ok|failed` lines. Frozen keys:
-`cd_read_feature`, `combo c2`, `combo sub_raw`, `combo sub_q`,
-`combo c2+sub_raw`, `combo c2+sub_q`, `verdict`,
+Newline-delimited `key value` / `combo <name> ok|failed|no-disc|no-audio`
+lines. Frozen keys: `cd_read_feature`, `combo c2`, `combo sub_raw`,
+`combo sub_q`, `combo c2+sub_raw`, `combo c2+sub_q`, `verdict`,
 `accurate_stream yes|no|unknown`.
+
+### `medium`, and what it does to the lines below it (added 0.47.0)
+
+The first line is now always what is loaded, in `disc`'s own fields:
+
+```
+medium kind=AUDIO profile=0x0008 reason=audio
+medium kind=BLANK profile=0x0009 reason=blank
+medium kind=NEITHER profile=0x0000 reason=no_medium tray=closed
+medium unknown
+```
+
+`tray=` appears only with `reason=no_medium`. `medium unknown` means the probe
+itself could not be made.
+
+**A `combo` line has four values, and two of them are not about the drive.**
+The combos are functional CD-DA reads, so they need audio to read:
+
+| value | meaning |
+|---|---|
+| `ok` | the read was sent and returned data |
+| `failed` | the read was sent and the drive refused it |
+| `no-disc` | the tray is empty; the read was **not sent** |
+| `no-audio` | a disc is loaded with nothing to read as CD-DA (a blank, a data disc, a DVD); the read was **not sent** |
+
+Until 0.47.0 the reads were sent regardless, so an empty tray printed five
+`failed` lines, and a blank or data disc additionally printed `verdict
+C2_UNSUPPORTED` — a confident statement about a drive that had been asked
+nothing it could answer. Under `no-disc` and `no-audio` the verdict is
+`C2_UNVERIFIED`. **A parser that treats everything except `ok` as false keeps
+working**; one that reports `failed` to a user should now distinguish the two
+new values, which is the point of them.
+
+On a Mixed Mode disc the reads go to the first **audio** track rather than
+LBA 0, where a data track would refuse them.
+
+A drive that is still evaluating a freshly loaded disc can answer profile
+`0x0000`. That is not classified as `no-audio`: the reads are sent, and a NOT
+READY refusal yields `C2_UNVERIFIED`, not `C2_UNSUPPORTED`.
+
+`accurate_stream` is `unknown` when there is no audio to probe; its vocabulary
+is unchanged. The `--c2` exit code is unchanged: 0 iff `C2_SUPPORTED`.
+
+**Library and binding.** `accudisc_features.medium`
+(`accudisc_features_medium`: `UNKNOWN`, `AUDIO`, `NONE`, `NO_AUDIO`) carries
+the same state; under `NONE` and `NO_AUDIO` every `ok_*` is zero for "not
+asked". The field occupies what was padding, so `sizeof(accudisc_features)` and
+every existing offset are unchanged. `governor_recommended_kbps` is 0 under
+`NONE`: the drive names a rate even with an empty tray, and it is a rate for a
+medium. Python: `Features.medium` and `Features.smoke_reads_ran`; the
+`"features_medium"` capability names their presence.
 
 ## `read --progress-fd N`
 
@@ -669,6 +727,66 @@ was a shell loop and this flag would not have stopped it; see
 `--byteswap` swaps each 16-bit audio sample before writing (audio byte order is
 drive-specific — the PX-716A advertises SWABAUDIO; settle empirically by
 read-back before trusting a real burn).
+
+## `settings` output (stdout) (added 0.46.0)
+
+`accudisc --driver auto settings` reports the drive's **persisted** vendor
+settings and life counters. **The report is read-only**: every command it
+issues is a GET, it changes no setting, and it touches no disc. The attach that
+`--driver` implies is not: since 0.46.0 the Plextor selftest reads SpeedRead,
+writes the same value back (the drive echoes it) and re-reads it — no net
+change, but a vendor SET, on every command run with `--driver`. For
+Plextor the query set is exactly the one QPxTool's `cdvdcontrol -c` sends, in
+its order.
+
+```
+settings via driver plextor (...)
+setting medium ok 0 none (tray closed)
+setting <key> ok|unanswered|no-disc <num|-> <value...>
+```
+
+**It works with or without a disc** (Keith, 2026-09-28). The first line is
+always `medium`, from the read-only disc probe: `none (tray closed|open|unknown)`
+with `num` 0, or `<kind> (<reason>, profile 0xNNNN)` with `num` 1 — the same
+kind/reason slugs as `disc`. The drive's settings are all answered either way;
+the values that describe the **loaded disc** (Plextor: `powerec.recommended`,
+`gigarec.disc`) read `no-disc - no disc loaded` with an empty tray. `no-disc` is
+*not applicable*, not a failure, and does not affect the exit code.
+
+- `<key>` is a stable identifier and is never reused with a different meaning.
+- `<num>` is the value as a number, or `-` when there is none. Its unit depends
+  on the key: **seconds** for `life.*_read`/`life.*_write`, a count for
+  `life.discs_loaded`, **kB/s** for `powerec.recommended`, `0`/`1` for a switch,
+  the **signed power step** for `varirec.*` when ON, the raw code for
+  `gigarec*` and `autostrategy`.
+- `<value...>` runs to the end of the line and may contain spaces. On an
+  `unanswered` line it says why: `refused by the drive (CHECK CONDITION)`;
+  `failed in transport (rc N); nothing further was sent` — the query that hit
+  the failure, so a flaky bridge's report names the command it wedged on;
+  `not asked (an earlier command failed in transport)` for every query after
+  it; or `not asked (EEPROM layout unknown for this model)`.
+
+**`unanswered` is not `OFF`.** A consumer must check the status token before
+reading the value.
+
+Keys: `medium` (library, first), then Plextor's `tla`, `life.discs_loaded`, `life.cd_read`, `life.cd_write`,
+`life.dvd_read`, `life.dvd_write`, `hide_cdr`, `single_session`, `speedread`,
+`powerec`, `powerec.recommended`, `gigarec`, `gigarec.disc`, `varirec.cd`,
+`silent`, `securec`, `varirec.dvd`, `bitset.dvd+r`, `bitset.dvd+r_dl`,
+`autostrategy`, `testwrite.dvd+`.
+
+- `powerec.recommended` is the drive's **intention** for the loaded disc, not a
+  delivered rate (measured recommending 48x where the medium then took 25x).
+  Its X factor follows the loaded profile (CD 176, DVD 1385 kB/s per X); with
+  the profile unknown, no X is claimed.
+- `life.cd_write` is a free witness for a burn: read it before and after. If it
+  has not advanced by roughly the burn's duration, the drive never spent that
+  time in write mode, whatever the command statuses said.
+
+Transport safety: a CHECK CONDITION on one query is the drive saying no, and
+the remaining queries still go out. Any other failure (transport, host,
+timeout) stops **all** further queries, because the likeliest cause is a wedged
+bridge and more commands would only extend the damage.
 
 ## `media` output (stdout)
 

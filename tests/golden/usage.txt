@@ -35,6 +35,9 @@ commands:
                  write rate and a requested speed is an upper
                  bound at best. No argument = report only.
                  Nothing in the burn path changes it
+  settings       report the drive's persisted vendor settings and
+                 life counters, READ-ONLY (Plextor: the set shown by
+                 QPxTool's cdvdcontrol -c) — needs --driver
   speed-uncap [on|off]
                  report or set the vendor read-speed uncap
                  (Plextor: SpeedRead) — needs --driver; persistent

@@ -642,6 +642,7 @@ def test_public_dataclass_field_names_are_pinned():
         "mastering_present", "mastering_current", "buf_claimed",
         "sao_claimed", "test_write_claimed",
         "governor_on", "governor_recommended_kbps",
+        "medium",  # 0.47.0: what the smoke reads had to work with
     }
 
     # Enum MEMBER names, which consumers write as MapState.HARD and which no
@@ -706,6 +707,32 @@ def test_a_known_governor_survives():
     off = ad._features_from_c(_features(known=1, on=0, kbps=0))
     assert off.governor_on is False, "known-and-off is False, NOT None"
     assert off.governor_recommended_kbps is None, "0 kB/s means not reported"
+
+
+def test_features_medium_says_whether_the_combos_are_results():
+    """0.47.0: an all-False combos dict has two meanings and `medium` picks one.
+
+    With no disc, or a disc with no audio, the smoke reads are never sent. The
+    flags are then False for "not asked", and a caller that reports them as a
+    drive that cannot do it is reporting the tray. Both directions asserted:
+    always-True and always-False each fail one half.
+    """
+    assert "features_medium" in ad.features
+    for value, ran in (
+        (ad.FeaturesMedium.NONE, False),
+        (ad.FeaturesMedium.NO_AUDIO, False),
+        (ad.FeaturesMedium.AUDIO, True),
+        (ad.FeaturesMedium.UNKNOWN, True),
+    ):
+        c = _features()
+        c.medium = int(value)
+        f = ad._features_from_c(c)
+        assert f.medium is value
+        assert f.smoke_reads_ran is ran, value
+
+    # A zero-filled struct -- what a pre-0.47.0 library leaves in that byte --
+    # must read as "the reads were sent", which is what such a library did.
+    assert ad._features_from_c(_features()).medium is ad.FeaturesMedium.UNKNOWN
 
 
 def test_governor_is_reachable_through_the_library():

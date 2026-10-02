@@ -156,7 +156,10 @@ binaries or sources).
 - **QPxTool** (https://qpxtool.sourceforge.io, GPL-2.0) — a reference where the
   Plextor vendor command set used in `drivers/plextor/` is documented (opcode
   0xE9 MODE pages, GET/SET direction bits, per-feature CDB framing, GigaRec rate
-  table, SpeedRead/SecuRec/AutoStrategy/PoweRec commands). Those commands are
+  table, SpeedRead/SecuRec/AutoStrategy/PoweRec commands). The 0.46.0 settings
+  report follows the query set and order of its `cdvdcontrol -c`, and its
+  decode tables for GigaRec, VariRec power/strategy, Silent-mode caps and the
+  AutoStrategy mode, and the EEPROM offsets of the life counters. Those commands are
   functional hardware identifiers (facts, not copyrightable expression); no
   QPxTool source is copied, and every command was independently verified by raw
   SG_IO on the owner's own PX-716A. QPxTool is credited here as a courtesy

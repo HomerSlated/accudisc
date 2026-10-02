@@ -103,6 +103,10 @@ _Static_assert(offsetof(accudisc_features, governor_known) == 16,
  * would pad differently and silently relocate them for a 0.31.0 consumer. */
 _Static_assert(offsetof(accudisc_features, governor_recommended_kbps) == 20,
                "features: governor_recommended_kbps moved");
+/* 0.47.0 put `medium` in the two padding bytes before that uint32. It must not
+ * have moved anything: the two asserts above and the size are the proof. */
+_Static_assert(offsetof(accudisc_features, medium) == 18,
+               "features: medium was supposed to land in padding");
 _Static_assert(offsetof(accudisc_features, c2_verdict) == 10,
                "features: c2_verdict moved, breaking every 0.25.0 consumer");
 _Static_assert(offsetof(accudisc_features, buf_claimed) == 13,

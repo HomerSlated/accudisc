@@ -60,6 +60,7 @@ from ._accudisc import ffi, lib
 
 __all__ = [
     "DriveOffset",
+    "VendorSetting",
     "offset_for",
     "WriteOffset", "write_offset_signal", "write_offset_locate",
     "fifo_bytes_for",
@@ -70,7 +71,7 @@ __all__ = [
     "Cancelled", "CrcError",
     "NotFound", "AbiMismatch", "RetainedBufferError",
     "C2", "Sub", "MapState", "SubQState", "Anomaly", "TocSource", "TocDegrade",
-    "C2Verdict",
+    "C2Verdict", "FeaturesMedium",
     "DiscKind", "DiscReason", "TrayState", "DiscProbe",
     "CtdbRepair", "ctdb_repair",
     "Verdict", "WriteResult",
@@ -168,6 +169,13 @@ features = frozenset({
     # because the .so it names may well be 0.32.0 while this file is older.
     # That gap is exactly how this one was found.
     "write_governor",
+    # Device.vendor_settings() exists (0.46.0): the drive's persisted vendor
+    # settings and life counters, read-only.
+    "vendor_settings",
+    # Features.medium / Features.smoke_reads_ran exist (0.47.0): the combos are
+    # "not asked" rather than "failed" with no disc or no audio loaded. Absent
+    # means an all-False combos dict cannot be told from an empty tray.
+    "features_medium",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -644,6 +652,21 @@ class C2Verdict(enum.IntEnum):
     UNVERIFIED = lib.ACCUDISC_C2_UNVERIFIED
 
 
+class FeaturesMedium(enum.IntEnum):
+    """What the functional smoke reads had to work with (0.47.0).
+
+    The smoke reads are CD-DA reads. Under ``NONE`` and ``NO_AUDIO`` they are
+    **not sent**, so every ``ok_*`` flag is ``False`` for "not asked" and must
+    not be reported as a failure of the drive. ``UNKNOWN`` means the disc could
+    not be classified and the reads were sent anyway.
+    """
+
+    UNKNOWN = lib.ACCUDISC_FEATURES_MEDIUM_UNKNOWN
+    AUDIO = lib.ACCUDISC_FEATURES_MEDIUM_AUDIO
+    NONE = lib.ACCUDISC_FEATURES_MEDIUM_NONE
+    NO_AUDIO = lib.ACCUDISC_FEATURES_MEDIUM_NO_AUDIO
+
+
 class WriteResult(enum.Enum):
     """The outcome of a burn that COMPLETED.
 
@@ -732,6 +755,29 @@ class Sense:
         if not self.valid:
             return "no sense"
         return f"sense key {self.key:#x} asc {self.asc:#04x} ascq {self.ascq:#04x}"
+
+
+@dataclass(frozen=True, slots=True)
+class VendorSetting:
+    """One entry of :meth:`Device.vendor_settings`.
+
+    ``key`` is a stable identifier (``"varirec.cd"``, ``"life.cd_write"``);
+    ``label`` and ``value`` are for people. ``num`` is the value as a number,
+    or ``None`` when there is none — seconds for operating times, kB/s for a
+    rate, 0/1 for a switch, the signed power step for an active VariREC.
+
+    **``ok`` False is "could not ask", never "off".** ``value`` then says why
+    — unless ``no_disc`` is True: the entry describes the loaded disc and the
+    tray is empty, which is not applicable rather than a failure. The first
+    entry is always ``"medium"``, what is loaded.
+    """
+
+    key: str
+    label: str
+    value: str
+    num: int | None
+    ok: bool
+    no_disc: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1063,8 +1109,30 @@ class Features:
     governor_on: bool | None = None
     #: The rate the governor currently recommends, kB/s. **STATUS, NOT A
     #: RATE** — what the drive would aim for, never what a burn delivered.
-    #: ``None`` when not known, or when the drive reports none (the C 0).
+    #: ``None`` when not known, or when the drive reports none (the C 0) —
+    #: which since 0.47.0 includes an empty tray: the rate is for the loaded
+    #: medium, and the drive names one even when there is none.
     governor_recommended_kbps: int | None = None
+
+    # ---- what was loaded when the probe ran, since 0.47.0.
+    #
+    # Defaulted, so a Features built by hand (or by a pre-0.47.0 library, whose
+    # struct carries a zero here) reads as UNKNOWN: "the smoke reads were sent
+    # and ok_* are what came back", which is what such a library did.
+    #: Decides whether :attr:`combos` are results at all — see
+    #: :attr:`smoke_reads_ran`.
+    medium: FeaturesMedium = FeaturesMedium.UNKNOWN
+
+    @property
+    def smoke_reads_ran(self) -> bool:
+        """Whether the ``ok_*`` flags are results rather than placeholders.
+
+        ``False`` with an empty tray or a disc carrying no audio (a blank, a
+        data disc): the reads were never sent, every ``ok_*`` is ``False``, and
+        :attr:`c2_verdict` is ``UNVERIFIED``. Check this before reporting a
+        ``False`` combo as a drive that cannot do it.
+        """
+        return self.medium in (FeaturesMedium.AUDIO, FeaturesMedium.UNKNOWN)
 
     @property
     def burnproof_available(self) -> bool:
@@ -2393,6 +2461,48 @@ class Device:
         kbps = ffi.new("uint32_t*")
         _check(lib.accudisc_write_governor_get(self._handle, on, kbps), self)
         return (bool(on[0]), kbps[0] or None)
+
+    def vendor_settings(self) -> list[VendorSetting]:
+        """The drive's persisted vendor settings and life counters.
+
+        **The report is read-only**: every command it issues is a GET; no
+        setting changes and no disc is touched. (Attaching the driver is not:
+        the Plextor selftest writes SpeedRead back to its current value.) For Plextor this is the query set of
+        QPxTool's ``cdvdcontrol -c`` — Hide-CDR, SingleSession, SpeedRead,
+        PoweREC, GigaREC, VariREC, SecuREC, Silent mode, AutoStrategy, the
+        DVD+R settings, and the EEPROM's discs-loaded and operating-time
+        counters.
+
+        A query the drive refused, or one not sent after a transport failure,
+        is still listed with ``ok=False``. Test ``ok`` before trusting a
+        value: an unanswered VariREC is not an OFF one.
+
+        Works with an empty tray: the first entry, ``"medium"``, says what is
+        loaded, and the values describing the loaded disc come back with
+        ``no_disc=True`` when there is none.
+
+        Raises :class:`Unsupported` when no vendor driver offering this is
+        attached; call :meth:`attach_driver` first.
+        """
+        cap = lib.ACCUDISC_VENDOR_SETTINGS_MAX
+        arr = ffi.new("accudisc_vendor_setting[]", cap)
+        n = ffi.new("uint32_t*")
+        _check(lib.accudisc_vendor_settings(
+            self._handle, arr, ffi.sizeof("accudisc_vendor_setting"), cap, n),
+            self)
+        out = []
+        for i in range(min(n[0], cap)):
+            e = arr[i]
+            ok = bool(e.flags & lib.ACCUDISC_VSET_OK)
+            has_num = ok and bool(e.flags & lib.ACCUDISC_VSET_HAS_NUM)
+            out.append(VendorSetting(
+                key=ffi.string(e.key).decode("ascii", "replace"),
+                label=ffi.string(e.label).decode("ascii", "replace"),
+                value=ffi.string(e.value).decode("ascii", "replace"),
+                num=int(e.num) if has_num else None,
+                ok=ok,
+                no_disc=bool(e.flags & lib.ACCUDISC_VSET_NO_DISC)))
+        return out
 
     def set_write_governor(self, on: bool) -> None:
         """Turn the drive's write-speed governor on or off.
@@ -3943,6 +4053,7 @@ def _features_from_c(c) -> Features:
         governor_recommended_kbps=(c.governor_recommended_kbps or None)
         if known
         else None,
+        medium=FeaturesMedium(c.medium),
     )
 
 

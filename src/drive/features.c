@@ -69,8 +69,9 @@ int adsc_probe_cd_mastering(struct accudisc_device *dev,
 }
 
 /* Does READ CD with this C2/sub combination return data (not CHECK
- * CONDITION)? Three CD-DA sectors from LBA 0. */
-static int combo_smoke(struct accudisc_device *dev, unsigned c2, unsigned sub)
+ * CONDITION)? Three CD-DA sectors from `lba`. */
+static int combo_smoke(struct accudisc_device *dev, uint32_t lba, unsigned c2,
+                       unsigned sub)
 {
     uint32_t sector_len = adsc_read_cd_sector_len(c2, sub);
     uint8_t *buf = malloc((size_t)3 * sector_len);
@@ -78,7 +79,7 @@ static int combo_smoke(struct accudisc_device *dev, unsigned c2, unsigned sub)
 
     if (!buf)
         return 0;
-    rc = adsc_mmc_read_cd(dev, 0, 3, ADSC_SECTOR_CDDA, c2, sub, buf,
+    rc = adsc_mmc_read_cd(dev, lba, 3, ADSC_SECTOR_CDDA, c2, sub, buf,
                           sector_len);
     free(buf);
     return rc == ACCUDISC_OK;
@@ -168,6 +169,21 @@ out:
     return rc;
 }
 
+/* Where the smoke reads go: the first audio track. LBA 0 on an audio disc, and
+ * past the data track on a Mixed Mode one — where LBA 0 would refuse a CD-DA
+ * read with 5/64/00 and report a working drive as five failed combos. */
+static uint32_t first_audio_lba(accudisc_device *dev)
+{
+    accudisc_toc toc;
+
+    if (accudisc_read_toc(dev, &toc) != ACCUDISC_OK)
+        return 0;
+    for (unsigned t = 0; t < toc.track_count; t++)
+        if (ACCUDISC_TRACK_IS_AUDIO(&toc.tracks[t]))
+            return toc.tracks[t].lba;
+    return 0;
+}
+
 int accudisc_probe_features(accudisc_device *dev, accudisc_features *out)
 {
     if (!dev || !out)
@@ -180,23 +196,60 @@ int accudisc_probe_features(accudisc_device *dev, accudisc_features *out)
      * Mastering descriptor at all and burns perfectly well through it. */
     (void)adsc_probe_cd_mastering(dev, out);
 
-    out->ok_c2 = (uint8_t)combo_smoke(dev, ADSC_C2_294, ADSC_SUB_NONE);
+    /* WHAT IS LOADED DECIDES WHETHER THE SMOKE READS MEAN ANYTHING. They are
+     * CD-DA reads; with an empty tray, a blank or a data disc they fail for
+     * want of audio, and until 0.47.0 that was reported as the drive failing
+     * all five combinations (and, on a blank or data disc, as a confident
+     * C2_UNSUPPORTED). So classify first, and do not send reads that can only
+     * produce a wrong answer. If the disc cannot be classified at all, fall
+     * back to issuing them: an unclassified disc is not evidence of no disc. */
+    accudisc_disc_probe dp;
+    uint32_t lba = 0;
 
-    /* A failed C2 smoke read only means "C2 unsupported" if the drive could
-     * actually have read. With no disc the read fails for lack of medium, which
-     * says nothing about C2 — capture that so the verdict is UNVERIFIED, not a
-     * confident false-negative UNSUPPORTED. */
-    int no_medium = 0;
-    if (!out->ok_c2) {
-        accudisc_sense s;
-        accudisc_last_sense(dev, &s);
-        no_medium = s.valid && s.key == 0x02 && s.asc == 0x3a;
+    if (accudisc_probe_disc(dev, &dp) != ACCUDISC_OK)
+        out->medium = ACCUDISC_FEATURES_MEDIUM_UNKNOWN;
+    else if (dp.kind == ACCUDISC_DISC_AUDIO)
+        out->medium = ACCUDISC_FEATURES_MEDIUM_AUDIO;
+    else if (dp.reason == ACCUDISC_DISC_WHY_NO_MEDIUM)
+        out->medium = ACCUDISC_FEATURES_MEDIUM_NONE;
+    else if (dp.reason == ACCUDISC_DISC_WHY_UNREADABLE ||
+             (dp.reason == ACCUDISC_DISC_WHY_NOT_CD_PROFILE && dp.profile == 0))
+        /* Not a classification, an absence of one: a drive still evaluating a
+         * freshly loaded disc answers profile 0 with a perfectly good audio CD
+         * in the tray (measured 2026-09-12). Withholding the reads here would
+         * turn "not sure yet" into "no audio". */
+        out->medium = ACCUDISC_FEATURES_MEDIUM_UNKNOWN;
+    else
+        out->medium = ACCUDISC_FEATURES_MEDIUM_NO_AUDIO;
+
+    int smoke = out->medium == ACCUDISC_FEATURES_MEDIUM_AUDIO ||
+                out->medium == ACCUDISC_FEATURES_MEDIUM_UNKNOWN;
+    int no_medium = 0; /* the reads were refused NOT READY */
+
+    if (out->medium == ACCUDISC_FEATURES_MEDIUM_AUDIO)
+        lba = first_audio_lba(dev);
+
+    if (smoke) {
+        out->ok_c2 = (uint8_t)combo_smoke(dev, lba, ADSC_C2_294, ADSC_SUB_NONE);
+
+        /* The unclassified path keeps the old guard, widened in 0.47.0 from
+         * MEDIUM NOT PRESENT to the whole NOT READY key: a C2 smoke read the
+         * drive was not ready to perform — no medium, or still becoming ready
+         * — says nothing about C2, so the verdict must be UNVERIFIED rather
+         * than a false-negative UNSUPPORTED. */
+        if (!out->ok_c2) {
+            accudisc_sense s;
+
+            accudisc_last_sense(dev, &s);
+            if (s.valid && s.key == 0x02)
+                no_medium = 1;
+        }
+
+        out->ok_sub_raw = (uint8_t)combo_smoke(dev, lba, ADSC_C2_NONE, ADSC_SUB_RAW);
+        out->ok_sub_q = (uint8_t)combo_smoke(dev, lba, ADSC_C2_NONE, ADSC_SUB_Q);
+        out->ok_c2_sub_raw = (uint8_t)combo_smoke(dev, lba, ADSC_C2_294, ADSC_SUB_RAW);
+        out->ok_c2_sub_q = (uint8_t)combo_smoke(dev, lba, ADSC_C2_294, ADSC_SUB_Q);
     }
-
-    out->ok_sub_raw = (uint8_t)combo_smoke(dev, ADSC_C2_NONE, ADSC_SUB_RAW);
-    out->ok_sub_q = (uint8_t)combo_smoke(dev, ADSC_C2_NONE, ADSC_SUB_Q);
-    out->ok_c2_sub_raw = (uint8_t)combo_smoke(dev, ADSC_C2_294, ADSC_SUB_RAW);
-    out->ok_c2_sub_q = (uint8_t)combo_smoke(dev, ADSC_C2_294, ADSC_SUB_Q);
 
     /* Vendor write-speed governor, if a driver is attached to answer. The
      * ERR_UNSUPPORTED case (no driver, or a driver without the slot) leaves
@@ -209,12 +262,17 @@ int accudisc_probe_features(accudisc_device *dev, accudisc_features *out)
         if (accudisc_write_governor_get(dev, &gon, &grec) == ACCUDISC_OK) {
             out->governor_known = 1;
             out->governor_on = (uint8_t)(gon ? 1 : 0);
-            out->governor_recommended_kbps = grec;
+            /* Whether the governor is ON is a drive setting. The rate it
+             * recommends is for the loaded medium, and the drive answers with
+             * a figure even when the tray is empty — so it is withheld there
+             * rather than passed on with no disc behind it. */
+            out->governor_recommended_kbps =
+                out->medium == ACCUDISC_FEATURES_MEDIUM_NONE ? 0 : grec;
         }
     }
 
-    if (no_medium)
-        out->c2_verdict = ACCUDISC_C2_UNVERIFIED; /* can't smoke-test empty */
+    if (!smoke || no_medium)
+        out->c2_verdict = ACCUDISC_C2_UNVERIFIED; /* nothing to smoke-test */
     else if (!out->ok_c2)
         out->c2_verdict = ACCUDISC_C2_UNSUPPORTED;
     else if (have_feat == 0 && out->c2_claimed)

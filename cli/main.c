@@ -54,6 +54,9 @@ static void usage(FILE *to)
         "                 write rate and a requested speed is an upper\n"
         "                 bound at best. No argument = report only.\n"
         "                 Nothing in the burn path changes it\n"
+        "  settings       report the drive's persisted vendor settings and\n"
+        "                 life counters, READ-ONLY (Plextor: the set shown by\n"
+        "                 QPxTool's cdvdcontrol -c) — needs --driver\n"
         "  speed-uncap [on|off]\n"
         "                 report or set the vendor read-speed uncap\n"
         "                 (Plextor: SpeedRead) — needs --driver; persistent\n"
@@ -1108,6 +1111,25 @@ static int cmd_features(accudisc_device *dev, int argc, char **argv)
     if (!c2 && !stream && !rotation && !all)
         all = 1; /* bare features = show everything */
 
+    /* WHAT IS LOADED, FIRST (0.47.0). Half of this command reads the disc, and
+     * with an empty tray it used to print five `combo ... failed` lines — a
+     * well-formed statement about the drive that was really a statement about
+     * the tray. So say what is in it, and let every disc-dependent line below
+     * answer for that state. The fields and tokens are `disc`'s own. */
+    accudisc_disc_probe dp;
+    int have_dp = accudisc_probe_disc(dev, &dp) == ACCUDISC_OK;
+
+    if (have_dp) {
+        printf("medium kind=%s profile=0x%04x reason=%s",
+               accudisc_disc_kind_str(dp.kind), dp.profile,
+               accudisc_disc_reason_str(dp.reason));
+        if (dp.reason == ACCUDISC_DISC_WHY_NO_MEDIUM)
+            printf(" tray=%s", accudisc_tray_state_str(dp.tray));
+        putchar('\n');
+    } else {
+        printf("medium unknown\n");
+    }
+
     accudisc_features f;
     int have_f = 0;
     if (c2 || all) {
@@ -1133,11 +1155,18 @@ static int cmd_features(accudisc_device *dev, int argc, char **argv)
                    f.test_write_claimed);
         else
             printf("cd_mastering absent\n");
-        printf("combo c2 %s\n", f.ok_c2 ? "ok" : "failed");
-        printf("combo sub_raw %s\n", f.ok_sub_raw ? "ok" : "failed");
-        printf("combo sub_q %s\n", f.ok_sub_q ? "ok" : "failed");
-        printf("combo c2+sub_raw %s\n", f.ok_c2_sub_raw ? "ok" : "failed");
-        printf("combo c2+sub_q %s\n", f.ok_c2_sub_q ? "ok" : "failed");
+        /* `failed` means a read was sent and refused. With nothing to read
+         * the reads are not sent at all, and the line says which nothing. */
+        const char *na = f.medium == ACCUDISC_FEATURES_MEDIUM_NONE ? "no-disc"
+                       : f.medium == ACCUDISC_FEATURES_MEDIUM_NO_AUDIO
+                             ? "no-audio" : NULL;
+        const struct { const char *name; unsigned ok; } combo[] = {
+            {"c2", f.ok_c2}, {"sub_raw", f.ok_sub_raw}, {"sub_q", f.ok_sub_q},
+            {"c2+sub_raw", f.ok_c2_sub_raw}, {"c2+sub_q", f.ok_c2_sub_q}};
+
+        for (size_t i = 0; i < sizeof(combo) / sizeof(combo[0]); i++)
+            printf("combo %s %s\n", combo[i].name,
+                   na ? na : combo[i].ok ? "ok" : "failed");
         printf("verdict %s\n",
                f.c2_verdict == ACCUDISC_C2_SUPPORTED     ? "C2_SUPPORTED"
                : f.c2_verdict == ACCUDISC_C2_UNVERIFIED  ? "C2_UNVERIFIED"
@@ -1149,13 +1178,23 @@ static int cmd_features(accudisc_device *dev, int argc, char **argv)
          * to masquerade as jitter. */
         accudisc_toc toc;
         uint8_t accurate = 0;
-        uint32_t probe_lba = accudisc_read_toc(dev, &toc) == ACCUDISC_OK
-                                 ? toc.leadout_lba / 2 : 3000;
-        if (accudisc_probe_accurate_stream(dev, probe_lba, &accurate)
-            == ACCUDISC_OK)
-            printf("accurate_stream %s\n", accurate ? "yes" : "no");
-        else
+
+        /* A classified disc with no audio (or no disc) has nothing to probe,
+         * and a blank answers long reads badly. `unknown` is already this
+         * line's word for "not established"; the medium line says why. */
+        if (have_dp && dp.kind != ACCUDISC_DISC_AUDIO &&
+            dp.reason != ACCUDISC_DISC_WHY_UNREADABLE &&
+            !(dp.reason == ACCUDISC_DISC_WHY_NOT_CD_PROFILE && dp.profile == 0)) {
             printf("accurate_stream unknown\n");
+        } else {
+            uint32_t probe_lba = accudisc_read_toc(dev, &toc) == ACCUDISC_OK
+                                     ? toc.leadout_lba / 2 : 3000;
+            if (accudisc_probe_accurate_stream(dev, probe_lba, &accurate)
+                == ACCUDISC_OK)
+                printf("accurate_stream %s\n", accurate ? "yes" : "no");
+            else
+                printf("accurate_stream unknown\n");
+        }
     }
 
     if (rotation || all) {
@@ -1694,6 +1733,61 @@ static int cmd_write_governor(accudisc_device *dev, int argc, char **argv)
     else
         printf("recommended none reported\n");
     return 0;
+}
+
+/* Report the drive's persisted vendor settings and life counters, READ-ONLY.
+ * One line per setting, value last so it may contain spaces:
+ *
+ *   setting <key> ok|unanswered|no-disc <num|-> <value...>
+ *
+ * The first is always `medium`: what is loaded. `no-disc` marks a value that
+ * describes the loaded disc when none is loaded — not applicable, so it does
+ * not affect the exit code; an empty tray is a normal state to ask in.
+ *
+ * Exit 3 if anything went unanswered: the report is still complete in the
+ * sense that every key is listed, but an unanswered VariREC is exactly the
+ * setting someone runs this to rule out, so it must not exit 0. */
+static int cmd_settings(accudisc_device *dev, int argc)
+{
+    accudisc_vendor_setting v[ACCUDISC_VENDOR_SETTINGS_MAX];
+    uint32_t n = 0, unanswered = 0;
+    int err;
+
+    if (argc != 0) {
+        usage(stderr);
+        return 1;
+    }
+    err = accudisc_vendor_settings(dev, v, sizeof(v[0]),
+                                   ACCUDISC_VENDOR_SETTINGS_MAX, &n);
+    if (err == ACCUDISC_ERR_UNSUPPORTED) {
+        fprintf(stderr, "accudisc: settings report unsupported via %s — a "
+                        "vendor driver is required (--driver auto)\n",
+                accudisc_access_method(dev));
+        return 2;
+    }
+    if (err != ACCUDISC_OK)
+        return fail_dev(dev, "settings", err);
+    if (n > ACCUDISC_VENDOR_SETTINGS_MAX) {
+        fprintf(stderr, "accudisc: driver produced %u settings, only %u "
+                        "shown\n", n, (unsigned)ACCUDISC_VENDOR_SETTINGS_MAX);
+        n = ACCUDISC_VENDOR_SETTINGS_MAX;
+        unanswered++;
+    }
+    printf("settings via %s\n", accudisc_access_method(dev));
+    for (uint32_t i = 0; i < n; i++) {
+        int ok = (v[i].flags & ACCUDISC_VSET_OK) != 0;
+        int nodisc = !ok && (v[i].flags & ACCUDISC_VSET_NO_DISC);
+        const char *st = ok ? "ok" : nodisc ? "no-disc" : "unanswered";
+
+        if (!ok && !nodisc)
+            unanswered++;
+        if (ok && (v[i].flags & ACCUDISC_VSET_HAS_NUM))
+            printf("setting %s %s %lld %s\n", v[i].key, st,
+                   (long long)v[i].num, v[i].value);
+        else
+            printf("setting %s %s - %s\n", v[i].key, st, v[i].value);
+    }
+    return unanswered ? 3 : 0;
 }
 
 static int cmd_media(accudisc_device *dev)
@@ -2998,6 +3092,8 @@ int main(int argc, char **argv)
         rc = cmd_speed_uncap(dev, nrest, rest);
     else if (!strcmp(command, "write-governor"))
         rc = cmd_write_governor(dev, nrest, rest);
+    else if (!strcmp(command, "settings"))
+        rc = cmd_settings(dev, nrest);
     else if (!strcmp(command, "media"))
         rc = cmd_media(dev);
     else if (!strcmp(command, "write"))
