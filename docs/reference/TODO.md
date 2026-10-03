@@ -7,7 +7,61 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
-## `[P0]` ALL BURNS PAUSED until the USB-IDE bridge is replaced — Keith, 2026-09-28
+## Burns: the 2026-09-28 pause is LIFTED — Keith, 2026-10-02 21:07
+
+**"Yes the burn pause is lifted."** The pause was set on 09-28 pending a
+replacement USB-IDE bridge. What lifted it is the day's record below: the
+original PX-716A, powered from the PC PSU with the Innostor bridge carrying data
+only, produced two discs that verify 11 of 11 against AccurateRip (4x and 16x),
+so neither the bridge's data path nor our write path is implicated, and no new
+bridge is called for on this unit.
+
+What still binds every burn:
+
+- **Pass `--speed` explicitly.** 16x is the only speed with passes on the
+  original unit since 09-11 (four of four). cdda2img's default is now 8x, a
+  speed with no burn in the record for either unit.
+- **A blank reading after one reload is not a verdict.** Reload, later if need
+  be, before spending another blank or blaming the writer.
+- **A good reading before a reload is not a verdict either**: that is the
+  drive's memory of the session.
+- **Never a starved burn**, and one variable at a time.
+- **The replacement unit reads burned CD-Rs badly and pressed CDs correctly**
+  (2026-10-03 below). Its three blank burns are therefore not evidence about
+  its writing until that is resolved. Never burned at 16x on PSU power, never
+  probed for page 05. Swapping a drive needs a shutdown.
+
+**The two PX-716A units, from their labels (2026-10-03):** the **original** is
+manufactured August 2005, TLA #0308; the **replacement** March 2006, TLA
+#0309. Same part number (127-2995-00) and the same rating on both, DC +5 V
+1.7 A and +12 V 2.0 A.
+
+**2026-10-03, ~12:00 — THE REPLACEMENT CANNOT RELIABLY READ BURNED CD-Rs; a
+pressed CD reads correctly.** Replacement unit on PC PSU power, one load per
+disc, read with `tools/discid`. Every sector below was compared against the
+burned source image (`Tracy Chapman-pressed.rbi`, ripped from the same pressed
+disc), all at one constant offset into the file:
+
+| disc | on the original unit (10-02) | on the replacement (10-03) |
+|---|---|---|
+| #2, 4x CD-R, burned on the original | blank once, then AUDIO, 11/11 AR | **blank** (status 0, TOC refused `5/24/00`); ATIP reads; program area **reads at the right addresses**, LBA 100 and 5000 **differ from the source** (zero counts 336 and 60 vs 342 and 65; 8 wrong bytes in the first 32 of LBA 5000), LBA 50000 and 150000 match |
+| #3, 16x CD-R, burned on the original | AUDIO on every load, 11/11 AR | **every command `2/57/00`** (not ready, unable to recover TOC), profile 0, no ATIP; front LED then flashed **8 green blinks + pause, repeating** (undocumented: the manual lists only 1 and 2 blinks, for its self-test); no syslog entries |
+| pressed CD, same album | — | AUDIO, full TOC, profile 0x0008; all four sampled sectors **match the source exactly**; plays in mpv |
+
+What it shows:
+
+- **A disc a drive calls blank can carry correct audio that the same drive
+  reads.** #2 on the replacement is the first positive observation of it. So
+  the 10-02 row for disc #1 ("every read `5/21/00`" on the original) no longer
+  establishes that #1 is empty; it has not been read in the replacement.
+- **The replacement's fault is on the read side with CD-R media.** Lower
+  reflectivity is the obvious difference between a CD-R and a pressed disc, so
+  a weak laser, low read gain or a dirty lens would show there first. That is
+  consistent, not established: one load per disc.
+- The 8-blink code is presumably a firmware servo/initialisation fault; its
+  table may be findable in the decompiled firmware (desk work, not done).
+
+The entries below are the 10-02 record, newest first, and are kept as written.
 
 **2026-10-02, 20:10 — THE 4x BURN WAS A GOOD DISC. "Blank on reload" is not a
 verdict on a burn.** The disc burned at 4x on the original unit at ~17:00, which
