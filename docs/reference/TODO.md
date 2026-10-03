@@ -7,6 +7,18 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
+## Hardware testing on both PX-716A units is STOPPED — Keith, 2026-10-03 18:57
+
+**No further tests on either drive until a replacement USB-IDE adapter
+arrives.** Keith's ruling: more testing cannot fix a hardware problem, and the
+readings so far are speculation. That covers the three untried tests listed
+under 10-03 below (`discid` on the PlexTools disc, `wparamsprobe` on the
+replacement, the built-in self-test): they stay recorded, and are **not to be
+proposed again** before the adapter is here. If the drives work through the new
+adapter, work resumes. If the fault persists, Keith may stop development: no
+good optical drives are made any more, so further hardware is a lottery he
+cannot fund.
+
 ## Burns: the 2026-09-28 pause is LIFTED — Keith, 2026-10-02 21:07
 
 **"Yes the burn pause is lifted."** The pause was set on 09-28 pending a
@@ -47,6 +59,17 @@ disc), all at one constant offset into the file:
 | #2, 4x CD-R, burned on the original | blank once, then AUDIO, 11/11 AR | **blank** (status 0, TOC refused `5/24/00`); ATIP reads; program area **reads at the right addresses**, LBA 100 and 5000 **differ from the source** (zero counts 336 and 60 vs 342 and 65; 8 wrong bytes in the first 32 of LBA 5000), LBA 50000 and 150000 match |
 | #3, 16x CD-R, burned on the original | AUDIO on every load, 11/11 AR | **every command `2/57/00`** (not ready, unable to recover TOC), profile 0, no ATIP; front LED then flashed **8 green blinks + pause, repeating** (undocumented: the manual lists only 1 and 2 blinks, for its self-test); no syslog entries |
 | pressed CD, same album | — | AUDIO, full TOC, profile 0x0008; all four sampled sectors **match the source exactly**; plays in mpv |
+| Toca (Ritek, burned on the original 09-02 or 09-03, read there repeatedly) | read correctly | **blank** (status 0); ATIP reads |
+| *Pump Up The Jam* (**Taiyo Yuden** CD-R, 12 tracks; who burned it not recorded) | — | AUDIO, full TOC, ATIP, CD-Text title; plays in mpv (no source to compare sectors against) |
+
+**12:33 addendum: the split may be the media, not CD-R as such.** Every
+CD-R the replacement failed on is a Ritek from Keith's spindle (ATIP
+`97:15:17`); the one Taiyo Yuden read normally. Its own three blank burns were
+Riteks too. This is a READ-side observation on the replacement only: it does
+not revive "media" for the original's write failures, which included a Taiyo
+Yuden on 09-11. Two things are not separated: Ritek against Taiyo Yuden, and
+how well each disc was burned (the Taiyo Yuden's origin is unknown). One disc
+each.
 
 What it shows:
 
@@ -60,6 +83,59 @@ What it shows:
   consistent, not established: one load per disc.
 - The 8-blink code is presumably a firmware servo/initialisation fault; its
   table may be findable in the decompiled firmware (desk work, not done).
+
+**2026-10-03, 14:20–16:55 — the replacement after a lens clean: READS
+RECOVERED, a PlexTools burn still reads blank.** Keith opened the replacement
+(warranty seal intact). No dust visible in the case; under magnification "quite
+a lot of very fine dust" on the objective lens. Cleaned with a slightly damp
+cotton bud, then a dry one (water, no isopropyl to hand). A possible tiny
+scratch on the lens, unconfirmed: it may be a reflection. All figures below are
+AFTER the clean; no PlexTools baseline was taken before it. PlexTools
+Professional XL 3.16 on Windows, drive fw 1.11 (the original is 1.11 too),
+**through the same Innostor bridge** (PlexTools names the drive PX-716UF and the
+port driver is USBSTOR). Power was the PC PSU (Keith, confirmed).
+
+| disc | recognised | read speed | C1 avg / max per s | C2 total (max/s) | CU |
+|---|---|---|---|---|---|
+| *Pump Up The Jam*, Taiyo Yuden | audio, 12 tracks | 10–24x | 1.5 / 22 | 0 | 0 |
+| #2, Ritek, 4x on the original | **audio, 11 tracks** (blank this morning) | 10–24x | 20.3 / 74 | 14 (6) | 0 |
+| Toca, Ritek, burned on the original | **audio, 15 tracks** (blank this morning) | 17–40x | 26.1 / 79 | 44 (15) | 0 |
+| Tracy Chapman, pressed | audio, 11 tracks | 10–24x | 32.7 / 110 | 21145 (371) | 2 |
+
+- The Disc Test reported 7 errors at 25:08 on the pressed Tracy and none on the
+  three CD-Rs. Whether that disc or this drive owns the pressed disc's C2 is
+  not known: it has not been measured the same way on the original. Toca was
+  read faster than the others, so its row is not like for like.
+- Beta/Jitter was captured for all four as graphs only, with no figures.
+- **Q-Check FE/TE on a blank Ritek: "good within the tested area, can be
+  written at the highest speed."** Focus and tracking under a simulated write
+  are not the fault.
+- **PlexTools Disc Copy, Ritek blank, 48x selected (last speed 38x, PoweRec
+  on): "completed successfully"; the disc reads empty** (Opti Drive Control:
+  status empty, ATIP `97:15:17`). Keith also tried other speeds, VariRec and
+  AutoStrategy, not logged, with the same result.
+- The AutoStrategy database holds one entry, a DVD+R; nothing for CD.
+
+What the burn does and does not show. It removes our software, the Linux
+path and our page-05 programming: Plextor's own program on another OS gets the
+same blank. It does **not** separate the drive from the bridge, which was in
+the path. The replacement now has no pass at any speed on either supply; the
+original burned two good discs through this bridge on 10-02. A bridge fault
+has to explain that difference between two units on the same firmware.
+
+Not yet done, cheapest first, none needing a new adapter:
+
+1. `discid` on the PlexTools-burned disc (and on #1) in the cleaned
+   replacement. This drive returned correct audio from a disc it called blank
+   this morning, so audio at the right addresses means it writes and the
+   lead-in is what fails; `5/21/00` everywhere means no marks were formed.
+2. `wparamsprobe` on the replacement with a fresh blank: never run on this
+   unit. A page 05 that does not hold would make every burn a test write.
+3. The drive's built-in self-test (manual pp. 100–103): ribbon off, PSU
+   power, CABLE SELECT and SLAVE both jumpered, hold eject at power-on. No
+   bridge and no host. One fresh blank. Read the disc back afterwards: a pass
+   is not proof of marks. The original's 09-12 self-test failures were on the
+   bridge's brick, so they never tested this.
 
 The entries below are the 10-02 record, newest first, and are kept as written.
 
