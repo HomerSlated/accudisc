@@ -2129,6 +2129,17 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
                         "deliberately.\n");
         result = "write_budget";
         ret = 2;
+    } else if (err == ACCUDISC_ERR_WRITE_PARAMS) {
+        /* Exit 2, nothing written. Its own token because the remedy is not the
+         * one for `error`: the disc is still blank and reusable, and the fault
+         * is between us and the drive's registers (firmware, or a bridge that
+         * did not deliver the page), not in the medium. The engine has already
+         * logged which field differs. */
+        fprintf(stderr, "accudisc: write: the drive does not hold the write "
+                        "parameters it accepted — nothing written, the disc is "
+                        "still blank\n");
+        result = "write_params";
+        ret = 2;
     } else if (err < 0) {
         (void)fail_dev(dev, "write", err); /* prints the human detail; exit 2 */
         result = "error";
@@ -2145,7 +2156,7 @@ static int cmd_write(accudisc_device *dev, int argc, char **argv)
     }
 
     /* Machine channel gets a summary on EVERY outcome, so a caller can key on
-     * result= (ok|caveats|not_blank|error) instead of scraping stderr — which
+     * result= (ok|caveats|not_blank|write_budget|write_params|error) instead of scraping stderr — which
      * is deliberately not a stable interface. exit 2's two sub-cases (not-blank
      * vs other failure) are otherwise indistinguishable by exit code alone.
      * Requested by cdda2img 2026-07-24. */

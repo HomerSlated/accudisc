@@ -2,8 +2,8 @@
  *
  * Purpose. Three burns on a PX-716A (2026-09-28 x2, 2026-10-02) completed with
  * every command GOOD and read back as a virgin blank after eject + load. One
- * explanation is that the drive never left Test Write: the burn MODE SELECTs
- * page 05 and has never read it back, so a select that returned GOOD and
+ * explanation is that the drive never left Test Write: until 0.48.0 the burn
+ * MODE SELECTed page 05 and never read it back, so a select that returned GOOD and
  * changed nothing -- ignored by the firmware, or mangled in the data-out phase
  * by the USB-IDE bridge -- is invisible to it. This probe sends the burn's own
  * page (it calls the same function the burn does) and reads it straight back.
@@ -22,7 +22,9 @@
  *
  * What it does NOT cover. The burn sends SET CD SPEED and SEND OPC between its
  * MODE SELECT and the first WRITE; a drive that reset page 05 on either would
- * pass here. Only a read-back inside the burn itself closes that.
+ * pass here. Since 0.48.0 the burn reads the page back itself after SET CD
+ * SPEED and refuses if it is not held (ACCUDISC_ERR_WRITE_PARAMS), so that
+ * half is closed there. A reset on SEND OPC is still not covered anywhere.
  *
  *   cmake --build build
  *   gcc -O2 -o build/wparamsprobe tools/wparamsprobe.c -I include -I src \

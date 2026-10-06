@@ -79,6 +79,41 @@ int adsc_write_params_roundtrip(struct accudisc_device *dev,
                                 const struct adsc_write_params *wp,
                                 struct adsc_wparams_roundtrip *rt);
 
+/* ---- page 05 read-back inside a burn ---------------------------------------
+ * The burn's two halves of the round trip, apart, because the burn sends SET CD
+ * SPEED between them: select and keep what went down the wire, then -- later,
+ * and before anything touches the disc -- ask the drive what it holds now.
+ *
+ * The comparison is against the page that was SENT, not against the request:
+ * a drive that refuses data block type 3 is retried without it and the burn
+ * goes on (with a warning), so the request and the wire can differ by design.
+ *
+ * Unlike the round trip above there is no `changed` verdict. The probe asks
+ * whether a select is APPLIED, which a match cannot show when the page already
+ * held the values. The burn asks whether the drive holds the burn's fields
+ * NOW, and for that a match is an answer however it came about. */
+struct adsc_wparams_check {
+    uint8_t  held[ADSC_WPARAMS_PAGE_MAX]; /* what MODE SENSE returned */
+    uint32_t held_len;
+    uint32_t diff_bytes; /* bytes of `held` that differ from the sent page */
+    uint8_t  fields_ok;  /* every field below reads back as sent */
+    /* Which burn field differs; all 0 when fields_ok. */
+    uint8_t  bad_write_type, bad_test_write, bad_bufe, bad_multisession,
+             bad_block_type, bad_session_format;
+};
+
+/* adsc_write_set_params, keeping the page as sent (ADSC_WPARAMS_PAGE_MAX
+ * bytes at `sent`). */
+int adsc_write_set_params_sent(struct accudisc_device *dev,
+                               const struct adsc_write_params *wp,
+                               uint8_t *sent, uint32_t *sent_len);
+
+/* One MODE SENSE of page 05, compared with `sent`. ACCUDISC_OK means the
+ * command completed and the verdict is in *out; fields_ok == 0 still returns
+ * OK. Touches the drive's registers only. */
+int adsc_write_params_check(struct accudisc_device *dev, const uint8_t *sent,
+                            uint32_t sent_len, struct adsc_wparams_check *out);
+
 /* Put a captured page back (the probe's pop for its own push). `page` is a
  * capture from the struct above; the mode header is re-read from the drive. */
 int adsc_write_params_restore(struct accudisc_device *dev,

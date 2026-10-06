@@ -706,9 +706,19 @@ with the laser off (test-write); requires a blank disc and an O_RDWR open.
     not the drive or the disc failing, and the remedy is different: re-run with
     `--simulate` (free — laser off, no power calibration) or raise the budget
     deliberately;
+  - `write_params` — the drive answered MODE SELECT page 05 GOOD and, read
+    back before the blank check, **does not hold** the page: write type, Test
+    Write, BURN-Proof, multisession, data block type or session format differs
+    from what was sent. **Nothing written; the disc is untouched and still
+    blank** (exit 2). Added 0.48.0; the library code is
+    `ACCUDISC_ERR_WRITE_PARAMS` (−16). Distinct from `error` because the medium
+    is not at fault and the blank is reusable: a drive left in Test Write runs
+    a whole burn with every command GOOD and hands back a blank disc. stderr
+    names the field. A read-back *command* that fails is `error`, with that
+    command's own code, and refuses the burn just the same;
   - `error` — a transport/device/local failure; nothing usable written (exit 2).
-  `sectors` is the count actually written (0 for `not_blank` and
-  `write_budget`).
+  `sectors` is the count actually written (0 for `not_blank`, `write_budget`
+  and `write_params`).
 - **exit**: 0 done; 1 usage / missing `--toc`/`--bin`; 2 fatal (disc not blank,
   or transport/device failure — could not complete); 3 completed with caveats.
   Exit 2 covers not-blank, budget refusal and other failures; **use `result=` to

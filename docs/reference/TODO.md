@@ -7,17 +7,30 @@ everything else worth remembering.
 Completed work is kept as one- or two-line summaries with any durable lesson
 attached; the blow-by-blow reasoning that produced it is not retained.
 
-## Hardware testing on both PX-716A units is STOPPED — Keith, 2026-10-03 18:57
+## Work continues on the original PX-716A; the adapter wait is dropped — Keith, 2026-10-06 16:14
 
-**No further tests on either drive until a replacement USB-IDE adapter
-arrives.** Keith's ruling: more testing cannot fix a hardware problem, and the
-readings so far are speculation. That covers the three untried tests listed
-under 10-03 below (`discid` on the PlexTools disc, `wparamsprobe` on the
-replacement, the built-in self-test): they stay recorded, and are **not to be
-proposed again** before the adapter is here. If the drives work through the new
-adapter, work resumes. If the fault persists, Keith may stop development: no
-good optical drives are made any more, so further hardware is a lottery he
-cannot fund.
+Keith's conclusion from his own research: every IDE-to-SATA and IDE-to-USB
+adapter on the market is poor quality, so no replacement adapter is being
+waited for. The reliable ways to run a Plextor, in his order of likelihood:
+
+1. an old PC with a native IDE port, an Intel ICH southbridge for preference
+   (his best prospect for an early resolution);
+2. a Plextor with its own native USB bridge (PX-716UF);
+3. a SATA Plextor (PX-716SA). The last two rarely come up for sale.
+
+**The original unit (August 2005) is the development drive**: it "does seem to
+now work, at least well enough to continue with this project". The replacement
+(March 2006) may or may not work on a different controller and stays unresolved
+until it is on one.
+
+This supersedes the 2026-10-03 18:57 ruling ("no further tests on either drive
+until a replacement USB-IDE adapter arrives") in its condition. What carries
+over from it: **diagnostic testing of the drives is not to be proposed.** More
+testing cannot fix a hardware problem. The three tests left untried on 10-03
+(`discid` on the PlexTools disc, `wparamsprobe` on the replacement, the
+built-in self-test) stay on record below and wait for Keith's lead. Hardware
+runs that completion needs are listed under their own entries and run when he
+chooses.
 
 ## Burns: the 2026-09-28 pause is LIFTED — Keith, 2026-10-02 21:07
 
@@ -30,17 +43,18 @@ bridge is called for on this unit.
 
 What still binds every burn:
 
-- **Pass `--speed` explicitly.** 16x is the only speed with passes on the
-  original unit since 09-11 (four of four). cdda2img's default is now 8x, a
-  speed with no burn in the record for either unit.
+- **Pass `--speed` explicitly.** On the original unit since 09-11, 16x has
+  passed four times of four and 4x once (disc #2 on 10-02; the other 4x
+  disc, cdrdao on 09-12, read blank and was never examined). cdda2img's default is now 8x, a speed with no burn in the record
+  for either unit.
 - **A blank reading after one reload is not a verdict.** Reload, later if need
   be, before spending another blank or blaming the writer.
 - **A good reading before a reload is not a verdict either**: that is the
   drive's memory of the session.
 - **Never a starved burn**, and one variable at a time.
-- **The replacement unit reads burned CD-Rs badly and pressed CDs correctly**
-  (2026-10-03 below). Its three blank burns are therefore not evidence about
-  its writing until that is resolved. Never burned at 16x on PSU power, never
+- **The replacement unit is unresolved** (2026-10-03 below). Before a lens
+  clean it read burned Ritek CD-Rs badly and pressed CDs correctly; after it,
+  reads recovered and a PlexTools burn on PSU power still read blank. Never
   probed for page 05. Swapping a drive needs a shutdown.
 
 **The two PX-716A units, from their labels (2026-10-03):** the **original** is
@@ -327,31 +341,49 @@ specification). Then one fed 16x
 burn per drive. Around each burn, `accudisc --driver auto settings` before and
 after: `life.cd_write` must advance by about the burn's duration.
 
-## `[P1]` Read page 05 back after every MODE SELECT in the burn — proposed 2026-09-28
+## BUILT 0.48.0 — the burn reads page 05 back before touching the disc — 2026-10-06; hardware run open
 
-`adsc_write_set_params` MODE SELECTs the write parameters and never reads them
-back (`adsc_write_get_params` exists with no caller). Proposed: MODE SENSE page
-05 immediately after, before the blank check and OPC, and abort BEFORE touching
-the disc unless it reads write type DAO with Test Write 0 (and the requested
-BUFE). One read-only command per burn; the next burn on any bridge then tells a
-drive that ignored the MODE SELECT (a silent test write) from a physical write
-failure, without spending a blank on the question. Awaiting Keith.
+Proposed 2026-09-28, round trip built 2026-10-02 (`adsc_write_params_roundtrip`,
+`tools/wparamsprobe.c`), wired into the burn 2026-10-06. `adsc_write_run` now
+keeps the page as sent, sets the speed, then sends **one MODE SENSE** and
+compares. If write type, Test Write, BURN-Proof, multisession, data block type
+or session format differs, the burn stops with the new
+`ACCUDISC_ERR_WRITE_PARAMS` (−16; CLI `result=write_params`, exit 2; Python
+`WriteParams`) **before the blank check, SEND OPC and the cue sheet**. A
+read-back command that fails refuses the burn with that command's own error.
+A differing byte outside those fields is logged and the burn goes on.
 
-**2026-10-02 — the round trip exists; the burn does not call it yet.**
-`adsc_write_params_roundtrip` (`src/write/wparams.c`) selects the page through
-the same code path as the burn, reads it back and compares the whole page, and
-`tools/wparamsprobe.c` runs it standalone with no disc. Two things it reports
-that the original proposal did not ask for: bytes outside the burn's own fields
-that read back different (a bridge mangling the data-out phase), and the case
-where the page already held the requested values, in which a match proves
-nothing — so the probe toggles Test Write on and then off. `tests/test_wparams.c`
-runs it against fake drives that answer GOOD and do not hold the page. The burn
-path is
-unchanged. **Run on the original PX-716A on 10-02, blank loaded: held both ways,
-whole page** (see the `[P0]` entry above). Still open, and only a read-back
-inside the burn closes it: a drive
-that resets page 05 on SET CD SPEED or SEND OPC, both of which follow the
-MODE SELECT.
+Three decisions the proposal did not settle:
+
+- **Compared with the page as sent, not with the request.** A drive that
+  refuses data block type 3 is retried without it and burns with a warning, and
+  a simulate asks for Test Write on. "Test Write must be 0" would have refused
+  every simulate.
+- **Placed after SET CD SPEED**, so a drive that resets the page on that command
+  is caught by the same single read.
+- **No "did the select change anything" verdict.** The probe needs one; the
+  burn asks only what the drive holds now.
+
+`tests/test_burn_flow.c` links the real `wparams.c` against a fake that answers
+every select GOOD and holds the page seven different ways; each refusal asserts
+the blank check, OPC, cue sheet and WRITE(10) were NOT SENT. Four mutations
+(refusal disabled, Test Write masked out of the comparison, read-back moved
+before the speed, failed read-back ignored) each fail a test. On CDEmu: a live
+30 s burn passes the read-back and round-trips byte-exact.
+
+Found while confirming the refusal line for cdda2img: the library's log sink
+cut every line at 255 characters, which removed the end of this one (338
+characters). The limit is now 512 (`ADSC_LOG_LINE_MAX`) and the test pins the
+line under it. Lesson kept: the fake's capture buffer was larger than the real
+sink's, so the test could not see the cut.
+
+**Open:**
+
+- **Not run on the PX-716A.** The probe held on the original unit on 10-02;
+  the burn's own read-back has only met the fake and CDEmu.
+- **A drive that resets page 05 on SEND OPC** is still not covered: OPC comes
+  after the read-back. Closing it needs a second MODE SENSE before the cue
+  sheet. Not built; Keith's call.
 
 ## DONE 0.47.0 — `accudisc features` matches the tray state — Keith, 2026-09-28
 
@@ -377,16 +409,13 @@ is sufficient since the disc-aware rework: the two disc keys then read
 look: QPxTool frames those with the length at CDB[9], we use CDB[10] like every
 other 0xE9 page.
 
-## `[P0]` DEVELOPMENT IS PAUSED until the PX-716A is serviced — Keith, 2026-09-19 17:17
+## SUPERSEDED — development paused until the PX-716A was serviced — Keith, 2026-09-19 17:17
 
-**"I'll need to pause any further development until I can properly service the
-Plextor, as the LITE-ON is basically unusable for our purposes. It's a marginal
-device which may work for reading undamaged discs, but not much else."**
-
-This is a *capability* pause, not a suspension of the kind above: the only drive
-that can validate read work is out of service, and the substitute cannot. Do not
-start hardware-dependent work, and do not propose reads on either drive, until
-Keith says the Plextor is back. Software that needs no disc is unaffected.
+A capability pause: the PX-716A was out of service and the LITE-ON could not
+validate read work. Superseded by the service on 09-23 (nothing needed
+attention), the burns of 10-02 and Keith's 2026-10-06 decision at the top of
+this file. The measurement behind it is kept, because it is the record that the
+LITE-ON was the fault and not the disc.
 
 **The evidence, measured 2026-09-19 (bench notes, same date).** One disc (Tracy
 Chapman), one library, one afternoon, scored against AccurateRip:
@@ -404,52 +433,18 @@ a different program. **The disc has one damaged track. The LITE-ON is the fault.
 
 Flashing it 9L08 -> 9L09 changed nothing material. It is going to be sold.
 
-## `[P0]` HARDWARE TESTING IS SUSPENDED until the drive is serviced — Keith, 2026-09-12 20:19
+## SUPERSEDED — hardware testing suspended until the drive was serviced — Keith, 2026-09-12 20:19
 
-**"I think we need to stop any further testing until the drive has been
-serviced."** No burns, no censuses, no read sweeps, no disc identification —
-nothing that costs a disc or drive time — until the mechanism has been cleaned
-and re-lubricated. Software work, tests against the fake drive in
-`tests/test_burn_flow.c`, and CDEmu (`/dev/sr1`) are all unaffected.
+Keith stopped all testing until the mechanism had been cleaned and
+re-lubricated. He opened the drive on 09-23: the mechanics were fine and the
+grease intact and soft, so nothing was applied and the lubricant hypothesis was
+retired. Of the four single-variable tests parked here, a 16x burn through our
+own write path has since passed on the original unit (10-02, driven by
+`cdda2img burn`); the other three were not run.
 
-**Why it is the right call and not merely caution:** every question still open
-would be answered *through* a drive we already suspect of a mechanical fault,
-so a negative result could not be attributed and a positive one could not be
-trusted. The single-variable tests below are worth running — after service, not
-before.
-
-**Parked, ready to resume in this order:**
-
-1. **The AmigaOS ISO at `speed=16`.** One disc. Changes ONLY the speed against
-   the 48x burn that failed at LBA 203 076 on 2026-09-12. The write-speed table
-   now stands at 4 failures at 48x against 2 byte-exact passes at 16x, and this
-   is the test that promotes that from a pattern to a finding.
-2. **`cdrecord`, 16x, CD-DA.** Moves content alone against T1/T2, and it is the
-   axis that decides whether AccuDisc's own use case works at all.
-3. **A BOUNDED probe of the outer edge** — a handful of single-attempt reads
-   around LBA 330 000-347 000 on the ABBA disc, never a scan (see the 19:19
-   constraint below). The census was stopped at 330 525, ~10 350 sectors short
-   of the predicted step, so that hypothesis is untested rather than refuted.
-4. **`accudisc write` at 16x** — the first test of our OWN write path since the
-   reversal. Nothing has implicated it since cdrdao cleared it on 09-11.
-
-**Related standing constraint, Keith 2026-09-12 19:19:** no grinding read loops
-on damaged regions. A census across a failing area makes the drive read, fail,
-reset and retry indefinitely.
-
-**The service itself.** `private/research/incoming/2026-09-12-plextor-laser-repair.md`
-already carries it: §5 lubricants (MOLYKOTE EM-30L first choice — NLGI 1,
-silicone-free, and DuPont's own TDS reports no stress cracking on ABS/POM/PC,
-which is the governing constraint; Super Lube 21030 as the pragmatic UK
-alternative), §4 lens cleaning, §3 teardown with a photo walkthrough.
-
-**Do §5.0's free test FIRST, before buying anything:** with the drive open and
-unpowered, turn the worm/lead-screw by hand and run the sled through its full
-travel. Sam's CD FAQ: *"There should be no sticky positions or places where
-movement is noticeably more difficult."* If it is smooth end to end, the
-lubricant hypothesis is dead and nothing should be applied. That test costs
-nothing and could settle the question outright — and it probes the rail
-extremes directly, which is where Keith expects the dried grease to be.
+**Still standing from this entry, Keith 2026-09-12 19:19:** no grinding read
+loops on damaged regions. A census across a failing area makes the drive read,
+fail, reset and retry indefinitely.
 
 ## `[P0]` NEVER AGAIN: no starved-buffer burns — Keith, 2026-09-12
 

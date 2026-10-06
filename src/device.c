@@ -11,7 +11,7 @@
 
 void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...)
 {
-    char msg[256];
+    char msg[ADSC_LOG_LINE_MAX];
     va_list ap;
 
     if (!dev->log_fn)
@@ -81,6 +81,9 @@ const char *accudisc_strerror(int err)
     case ACCUDISC_ERR_NOT_BLANK:   return "disc is not blank (nothing written)";
     case ACCUDISC_ERR_WRITE_BUDGET:
         return "live-write budget exhausted for this device (nothing written)";
+    case ACCUDISC_ERR_WRITE_PARAMS:
+        return "the drive does not hold the write parameters it accepted "
+               "(nothing written)";
     default:                       return "unknown error";
     }
 }

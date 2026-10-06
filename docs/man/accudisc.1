@@ -1261,7 +1261,7 @@ For
 .RS 4
 .nf
 progress <done> <total>
-summary sectors=<n> mode=<simulate|burn> result=<ok|caveats|not_blank|error>
+summary sectors=<n> mode=<simulate|burn> result=<ok|caveats|not_blank|write_budget|write_params|error>
 .fi
 .RE
 .PP
@@ -1273,9 +1273,17 @@ summary is emitted on
 .B every
 outcome, so a caller can key on
 .I result=
-instead of the exit code. That matters because exit 2 covers both
-.I not_blank
+instead of the exit code. That matters because exit 2 covers
+.IR not_blank ,
+.IR write_budget ,
+.I write_params
 and other failures and the exit code alone cannot separate them.
+.PP
+.I write_params
+(since 0.48.0) means the drive accepted the write parameters and, read back
+before anything touched the disc, did not hold them. A burn in that state can
+complete with every command accepted and leave a blank disc, so it is refused:
+nothing is written and the disc is still blank. The log names the field.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -1350,7 +1358,12 @@ uses exit
 for a disc that is not blank: nothing was written, so the precondition could
 not be met. Use
 .I result=not_blank
-on the machine channel to distinguish it from a transport failure.
+on the machine channel to distinguish it from a transport failure. The same
+holds for
+.I result=write_budget
+and
+.IR result=write_params :
+exit 2, nothing written.
 .SH ENVIRONMENT
 .TP
 .B ACCUDISC_DRIVER_DIR

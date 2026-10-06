@@ -67,6 +67,7 @@ __all__ = [
     "WOFF_SAMPLES", "WOFF_PULSE_A", "WOFF_PULSE_B", "WOFF_PULSE_LEN",
     "AccuDiscError", "InvalidArgument", "OutOfMemory", "OpenFailed", "IOFailed",
     "SenseError", "ShortResponse", "Unsupported", "NotBlank", "WriteBudget",
+    "WriteParams",
     "WriteHealth", "WRITE_ANOMALY_PAYLOAD", "WRITE_ANOMALY_SETTLE",
     "Cancelled", "CrcError",
     "NotFound", "AbiMismatch", "RetainedBufferError",
@@ -336,6 +337,22 @@ class WriteBudget(AccuDiscError):
     """
 
 
+class WriteParams(AccuDiscError):
+    """``ACCUDISC_ERR_WRITE_PARAMS`` — the drive does not hold the write
+    parameters it accepted. Nothing was written; the disc is still blank.
+
+    Since 0.48.0 :meth:`Device.write` reads mode page 05 back after selecting
+    it and setting the speed, before the blank check and before the laser
+    fires. If write type, Test Write, BURN-Proof, multisession, data block type
+    or session format differs from what was sent, the burn is refused with
+    this. The log callback names the field.
+
+    A sibling of :class:`NotBlank`, not a kind of :class:`IOFailed`: the medium
+    is not at fault and the blank can be used again. A read-back *command* that
+    fails raises that command's own error instead, and refuses the burn too.
+    """
+
+
 class Cancelled(AccuDiscError):
     """``ACCUDISC_ERR_CANCELLED`` — stopped by the cancel flag or the sink."""
 
@@ -397,6 +414,7 @@ _ERRORS: dict[int, type[AccuDiscError]] = {
     lib.ACCUDISC_ERR_UNSUPPORTED: Unsupported,
     lib.ACCUDISC_ERR_NOT_BLANK: NotBlank,
     lib.ACCUDISC_ERR_WRITE_BUDGET: WriteBudget,
+    lib.ACCUDISC_ERR_WRITE_PARAMS: WriteParams,
     lib.ACCUDISC_ERR_CANCELLED: Cancelled,
     lib.ACCUDISC_ERR_CRC: CrcError,
     lib.ACCUDISC_ERR_NOTFOUND: NotFound,
@@ -685,6 +703,8 @@ class WriteResult(enum.Enum):
     ``ok``              :attr:`WriteResult.OK`
     ``caveats``         :attr:`WriteResult.CAVEATS`
     ``not_blank``       raises :class:`NotBlank` — nothing was written
+    ``write_budget``    raises :class:`WriteBudget` — nothing was written
+    ``write_params``    raises :class:`WriteParams` — nothing was written
     ``error``           raises another :class:`AccuDiscError`
     ==================  ===================================================
 

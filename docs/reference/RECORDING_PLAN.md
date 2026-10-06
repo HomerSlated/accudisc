@@ -74,6 +74,12 @@ and the MMC opcode.
    (SAO) + BURN-Proof (0x40) + test-write bit for `--simulate`; `mp[3]`
    multisession bits; `mp[4]` data-block-type (raw 2352, or `3`=raw+P–W 2448
    when CD-Text is in the lead-in); `mp[8]` session format / TOC type.
+   **Then read it back (ours, not cdrdao's; 0.48.0)** — after SET CD SPEED and
+   before the blank check, one MODE SENSE of page 0x05 compared with the page
+   as sent. A drive that answered GOOD and does not hold write type, Test
+   Write, BURN-Proof, multisession, data block type or session format is
+   refused with `ACCUDISC_ERR_WRITE_PARAMS`, disc untouched: left in Test
+   Write it would complete the burn and hand back a blank.
 2. **Power calibration** — SEND OPC (**0x54**) (`performPowerCalibration`).
    Skipped under `--simulate`; `--force` may bypass a failure (we surface it as
    exit-3, never silently).

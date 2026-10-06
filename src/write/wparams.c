@@ -108,6 +108,22 @@ int adsc_write_set_params(struct accudisc_device *dev,
     return wp_program(dev, wp, NULL);
 }
 
+int adsc_write_set_params_sent(struct accudisc_device *dev,
+                               const struct adsc_write_params *wp,
+                               uint8_t *sent, uint32_t *sent_len)
+{
+    struct adsc_wparams_roundtrip rt;
+    int rc;
+
+    if (!dev || !wp || !sent || !sent_len)
+        return ACCUDISC_ERR_INVAL;
+    memset(&rt, 0, sizeof(rt));
+    rc = wp_program(dev, wp, &rt);
+    memcpy(sent, rt.sent, ADSC_WPARAMS_PAGE_MAX);
+    *sent_len = rt.sent_len;
+    return rc;
+}
+
 /* Bytes of the page that decide what a burn does. Byte 0's top two bits (PS
  * and a reserved bit) are cleared on select and may come back set, so they are
  * never part of a comparison. */
@@ -127,6 +143,45 @@ static int wp_pages_equal(const uint8_t *a, uint32_t alen, const uint8_t *b,
     if ((a[0] ^ b[0]) & 0x3f)
         return 0;
     return memcmp(a + 1, b + 1, alen - 1) == 0;
+}
+
+int adsc_write_params_check(struct accudisc_device *dev, const uint8_t *sent,
+                            uint32_t sent_len, struct adsc_wparams_check *out)
+{
+    uint8_t buf[64];
+    uint32_t len = 0, po = 0;
+    int rc;
+
+    /* 9 bytes of the sent page are compared field by field below. */
+    if (!dev || !sent || !out || sent_len < 9 ||
+        sent_len > ADSC_WPARAMS_PAGE_MAX)
+        return ACCUDISC_ERR_INVAL;
+    memset(out, 0, sizeof(*out));
+
+    rc = adsc_mmc_mode_sense10(dev, ADSC_MODE_WRITE_PARAMS, buf,
+                               sizeof(buf), &len, &po);
+    if (rc != ACCUDISC_OK)
+        return rc;
+    if (po + 9 > len)
+        return ACCUDISC_ERR_SHORT;
+    out->held_len = wp_capture(out->held, buf, len, po);
+
+    const uint8_t *h = out->held;
+
+    out->bad_write_type     = (uint8_t)(((sent[2] ^ h[2]) & 0x0f) != 0);
+    out->bad_test_write     = (uint8_t)(((sent[2] ^ h[2]) & 0x10) != 0);
+    out->bad_bufe           = (uint8_t)(((sent[2] ^ h[2]) & 0x40) != 0);
+    out->bad_multisession   = (uint8_t)(((sent[3] ^ h[3]) & 0xc0) != 0);
+    out->bad_block_type     = (uint8_t)(((sent[4] ^ h[4]) & 0x0f) != 0);
+    out->bad_session_format = (uint8_t)(sent[8] != h[8]);
+    out->fields_ok = (uint8_t)wp_fields_equal(sent, h);
+
+    for (uint32_t i = 0; i < sent_len && i < out->held_len; i++)
+        if ((sent[i] ^ h[i]) & (i == 0 ? 0x3f : 0xff))
+            out->diff_bytes++;
+    if (sent_len != out->held_len)
+        out->diff_bytes++;
+    return ACCUDISC_OK;
 }
 
 int adsc_write_params_roundtrip(struct accudisc_device *dev,

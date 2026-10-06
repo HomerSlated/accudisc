@@ -190,6 +190,7 @@ typedef enum accudisc_err {
     ACCUDISC_ERR_ABI,
     ACCUDISC_ERR_NOT_BLANK,
     ACCUDISC_ERR_WRITE_BUDGET,
+    ACCUDISC_ERR_WRITE_PARAMS,
     ACCUDISC_ERR_AMBIGUOUS,
     ...
 } accudisc_err;

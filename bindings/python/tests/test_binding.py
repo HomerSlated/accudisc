@@ -1578,6 +1578,14 @@ def test_not_blank_maps_to_its_own_exception_type():
     assert lib.ACCUDISC_ERR_NOT_BLANK != lib.ACCUDISC_ERR_UNSUPPORTED
     assert lib.ACCUDISC_ERR_NOT_BLANK == -13
 
+    # 0.48.0: the page 05 read-back refusal. A sibling again -- catching it as
+    # IOFailed or NotBlank would tell the user the wrong thing to do.
+    assert ad._ERRORS[lib.ACCUDISC_ERR_WRITE_PARAMS] is ad.WriteParams
+    assert lib.ACCUDISC_ERR_WRITE_PARAMS == -16
+    for other in (ad.NotBlank, ad.WriteBudget, ad.IOFailed, ad.Unsupported):
+        assert not issubclass(ad.WriteParams, other)
+        assert not issubclass(other, ad.WriteParams)
+
     assert not issubclass(ad.InvalidArgument, ad.Unsupported)
     assert not issubclass(ad.Unsupported, ad.InvalidArgument)
 

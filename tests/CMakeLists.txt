@@ -120,6 +120,7 @@ target_link_options(test_features PRIVATE -Wl,--wrap=adsc_dev_exec)
 
 add_executable(test_burn_flow test_burn_flow.c
                ${PROJECT_SOURCE_DIR}/src/write/burn.c
+               ${PROJECT_SOURCE_DIR}/src/write/wparams.c
                ${PROJECT_SOURCE_DIR}/src/write/cuesheet.c
                ${PROJECT_SOURCE_DIR}/src/write/fifo.c
                ${PROJECT_SOURCE_DIR}/src/mmc/cdb.c)

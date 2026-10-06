@@ -103,6 +103,16 @@ static struct {
 
     /* TRACE (0.36.0). READ DISC INFORMATION calls, what the post-burn one
      * reports, and every trace note in order, " | "-separated. */
+    /* PAGE 05 (0.48.0). The REAL src/write/wparams.c is linked, so the model
+     * is of the drive, not of the comparison: MODE SELECT always answers GOOD
+     * and `wp_mode` decides what the page reads back as afterwards. */
+    uint8_t  wp_page[52];
+    int      wp_mode;          /* enum wp_mode below */
+    unsigned wp_selects, wp_senses;
+    unsigned wp_senses_at_speed; /* MODE SENSEs seen when SET CD SPEED arrived */
+    unsigned opc_calls, cue_calls;
+    char     wp_log[512];      /* the refusal line, if it appeared */
+
     unsigned discinfo_calls;
     int      post_status;      /* disc status returned from the 2nd call on */
     char     notes[4096];
@@ -227,9 +237,75 @@ int adsc_mmc_write10(struct accudisc_device *dev, int32_t lba, uint32_t nblocks,
 
 /* Everything else the burn path calls, succeeding quietly. */
 int adsc_mmc_send_cue_sheet(struct accudisc_device *d, const uint8_t *c, uint32_t n)
-{ (void)d; (void)c; (void)n; return fake.cue_fail ? ACCUDISC_ERR_IO : ACCUDISC_OK; }
+{ (void)d; (void)c; (void)n; fake.cue_calls++;
+  return fake.cue_fail ? ACCUDISC_ERR_IO : ACCUDISC_OK; }
 int adsc_mmc_send_opc(struct accudisc_device *d, int a)
-{ (void)d; (void)a; return ACCUDISC_OK; }
+{ (void)d; (void)a; fake.opc_calls++; return ACCUDISC_OK; }
+
+/* ---- page 05: a drive that answers GOOD and may not hold the page -------- */
+
+enum wp_mode {
+    WP_HONOUR,        /* stores the page as sent */
+    WP_IGNORE,        /* GOOD, and changes nothing */
+    WP_KEEP_TEST,     /* stores it, with Test Write left set */
+    WP_DROP_BUFE,     /* stores it, without BURN-Proof */
+    WP_RESET_ON_SPEED,/* stores it; SET CD SPEED puts the default back */
+    WP_OTHER_BYTE,    /* stores it with one non-burn byte altered */
+    WP_SENSE_FAILS    /* the read-back MODE SENSE itself fails */
+};
+#define WP_HDR 8u
+
+static void wp_default_page(void)
+{
+    memset(fake.wp_page, 0, sizeof fake.wp_page);
+    fake.wp_page[0] = 0x05;
+    fake.wp_page[1] = 0x32;
+    fake.wp_page[2] = 0x71; /* BUFE | Test Write | TAO: the page a drive left
+                             * in Test Write would still hold */
+    fake.wp_page[3] = 0xc4;
+    fake.wp_page[4] = 0x08;
+    fake.wp_page[15] = 0x96;
+}
+
+int adsc_mmc_mode_sense10(struct accudisc_device *d, unsigned page, uint8_t *buf,
+                          uint32_t cap, uint32_t *len, uint32_t *page_off)
+{
+    (void)d;
+    assert(page == 0x05 && cap >= WP_HDR + sizeof fake.wp_page);
+    /* The burn senses once to build the select and once to read back. */
+    if (fake.wp_mode == WP_SENSE_FAILS && fake.wp_senses >= 1) {
+        fake.wp_senses++;
+        return ACCUDISC_ERR_IO;
+    }
+    fake.wp_senses++;
+    memset(buf, 0, WP_HDR);
+    buf[1] = (uint8_t)(WP_HDR + sizeof fake.wp_page - 2);
+    memcpy(buf + WP_HDR, fake.wp_page, sizeof fake.wp_page);
+    buf[WP_HDR] |= 0x80; /* PS, as real drives report it */
+    *len = WP_HDR + sizeof fake.wp_page;
+    *page_off = WP_HDR;
+    return ACCUDISC_OK;
+}
+
+int adsc_mmc_mode_select10(struct accudisc_device *d, uint8_t *buf, uint32_t len,
+                           uint32_t page_off)
+{
+    (void)d;
+    assert(len == WP_HDR + sizeof fake.wp_page && page_off == WP_HDR);
+    buf[0] = buf[1] = 0;      /* what the real one does to the caller's buffer */
+    buf[page_off] &= 0x3f;
+    fake.wp_selects++;
+    if (fake.wp_mode == WP_IGNORE)
+        return ACCUDISC_OK;
+    memcpy(fake.wp_page, buf + page_off, sizeof fake.wp_page);
+    if (fake.wp_mode == WP_KEEP_TEST)
+        fake.wp_page[2] |= 0x10;
+    if (fake.wp_mode == WP_DROP_BUFE)
+        fake.wp_page[2] &= (uint8_t)~0x40;
+    if (fake.wp_mode == WP_OTHER_BYTE)
+        fake.wp_page[15] ^= 0x01;
+    return ACCUDISC_OK;
+}
 int adsc_mmc_sync_cache(struct accudisc_device *d)
 { (void)d; fake.sync_calls++; return ACCUDISC_OK; }
 
@@ -259,8 +335,6 @@ int adsc_mmc_read_buffer_capacity(struct accudisc_device *d,
         fake.cap_blank += fake.cap_blank_step;
     return ACCUDISC_OK;
 }
-int adsc_write_set_params(struct accudisc_device *d, const struct adsc_write_params *w)
-{ (void)d; (void)w; return ACCUDISC_OK; }
 int adsc_write_read_disc_info(struct accudisc_device *d, struct adsc_disc_info *di)
 {
     (void)d;
@@ -274,6 +348,9 @@ int adsc_mmc_set_cd_speed(struct accudisc_device *d, uint16_t read_kbps,
 {
     (void)d;
     fake.set_speed_calls++;
+    fake.wp_senses_at_speed = fake.wp_senses;
+    if (fake.wp_mode == WP_RESET_ON_SPEED)
+        wp_default_page();
     fake.last_read_kbps = read_kbps;
     fake.last_write_kbps = write_kbps;
     fake.last_rotctl = rotctl;
@@ -358,6 +435,9 @@ void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...)
     vsnprintf(fake.last_log, sizeof fake.last_log, fmt, ap);
     va_end(ap);
     fake.log_lines++;
+    if (strstr(fake.last_log, "page 05") ||
+        strstr(fake.last_log, "DOES NOT HOLD"))
+        snprintf(fake.wp_log, sizeof fake.wp_log, "%s", fake.last_log);
     if (strstr(fake.last_log, "giving up"))
         snprintf(fake.gave_up_log, sizeof fake.gave_up_log, "%s", fake.last_log);
     if (strstr(fake.last_log, "flow —"))
@@ -461,6 +541,7 @@ static void reset(void)
     /* A drive that claims BURN-Proof, like the PX-716A. Tests that care about
      * the failover override it. */
     fake.buf_claimed = 1;
+    wp_default_page();
 }
 
 /* ---- tests --------------------------------------------------------------- */
@@ -1326,6 +1407,160 @@ static void test_an_unstated_speed_is_UNKNOWN_rather_than_assumed(void)
     assert(strstr(fake.speed_log, "would not report a write speed"));
 }
 
+/* ---- page 05 read-back (0.48.0) ------------------------------------------ */
+
+/* Until 0.48.0 the burn MODE SELECTed page 05 and never looked again. Every
+ * drive below answers the select GOOD. What must differ is whether the burn
+ * goes on, and "it returned an error" is not enough of an assertion: the point
+ * is that the disc is untouched, so each refusal checks that the blank check,
+ * SEND OPC, the cue sheet and WRITE(10) were NOT SENT. */
+static void assert_nothing_reached_the_disc(void)
+{
+    assert(fake.discinfo_calls == 0 && "refused before the blank check");
+    assert(fake.opc_calls == 0 && "the laser never fired for calibration");
+    assert(fake.cue_calls == 0 && "no session was opened");
+    assert(fake.write_calls == 0 && "nothing was written");
+    assert(fake.sync_calls == 0 && "no session, so nothing to abort");
+}
+
+static void test_a_drive_that_holds_the_page_burns_and_is_asked_ONCE(void)
+{
+    reset();
+    opt_live = 1;
+    opt_speed = 16;
+    assert(run() == ACCUDISC_OK);
+    assert(fake.wp_selects == 1);
+    assert(fake.wp_senses == 2 && "one to build the select, ONE to read back");
+    assert(fake.wp_senses_at_speed == 1 && "the read-back comes AFTER the "
+                                           "speed is set, not before");
+    assert(fake.opc_calls == 1 && fake.cue_calls == 1 && fake.write_calls > 0);
+    assert(fake.wp_log[0] == 0 && "a held page is not worth a log line");
+}
+
+static void test_a_drive_that_IGNORES_the_select_is_refused_untouched(void)
+{
+    reset();
+    opt_live = 1;
+    fake.wp_mode = WP_IGNORE;
+    assert(run() == ACCUDISC_ERR_WRITE_PARAMS);
+    assert_nothing_reached_the_disc();
+    assert(strstr(fake.wp_log, "write type") && strstr(fake.wp_log, "Test Write"));
+    assert(strstr(fake.wp_log, "left a blank disc") &&
+           "the consequence is named, since it is the one seen on real media");
+    /* The real sink cuts a line at ADSC_LOG_LINE_MAX, and this is among the
+     * longest the refusal gets. Its last words are the ones a caller acts on. */
+    assert(strlen(fake.wp_log) < ADSC_LOG_LINE_MAX);
+    assert(strstr(fake.wp_log, "the disc is untouched"));
+    printf("  (refusal line: %zu chars)\n", strlen(fake.wp_log));
+}
+
+static void test_a_drive_left_in_TEST_WRITE_is_refused_on_a_live_burn(void)
+{
+    reset();
+    opt_live = 1;
+    fake.wp_mode = WP_KEEP_TEST;
+    assert(run() == ACCUDISC_ERR_WRITE_PARAMS);
+    assert_nothing_reached_the_disc();
+    assert(strstr(fake.wp_log, "Test Write"));
+    assert(!strstr(fake.wp_log, "write type") && "only the field that differs");
+}
+
+/* The check is against the page as SENT. A simulate asks for Test Write, so a
+ * drive holding it is correct; a check for "Test Write == 0" would refuse every
+ * simulate, the CDEmu target included. */
+static void test_a_SIMULATE_wants_test_write_and_is_not_refused_for_it(void)
+{
+    reset();
+    opt_live = 0;
+    fake.wp_mode = WP_KEEP_TEST;
+    assert(run() == ACCUDISC_OK);
+    assert(fake.write_calls > 0);
+}
+
+/* And the other direction: a simulate on a drive that would fire the laser. */
+static void test_a_SIMULATE_on_a_drive_that_dropped_test_write_is_refused(void)
+{
+    reset();
+    opt_live = 0;
+    /* Hold a LIVE page and ignore the select: Test Write stays off. */
+    fake.wp_page[2] = 0x42; /* BUFE | DAO, Test Write off */
+    fake.wp_page[3] = 0x04;
+    fake.wp_page[4] = 0x00;
+    fake.wp_mode = WP_IGNORE;
+    assert(run() == ACCUDISC_ERR_WRITE_PARAMS);
+    assert_nothing_reached_the_disc();
+    assert(strstr(fake.wp_log, "Test Write"));
+    assert(!strstr(fake.wp_log, "left a blank disc"));
+}
+
+/* Engine state follows the request: with BUFE dropped the underrun policy would
+ * believe in a failover that is not there. */
+static void test_a_drive_that_drops_BURN_PROOF_is_refused(void)
+{
+    reset();
+    opt_live = 1;
+    fake.wp_mode = WP_DROP_BUFE;
+    assert(run() == ACCUDISC_ERR_WRITE_PARAMS);
+    assert_nothing_reached_the_disc();
+    assert(strstr(fake.wp_log, "BURN-Proof"));
+}
+
+/* Why the read-back sits after SET CD SPEED. Reading back straight after the
+ * select would pass this drive. */
+static void test_a_page_RESET_BY_SET_CD_SPEED_is_caught(void)
+{
+    reset();
+    opt_live = 1;
+    opt_speed = 16;
+    fake.wp_mode = WP_RESET_ON_SPEED;
+    assert(run() == ACCUDISC_ERR_WRITE_PARAMS);
+    assert(fake.set_speed_calls == 1);
+    assert_nothing_reached_the_disc();
+
+    /* The control: same drive, no speed set, nothing resets the page. */
+    reset();
+    opt_live = 1;
+    fake.wp_mode = WP_RESET_ON_SPEED;
+    assert(run() == ACCUDISC_OK);
+}
+
+/* The burn does not ask whether the select was APPLIED. A drive that already
+ * holds live DAO and drops the select holds the right page, and the disc is as
+ * safe as on one that applied it. */
+static void test_a_page_that_ALREADY_held_the_values_passes_however(void)
+{
+    reset();
+    opt_live = 1;
+    fake.wp_page[2] = 0x42;
+    fake.wp_page[3] = 0x04;
+    fake.wp_page[4] = 0x00;
+    fake.wp_mode = WP_IGNORE;
+    assert(run() == ACCUDISC_OK);
+    assert(fake.write_calls > 0);
+}
+
+static void test_a_byte_OUTSIDE_the_burn_fields_is_reported_not_refused(void)
+{
+    reset();
+    opt_live = 1;
+    fake.wp_mode = WP_OTHER_BYTE;
+    assert(run() == ACCUDISC_OK);
+    assert(fake.write_calls > 0);
+    assert(strstr(fake.wp_log, "1 byte(s)") && strstr(fake.wp_log, "proceeding"));
+}
+
+/* Could not ask is not "held". The command's own error comes back, not
+ * ERR_WRITE_PARAMS: nothing was learned about the page. */
+static void test_a_FAILED_read_back_refuses_with_the_commands_own_error(void)
+{
+    reset();
+    opt_live = 1;
+    fake.wp_mode = WP_SENSE_FAILS;
+    assert(run() == ACCUDISC_ERR_IO);
+    assert_nothing_reached_the_disc();
+    assert(strstr(fake.wp_log, "could not be read back"));
+}
+
 int main(void)
 {
     test_a_clean_burn_never_stalls();
@@ -1366,6 +1601,16 @@ int main(void)
     test_a_failure_that_is_not_about_speed_is_not_climbed();
     test_the_ride_through_is_reported_against_the_DRIVES_rate();
     test_an_unstated_speed_is_UNKNOWN_rather_than_assumed();
+    test_a_drive_that_holds_the_page_burns_and_is_asked_ONCE();
+    test_a_drive_that_IGNORES_the_select_is_refused_untouched();
+    test_a_drive_left_in_TEST_WRITE_is_refused_on_a_live_burn();
+    test_a_SIMULATE_wants_test_write_and_is_not_refused_for_it();
+    test_a_SIMULATE_on_a_drive_that_dropped_test_write_is_refused();
+    test_a_drive_that_drops_BURN_PROOF_is_refused();
+    test_a_page_RESET_BY_SET_CD_SPEED_is_caught();
+    test_a_page_that_ALREADY_held_the_values_passes_however();
+    test_a_byte_OUTSIDE_the_burn_fields_is_reported_not_refused();
+    test_a_FAILED_read_back_refuses_with_the_commands_own_error();
     printf("ok test_burn_flow\n");
     return 0;
 }

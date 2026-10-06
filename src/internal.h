@@ -226,6 +226,11 @@ int adsc_speeds_layout(uint32_t count, uint8_t ncand, uint8_t points,
 void adsc_speeds_admit(accudisc_speed_rung *rungs, uint8_t n, uint8_t points,
                        uint32_t k);
 
+/* One log line, terminator included. A line that does not fit is cut, and the
+ * end of a refusal is where it says the disc is untouched: 256 cut the page 05
+ * refusal (0.48.0) mid-sentence. tests/test_burn_flow.c pins that line under
+ * this. */
+#define ADSC_LOG_LINE_MAX 512
 void adsc_dev_log(struct accudisc_device *dev, const char *fmt, ...);
 
 /* ---- caller-declared struct size (API_PLAN §7.1) ---------------------------

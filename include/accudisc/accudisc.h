@@ -27,7 +27,13 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 47 /* 0.47.0: accudisc_features.medium — what
+#define ACCUDISC_VERSION_MINOR 48 /* 0.48.0: accudisc_write reads mode page 05
+                                  * back before touching the disc and refuses,
+                                  * with the new ACCUDISC_ERR_WRITE_PARAMS
+                                  * (-16), a drive that does not hold the page
+                                  * it accepted. No struct changes. A burn
+                                  * sends one more command (MODE SENSE).
+                                  * Previously 0.47.0: accudisc_features.medium — what
                                   * the functional probe HAD to work with. With
                                   * no disc, or a disc with no audio to read,
                                   * the smoke reads are not issued and their
@@ -1003,6 +1009,27 @@ typedef enum accudisc_err {
                                       * build accepted. Opt in with
                                       * accudisc_set_write_budget(); the CLI
                                       * does, so a shell loop is covered. */
+    ACCUDISC_ERR_WRITE_PARAMS = -16, /* accudisc_write refused: the drive took
+                                      * the write-parameters page (MODE SELECT
+                                      * page 05 answered GOOD) and, read back
+                                      * before anything touched the disc, does
+                                      * not hold it: write type, Test Write,
+                                      * BURN-Proof, multisession, data block
+                                      * type or session format differs from
+                                      * what was sent. Nothing was written; the
+                                      * disc is untouched and still blank.
+                                      *
+                                      * Its own code because the alternative is
+                                      * silent. A drive left in Test Write runs
+                                      * the whole burn with every command GOOD
+                                      * and hands back a blank disc, and a
+                                      * bridge that mangles the data-out phase
+                                      * looks the same. The log line names the
+                                      * field. A failed read-back COMMAND is
+                                      * not this code: it returns that
+                                      * command's own error (ERR_SENSE,
+                                      * ERR_IO...), and the burn is refused
+                                      * just the same. Since 0.48.0. */
     ACCUDISC_ERR_NOT_BLANK   = -13 /* accudisc_write refused: the loaded disc
                                       is not blank. Nothing was written.
                                       Split out of ERR_UNSUPPORTED in 0.4.0.
