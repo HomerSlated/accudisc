@@ -343,9 +343,12 @@ class WriteParams(AccuDiscError):
 
     Since 0.48.0 :meth:`Device.write` reads mode page 05 back after selecting
     it and setting the speed, before the blank check and before the laser
-    fires. If write type, Test Write, BURN-Proof, multisession, data block type
-    or session format differs from what was sent, the burn is refused with
-    this. The log callback names the field.
+    fires. Since 0.48.1 a live burn reads it once more after power calibration
+    and before the cue sheet. If write type, Test Write, BURN-Proof,
+    multisession, data block type or session format differs from what was
+    sent, the burn is refused with this. The log callback names the field and
+    says which read refused: the first leaves the disc untouched, the second
+    has used one calibration slot and nothing else.
 
     A sibling of :class:`NotBlank`, not a kind of :class:`IOFailed`: the medium
     is not at fault and the blank can be used again. A read-back *command* that

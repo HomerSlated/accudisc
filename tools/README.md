@@ -111,7 +111,8 @@ gcc -o build/mediaprobe tools/mediaprobe.c -I include -I src build/src/libaccudi
   Does **not** cover a drive that resets the page on SET CD SPEED or SEND OPC,
   which a burn sends afterwards. Since 0.48.0 the burn itself reads the page
   back after SET CD SPEED and refuses if it is not held, which closes the first
-  of those; a reset on SEND OPC is still uncovered.
+  of those, and since 0.48.1 it reads it again after SEND OPC, which closes
+  the second.
 
 - **`speedprobe.c`** — SET STREAMING (0xB6) flag-bit harness: does GET
   PERFORMANCE reflect a set ceiling; does Exact (0x02) work; does real RDD

@@ -110,6 +110,8 @@ static struct {
     int      wp_mode;          /* enum wp_mode below */
     unsigned wp_selects, wp_senses;
     unsigned wp_senses_at_speed; /* MODE SENSEs seen when SET CD SPEED arrived */
+    unsigned wp_senses_at_opc;   /* ... and when SEND OPC arrived */
+    unsigned wp_senses_at_cue;   /* ... and when SEND CUE SHEET arrived */
     unsigned opc_calls, cue_calls;
     char     wp_log[512];      /* the refusal line, if it appeared */
 
@@ -235,13 +237,6 @@ int adsc_mmc_write10(struct accudisc_device *dev, int32_t lba, uint32_t nblocks,
     return ACCUDISC_OK;
 }
 
-/* Everything else the burn path calls, succeeding quietly. */
-int adsc_mmc_send_cue_sheet(struct accudisc_device *d, const uint8_t *c, uint32_t n)
-{ (void)d; (void)c; (void)n; fake.cue_calls++;
-  return fake.cue_fail ? ACCUDISC_ERR_IO : ACCUDISC_OK; }
-int adsc_mmc_send_opc(struct accudisc_device *d, int a)
-{ (void)d; (void)a; fake.opc_calls++; return ACCUDISC_OK; }
-
 /* ---- page 05: a drive that answers GOOD and may not hold the page -------- */
 
 enum wp_mode {
@@ -251,7 +246,9 @@ enum wp_mode {
     WP_DROP_BUFE,     /* stores it, without BURN-Proof */
     WP_RESET_ON_SPEED,/* stores it; SET CD SPEED puts the default back */
     WP_OTHER_BYTE,    /* stores it with one non-burn byte altered */
-    WP_SENSE_FAILS    /* the read-back MODE SENSE itself fails */
+    WP_SENSE_FAILS,   /* the read-back MODE SENSE itself fails */
+    WP_RESET_ON_OPC,  /* stores it; SEND OPC puts the default back */
+    WP_SENSE_FAILS_AFTER_OPC /* the SECOND read-back fails */
 };
 #define WP_HDR 8u
 
@@ -267,13 +264,29 @@ static void wp_default_page(void)
     fake.wp_page[15] = 0x96;
 }
 
+/* Everything else the burn path calls, succeeding quietly. */
+int adsc_mmc_send_cue_sheet(struct accudisc_device *d, const uint8_t *c, uint32_t n)
+{ (void)d; (void)c; (void)n; fake.cue_calls++;
+  fake.wp_senses_at_cue = fake.wp_senses;
+  return fake.cue_fail ? ACCUDISC_ERR_IO : ACCUDISC_OK; }
+int adsc_mmc_send_opc(struct accudisc_device *d, int a)
+{
+    (void)d; (void)a;
+    fake.opc_calls++;
+    fake.wp_senses_at_opc = fake.wp_senses;
+    if (fake.wp_mode == WP_RESET_ON_OPC)
+        wp_default_page();
+    return ACCUDISC_OK;
+}
+
 int adsc_mmc_mode_sense10(struct accudisc_device *d, unsigned page, uint8_t *buf,
                           uint32_t cap, uint32_t *len, uint32_t *page_off)
 {
     (void)d;
     assert(page == 0x05 && cap >= WP_HDR + sizeof fake.wp_page);
     /* The burn senses once to build the select and once to read back. */
-    if (fake.wp_mode == WP_SENSE_FAILS && fake.wp_senses >= 1) {
+    if ((fake.wp_mode == WP_SENSE_FAILS && fake.wp_senses >= 1) ||
+        (fake.wp_mode == WP_SENSE_FAILS_AFTER_OPC && fake.wp_senses >= 2)) {
         fake.wp_senses++;
         return ACCUDISC_ERR_IO;
     }
@@ -1423,18 +1436,65 @@ static void assert_nothing_reached_the_disc(void)
     assert(fake.sync_calls == 0 && "no session, so nothing to abort");
 }
 
-static void test_a_drive_that_holds_the_page_burns_and_is_asked_ONCE(void)
+static void test_a_drive_that_holds_the_page_is_asked_TWICE_on_a_live_burn(void)
 {
     reset();
     opt_live = 1;
     opt_speed = 16;
     assert(run() == ACCUDISC_OK);
     assert(fake.wp_selects == 1);
-    assert(fake.wp_senses == 2 && "one to build the select, ONE to read back");
-    assert(fake.wp_senses_at_speed == 1 && "the read-back comes AFTER the "
-                                           "speed is set, not before");
+    assert(fake.wp_senses == 3 && "one to build the select, one read-back "
+                                  "before the disc is touched, one after OPC");
+    assert(fake.wp_senses_at_speed == 1 && "the first read-back comes AFTER "
+                                           "the speed is set, not before");
+    assert(fake.wp_senses_at_opc == 2 && "... and BEFORE the laser fires");
+    assert(fake.wp_senses_at_cue == 3 && "the second comes between OPC and "
+                                         "the cue sheet");
     assert(fake.opc_calls == 1 && fake.cue_calls == 1 && fake.write_calls > 0);
     assert(fake.wp_log[0] == 0 && "a held page is not worth a log line");
+}
+
+static void test_a_simulate_is_asked_ONCE_because_it_sends_no_OPC(void)
+{
+    reset();
+    opt_live = 0;
+    assert(run() == ACCUDISC_OK);
+    assert(fake.opc_calls == 0);
+    assert(fake.wp_senses == 2 && "nothing happened since the first read");
+}
+
+/* The gap the first read-back leaves: it has passed by the time OPC runs. The
+ * disc cannot be called untouched here -- calibration fired -- but the session
+ * must not open. */
+static void test_a_page_RESET_BY_SEND_OPC_is_caught_before_the_cue_sheet(void)
+{
+    reset();
+    opt_live = 1;
+    fake.wp_mode = WP_RESET_ON_OPC;
+    assert(run() == ACCUDISC_ERR_WRITE_PARAMS);
+    assert(fake.opc_calls == 1 && fake.discinfo_calls == 1);
+    assert(fake.cue_calls == 0 && "no session was opened");
+    assert(fake.write_calls == 0 && fake.sync_calls == 0);
+    assert(strstr(fake.wp_log, "HELD BEFORE POWER CALIBRATION"));
+    assert(strstr(fake.wp_log, "calibration has run and the disc is still "
+                               "blank"));
+    assert(!strstr(fake.wp_log, "untouched") &&
+           "it is not: a calibration slot was used");
+    assert(strlen(fake.wp_log) < ADSC_LOG_LINE_MAX);
+    assert(strcmp(fake.last_log, fake.wp_log) == 0 &&
+           "the refusal is the last thing logged");
+    printf("  (post-OPC refusal line: %zu chars)\n", strlen(fake.wp_log));
+}
+
+static void test_a_FAILED_second_read_back_refuses_before_the_cue_sheet(void)
+{
+    reset();
+    opt_live = 1;
+    fake.wp_mode = WP_SENSE_FAILS_AFTER_OPC;
+    assert(run() == ACCUDISC_ERR_IO);
+    assert(fake.opc_calls == 1);
+    assert(fake.cue_calls == 0 && fake.write_calls == 0);
+    assert(strstr(fake.wp_log, "after power calibration"));
 }
 
 static void test_a_drive_that_IGNORES_the_select_is_refused_untouched(void)
@@ -1452,6 +1512,11 @@ static void test_a_drive_that_IGNORES_the_select_is_refused_untouched(void)
     assert(strlen(fake.wp_log) < ADSC_LOG_LINE_MAX);
     assert(strstr(fake.wp_log, "the disc is untouched"));
     printf("  (refusal line: %zu chars)\n", strlen(fake.wp_log));
+    /* CONSUMER CONTRACT (cdda2img correspondence, section 229): their refusal
+     * message quotes the LAST log line before the error. Anything logged after
+     * the refusal on this path makes them quote the wrong line. */
+    assert(strcmp(fake.last_log, fake.wp_log) == 0 &&
+           "the refusal is the last thing logged");
 }
 
 static void test_a_drive_left_in_TEST_WRITE_is_refused_on_a_live_burn(void)
@@ -1601,7 +1666,10 @@ int main(void)
     test_a_failure_that_is_not_about_speed_is_not_climbed();
     test_the_ride_through_is_reported_against_the_DRIVES_rate();
     test_an_unstated_speed_is_UNKNOWN_rather_than_assumed();
-    test_a_drive_that_holds_the_page_burns_and_is_asked_ONCE();
+    test_a_drive_that_holds_the_page_is_asked_TWICE_on_a_live_burn();
+    test_a_simulate_is_asked_ONCE_because_it_sends_no_OPC();
+    test_a_page_RESET_BY_SEND_OPC_is_caught_before_the_cue_sheet();
+    test_a_FAILED_second_read_back_refuses_before_the_cue_sheet();
     test_a_drive_that_IGNORES_the_select_is_refused_untouched();
     test_a_drive_left_in_TEST_WRITE_is_refused_on_a_live_burn();
     test_a_SIMULATE_wants_test_write_and_is_not_refused_for_it();

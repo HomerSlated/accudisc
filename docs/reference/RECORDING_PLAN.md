@@ -81,6 +81,9 @@ and the MMC opcode.
    refused with `ACCUDISC_ERR_WRITE_PARAMS`, disc untouched: left in Test
    Write it would complete the burn and hand back a blank.
 2. **Power calibration** — SEND OPC (**0x54**) (`performPowerCalibration`).
+   **Followed on a live burn by a second read-back of page 0x05 (0.48.1)**,
+   same comparison and same refusal, for a drive that resets the page during
+   calibration; the cue sheet is the next command and commits the burn.
    Skipped under `--simulate`; `--force` may bypass a failure (we surface it as
    exit-3, never silently).
 3. **Query next writable address** — READ TRACK INFO / `getNWA` (advisory; some

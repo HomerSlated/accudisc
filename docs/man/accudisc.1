@@ -1280,10 +1280,12 @@ instead of the exit code. That matters because exit 2 covers
 and other failures and the exit code alone cannot separate them.
 .PP
 .I write_params
-(since 0.48.0) means the drive accepted the write parameters and, read back
-before anything touched the disc, did not hold them. A burn in that state can
-complete with every command accepted and leave a blank disc, so it is refused:
-nothing is written and the disc is still blank. The log names the field.
+(since 0.48.0) means the drive accepted the write parameters and, read back,
+did not hold them. A burn in that state can complete with every command
+accepted and leave a blank disc, so it is refused: nothing is written and the
+disc is still blank. The page is read before the blank check and, on a live
+burn, again after power calibration and before the session opens. The log
+names the field and which read refused.
 .SH EXIT STATUS
 .TP
 .B 0

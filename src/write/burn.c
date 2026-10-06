@@ -1,8 +1,9 @@
 /* DAO burn orchestration (recording engine, phase 1 slice 4).
  *
  * Ties the slices together into a Disc-At-Once audio burn: write parameters ->
- * write speed -> write-parameters read-back -> disc-blank check -> SEND CUE SHEET -> lead-in gap + track audio (WRITE(10))
- * -> SYNCHRONIZE CACHE. Follows cdrdao's GenericMMC DAO sequence. With
+ * write speed -> write-parameters read-back -> disc-blank check -> power
+ * calibration -> second read-back (live burns) -> SEND CUE SHEET -> lead-in
+ * gap + track audio (WRITE(10)) -> SYNCHRONIZE CACHE. Follows cdrdao's GenericMMC DAO sequence. With
  * opts->simulate the write-parameters test-write bit is set, so the drive runs
  * the whole path with the laser off (safe on any blank disc).
  *
@@ -412,6 +413,69 @@ static void trace_disc_info(struct accudisc_device *dev, const char *when,
                         di->leadin_f);
 }
 
+/* Read page 05 back and compare it with the page as SENT (see
+ * adsc_wparams_check): only the fields a burn depends on refuse it; any other
+ * byte that differs is reported and the burn goes on. `after_opc` says which of
+ * the two reads this is, because what can be promised about the disc differs:
+ * before calibration it is untouched, after it a calibration slot is used and
+ * the program area is still blank. */
+static int check_write_params(struct accudisc_device *dev, const uint8_t *sent,
+                              uint32_t sent_len,
+                              const struct adsc_write_params *wp, int after_opc)
+{
+    struct adsc_wparams_check wc;
+    const char *disc = after_opc
+        ? "Nothing was written: power calibration has run and the disc is "
+          "still blank"
+        : "Nothing was written and the disc is untouched";
+    int rc;
+
+    adsc_dev_trace_note(dev, "phase: write parameters read-back%s (MODE SENSE "
+                             "page 05)",
+                        after_opc ? " after power calibration" : "");
+    rc = adsc_write_params_check(dev, sent, sent_len, &wc);
+    if (rc != ACCUDISC_OK) {
+        adsc_dev_log(dev, "write: page 05 could not be read back%s (rc %d) — "
+                          "refusing to burn against write parameters nobody "
+                          "has seen. %s",
+                     after_opc ? " after power calibration" : "", rc, disc);
+        return rc;
+    }
+    if (!wc.fields_ok) {
+        /* The LAST log line of a refused burn, and a consumer quotes it as
+         * such: log nothing after it on this path (test_burn_flow pins
+         * that). */
+        adsc_dev_log(dev, "write: THE DRIVE DOES NOT HOLD THE WRITE PARAMETERS "
+                          "IT %s —%s%s%s%s%s%s differ%s. Sent bytes 2/3/4/8 = "
+                          "%02x %02x %02x %02x, the drive holds %02x %02x %02x "
+                          "%02x. %s",
+                     after_opc ? "HELD BEFORE POWER CALIBRATION" : "ACCEPTED",
+                     wc.bad_write_type ? " write type" : "",
+                     wc.bad_test_write ? " Test Write" : "",
+                     wc.bad_bufe ? " BURN-Proof" : "",
+                     wc.bad_multisession ? " multisession" : "",
+                     wc.bad_block_type ? " data block type" : "",
+                     wc.bad_session_format ? " session format" : "",
+                     wc.bad_test_write && !wp->simulate
+                         ? " (Test Write is still SET: this burn would have "
+                           "run with the laser at read power and left a blank "
+                           "disc)"
+                         : "",
+                     sent[2], sent[3], sent[4], sent[8],
+                     wc.held[2], wc.held[3], wc.held[4], wc.held[8], disc);
+        return ACCUDISC_ERR_WRITE_PARAMS;
+    }
+    if (wc.diff_bytes)
+        adsc_dev_log(dev, "write: page 05 reads back with %u byte(s) "
+                          "different from what was sent, none of them a field "
+                          "this burn depends on; proceeding",
+                     wc.diff_bytes);
+    else
+        adsc_dev_trace_note(dev, "write parameters held: page 05 reads back "
+                                 "as sent");
+    return ACCUDISC_OK;
+}
+
 int adsc_write_run(struct accudisc_device *dev,
                    const struct adsc_write_toc *toc, int bin_fd,
                    const struct adsc_burn_opts *opts,
@@ -550,60 +614,15 @@ int adsc_write_run(struct accudisc_device *dev,
      * and a bridge may deliver a data phase that is not the one we sent. A
      * burn against a page still in Test Write completes with every command
      * GOOD and leaves a virgin blank, which nothing later in this function can
-     * tell from a physical write failure. So ask, once, and refuse before the
-     * blank check and before the laser fires for calibration.
+     * tell from a physical write failure. So ask, and refuse before the blank
+     * check and before the laser fires for calibration.
      *
      * Placed AFTER the speed is set so that a drive which resets the page on
-     * SET CD SPEED is caught too. NOT covered: a drive that resets it on SEND
-     * OPC, which comes later; that would need a second read before the cue
-     * sheet.
-     *
-     * Compared with the page as SENT (see adsc_wparams_check): only the fields
-     * a burn depends on refuse it. Any other byte that differs is reported and
-     * the burn goes on. */
-    {
-        struct adsc_wparams_check wc;
-
-        adsc_dev_trace_note(dev, "phase: write parameters read-back (MODE "
-                                 "SENSE page 05)");
-        ret = adsc_write_params_check(dev, wp_sent, wp_sent_len, &wc);
-        if (ret != ACCUDISC_OK) {
-            adsc_dev_log(dev, "write: page 05 could not be read back (rc %d) "
-                              "— refusing to burn against write parameters "
-                              "nobody has seen; the disc is untouched", ret);
-            goto done;
-        }
-        if (!wc.fields_ok) {
-            adsc_dev_log(dev, "write: THE DRIVE DOES NOT HOLD THE WRITE "
-                              "PARAMETERS IT ACCEPTED —%s%s%s%s%s%s differ"
-                              "%s. Sent bytes 2/3/4/8 = %02x %02x %02x %02x, "
-                              "the drive holds %02x %02x %02x %02x. Nothing "
-                              "was written and the disc is untouched",
-                         wc.bad_write_type ? " write type" : "",
-                         wc.bad_test_write ? " Test Write" : "",
-                         wc.bad_bufe ? " BURN-Proof" : "",
-                         wc.bad_multisession ? " multisession" : "",
-                         wc.bad_block_type ? " data block type" : "",
-                         wc.bad_session_format ? " session format" : "",
-                         wc.bad_test_write && !wp.simulate
-                             ? " (Test Write is still SET: this burn would "
-                               "have run with the laser at read power and "
-                               "left a blank disc)"
-                             : "",
-                         wp_sent[2], wp_sent[3], wp_sent[4], wp_sent[8],
-                         wc.held[2], wc.held[3], wc.held[4], wc.held[8]);
-            ret = ACCUDISC_ERR_WRITE_PARAMS;
-            goto done;
-        }
-        if (wc.diff_bytes)
-            adsc_dev_log(dev, "write: page 05 reads back with %u byte(s) "
-                              "different from what was sent, none of them a "
-                              "field this burn depends on; proceeding",
-                         wc.diff_bytes);
-        else
-            adsc_dev_trace_note(dev, "write parameters held: page 05 reads "
-                                     "back as sent");
-    }
+     * SET CD SPEED is caught too. This is the last point at which the disc is
+     * wholly untouched; step 3b asks again after SEND OPC. */
+    if ((ret = check_write_params(dev, wp_sent, wp_sent_len, &wp, 0)) !=
+        ACCUDISC_OK)
+        goto done;
 
     /* 2. Refuse anything but a blank disc. */
     struct adsc_disc_info di;
@@ -630,6 +649,16 @@ int adsc_write_run(struct accudisc_device *dev,
             ret = ACCUDISC_OK;
         }
         if (ret != ACCUDISC_OK)
+            goto done;
+
+        /* 3b. ASK AGAIN. The first read-back cannot see a drive that resets
+         * page 05 as a side effect of SEND OPC, and the cue sheet is the next
+         * command: past it the burn is committed. One more MODE SENSE, live
+         * burns only (a simulate sends no OPC, so nothing has happened since
+         * the first read). A refusal here leaves a used calibration slot and a
+         * blank program area. */
+        if ((ret = check_write_params(dev, wp_sent, wp_sent_len, &wp, 1)) !=
+            ACCUDISC_OK)
             goto done;
     } else {
         adsc_dev_trace_note(dev, "phase: power calibration SKIPPED (test "

@@ -892,7 +892,13 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 0 /* reset by 0.36.0. Previously:
+#define ACCUDISC_VERSION_PATCH 1 /* 0.48.1: a live burn reads page 05 back a
+                                  * SECOND time, after SEND OPC and before the
+                                  * cue sheet, so a drive that resets the page
+                                  * during power calibration is refused too
+                                  * (same ACCUDISC_ERR_WRITE_PARAMS). One more
+                                  * MODE SENSE per live burn; none in simulate.
+                                  * Reset by 0.36.0. Previously:
                                   * 0.35.1: accudisc_verify's TIER 2 NEVER
                                   * WORKED. It passed fn = NULL to
                                   * accudisc_counter_census, which required a
@@ -1011,13 +1017,21 @@ typedef enum accudisc_err {
                                       * does, so a shell loop is covered. */
     ACCUDISC_ERR_WRITE_PARAMS = -16, /* accudisc_write refused: the drive took
                                       * the write-parameters page (MODE SELECT
-                                      * page 05 answered GOOD) and, read back
-                                      * before anything touched the disc, does
-                                      * not hold it: write type, Test Write,
-                                      * BURN-Proof, multisession, data block
-                                      * type or session format differs from
-                                      * what was sent. Nothing was written; the
-                                      * disc is untouched and still blank.
+                                      * page 05 answered GOOD) and, read back,
+                                      * does not hold it: write type, Test
+                                      * Write, BURN-Proof, multisession, data
+                                      * block type or session format differs
+                                      * from what was sent. Nothing was
+                                      * written and the disc is still blank.
+                                      *
+                                      * The page is read twice. First after
+                                      * the speed is set and before the blank
+                                      * check: a refusal there leaves the disc
+                                      * untouched. Again (0.48.1, live burns
+                                      * only) after SEND OPC and before the
+                                      * cue sheet: a refusal there has used
+                                      * one power-calibration slot and nothing
+                                      * else. The log line says which.
                                       *
                                       * Its own code because the alternative is
                                       * silent. A drive left in Test Write runs

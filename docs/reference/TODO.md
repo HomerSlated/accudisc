@@ -341,7 +341,7 @@ specification). Then one fed 16x
 burn per drive. Around each burn, `accudisc --driver auto settings` before and
 after: `life.cd_write` must advance by about the burn's duration.
 
-## BUILT 0.48.0 — the burn reads page 05 back before touching the disc — 2026-10-06; hardware run open
+## BUILT 0.48.0 / 0.48.1 — the burn reads page 05 back before touching the disc, and again after OPC — 2026-10-06; hardware run open
 
 Proposed 2026-09-28, round trip built 2026-10-02 (`adsc_write_params_roundtrip`,
 `tools/wparamsprobe.c`), wired into the burn 2026-10-06. `adsc_write_run` now
@@ -381,9 +381,15 @@ sink's, so the test could not see the cut.
 
 - **Not run on the PX-716A.** The probe held on the original unit on 10-02;
   the burn's own read-back has only met the fake and CDEmu.
-- **A drive that resets page 05 on SEND OPC** is still not covered: OPC comes
-  after the read-back. Closing it needs a second MODE SENSE before the cue
-  sheet. Not built; Keith's call.
+- ~~A drive that resets page 05 on SEND OPC is not covered.~~ **BUILT 0.48.1,
+  2026-10-06, on Keith's go.** A live burn reads the page a second time after
+  SEND OPC and before the cue sheet, with the same comparison and refusal. A
+  refusal there has used one calibration slot; its log line says so and does
+  not call the disc untouched. A simulate sends no OPC and is read once. Two
+  more fake modes (reset on OPC, second read fails) and two more mutations
+  (second read disabled, moved before OPC) each fail a test. cdda2img quotes
+  the last log line of a refused burn, so `test_burn_flow` pins that the
+  refusal is the last thing logged on both paths.
 
 ## DONE 0.47.0 — `accudisc features` matches the tray state — Keith, 2026-09-28
 

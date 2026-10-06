@@ -707,10 +707,13 @@ with the laser off (test-write); requires a blank disc and an O_RDWR open.
     `--simulate` (free — laser off, no power calibration) or raise the budget
     deliberately;
   - `write_params` — the drive answered MODE SELECT page 05 GOOD and, read
-    back before the blank check, **does not hold** the page: write type, Test
-    Write, BURN-Proof, multisession, data block type or session format differs
-    from what was sent. **Nothing written; the disc is untouched and still
-    blank** (exit 2). Added 0.48.0; the library code is
+    back, **does not hold** the page: write type, Test Write, BURN-Proof,
+    multisession, data block type or session format differs from what was
+    sent. **Nothing written; the disc is still blank** (exit 2). The page is
+    read after the speed is set and before the blank check (a refusal there
+    leaves the disc untouched) and, on a live burn since 0.48.1, again after
+    power calibration and before the cue sheet (a refusal there has used one
+    calibration slot and nothing else). Added 0.48.0; the library code is
     `ACCUDISC_ERR_WRITE_PARAMS` (−16). Distinct from `error` because the medium
     is not at fault and the blank is reusable: a drive left in Test Write runs
     a whole burn with every command GOOD and hands back a blank disc. stderr

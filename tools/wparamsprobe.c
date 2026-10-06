@@ -24,7 +24,8 @@
  * MODE SELECT and the first WRITE; a drive that reset page 05 on either would
  * pass here. Since 0.48.0 the burn reads the page back itself after SET CD
  * SPEED and refuses if it is not held (ACCUDISC_ERR_WRITE_PARAMS), so that
- * half is closed there. A reset on SEND OPC is still not covered anywhere.
+ * half is closed there, and since 0.48.1 it reads the page again after SEND
+ * OPC, which closes the other.
  *
  *   cmake --build build
  *   gcc -O2 -o build/wparamsprobe tools/wparamsprobe.c -I include -I src \
