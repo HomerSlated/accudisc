@@ -32,6 +32,31 @@ built-in self-test) stay on record below and wait for Keith's lead. Hardware
 runs that completion needs are listed under their own entries and run when he
 chooses.
 
+**2026-10-10, about 01:00 BST — the PC would not boot until the rig was
+powered off at the bridge. Keith: "That Innostor device is definitely
+faulty."** Keith reported this to the System agent, which relayed it here; the
+quotation is his, the rest is a paraphrase.
+
+- Several boot attempts stalled in firmware, before GRUB and before the UEFI
+  boot screen.
+- The Plextor's LED was steady green with no disc in the drive.
+- He powered the rig off at the bridge, and only then did the machine boot.
+
+After that boot the Innostor bridge (USB 1f75:0611) and the PX-716A enumerated
+normally as `sr0`. That is the System agent's observation of the live machine;
+the drive was not probed, by either agent.
+
+Not recorded: which of the two PX-716A units was attached, and which supply fed
+the drive and the bridge that night. No Linux log can show the stall, because
+it happened before the kernel loaded.
+
+What it shows is the bridge-and-drive pair wedged hard enough to hold the PC's
+firmware. It does not by itself separate the bridge from the drive, and no test
+to separate them is proposed (the rule above). The bridge wedging is already on
+record below, under long reads on a disc that reads blank; this is a second
+way to reach it. It agrees with the decision above to leave adapters for a
+native IDE port, and changes nothing in the software work.
+
 ## Burns: the 2026-09-28 pause is LIFTED — Keith, 2026-10-02 21:07
 
 **"Yes the burn pause is lifted."** The pause was set on 09-28 pending a
