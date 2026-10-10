@@ -726,6 +726,106 @@ shift flag on either path, and anchoring without a slip each failed a test.
   Told cdda2img not to read `overlap_sectors` as a position check until this
   lands (correspondence 199.2).
 
+## The PX-716A lost 12 samples in one 40x whole-disc pass and not in the next — measured by cdda2img 2026-10-10; intermittent, a finding, no work item
+
+**The disc.** A second copy of Tracy Chapman, bought 2026-10-10. It is a
+different master from the first copy: lead-out 162842 against 162892, track 11
+at LBA 148630 against 148650 (correspondence 2026-10-10b). So it verifies
+against its own AccurateRip and CTDB entries, and nothing below compares the
+two discs sample for sample.
+
+**The rip** (cdda2img §231; PX-716A rev 1.11 on the Innostor bridge, engine
+0.48.1, `cdda2img rip` default profile, 17:02 to 17:13). Which of the two units
+was attached, and its power arrangement, are not recorded.
+
+- Whole-disc pass at 40x: all 162842 sectors, a capture of exactly
+  162842 × 2352 bytes. No command hung.
+- AccurateRip on that pass: tracks 1 to 4 OK, track 5 DAMAGED (its frame-450
+  sum matched), tracks 6 to 11 MISMATCH.
+- CTDB declined: damage exceeds the parity's capacity.
+- Track ladder 40, 32, 24, 8, 4x: tracks 5 to 11 each matched at 4x and at no
+  higher rung. Final 11 of 11 at confidence 200.
+
+**What the 40x pass actually held** (cdda2img §232; computed from data on disk,
+no drive access). The first-pass AccurateRip v1 sums of tracks 6 to 11 are each
+reproduced from the verified audio at a shift of **+12 samples**, and at no
+other shift within ±60000. Six independent 32-bit matches; shift 0 reproduces
+the verified sums as the control. Track 5's first-pass sum is reproduced at no
+shift. So twelve samples went missing once, somewhere in track 5 after its
+frame 450 and before LBA 72395, and every sector from there to the lead-out
+held the audio that belongs 12 samples later. The bytes were right and their
+position was wrong, which is why AccurateRip said MISMATCH on tracks 6 to 11,
+not DAMAGED.
+
+**A span read of track 5 did not repeat it** (cdda2img §234, 20:01). LBA 57535
+for 15160 sectors (track 5 with 300 sectors either side), 40x honoured, audio +
+C2 pointers + raw P-W as in the whole-disc pass. The engine reported
+`c2_bits=0 hard_errors=0 slips=0 rereads=0`. Compared sector by sector with the
+verified audio, every sector sits at the undisturbed position. Their locating
+tool found a planted 12-sample drop in a synthetic control first.
+
+**A second kept whole-disc pass read every sector in place** (cdda2img §235
+and §236, 20:05 to 20:08, on Keith's instruction). Three reads back to back
+with no spindle park between them, all asking for 40x:
+
+| read | sectors | wall | C2 bits | `slips` | against the verified audio |
+|---|---|---|---|---|---|
+| whole disc, audio + C2 + raw P-W | 162842 | 116.0 s | 0 | 0 | in place on every non-silent sector |
+| track 6 ±300, plain audio | 21557 | 12.4 s | 0 | 0 | in place throughout |
+| track 6 ±300, audio + C2 + raw P-W | 21557 | 14.6 s | 0 | 0 | in place throughout |
+
+Same disc, drive, engine build, speed setting and stream shape as the 17:02
+pass. **So the loss is not deterministic.**
+
+**The day's whole-disc passes on this disc** (cdda2img §232 and §236):
+
+| when | result |
+|---|---|
+| 17:02, cdda2img rip | displaced by +12 from track 5, confirmed |
+| 18:58, Keith's cdda2img rip | failed the same tracks 5 to 11, each recovered at 4x only; first-pass sums not kept, so whether it was out by 12 is not known |
+| 20:05, kept capture | in place |
+
+**Keith, 22:21: "The previous failures have mysteriously gone."** He suspects
+the Innostor bridge as the underlying cause. That is his reading and is not
+tested here; nothing above separates the bridge from the drive. cdda2img is
+building a slip check into its own code regardless.
+
+Also that day, same drive: Keith's rip of the first copy (19:06) verified at
+40x with track 8 repaired by CTDB, and cyanrip 0.9.3 verified all 11 tracks of
+the new disc at a net 4.0x to 4.8x.
+
+**Not known.**
+
+- Where in track 5 the samples went on the 17:02 pass, and what C2 and Q held
+  there. That pass's scratch capture was deleted.
+- What the ladder's reads at 40, 32, 24 and 8x returned. They did not match and
+  were not kept.
+- Whether a displaced state persists across seeks. The 20:05 run was built to
+  ask this and could not answer: the pass did not slip, so the span reads after
+  it had nothing to inherit.
+- The cause. cdda2img lists three differences between the failing rips and the
+  clean capture, none tested: the rip reads the full TOC and CD-Text on the
+  same device handle first; it passes `status_map` and `subq_map` buffers when
+  its display wants them; and the 18:58 rip was interactive.
+
+One side observation from §236, recorded without a reading attached: with
+`speed_honoured_x=40` on all three reads, the rate measured inside them was
+12.9x rising to 25.1x across the whole disc, and at the same radius about 25x
+for plain audio against about 20x for audio + C2 + raw P-W.
+
+**How it relates to the section below.** Twelve samples is two CIRC frames of 6
+samples, the quantum measured on the LITE-ON. Two things differ. That slip sat
+at a fixed disc position and reproduced on re-reads; this one did not appear in
+a span re-read or in a second whole-disc pass at the same speed. And that drive
+was the LH-20A1S; this is the PX-716A.
+
+**What it changes here: nothing.** The engine returned a complete, well-formed
+capture and only the caller's absolute gate showed it was displaced, which is
+RECOVERY.md's invariant again. cdda2img's Q slip counter read 0 on that pass,
+correctly: it compares Q position with the expected sector, and 12 samples
+moves no Q frame. Keith's 2026-09-19 ruling stands (a plain single-pass read
+gets no forced witness), and this entry does not reopen it.
+
 ## `[P1]` The LITE-ON slips whole CIRC frames, and no relative check can see it — MEASURED 2026-09-19, closes the `--overlap` question
 
 **Authorised single arm, reading rule frozen before the run.** 0.45.0, 9L09, 16x,
