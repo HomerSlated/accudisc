@@ -726,7 +726,7 @@ shift flag on either path, and anchoring without a slip each failed a test.
   Told cdda2img not to read `overlap_sectors` as a position check until this
   lands (correspondence 199.2).
 
-## The PX-716A lost 12 samples in one 40x whole-disc pass and not in the next — measured by cdda2img 2026-10-10; intermittent, a finding, no work item
+## The PX-716A lost 12 samples in two of four 40x whole-disc passes — measured by cdda2img 2026-10-10; intermittent, a finding, no work item
 
 **The disc.** A second copy of Tracy Chapman, bought 2026-10-10. It is a
 different master from the first copy: lead-out 162842 against 162892, track 11
@@ -777,13 +777,36 @@ with no spindle park between them, all asking for 40x:
 Same disc, drive, engine build, speed setting and stream shape as the 17:02
 pass. **So the loss is not deterministic.**
 
-**The day's whole-disc passes on this disc** (cdda2img §232 and §236):
+**The day's whole-disc passes on this disc** (cdda2img §232, §236 and §237):
 
 | when | result |
 |---|---|
-| 17:02, cdda2img rip | displaced by +12 from track 5, confirmed |
-| 18:58, Keith's cdda2img rip | failed the same tracks 5 to 11, each recovered at 4x only; first-pass sums not kept, so whether it was out by 12 is not known |
+| 17:02, cdda2img rip | 12 samples lost in track 5, confirmed from the first-pass AccurateRip sums |
+| 18:58, Keith's cdda2img rip | 12 samples lost in track 5; failed the same tracks 5 to 11, each recovered at 4x only |
 | 20:05, kept capture | in place |
+| about 22:15, Keith's cdda2img rip | in place |
+
+The 18:58 row was first recorded here as "not known", following §232; §237
+corrects it. Both failing rips recorded `ctdb_offset=+18` against the same CTDB
+entry. cdda2img's control, on files built from the verified audio with no drive
+access: an undisturbed copy gives `ctdb_offset=+30` and 11 of 11, and the same
+copy with 12 samples removed inside track 5 gives `+18` and 6 of 11 (tracks 6
+to 11). +18 is the read offset less 12. So the two failing passes lost the same
+amount in the same track.
+
+One observation over those four passes, which cdda2img labels as not a finding:
+the two clean passes set the speed explicitly (`speed_x=40`, `--ad-speed 40`),
+and the 17:02 rip passed no speed, leaving the drive to manage its own. What
+the 18:58 rip passed is not known. Against it, the ladder's re-reads set a
+speed and still failed at 40, 32, 24 and 8x.
+
+**cdda2img now repairs a displacement without a re-read** (§237, their
+`330fa08`). After CTDB and before any re-read, its rip looks for a shift at
+which a failed track verifies against AccurateRip and re-slices the track from
+the capture. Its ladder also tests a re-read that fails in place for a
+displaced copy, which is the record that will say whether the drive stays
+displaced across a seek the next time this happens. Tested offline and on the
+planted loss; not yet run on the drive. Nothing was asked of this library.
 
 **Keith, 22:21: "The previous failures have mysteriously gone."** He suspects
 the Innostor bridge as the underlying cause. That is his reading and is not
@@ -815,9 +838,10 @@ for plain audio against about 20x for audio + C2 + raw P-W.
 
 **How it relates to the section below.** Twelve samples is two CIRC frames of 6
 samples, the quantum measured on the LITE-ON. Two things differ. That slip sat
-at a fixed disc position and reproduced on re-reads; this one did not appear in
-a span re-read or in a second whole-disc pass at the same speed. And that drive
-was the LH-20A1S; this is the PX-716A.
+at a fixed disc position and reproduced on re-reads; this one appeared in two
+of four whole-disc passes, each time as 12 samples in track 5, and not in a
+span re-read at the same speed. And that drive was the LH-20A1S; this is the
+PX-716A.
 
 **What it changes here: nothing.** The engine returned a complete, well-formed
 capture and only the caller's absolute gate showed it was displaced, which is
