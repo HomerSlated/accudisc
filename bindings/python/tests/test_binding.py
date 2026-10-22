@@ -132,7 +132,8 @@ def test_struct_sizes_match_api_plan():
     table and the ABI rules were reasoned about, so a silent change should
     fail something.
     """
-    assert ffi.sizeof("accudisc_read_req") == 80   # 64 -> 72 in 0.22.0, 72 -> 80 in 0.45.0
+    assert ffi.sizeof("accudisc_read_req") == 88   # 64 -> 72 in 0.22.0, 72 -> 80 in 0.45.0,
+                                                   # 80 -> 88 in 0.49.0
     assert ffi.sizeof("accudisc_read_stats") == 160  # 136 -> 144 in 0.7.0,
                                                      # 144 -> 160 in 0.22.0
     assert ffi.sizeof("accudisc_chunk") == 32
@@ -626,6 +627,7 @@ def test_public_dataclass_field_names_are_pinned():
         "subq_total", "subq_ok", "subq_misposition",
         "speed_requested_x", "speed_honoured_x",
         "buffer_peak_chunks", "buffer_stalls",
+        "cache_defeat",  # 0.49.0: whether the pre-read far read ran
     }
 
     assert {f.name for f in dataclasses.fields(ad.Chunk)} == {
@@ -653,6 +655,40 @@ def test_public_dataclass_field_names_are_pinned():
     assert {m.name for m in ad.SubQState} == {
         "PENDING", "OK", "BAD", "NO_POSITION", "NO_AUDIO", "MISPOSITION",
     }
+    assert {m.name for m in ad.CacheDefeat} == {"OFF", "DONE", "FAILED"}
+
+
+def test_cache_defeat_is_wired_through():
+    """0.49.0: the keyword reaches the C field, and the record comes back.
+
+    Device-free, so the three links a drive would hide are checked directly:
+    the enum carries the header's values (a wrong one would report a far read
+    that never ran as DONE), the keyword exists and is OFF by default (every
+    existing read unchanged), and the stats conversion maps the C byte rather
+    than dropping it, which is how three ReadStats fields once went missing.
+    """
+    import inspect
+
+    assert int(ad.CacheDefeat.OFF) == lib.ACCUDISC_CACHE_DEFEAT_OFF
+    assert int(ad.CacheDefeat.DONE) == lib.ACCUDISC_CACHE_DEFEAT_DONE
+    assert int(ad.CacheDefeat.FAILED) == lib.ACCUDISC_CACHE_DEFEAT_FAILED
+    assert len({int(m) for m in ad.CacheDefeat}) == 3
+
+    p = inspect.signature(ad.Device.read).parameters["cache_defeat"]
+    assert p.default is False
+
+    for value in (lib.ACCUDISC_CACHE_DEFEAT_OFF, lib.ACCUDISC_CACHE_DEFEAT_DONE,
+                  lib.ACCUDISC_CACHE_DEFEAT_FAILED):
+        c = ffi.new("accudisc_read_stats*")
+        c.size = ffi.sizeof("accudisc_read_stats")
+        c.cache_defeat = value
+        st = ad._stats_from_c(c)
+        assert st.cache_defeat == value
+        assert isinstance(st.cache_defeat, ad.CacheDefeat)
+
+    # The C field the keyword sets, at the offset the ABI test pins.
+    assert ffi.offsetof("accudisc_read_req", "cache_defeat") == 80
+    assert ffi.offsetof("accudisc_read_stats", "cache_defeat") == 148
 
 
 def test_features_names_what_the_version_cannot():
@@ -673,6 +709,7 @@ def test_features_names_what_the_version_cannot():
     assert "speed_honoured" in ad.features
     assert "write_governor" in ad.features
     assert "acquisition_strategies" in ad.features
+    assert "cache_defeat" in ad.features  # 0.49.0; cdda2img detects on it
     assert "no_such_capability" not in ad.features
 
 

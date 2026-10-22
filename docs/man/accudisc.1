@@ -1026,6 +1026,21 @@ consensus votes must be speed-diverse, because a drive can misread the same way
 at the same speed every time. Verify passes themselves stream at the pass speed
 \(em drives recalibrate on every speed change, so per-chunk switching thrashes.
 .TP
+.B \-\-cache\-defeat
+Before the first transfer, and after
+.B \-\-speed
+is applied, read one sector 5000 sectors outside the span and discard it, so a
+re-read straight after another read is not answered from the drive's cache.
+One command, never retried, and it never fails the read; the summary line
+reports
+.BR cache_defeat=done ,
+.B failed
+(refused, typically past the lead-out), or
+.B off
+when not asked for. It assumes the drive drops its cache on a non-sequential
+read: measured on a LITE-ON LH-20A1S, not on a Plextor PX-716A. Off by
+default (0.49.0).
+.TP
 .BI \-\-speed " X"
 Set the drive read speed to
 .RI X x

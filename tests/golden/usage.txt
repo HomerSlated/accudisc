@@ -157,6 +157,10 @@ read options:
                  32,16,8,4 — attempt n runs at the n-th speed;
                  pass speed is restored for streaming
   --speed X      set drive read speed to Xx first (best-effort)
+  --cache-defeat before the first transfer, read one sector 5000
+                 away, so a re-read straight after another read
+                 is not answered from the drive's cache (off by
+                 default)
   --uncap        lift the vendor read-speed cap for this read only,
                  restoring the drive's prior setting afterwards
                  (needs --driver; Plextor: SpeedRead). Note the
@@ -176,7 +180,8 @@ read options:
                  'progress <done> <total>' lines, then a final
                  'summary hard= c2= recovered= suspect= rereads=
                  slips= subq_total= subq_ok= subq_bad=
-                 subq_misposition= buffer_peak= buffer_stalls='
+                 subq_misposition= buffer_peak= buffer_stalls=
+                 cache_defeat='
                  line, or 'error write <lane> <errno>' if an output
                  file could not be written (stable format; -q does
                  not mute it). Full key list:

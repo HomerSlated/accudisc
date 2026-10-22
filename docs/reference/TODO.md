@@ -743,8 +743,20 @@ was attached, and its power arrangement, are not recorded.
 - AccurateRip on that pass: tracks 1 to 4 OK, track 5 DAMAGED (its frame-450
   sum matched), tracks 6 to 11 MISMATCH.
 - CTDB declined: damage exceeds the parity's capacity.
-- Track ladder 40, 32, 24, 8, 4x: tracks 5 to 11 each matched at 4x and at no
-  higher rung. Final 11 of 11 at confidence 200.
+- Track ladder over the rungs 40, 32, 24, 8 and 4x: tracks 5 to 11 each matched
+  at 4x. Final 11 of 11 at confidence 200.
+
+**Corrected 2026-10-22 (cdda2img §238).** cdda2img's ladder has walked its
+rungs slowest-first since 2026-07-25: the list arrived fastest-first and was
+reversed once more. So 4x was the first rung of each pass, and a `matched@4X`
+was attempt 1, 6 or 11, most simply the first. Four statements in this entry
+followed §231, §232 and §237 and are withdrawn: that no track matched at a
+higher rung, that the 18:58 rip recovered each track "at 4x only", that the
+ladder's re-reads failed at 40, 32, 24 and 8x, and what those re-reads
+returned. Nothing on record shows a re-read at those rungs failing, or
+happening at all. Unaffected: the 12 samples lost in two of four passes, the
++12 position of tracks 6 to 11, and the clean span reads of track 5. §238
+reports Keith's ruling that the walk is fastest-first; cdda2img is fixing it.
 
 **What the 40x pass actually held** (cdda2img §232; computed from data on disk,
 no drive access). The first-pass AccurateRip v1 sums of tracks 6 to 11 are each
@@ -782,7 +794,7 @@ pass. **So the loss is not deterministic.**
 | when | result |
 |---|---|
 | 17:02, cdda2img rip | 12 samples lost in track 5, confirmed from the first-pass AccurateRip sums |
-| 18:58, Keith's cdda2img rip | 12 samples lost in track 5; failed the same tracks 5 to 11, each recovered at 4x only |
+| 18:58, Keith's cdda2img rip | 12 samples lost in track 5; failed the same tracks 5 to 11, each recovered at 4x |
 | 20:05, kept capture | in place |
 | about 22:15, Keith's cdda2img rip | in place |
 
@@ -797,8 +809,7 @@ amount in the same track.
 One observation over those four passes, which cdda2img labels as not a finding:
 the two clean passes set the speed explicitly (`speed_x=40`, `--ad-speed 40`),
 and the 17:02 rip passed no speed, leaving the drive to manage its own. What
-the 18:58 rip passed is not known. Against it, the ladder's re-reads set a
-speed and still failed at 40, 32, 24 and 8x.
+the 18:58 rip passed is not known. It remains one observation.
 
 **cdda2img now repairs a displacement without a re-read** (§237, their
 `330fa08`). After CTDB and before any re-read, its rip looks for a shift at
@@ -821,8 +832,8 @@ the new disc at a net 4.0x to 4.8x.
 
 - Where in track 5 the samples went on the 17:02 pass, and what C2 and Q held
   there. That pass's scratch capture was deleted.
-- What the ladder's reads at 40, 32, 24 and 8x returned. They did not match and
-  were not kept.
+- Whether the ladder read any track at 40, 32, 24 or 8x. Its walk began at 4x
+  (see the correction above).
 - Whether a displaced state persists across seeks. The 20:05 run was built to
   ask this and could not answer: the pass did not slip, so the span reads after
   it had nothing to inherit.
@@ -7457,7 +7468,30 @@ in cdda2img, once in 8trax, and once in the next front end.
 arrive. Not urgent — cdda2img is explicit that it is not a blocker and they are
 not burning.
 
-### 2. The ladder driver: sweep-then-gate, NOT a caller predicate — `[P2]`
+### 2. The ladder driver: sweep-then-gate, NOT a caller predicate — SUPERSEDED 2026-10-22: BUILT as `read_req.cache_defeat` (0.49.0), no sweep call
+
+**Keith's ruling, 2026-10-22 (correspondence 2026-10-22a/b, cdda2img §238,
+§239): no `read_sweep`. An opt-in cache defeat on the existing read instead.**
+With the AccurateRip gate between calls and the rung order owned by cdda2img,
+the sweep is a loop of ordinary reads on their side. A one-rung sweep call
+would have been `accudisc_read_cdda` plus one far read, and the multi-rung form
+had no caller. The order stays theirs: their ladder walked slowest-first from
+2026-07-25 because two components each reversed the same list, and a library
+ordering it too would have made three. Their fix is `7372e29` (fastest-first,
+Keith's ruling).
+
+What shipped: `accudisc_read_req.cache_defeat` reads one sector 5000 sectors
+outside the span after the pass speed is set and before the first transfer.
+One command, no retry, never fails the read; `accudisc_read_stats.cache_defeat`
+records OFF/DONE/FAILED. CLI `--cache-defeat`, summary key `cache_defeat=`;
+Python `read(cache_defeat=True)`, `ReadStats.cache_defeat`, feature name
+`"cache_defeat"`. Tests: `tests/test_cache_defeat.c` (fake drive, 8 cases on
+the command stream); ten engine mutations each failed a case. **Measured on a
+LITE-ON LH-20A1S only (2026-09-18); unmeasured on the PX-716A** — and the
+header says what it assumes about eviction. cdda2img sets it on every ladder
+attempt once 0.49.0 lands.
+
+The record below is kept as the reasoning that led here.
 
 Settled with cdda2img across §181 §4 / §182 §1, and worth recording because the
 losing option is the one that looks more efficient.

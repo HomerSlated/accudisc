@@ -384,7 +384,7 @@ Newline-delimited machine tokens on caller-supplied fd `N` (unaffected by
 progress <done> <total>
 summary hard=<n> c2=<n> recovered=<n> suspect=<n> rereads=<n> slips=<n>
         subq_total=<n> subq_ok=<n> subq_bad=<n> subq_misposition=<n>
-        buffer_peak=<n> buffer_stalls=<n>
+        buffer_peak=<n> buffer_stalls=<n> cache_defeat=<off|done|failed>
 error write <lane> <strerror>
 ```
 (the `summary` line is one physical line; wrapped here only to fit)
@@ -407,6 +407,18 @@ LBA than the one commanded** (0 unless `--sub raw` was requested), and
 `buffer_peak`/`buffer_stalls` = AccuBuffer high-water mark and the number of
 times the drive had to wait for a free slot (both 0 unless `--buffer` was
 given).
+
+**`cache_defeat` (0.49.0)** is `off` unless `--cache-defeat` was given. With it,
+`done` means the one far read before the first transfer completed, and `failed`
+means it was refused (typically past the lead-out, on a span that starts below
+LBA 5000 and ends near the end of the disc) and the read went ahead without it.
+`failed` does not change the exit code: it is not a read error. It means the
+read may have been answered partly from the drive's cache, which is what the
+option was asked to rule out. Library: `accudisc_read_req.cache_defeat` and
+`accudisc_read_stats.cache_defeat` (`ACCUDISC_CACHE_DEFEAT_*`); Python:
+`read(cache_defeat=True)` and `ReadStats.cache_defeat`, detected by
+`"cache_defeat" in accudisc.features`. Measured on a LITE-ON LH-20A1S only;
+see the header for what it assumes about the drive's cache.
 
 **`buffer_stalls=0` means the buffer did nothing.** It is the honest answer to
 "did it help?", which a throughput figure cannot give — a read that was never

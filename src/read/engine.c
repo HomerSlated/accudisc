@@ -249,6 +249,30 @@ static void cache_defeat(struct rd *r, uint32_t cur)
                      ACCUDISC_SUB_NONE, r->flush, ACCUDISC_BYTES_AUDIO);
 }
 
+/* accudisc_read_req.cache_defeat (0.49.0): the same one-sector far read, once,
+ * before the FIRST transfer, placed OUTSIDE the span. cache_defeat() above
+ * steps forward from the sector being re-read, which for the head of a long
+ * span lands inside it, and a drive that reads ahead would then cache sectors
+ * this read is about to ask for. One command and no retry:
+ * the caller asked for exactly that, and a failure only means the read goes
+ * ahead as it would have without the option. */
+static uint8_t defeat_before_read(struct rd *r)
+{
+    const accudisc_read_req *req = r->req;
+    uint64_t away = req->lba >= ADSC_FLUSH_DISTANCE
+                        ? (uint64_t)req->lba - ADSC_FLUSH_DISTANCE
+                        : (uint64_t)req->lba + req->count - 1 +
+                              ADSC_FLUSH_DISTANCE;
+
+    if (away > UINT32_MAX)
+        return ACCUDISC_CACHE_DEFEAT_FAILED; /* no address to try */
+    return adsc_mmc_read_cd(r->dev, (uint32_t)away, 1, r->sector_type,
+                            ACCUDISC_C2_NONE, ACCUDISC_SUB_NONE, r->flush,
+                            ACCUDISC_BYTES_AUDIO) == ACCUDISC_OK
+               ? ACCUDISC_CACHE_DEFEAT_DONE
+               : ACCUDISC_CACHE_DEFEAT_FAILED;
+}
+
 static int read_sector(struct rd *r, uint32_t lba, uint8_t *dst)
 {
     return adsc_mmc_read_cd(r->dev, lba, 1, r->sector_type, r->req->c2,
@@ -945,6 +969,12 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             goto out;
         ab_live = 1;
     }
+
+    /* After the pass speed and before the first transfer, so the read that
+     * follows starts from a cache this read emptied, at the speed it asked
+     * for. Never fails the read; the stats say whether it ran. */
+    if (req->cache_defeat)
+        r.st.cache_defeat = defeat_before_read(&r);
 
     uint32_t lba = req->lba;
     uint32_t remaining = req->count;

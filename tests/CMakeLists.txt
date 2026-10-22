@@ -34,7 +34,8 @@ foreach(t test_version test_cdb test_sense test_toc test_map test_decode
         test_cdtext_encode test_discinfo test_alloc_even test_uncap test_plan
         test_abi test_speeds test_rs16 test_rs16_kat test_ctdb_api
         test_write_offset test_accubuf test_write_health test_trace test_ready
-        test_layout test_consensus test_wparams test_features)
+        test_layout test_consensus test_wparams test_features
+        test_cache_defeat)
     add_executable(${t} ${t}.c)
     # test_accubuf drives the ring's own threads; the others do not care.
     target_link_libraries(${t} PRIVATE accudisc_static Threads::Threads)
@@ -117,6 +118,9 @@ target_link_options(test_wparams PRIVATE -Wl,--wrap=adsc_dev_exec)
 # And for the feature probe in each tray state: "not applicable" must mean the
 # smoke reads were NOT SENT, which only a fake that counts them can show.
 target_link_options(test_features PRIVATE -Wl,--wrap=adsc_dev_exec)
+# And for the pre-read cache defeat: where the far read went, when, and how
+# often are properties of the command stream, which only the seam records.
+target_link_options(test_cache_defeat PRIVATE -Wl,--wrap=adsc_dev_exec)
 
 add_executable(test_burn_flow test_burn_flow.c
                ${PROJECT_SOURCE_DIR}/src/write/burn.c

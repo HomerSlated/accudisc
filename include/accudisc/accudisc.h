@@ -27,7 +27,16 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 48 /* 0.48.0: accudisc_write reads mode page 05
+#define ACCUDISC_VERSION_MINOR 49 /* 0.49.0: accudisc_read_req.cache_defeat,
+                                  * OPT-IN: one far read before the first
+                                  * transfer, so a re-read straight after
+                                  * another read is not answered from the
+                                  * drive's cache. read_req 80 -> 88:
+                                  * reserved1 covers 0.48.1's tail padding and
+                                  * is never read. accudisc_read_stats.
+                                  * cache_defeat says what happened, in what
+                                  * was padding: read_stats stays 160.
+                                  * Previously 0.48.0: accudisc_write reads mode page 05
                                   * back before touching the disc and refuses,
                                   * with the new ACCUDISC_ERR_WRITE_PARAMS
                                   * (-16), a drive that does not hold the page
@@ -892,7 +901,8 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 1 /* 0.48.1: a live burn reads page 05 back a
+#define ACCUDISC_VERSION_PATCH 0 /* reset by 0.49.0. Previously:
+                                  * 0.48.1: a live burn reads page 05 back a
                                   * SECOND time, after SEND OPC and before the
                                   * cue sheet, so a drive that resets the page
                                   * during power calibration is refused too
@@ -3606,6 +3616,55 @@ typedef struct accudisc_read_req {
      * and only an absolute gate (AccurateRip/CTDB, in the caller) can tell.
      * Not a position check on every sector — a slip with no C2 flag within a
      * chunk of it is not seen. verify_passes >= 2 is. */
+    uint8_t reserved1[7]; /* NEVER READ. Tail padding from 0.45.0 through
+                           * 0.48.1, so a caller's bytes 73-79 may hold
+                           * anything and `size` reads 80 either way: the
+                           * reserved0 case again. cache_defeat starts at 80
+                           * instead, beyond an older caller's declared end,
+                           * where the import zero-extends it. Leave zero; the
+                           * library ignores it. */
+    uint8_t cache_defeat;
+    /* 0.49.0, OPT-IN: before the FIRST transfer, once the pass speed is set,
+     * read one sector 5000 sectors away from the span and throw it away:
+     * before the span's first sector, or after its last when the span starts
+     * below LBA 5000. Rereads and witness passes already do this before every
+     * re-read. The first transfer of a read never did.
+     *
+     * WHY. A read that starts where the previous read left the drive's cache
+     * can be answered from that cache instead of the disc. The case it is for
+     * is a speed-ladder re-read of a short span straight after a read at
+     * another speed: answered from cache, it is not a read at its own speed
+     * at all, and nothing in the result says so. cdda2img's track ladder sets
+     * it on every attempt (correspondence 238, 239).
+     *
+     * WHAT IT ASSUMES: that the drive drops its read cache on a non-sequential
+     * read. MEASURED on a LITE-ON LH-20A1S, 2026-09-18 (correspondence 18s):
+     * one sector 5000 away made the next read of a 49-sector span fresh 3/3,
+     * and one sector read anywhere else displaced a cached 49-sector span
+     * 12/12, which plain LRU cannot do. Limits: one drive, one disc, and "some
+     * sector changed" cannot exclude a read that was partly cached. NOT
+     * MEASURED ON THE PX-716A. A drive that keeps segments across a far read
+     * (a segmented buffer) is not defeated by it, and nothing in this library
+     * would show that.
+     *
+     * ONE COMMAND, NO RETRY, and it cannot fail the read: its error is not
+     * counted in sense_*, hard_errors or rereads. accudisc_read_stats.
+     * cache_defeat records what happened.
+     *
+     * NO ROOM. The engine does not read the TOC, so it cannot know where the
+     * disc ends. A span that starts below LBA 5000 and ends within 5000
+     * sectors of the lead-out, such as a one-track disc read whole, sends the
+     * far read past the lead-out. A drive that refuses it leaves the read
+     * exactly as it is without this option, recorded as FAILED. A drive that
+     * reads into the lead-out may complete it, and then it was a real far
+     * read, recorded as DONE. On a Mixed Mode disc the sector before the span
+     * can fall in the data track and be refused the same way, because the far
+     * read uses the read's own sector type.
+     *
+     * Costs one seek per read. Off by default, so every existing read is
+     * unchanged. A caller that sets it against a library older than 0.49.0
+     * gets ACCUDISC_ERR_ABI (the IN rule above), never a silently plain
+     * read. */
 } accudisc_read_req;
 
 /* One delivered chunk. data holds nsec sectors, each sector_len bytes laid
@@ -3757,8 +3816,23 @@ typedef struct accudisc_read_stats {
      * climbing means it was full — undersized, or a sink sustainably slower
      * than the drive, which no size fixes. */
     uint32_t buffer_peak_chunks;
+    /* 0.49.0: what accudisc_read_req.cache_defeat did, ACCUDISC_CACHE_DEFEAT_*
+     * below, so a record can tell a defeated read from one that was not. It
+     * sits here, between the two AccuBuffer counters, because these were
+     * padding bytes: sizeof and every offset are unchanged, and any caller
+     * whose declared size reaches offset 148 gets it. From a library older
+     * than 0.49.0 this byte is that library's padding and means nothing, so
+     * check the version (Python: "cache_defeat" in accudisc.features) before
+     * reading it. */
+    uint8_t cache_defeat;
     uint64_t buffer_stalls;
 } accudisc_read_stats;
+
+/* accudisc_read_stats.cache_defeat */
+#define ACCUDISC_CACHE_DEFEAT_OFF    0 /* not asked for */
+#define ACCUDISC_CACHE_DEFEAT_DONE   1 /* the far read completed */
+#define ACCUDISC_CACHE_DEFEAT_FAILED 2 /* refused, or no address to try; the
+                                        * read went ahead without it */
 
 /* Blocking. Streams req->count sectors from req->lba into sink (which may be
  * NULL to read for status/stats only). stats may be NULL. */

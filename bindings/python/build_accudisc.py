@@ -655,6 +655,8 @@ typedef struct accudisc_read_req {
     uint32_t buffer_bytes;
     uint8_t reserved0[4];
     uint8_t c2_witness;
+    uint8_t reserved1[7];
+    uint8_t cache_defeat;
     ...;
 } accudisc_read_req;
 
@@ -693,9 +695,14 @@ typedef struct accudisc_read_stats {
     uint16_t speed_honoured_x;
     uint32_t subq_misposition;
     uint32_t buffer_peak_chunks;
+    uint8_t cache_defeat;
     uint64_t buffer_stalls;
     ...;
 } accudisc_read_stats;
+
+#define ACCUDISC_CACHE_DEFEAT_OFF ...
+#define ACCUDISC_CACHE_DEFEAT_DONE ...
+#define ACCUDISC_CACHE_DEFEAT_FAILED ...
 
 int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                        accudisc_sink_fn sink, void *user,

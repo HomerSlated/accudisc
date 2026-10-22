@@ -176,6 +176,10 @@ static void usage(FILE *to)
         "                 32,16,8,4 — attempt n runs at the n-th speed;\n"
         "                 pass speed is restored for streaming\n"
         "  --speed X      set drive read speed to Xx first (best-effort)\n"
+        "  --cache-defeat before the first transfer, read one sector 5000\n"
+        "                 away, so a re-read straight after another read\n"
+        "                 is not answered from the drive's cache (off by\n"
+        "                 default)\n"
         "  --uncap        lift the vendor read-speed cap for this read only,\n"
         "                 restoring the drive's prior setting afterwards\n"
         "                 (needs --driver; Plextor: SpeedRead). Note the\n"
@@ -195,7 +199,8 @@ static void usage(FILE *to)
         "                 'progress <done> <total>' lines, then a final\n"
         "                 'summary hard= c2= recovered= suspect= rereads=\n"
         "                 slips= subq_total= subq_ok= subq_bad=\n"
-        "                 subq_misposition= buffer_peak= buffer_stalls='\n"
+        "                 subq_misposition= buffer_peak= buffer_stalls=\n"
+        "                 cache_defeat='\n"
         "                 line, or 'error write <lane> <errno>' if an output\n"
         "                 file could not be written (stable format; -q does\n"
         "                 not mute it). Full key list:\n"
@@ -2337,6 +2342,17 @@ static void lane_free(uint8_t *p, const char *path, uint32_t count)
         free(p);
 }
 
+/* accudisc_read_stats.cache_defeat as the summary line's token. */
+static const char *cache_defeat_str(uint8_t s)
+{
+    switch (s) {
+    case ACCUDISC_CACHE_DEFEAT_OFF:    return "off";
+    case ACCUDISC_CACHE_DEFEAT_DONE:   return "done";
+    case ACCUDISC_CACHE_DEFEAT_FAILED: return "failed";
+    default:                           return "unknown";
+    }
+}
+
 static int cmd_read(accudisc_device *dev, int argc, char **argv)
 {
     accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
@@ -2438,6 +2454,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             req.c2_retries = (uint8_t)strtol(optv, NULL, 0);
         else if (!strcmp(a, "--c2-witness"))
             req.c2_witness = 1;
+        else if (!strcmp(a, "--cache-defeat"))
+            req.cache_defeat = 1;
         else if (opt_val(argv, argc, &i, "--verify", &optv, &optbad))
             req.verify_passes = (uint8_t)strtol(optv, NULL, 0);
         else if (opt_val(argv, argc, &i, "--overlap", &optv, &optbad))
@@ -2828,6 +2846,16 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         fprintf(stderr, "  Q MISPOSITION    : %llu sectors whose valid Q named "
                         "a DIFFERENT LBA than requested\n",
                 (unsigned long long)st.subq_misposition);
+    /* Only when asked for, like the AccuBuffer line. A failed far read is not
+     * an error, since the read went ahead as it would have without it, but it
+     * is said: the caller asked for a read the cache could not answer and did
+     * not get one. */
+    if (req.cache_defeat)
+        fprintf(stderr, "  cache defeat     : %s\n",
+                st.cache_defeat == ACCUDISC_CACHE_DEFEAT_DONE
+                    ? "done (one far read before the first transfer)"
+                    : "FAILED (the far read did not complete; the read "
+                      "went ahead without it)");
     if (req.c2_retries || req.verify_passes >= 2 || req.overlap_sectors ||
         req.c2_witness)
         fprintf(stderr, "  accuracy         : %llu recovered, %llu suspect, "
@@ -2845,7 +2873,7 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                 "summary hard=%llu c2=%llu recovered=%llu suspect=%llu "
                 "rereads=%llu slips=%llu subq_total=%llu subq_ok=%llu "
                 "subq_bad=%llu subq_misposition=%llu buffer_peak=%u "
-                "buffer_stalls=%llu\n",
+                "buffer_stalls=%llu cache_defeat=%s\n",
                 (unsigned long long)st.hard_errors,
                 (unsigned long long)st.sectors_flagged,
                 (unsigned long long)st.sectors_recovered,
@@ -2857,7 +2885,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
                 (unsigned long long)(st.subq_total - st.subq_ok),
                 (unsigned long long)st.subq_misposition,
                 st.buffer_peak_chunks,
-                (unsigned long long)st.buffer_stalls);
+                (unsigned long long)st.buffer_stalls,
+                cache_defeat_str(st.cache_defeat));
     /* Exit 3 = delivered but degraded: the caller should gate before
      * trusting the image (relative signals only — see the header). */
     ret = (st.hard_errors || st.sectors_suspect || st.sectors_flagged) ? 3

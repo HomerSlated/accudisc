@@ -57,7 +57,15 @@ _Static_assert(sizeof(accudisc_speed_rung) == 20,
  * updating the number below, bumping ACCUDISC_VERSION_MINOR so the .so version
  * moves with the layout, and adding a row to API_PLAN §8. Tripping these is a
  * reminder, not a defect. */
-_Static_assert(sizeof(accudisc_read_req) == 80, "read_req grew — see above");
+_Static_assert(sizeof(accudisc_read_req) == 88, "read_req grew — see above");
+/* 0.49.0: 80 -> 88, the same move again. 0.45.0's struct ended in seven bytes
+ * of tail padding at 73, so cache_defeat does not go there: reserved1 covers
+ * 73-79 and is never read, and cache_defeat sits at 80, beyond a 0.48.1
+ * caller's declared end, where the import zero-extends it. */
+_Static_assert(offsetof(accudisc_read_req, reserved1) == 73,
+               "read_req: reserved1 must cover 0.48.1's padding");
+_Static_assert(offsetof(accudisc_read_req, cache_defeat) == 80,
+               "read_req: cache_defeat must sit past 0.48.1's end");
 /* 0.45.0: 72 -> 80. c2_witness is DELIBERATELY not in 0.44.0's tail padding
  * at 68: padding is not guaranteed zero in a caller's struct, and `size`
  * would read 72 for old and new alike, so garbage there would switch it on.
@@ -76,6 +84,14 @@ _Static_assert(sizeof(accudisc_read_stats) == 160, "read_stats grew — see abov
  * to the tail rather than beside the counters they belong with. */
 _Static_assert(offsetof(accudisc_read_stats, subq_misposition) == 140,
                "subq_misposition moved: 0.21.0 consumers read the wrong field");
+/* 0.49.0 put read_stats.cache_defeat in the padding between the two AccuBuffer
+ * counters. It must not have moved anything: buffer_stalls keeps its offset
+ * and the size stays 160 (asserted above). */
+_Static_assert(offsetof(accudisc_read_stats, cache_defeat) == 148,
+               "read_stats: cache_defeat was supposed to land in padding");
+_Static_assert(offsetof(accudisc_read_stats, buffer_stalls) == 152,
+               "read_stats: buffer_stalls moved: 0.22.0 consumers read the "
+               "wrong field");
 _Static_assert(sizeof(accudisc_write_opts) == 32, "write_opts grew — see above");
 /* 24 -> 32 in 0.26.0: `burnproof` appended at offset 24. Guarded by the `size`
  * field, so a 0.25.0 caller passing 24 is honoured and simply gets AUTO. */
@@ -253,6 +269,19 @@ int main(void)
         rc = adsc_abi_import(&dst, sizeof dst, src, oldlen);
         ck(rc == ACCUDISC_OK && dst.c2_witness == 0,
            "import: 0.44.0 caller's garbage padding does not set c2_witness");
+    }
+
+    /* ---- import: a 0.48.1 caller (80 bytes) with GARBAGE in bytes 73-79,
+     * its tail padding. They must not reach cache_defeat, which would add a
+     * far read to a read whose caller changed nothing. ---- */
+    {
+        const uint32_t oldlen = 80;
+        memset(src, 0, sizeof src);
+        memcpy(src, &oldlen, sizeof oldlen);
+        memset(src + 73, 0xFF, 7);
+        rc = adsc_abi_import(&dst, sizeof dst, src, oldlen);
+        ck(rc == ACCUDISC_OK && dst.cache_defeat == 0,
+           "import: 0.48.1 caller's garbage padding does not set cache_defeat");
     }
 
     /* ---- import: an ABSURD size must be refused BEFORE the tail is scanned.

@@ -72,7 +72,7 @@ __all__ = [
     "Cancelled", "CrcError",
     "NotFound", "AbiMismatch", "RetainedBufferError",
     "C2", "Sub", "MapState", "SubQState", "Anomaly", "TocSource", "TocDegrade",
-    "C2Verdict", "FeaturesMedium",
+    "C2Verdict", "FeaturesMedium", "CacheDefeat",
     "DiscKind", "DiscReason", "TrayState", "DiscProbe",
     "CtdbRepair", "ctdb_repair",
     "Verdict", "WriteResult",
@@ -177,6 +177,11 @@ features = frozenset({
     # "not asked" rather than "failed" with no disc or no audio loaded. Absent
     # means an all-False combos dict cannot be told from an empty tray.
     "features_medium",
+    # Device.read(cache_defeat=True) and ReadStats.cache_defeat exist (0.49.0):
+    # one far read before the first transfer, and a record of whether it ran.
+    # Absent means neither exists. Do not read it from library_version(): a
+    # stale wrapper over a 0.49.0 .so has no keyword to pass.
+    "cache_defeat",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -686,6 +691,20 @@ class FeaturesMedium(enum.IntEnum):
     AUDIO = lib.ACCUDISC_FEATURES_MEDIUM_AUDIO
     NONE = lib.ACCUDISC_FEATURES_MEDIUM_NONE
     NO_AUDIO = lib.ACCUDISC_FEATURES_MEDIUM_NO_AUDIO
+
+
+class CacheDefeat(enum.IntEnum):
+    """What ``Device.read(cache_defeat=True)`` did (0.49.0).
+
+    ``FAILED`` is not an error: the far read was refused, or there was no
+    address to try, and the read went ahead exactly as it would have without
+    the option. It does mean the read may have been answered from the drive's
+    cache, which is what the option was asked to rule out.
+    """
+
+    OFF = lib.ACCUDISC_CACHE_DEFEAT_OFF
+    DONE = lib.ACCUDISC_CACHE_DEFEAT_DONE
+    FAILED = lib.ACCUDISC_CACHE_DEFEAT_FAILED
 
 
 class WriteResult(enum.Enum):
@@ -1466,6 +1485,7 @@ class ReadStats:
     subq_misposition: int
     buffer_peak_chunks: int
     buffer_stalls: int
+    cache_defeat: CacheDefeat
 
     @property
     def speed_quantized(self) -> bool:
@@ -3306,8 +3326,18 @@ class Device:
         cancel: Cancel | None = None,
         buffer_bytes: int = 0,
         c2_witness: bool = False,
+        cache_defeat: bool = False,
     ) -> ReadResult:
         """Stream ``count`` sectors from ``lba`` to ``sink``.
+
+        ``cache_defeat`` (0.49.0, off by default): before the first transfer,
+        read one sector 5000 sectors away from the span, so a re-read straight
+        after another read is not answered from the drive's cache. One command,
+        no retry, and it never fails the read; ``ReadStats.cache_defeat`` says
+        whether it ran (:class:`CacheDefeat`). It assumes the drive drops its
+        cache on a non-sequential read: measured on a LITE-ON LH-20A1S, not on
+        a PX-716A. Detect it with ``"cache_defeat" in accudisc.features``; see
+        ``cache_defeat`` in accudisc.h.
 
         ``c2_witness`` (0.45.0, off by default, needs ``c2`` other than
         ``C2.NONE`` or the read raises): where C2 fires, that chunk and both
@@ -3415,6 +3445,7 @@ class Device:
         req.verify_passes = verify_passes
         req.overlap_sectors = overlap_sectors
         req.c2_witness = 1 if c2_witness else 0
+        req.cache_defeat = 1 if cache_defeat else 0
 
         keepalive: list = []
         if speed_ladder:
@@ -4289,6 +4320,7 @@ def _stats_from_c(s) -> ReadStats:
         subq_misposition=s.subq_misposition,
         buffer_peak_chunks=s.buffer_peak_chunks,
         buffer_stalls=s.buffer_stalls,
+        cache_defeat=CacheDefeat(s.cache_defeat),
     )
 
 
