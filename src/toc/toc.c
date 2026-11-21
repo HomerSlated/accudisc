@@ -429,6 +429,51 @@ static uint8_t disc_session_count(accudisc_device *dev)
     return buf[4];
 }
 
+/* Rung 1 of accudisc_read_toc_src, public since 0.50.0 so that a saved lead-in
+ * gives the TOC a live read of it gives. read_toc_src calls this rather than
+ * keeping its own copy: two copies of a fold are two places for a rule (the
+ * track-1 pregap, the session count) to drift apart without either failing. */
+int accudisc_toc_from_fulltoc_raw(const uint8_t *raw, uint32_t len,
+                                  accudisc_toc *out, accudisc_toc_info *info)
+{
+    accudisc_toc_info local = {0};
+    accudisc_fulltoc ft;
+    int rc;
+
+    /* Zeroed first, so EVERY failure leaves them zeroed — the header says "any
+     * failure", and a NULL raw is one. */
+    if (out)
+        memset(out, 0, sizeof(*out));
+    if (info)
+        memset(info, 0, sizeof(*info));
+    if (!raw || !out)
+        return ACCUDISC_ERR_INVAL;
+
+    rc = accudisc_fulltoc_parse(raw, len, &ft);
+    if (rc == ACCUDISC_OK)
+        rc = adsc_toc_from_fulltoc(&ft, out, &local);
+    if (rc != ACCUDISC_OK) {
+        /* The fold may have written part of *out before refusing. A caller
+         * that ignores the return must not find a plausible-looking TOC. */
+        memset(out, 0, sizeof(*out));
+        if (info)
+            memset(info, 0, sizeof(*info));
+        return rc;
+    }
+    local.source = ACCUDISC_TOC_SRC_FULLTOC;
+    local.degrade = ACCUDISC_TOC_DEGRADE_NONE;
+    local.degrade_err = 0;
+    /* The lead-in already told us; no need to spend another command. Sessions
+     * are numbered from 1 and contiguously, so the highest number seen IS the
+     * count — more robust than the session table's length, which drops any
+     * session lacking an A2. */
+    local.session_count = local.last_session;
+    out->sessions_total = local.last_session;
+    if (info)
+        *info = local;
+    return ACCUDISC_OK;
+}
+
 int accudisc_read_toc_src(accudisc_device *dev, accudisc_toc *out,
                           accudisc_toc_info *info)
 {
@@ -443,26 +488,11 @@ int accudisc_read_toc_src(accudisc_device *dev, accudisc_toc *out,
     /* Rung 1: the full TOC, for session structure. */
     rc = accudisc_read_full_toc(dev, &raw, &len);
     if (rc == ACCUDISC_OK) {
-        accudisc_fulltoc ft;
-        int prc = accudisc_fulltoc_parse(raw, len, &ft);
+        int prc = accudisc_toc_from_fulltoc_raw(raw, len, out, info);
 
-        if (prc == ACCUDISC_OK)
-            prc = adsc_toc_from_fulltoc(&ft, out, &local);
         free(raw);
-        if (prc == ACCUDISC_OK) {
-            local.source = ACCUDISC_TOC_SRC_FULLTOC;
-            local.degrade = ACCUDISC_TOC_DEGRADE_NONE;
-            local.degrade_err = 0;
-            /* The lead-in already told us; no need to spend another command.
-             * Sessions are numbered from 1 and contiguously, so the highest
-             * number seen IS the count — more robust than the session table's
-             * length, which drops any session lacking an A2. */
-            local.session_count = local.last_session;
-            out->sessions_total = local.last_session;
-            if (info)
-                *info = local;
+        if (prc == ACCUDISC_OK)
             return ACCUDISC_OK;
-        }
         /* The drive answered but the lead-in did not yield a usable TOC. */
         memset(&local, 0, sizeof(local));
         local.degrade = ACCUDISC_TOC_DEGRADE_LEADIN_MALFORMED;

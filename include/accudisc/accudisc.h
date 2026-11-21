@@ -27,7 +27,14 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 49 /* 0.49.0: accudisc_read_req.cache_defeat,
+#define ACCUDISC_VERSION_MINOR 50 /* 0.50.0: accudisc_toc_from_fulltoc_raw,
+                                  * the TOC from a SAVED format-2 response,
+                                  * pure. It is read_toc_src's format-2 rung,
+                                  * which now calls it, so a dump and a live
+                                  * read of one lead-in give the same TOC,
+                                  * track-1 pregap included. Additive: no
+                                  * struct changed.
+                                  * Previously 0.49.0: accudisc_read_req.cache_defeat,
                                   * OPT-IN: one far read before the first
                                   * transfer, so a re-read straight after
                                   * another read is not answered from the
@@ -901,7 +908,7 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 0 /* reset by 0.49.0. Previously:
+#define ACCUDISC_VERSION_PATCH 0 /* reset by 0.50.0 (and by 0.49.0). Previously:
                                   * 0.48.1: a live burn reads page 05 back a
                                   * SECOND time, after SEND OPC and before the
                                   * cue sheet, so a drive that resets the page
@@ -2548,6 +2555,27 @@ typedef struct accudisc_toc_info {
  * is returned, since that is the one that left the caller with nothing). */
 ACCUDISC_API int accudisc_read_toc_src(accudisc_device *dev, accudisc_toc *out,
                                        accudisc_toc_info *info);
+
+/* The same TOC from bytes already held (0.50.0): what accudisc_read_toc_src
+ * builds when the lead-in answers, but from a SAVED READ TOC format-2 response
+ * (exactly what accudisc_read_full_toc returns, its 2-byte length field
+ * included). Pure: no device, no hardware.
+ *
+ * It is the format-2 rung of accudisc_read_toc_src itself, not a second copy of
+ * it, so a TOC from a dump is the TOC a live read of that lead-in gives: the
+ * same tracks, sessions, anomalies and track-1 pregap (accudisc_track.pregap),
+ * and on success info reports source FULLTOC, degrade NONE and
+ * session_count = last_session. Requested by cdda2img (correspondence 247) so
+ * offline tools stop keeping their own copy of the pregap rule.
+ *
+ * Returns ACCUDISC_ERR_INVAL for a NULL raw or out; otherwise what
+ * accudisc_fulltoc_parse returns for bytes it cannot parse, or
+ * ACCUDISC_ERR_SHORT when the lead-in names no lead-out (A2) or no usable
+ * track. On any failure *out and *info are zeroed rather than left
+ * half-written. info may be NULL. */
+ACCUDISC_API int accudisc_toc_from_fulltoc_raw(const uint8_t *raw,
+                                               uint32_t len, accudisc_toc *out,
+                                               accudisc_toc_info *info);
 
 /* Stable lowercase tokens for the machine interface ("fulltoc"/"toc";
  * "none"/"leadin_unreadable"/"leadin_absent"/"leadin_malformed"). Never NULL. */

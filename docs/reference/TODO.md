@@ -7662,6 +7662,30 @@ remains is theirs: whether `build_rip_info` takes `start` from `Track.pregap`
 instead of its own `parse_fulltoc`, then the ABBA *Gold* MB/CDDB check, then
 deleting their rule (§182 §3).
 
+**Decided 2026-11-21 (Keith with cdda2img): they switch to our `Track.pregap`.**
+Landed on their side as `bfc5de2`: the rip takes the first audio track's
+`Track.pregap` from the TOC its read already holds, checks it against the full
+TOC's INDEX 01 and fails the rip if they disagree. Offline callers (a saved
+full TOC, no drive) still compute it themselves, because the raw-bytes → `Toc`
+step (`adsc_toc_from_fulltoc`) is not public; only `accudisc_fulltoc_parse`,
+which returns lead-in entries, is. They report ABBA *Gold* giving the right MB
+and CDDB IDs with our 33. Nothing to change here.
+
+**BUILT 0.50.0 (2026-11-21, Keith: "Go ahead and expose a public call that
+builds a Toc from raw full-TOC bytes"), cdda2img's ask in correspondence 247.**
+`accudisc_toc_from_fulltoc_raw(raw, len, *toc, *info)` and Python
+`toc_from_full_toc(raw) -> (Toc, TocInfo)`, feature name `toc_from_full_toc`.
+It *is* `accudisc_read_toc_src`'s format-2 rung, which now calls it, so a saved
+dump and a live read of one lead-in cannot fold differently. On failure `*toc`
+and `*info` are zeroed. One behaviour change on the live path: when both
+format 2 and format 0 fail, `info` is now zeroed rather than left as it was;
+the call returns an error there either way. `tests/test_toc_from_raw.c` holds
+the pure call equal, field by field, to `read_toc_src` over a fake drive
+answering the same bytes (ABBA *Gold*'s shape, and an Enhanced CD), and checks
+the zeroing and the live degrade's `degrade_err`. Four mutants caught, each at
+its own assertion. With it, cdda2img's offline tools can drop their copy of
+the pregap rule.
+
 If the plan or the TOC ever needs a new field: `accudisc_range_plan` is an OUT
 struct with no `size` (32 bytes, pinned in the binding). Measured 2026-10-22:
 bytes 18-19 and 28-31 are padding. Growing it would let a library write past

@@ -35,7 +35,7 @@ foreach(t test_version test_cdb test_sense test_toc test_map test_decode
         test_abi test_speeds test_rs16 test_rs16_kat test_ctdb_api
         test_write_offset test_accubuf test_write_health test_trace test_ready
         test_layout test_consensus test_wparams test_features
-        test_cache_defeat)
+        test_cache_defeat test_toc_from_raw)
     add_executable(${t} ${t}.c)
     # test_accubuf drives the ring's own threads; the others do not care.
     target_link_libraries(${t} PRIVATE accudisc_static Threads::Threads)
@@ -121,6 +121,9 @@ target_link_options(test_features PRIVATE -Wl,--wrap=adsc_dev_exec)
 # And for the pre-read cache defeat: where the far read went, when, and how
 # often are properties of the command stream, which only the seam records.
 target_link_options(test_cache_defeat PRIVATE -Wl,--wrap=adsc_dev_exec)
+# And for the TOC from saved bytes: it must equal what read_toc_src builds from
+# the same lead-in, which needs a drive that answers with exactly those bytes.
+target_link_options(test_toc_from_raw PRIVATE -Wl,--wrap=adsc_dev_exec)
 
 add_executable(test_burn_flow test_burn_flow.c
                ${PROJECT_SOURCE_DIR}/src/write/burn.c

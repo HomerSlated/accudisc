@@ -86,7 +86,7 @@ __all__ = [
     # bound 2026-08-29 under Keith's "library implies binding" ruling
     "PlanReason", "RangePlan", "RangeCheck", "plan_read_range",
     "PregapState", "IndexMap", "index_map_decode",
-    "FullToc", "FullTocEntry", "parse_full_toc",
+    "FullToc", "FullTocEntry", "parse_full_toc", "toc_from_full_toc",
     "Atip", "atip_manufacturer",
     "CdText", "CdTextStrings", "decode_cdtext",
     "UncapState", "Rotation", "PerfDesc", "classify_rotation",
@@ -182,6 +182,10 @@ features = frozenset({
     # Absent means neither exists. Do not read it from library_version(): a
     # stale wrapper over a 0.49.0 .so has no keyword to pass.
     "cache_defeat",
+    # toc_from_full_toc() exists (0.50.0): a Toc, Track.pregap included, from
+    # a saved format-2 response with no drive. Absent means only
+    # parse_full_toc's raw entries are available offline.
+    "toc_from_full_toc",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -3243,18 +3247,7 @@ class Device:
         out = ffi.new("accudisc_toc*")
         info = ffi.new("accudisc_toc_info*")
         _check(lib.accudisc_read_toc_src(self._handle, out, info), self)
-        return (
-            _toc_from_c(out),
-            TocInfo(
-                source=TocSource(info.source),
-                degrade=TocDegrade(info.degrade),
-                degrade_err=info.degrade_err,
-                first_session=info.first_session,
-                last_session=info.last_session,
-                session_count=info.session_count or None,
-                disc_type=info.disc_type,
-            ),
-        )
+        return _toc_from_c(out), _toc_info_from_c(info)
 
     def read_full_toc_raw(self) -> bytes:
         """Raw READ TOC format 2 response, undecoded (feed your own parser)."""
@@ -4391,6 +4384,38 @@ def index_map_decode(raw: bytes, base_lba: int, toc: Toc,
     n = lib.accudisc_index_map_decode(raw, base_lba, count, _toc_to_c(toc),
                                       out, max_tracks)
     return [_index_map_from_c(out[i]) for i in range(n)]
+
+
+def _toc_info_from_c(info) -> TocInfo:
+    return TocInfo(
+        source=TocSource(info.source),
+        degrade=TocDegrade(info.degrade),
+        degrade_err=info.degrade_err,
+        first_session=info.first_session,
+        last_session=info.last_session,
+        session_count=info.session_count or None,
+        disc_type=info.disc_type,
+    )
+
+
+def toc_from_full_toc(raw: bytes) -> tuple[Toc, TocInfo]:
+    """The TOC from a SAVED READ TOC format-2 response. **Pure** (0.50.0).
+
+    ``raw`` is what :meth:`Device.read_full_toc_raw` returns, length field
+    included, so a dump written from it goes straight back in. The result is
+    what :meth:`Device.read_toc_src` returns when the lead-in answers: the C
+    side runs the same code for both, so a dump and a live read of one lead-in
+    give the same tracks, sessions and ``Track.pregap``. ``TocInfo.source`` is
+    always ``FULLTOC`` and ``degrade`` ``NONE``; there is no format-0 fallback
+    here, because there is no drive to ask.
+
+    Raises :class:`AccuDiscError` for bytes that do not parse, or for a lead-in
+    with no lead-out or no usable track.
+    """
+    out = ffi.new("accudisc_toc*")
+    info = ffi.new("accudisc_toc_info*")
+    _check(lib.accudisc_toc_from_fulltoc_raw(raw, len(raw), out, info))
+    return _toc_from_c(out), _toc_info_from_c(info)
 
 
 def parse_full_toc(raw: bytes) -> FullToc:

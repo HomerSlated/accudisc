@@ -390,7 +390,10 @@ against a drive it never configured; the `with` makes "put it back" structural
 instead of a line in a docstring.
 
 The pure functions — `plan_read_range`, `index_map_decode`, `parse_full_toc`,
-`decode_cdtext`, `atip_manufacturer`, `classify_rotation` — need no device.
+`toc_from_full_toc`, `decode_cdtext`, `atip_manufacturer`, `classify_rotation`
+— need no device. `toc_from_full_toc` (0.50.0) turns a saved
+`read_full_toc_raw()` dump into the same `(Toc, TocInfo)` a live
+`read_toc_src()` gives from that lead-in, track 1's `pregap` included.
 `plan_read_range` is the one worth knowing about: it is AccuDisc's entire
 read-range policy (session → audio range → whole-disc default, then the
 audio-range guard) as one call over a TOC, and **a refusal is a result rather

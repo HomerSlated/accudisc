@@ -408,6 +408,8 @@ typedef struct accudisc_toc_info {
 
 int accudisc_read_toc_src(accudisc_device *dev, accudisc_toc *out,
                           accudisc_toc_info *info);
+int accudisc_toc_from_fulltoc_raw(const uint8_t *raw, uint32_t len,
+                                  accudisc_toc *out, accudisc_toc_info *info);
 const char *accudisc_toc_source_str(unsigned source);
 const char *accudisc_toc_degrade_str(unsigned degrade);
 

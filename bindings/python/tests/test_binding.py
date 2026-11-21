@@ -710,6 +710,7 @@ def test_features_names_what_the_version_cannot():
     assert "write_governor" in ad.features
     assert "acquisition_strategies" in ad.features
     assert "cache_defeat" in ad.features  # 0.49.0; cdda2img detects on it
+    assert "toc_from_full_toc" in ad.features  # 0.50.0; cdda2img asked (247)
     assert "no_such_capability" not in ad.features
 
 
@@ -1092,6 +1093,68 @@ def test_pregap_belongs_to_the_following_track():
     t = ad.Track(number=2, adr_ctrl=0x10, session=1, lba=10000,
                  sectors=10000, pregap=150)
     assert t.full_extent == (9850, 10150)
+
+
+def _leadin(*descs, first=1, last=1):
+    """READ TOC format 2 bytes: header, then 11-byte descriptors given as
+    (session, adr_ctrl, point, lba) for addresses, or (session, adr_ctrl,
+    point, (pmin, psec, pframe)) for A0/A1's track numbers."""
+    body = b""
+    for session, adr_ctrl, point, where in descs:
+        if isinstance(where, tuple):
+            pm, ps, pf = where
+        else:
+            a = where + 150
+            pm, ps, pf = a // 4500, (a // 75) % 60, a % 75
+        body += bytes([session, adr_ctrl, 0, point, 0, 0, 0, 0, pm, ps, pf])
+    n = 2 + len(body)
+    return bytes([n >> 8, n & 0xFF, first, last]) + body
+
+
+_ABBA_GOLD_LEADIN = _leadin(
+    (1, 0x10, 0xA0, (1, 0, 0)),
+    (1, 0x10, 0xA1, (2, 0, 0)),
+    (1, 0x10, 0xA2, 300000),
+    (1, 0x10, 1, 33),
+    (1, 0x10, 2, 100000),
+)
+
+
+def test_toc_from_full_toc_gives_track_1_its_pregap_offline():
+    """0.50.0: a saved lead-in, no drive, and track 1 still owns LBA 0..32.
+
+    The C side is read_toc_src's own format-2 rung (tests/test_toc_from_raw.c
+    holds it equal to a live read of the same bytes); this checks the binding
+    carries every part of it across.
+    """
+    toc, info = ad.toc_from_full_toc(_ABBA_GOLD_LEADIN)
+    assert [t.number for t in toc.tracks] == [1, 2]
+    one = toc.track(1)
+    assert one.lba == 33 and one.pregap == 33
+    assert one.full_extent == (0, one.sectors + 33)
+    assert toc.track(2).pregap == 0
+    assert toc.leadout_lba == 300000
+    assert info.source == ad.TocSource.FULLTOC
+    assert info.degrade == ad.TocDegrade.NONE
+    assert (info.first_session, info.last_session) == (1, 1)
+    assert info.session_count == 1
+    # The same bytes through the entry-level parser: five lead-in points.
+    assert len(ad.parse_full_toc(_ABBA_GOLD_LEADIN).entries) == 5
+
+
+def test_toc_from_full_toc_refuses_what_does_not_fold():
+    no_leadout = _leadin(
+        (1, 0x10, 0xA0, (1, 0, 0)),
+        (1, 0x10, 0xA1, (2, 0, 0)),
+        (1, 0x10, 1, 33),
+        (1, 0x10, 2, 100000),
+    )
+    for raw in (b"\x00\x02\x01", no_leadout):   # short header; no A2
+        try:
+            ad.toc_from_full_toc(raw)
+        except ad.AccuDiscError:
+            continue
+        raise AssertionError(f"{raw!r} folded into a TOC")
 
 
 def test_trusted_is_false_only_for_untrusted_geometry():
