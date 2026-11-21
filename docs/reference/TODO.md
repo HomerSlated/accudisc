@@ -366,6 +366,110 @@ specification). Then one fed 16x
 burn per drive. Around each burn, `accudisc --driver auto settings` before and
 after: `life.cd_write` must advance by about the burn's duration.
 
+## QUEUED for the next session — Keith, 2026-10-22 19:47: the track-1 pre-gap rule, then the one-sector far read on the PX-716A
+
+Verbatim: *"Queue up the track-1 pre-gap rule next and one-sector far read
+test for next session."* In that order.
+
+### 1. The track-1 pre-gap rule (desk work) — DONE 2026-11-21, see consumer request item 3
+
+The entry is under "Consumer requests — cdda2img, recorded 2026-08-29", item
+3, which now carries a correction: its premise is contradicted by the code. The
+geometry has been in the library since `ecca97f` (2026-07-23), so the first job
+is to establish what, if anything, is missing on our side.
+
+### 2. The one-sector far read on the PX-716A (hardware, directed by Keith)
+
+**This is Keith's direction, not a proposal.** The standing rule against
+proposing drive tests on the PX-716A is unchanged; this one test was asked for.
+
+**The question.** Does 0.49.0's `cache_defeat` (one sector 5000 sectors outside
+the span, the same geometry as the engine's reread `cache_defeat()`) make the
+next read of a span fresh on the PX-716A? It was measured on the LH-20A1S only
+(2026-09-18, correspondence 18s: 3/3 at 5000 away, 9/9 far, LRU refuted 12/12).
+
+**Settle these before any read**, and write the reading rule down first, as was
+done for the LITE-ON:
+
+- **A control arm with no read in between.** If back-to-back reads of a span
+  are not cached on this drive at all, a "fresh" result after the far read says
+  nothing. On the LH-20A1S, 49 to 196 sectors back to back came back cached and
+  400 or more fresh; this drive's figure is unknown.
+- **What tells a cached read from a fresh one.** On clean media both return the
+  same bytes, so the LITE-ON metric ("any sector differs") needs a span whose
+  fresh reads differ, which means a damaged site. Timing is a candidate signal
+  and is untested as one here.
+- **The fewest reads that answer it.** Keith's rule since 2026-09-24 is absolute
+  minimal hardware testing. Size the arms to the question, with no sweep.
+- **Claim protocol.** CLAIMED/RELEASED with cdda2img, `flock /var/tmp/sr0.lock`,
+  `--device /dev/sr0`. Keith loads the disc.
+
+cdda2img sets the option on every ladder attempt (correspondence 239), so the
+result goes to them either way.
+
+**The rule, fixed 2026-11-21 before any read** (Keith: "Go ahead with the
+one-sector far read rule"). Applied by `tools/cache_defeat_probe.py`, whose
+docstring carries the same text.
+
+- **Discriminator: timing, on clean media.** A damaged site would give a byte
+  discriminator, but varying results on the PX-716A are the entropy rule's
+  territory, so the disc is a clean pressing. The measured quantity is the
+  elapsed time of the one READ CD that re-reads the span, from the per-command
+  trace (`trace=2`; host `CLOCK_MONOTONIC` around the ioctl, printed to the
+  µs). A cached answer costs the bus transfer only; a fresh one costs a seek
+  back from the far target plus rotational latency.
+- **One process, one handle, `speed_x = 0`.** Separate CLI runs re-open the
+  drive and could put TOC or mode commands between the two reads. With a speed
+  given, the engine sends SET CD SPEED on *every* read, which could recalibrate
+  or flush the cache on its own. This tests the **mechanism**, not cdda2img's
+  ladder (which sets a speed per attempt). Whether a speed set itself flushes
+  is left open, not proposed.
+- **Instance = two reads of a 24-sector span S.** Arm A (control): read S, read
+  S. Arm B: read S, read S with `cache_defeat` (one sector at S − 5000 between).
+  24, not 32: the CDEmu dry run showed the transport caps a transfer at 64 KiB,
+  so 32 sectors went out as 27 + 5 — and the validity check caught it.
+  Instances alternate A, B, …; each has its own span 10000 sectors past the
+  last (beyond the far target plus a full 8 MB buffer of read-ahead), so every
+  first read is cold. Spans start 30% into the audio.
+- **Validity** (from the trace): A has no media command between its two span
+  transfers; B has exactly one, a 1-sector READ CD at S − 5000, GOOD, and
+  `read_stats.cache_defeat == DONE`; each read is exactly one transfer.
+  Any invalid instance → UNRESOLVED.
+- **Control:** every A must have t2 ≤ t1/4. Otherwise **MOOT** — back-to-back
+  re-reads at 24 sectors are not cached here, so the defeat has nothing to do
+  in this pattern. Stop; no span sweep.
+- **Classification:** c = the largest A t2. Each B is FRESH if t2 ≥ 4c, CACHED if
+  t2 ≤ 2c, else AMBIGUOUS. **WORKS** if every B is FRESH, **DOES NOT WORK** if
+  every B is CACHED, otherwise UNRESOLVED. No further reads follow any outcome
+  without Keith.
+- **Dry run 2026-11-21 on CDEmu** (silent 90000-sector image, `/dev/sr1`, 3 per
+  arm): all six instances valid, far read at the right LBA, verdict MOOT —
+  correct, since a virtual drive has no seek and costs the same either way.
+  This checks the sequence and the rule's plumbing only.
+
+**RESULT 2026-11-21 13:42 — WORKS.** Keith: three per arm, *Under My Skin* (the
+disc cdda2img had just read; a clean pressing), original PX-716A through the
+USB-IDE bridge (this PC has no native IDE; native IDE is planned on another
+machine). Claimed and released with cdda2img (our 2026-11-21c/d, their 244).
+One run. The trace holds exactly 17 commands, all GOOD: 2 READ TOC at open, 15
+READ CD.
+
+| arm | span LBA | t1 | t2 | far read |
+|---|---:|---:|---:|---:|
+| A | 62116 | 3344.2 ms | 2.19 ms | — |
+| B | 72116 | 1706.2 ms | 69.90 ms | 53.4 ms |
+| A | 82116 | 129.5 ms | 1.80 ms | — |
+| B | 92116 | 61.7 ms | 60.84 ms | 50.4 ms |
+| A | 102116 | 58.1 ms | 1.81 ms | — |
+| B | 112116 | 65.3 ms | 51.32 ms | 43.8 ms |
+
+The two multi-second t1 include spin-up. Control valid (every A t2 ≤ t1/4);
+c = 2.19 ms; every B t2 ≥ 4c (23–32× c) → all FRESH. All six instances had
+identical bytes on both reads, as expected on clean media. **Not established:**
+the ladder's pattern, which sets a speed per attempt; whether SET CD SPEED
+flushes the cache on its own stays open (not proposed). At worst the option is
+redundant there.
+
 ## BUILT 0.48.0 / 0.48.1 — the burn reads page 05 back before touching the disc, and again after OPC — 2026-10-06; hardware run open
 
 Proposed 2026-09-28, round trip built 2026-10-02 (`adsc_write_params_roundtrip`,
@@ -7519,6 +7623,49 @@ Their cuesheet convention (INDEX 01 at LBA > 0 becomes track 1's pre-gap,
 `start_frame=0`) is a range-and-geometry decision that `accudisc_plan_read_range`
 does not express. Keith ruled it moves to us rather than staying a consumer
 policy. See cdda2img §182 §3.
+
+**QUEUED for the next session (Keith, 2026-10-22). Found while queuing it:
+the premise above is contradicted by the code, which predates it.** Read from
+source, not yet re-tested:
+
+- `ecca97f` (2026-07-23, from cdda2img §30) made track 1's program-area
+  pre-gap belong to track 1. `src/toc/toc.c:136-151` sets
+  `accudisc_track.pregap` to INDEX 01's LBA when the first track of session 1
+  starts above LBA 0. The header documents the field and its failure mode, a
+  wrong disc ID.
+- `accudisc_toc_session_audio_range` and `accudisc_toc_track_range` both start
+  at `lba - pregap` (`src/toc/session.c:119-125`, `:151-153`), and
+  `accudisc_plan_read_range` resolves through them (`src/toc/plan.c:81`,
+  `:130`). So a planned read already starts at LBA 0 on such a disc.
+- Python exposes `Track.pregap` and the `Track.full_extent` property.
+- So our 2026-08-29b sentence "I do not believe we express it at all" was
+  wrong as stated. What cdda2img's `subq_toc.build_rip_info` adds is the
+  emission (`start_frame = 0`, `pregap_frames = start` in their rip info),
+  which may need nothing new from us beyond `Track.pregap`.
+
+**Next session, in order:** confirm the above with a test on a synthetic TOC
+whose track 1 starts at LBA 33 (ABBA *Gold*'s geometry), if none exists. Then
+tell cdda2img, with the correction first, and agree what remains. Their
+validation is ABBA *Gold* (`start = 33`): MB `xu6JNKjjqvue0dEfEKJ5d7Ffipw-` and
+CDDB `09121513` with the rule, both wrong without it. They delete theirs only
+once ours is in use and the two agree on that disc (§182 §3).
+
+**Done 2026-11-21 (Keith: "Add the planner assertion, then send the
+correction").** The synthetic-TOC test already existed: `tests/test_toc_hostile.c`
+has carried INDEX 01 at 33 since `ecca97f`, checking the pregap, both range
+functions and the guard. Added the one path it reached only through code,
+`accudisc_plan_read_range` asked three ways (default, `--tracks 1-2`,
+`--session 1`) → LBA 0, count 300000. Two mutants (the track-path and
+session-path starts each shifted by one in `plan.c`) both abort at the new
+assertion. Correction sent to cdda2img as 2026-11-21b, correction first. What
+remains is theirs: whether `build_rip_info` takes `start` from `Track.pregap`
+instead of its own `parse_fulltoc`, then the ABBA *Gold* MB/CDDB check, then
+deleting their rule (§182 §3).
+
+If the plan or the TOC ever needs a new field: `accudisc_range_plan` is an OUT
+struct with no `size` (32 bytes, pinned in the binding). Measured 2026-10-22:
+bytes 18-19 and 28-31 are padding. Growing it would let a library write past
+an older caller's allocation.
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 

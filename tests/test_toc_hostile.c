@@ -418,6 +418,35 @@ int main(void)
             assert(accudisc_toc_track_range(&t, 1, 2, &tl, &tc) == ACCUDISC_OK);
             assert(tl == lba && tc == count);
         }
+
+        /* And the planner — what the CLI and both bindings call — resolves all
+         * three ways of asking for the disc to the same span from LBA 0. It is
+         * built on the two range functions above, but that was read from
+         * source, not tested; a planner path that re-derived the start from
+         * INDEX 01 would drop the pregap with every assertion above passing. */
+        {
+            const int32_t ways[3][3] = {
+                /* session, first_track, last_track */
+                { -1, -1, -1 }, /* nothing named: the default */
+                { -1, 1, 2 },   /* --tracks 1-2 */
+                { 1, -1, -1 },  /* --session 1 */
+            };
+
+            for (int w = 0; w < 3; w++) {
+                accudisc_range_spec s = ACCUDISC_RANGE_SPEC_INIT;
+                accudisc_range_plan p;
+
+                s.session = ways[w][0];
+                s.first_track = ways[w][1];
+                s.last_track = ways[w][2];
+                s.start = -1;
+                s.count = -1;
+                assert(accudisc_plan_read_range(&t, &s, &p) == ACCUDISC_OK);
+                assert(p.plan_reason == ACCUDISC_PLAN_OK);
+                assert(p.lba == 0);
+                assert(p.count == 300000);
+            }
+        }
     }
 
     /* A first track at LBA 0 — the ordinary case — gains no pregap, and a
