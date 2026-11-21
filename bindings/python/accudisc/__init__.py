@@ -2661,15 +2661,19 @@ class Device:
         """ATIP for a recordable disc, or ``None`` for a pressed one.
 
         ``None`` is **absence, not failure** — a pressed CD has no ATIP, which
-        is a fact about the disc rather than an error to handle.
+        is a fact about the disc rather than an error to handle. Every other
+        outcome raises: a drive that rejects the command (``ERR_SENSE``), a
+        transport failure (``ERR_IO``), anything else. Treat a raise as
+        "unknown", never as "pressed".
         """
         out = ffi.new("accudisc_atip*")
         rc = lib.accudisc_read_atip(self._handle, out)
-        # NOTFOUND only. ERR_UNSUPPORTED means the DRIVE cannot read ATIP,
-        # which is a different fact from "this disc has none" — folding both
-        # into None would report a pressed disc and a drive that cannot answer
-        # as the same thing, and a caller deciding whether a blank is writable
-        # would act on it.
+        # NOTFOUND only. Any other code means the DRIVE could not answer —
+        # usually ERR_SENSE, since accudisc_read_atip passes a rejection's code
+        # straight through — which is a different fact from "this disc has
+        # none". Folding both into None would report a pressed disc and a drive
+        # that cannot answer as the same thing, and a caller deciding whether a
+        # disc is recordable would act on it.
         if rc == lib.ACCUDISC_ERR_NOTFOUND:
             return None
         _check(rc, self)
