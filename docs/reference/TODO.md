@@ -8076,6 +8076,67 @@ every probe today. C2 and subchannel reads, and other drives, are unmeasured,
 and the LITE-ON notes say SG_IO's residual was not a usable length there. Only
 `read_cd_once` uses `adsc_exec_check_short`.
 
+## BUILT 0.52.0 — a cancel lands within one READ CD; handle-level cancel flag — 2026-11-22
+
+**Asked by cdda2img (correspondence 262; Keith had reported that Ctrl-C "just
+seems to ignore it" during rips). Keith, 19:0x: build items 1–3 now, and item 4
+as a device-level cancel.** Until 0.52.0 `read_req.cancel` was polled once per
+chunk. A bad chunk's per-sector retries, rescues, consensus rereads and verify
+passes therefore ran to the end before a cancel took effect. That is minutes
+on a damaged chunk, and over a minute in 0.51.1's crawl.
+
+- **Engine (`src/read/engine.c`).**
+  - Every READ CD goes through a gated helper (`far_read`, `read_sector`,
+    `read_run`) that refuses once `stop()` has latched a flag.
+  - Every retry loop breaks on the latch.
+  - The main loop abandons the chunk at a `CANCEL_POINT` after each stage that
+    can read. An interrupted chunk is never delivered, and its abandoned
+    sectors are not booked as hard errors.
+  - A flag already up refuses the read before any command is sent.
+  - `ladder_restore` now runs on every exit. Before, it ran on success only, so
+    a cancel or a refusing sink after a rescue left the drive at a ladder rung.
+- **`accudisc_set_cancel(dev, flag)`** (new). A handle-level flag, polled by:
+  - read
+  - census
+  - pregap scan
+  - verify
+  - the speed-ladder probe and the C2-lag probe (neither had any flag before)
+
+  Either flag aborts. The library never clears it. `accudisc_write` ignores it.
+  It is never checked inside `adsc_dev_exec`, so clean-up commands still run.
+- **Gaps found on the way and fixed:**
+  - Census and pregap scan never passed their flag to their inner read.
+  - A cancelled census read would have been booked as a damage sample.
+  - verify reported a cancel during alignment as `OK, aligned=0` (a verdict
+    about the disc), and a cancel during its census as a degraded OK.
+- **Bound:** one `adsc_mmc_read_cd`. That is two commands while the 0.51.2
+  exact-length retry is untested on the handle, and a single command on a bad
+  sector can run to its timeout.
+- **Tests:** `tests/test_cancel.c`, 6 cases.
+  - The fake raises the flag DURING the Nth READ CD, and the assertion is that
+    no READ CD follows it.
+  - Mutants caught:
+    - ungated retries
+    - booking before the check
+    - no restore on exit
+    - the request flag only
+    - the speeds per-chunk poll
+    - each C2-lag pass
+  - One mutant survives: removing the `CANCEL_POINT` straight after `read_span`.
+    It changes no command, because the next stage stops on the latch, so it is
+    a duplicate check that no test can tell apart.
+  - The fake's first noise pattern was affine. It made rereads pure sample
+    shifts of each other, so consensus took the slip branch, which restores the
+    ladder itself and hid the missing restore. It is hashed now.
+  - `test_cache_defeat`'s no-address case used a pre-set flag as a vehicle;
+    the fake now raises it during the first READ CD.
+- **Python:** `Device.set_cancel(Cancel | None)` holds the token on the
+  instance. There is also `Cancel.reset()` and the feature token
+  `handle_cancel`.
+- **Not done:** census is not covered by a test (it needs a driver offering the
+  counters). The CLI is unchanged: it installs no SIGINT handler, so Ctrl-C
+  still ends it by the default action, with no speed restore.
+
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 
 8trax is the third correspondent and the first **GUI** consumer. Keith's ruling

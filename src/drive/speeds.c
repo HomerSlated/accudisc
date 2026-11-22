@@ -51,6 +51,12 @@ static uint32_t stream_span(struct accudisc_device *dev, uint32_t lba,
     *err = ACCUDISC_OK;
     while (done < n) {
         uint32_t c = n - done < SPEEDS_CHUNK ? n - done : SPEEDS_CHUNK;
+
+        /* Handle-level cancel (0.52.0): before every READ CD. */
+        if (adsc_cancelled(dev, NULL)) {
+            *err = ACCUDISC_ERR_CANCELLED;
+            break;
+        }
         int rc = adsc_mmc_read_cd(dev, lba + done, c, ADSC_SECTOR_CDDA,
                                   ACCUDISC_C2_NONE, ACCUDISC_SUB_NONE, buf,
                                   ACCUDISC_BYTES_AUDIO);
@@ -263,6 +269,12 @@ int accudisc_probe_speed_ladder(accudisc_device *dev, uint32_t lba,
         r->max_cx = 0;
         r->band_cx[0] = r->band_cx[1] = r->band_cx[2] = 0;
 
+        /* Between rungs too: a speed change alone can take seconds. */
+        if (adsc_cancelled(dev, NULL)) {
+            free(buf);
+            return ACCUDISC_ERR_CANCELLED;
+        }
+
         /* One speed set per rung, covering all of its bands. */
         accudisc_set_speed(dev, candidates[i]); /* best-effort by design */
 
@@ -280,6 +292,14 @@ int accudisc_probe_speed_ladder(accudisc_device *dev, uint32_t lba,
             uint32_t done = stream_span(dev, wlba + SPEEDS_CHUNK, want, buf,
                                         &rc);
             double secs = mono_now() - t0;
+
+            /* A cancelled window is not a slow one: return before its figure
+             * or the admission below can be computed from a partial table
+             * (0.52.0). The rung's speed stays set, as on every exit here. */
+            if (adsc_cancelled(dev, NULL)) {
+                free(buf);
+                return ACCUDISC_ERR_CANCELLED;
+            }
 
             if (done)
                 read_any = 1;

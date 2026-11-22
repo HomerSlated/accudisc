@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../internal.h"
 #include "../mmc/mmc.h"
 #include "c2lag.h"
 #include "../read/far.h"
@@ -169,6 +170,12 @@ int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba, uint32_t count,
          off += chunk) {
         uint32_t n = count - off < chunk ? count - off : chunk;
 
+        /* Handle-level cancel (0.52.0, accudisc_set_cancel): before every
+         * READ CD, since this probe takes no flag of its own. */
+        if (adsc_cancelled(dev, NULL)) {
+            rc = ACCUDISC_ERR_CANCELLED;
+            goto out_free;
+        }
         if (adsc_mmc_read_cd(dev, lba + off, n, ADSC_SECTOR_CDDA,
                              ACCUDISC_C2_PTRS, ACCUDISC_SUB_NONE, buf,
                              sector_len) != ACCUDISC_OK)
@@ -200,7 +207,15 @@ int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba, uint32_t count,
         unsigned got = 0;
 
         for (unsigned k = 0; k < C2LAG_WINDOW_READS; k++) {
+            if (adsc_cancelled(dev, NULL)) {
+                rc = ACCUDISC_ERR_CANCELLED;
+                goto out_free;
+            }
             cache_defeat(dev, wlba, wn, lba, lba + count, flush);
+            if (adsc_cancelled(dev, NULL)) {
+                rc = ACCUDISC_ERR_CANCELLED;
+                goto out_free;
+            }
             if (adsc_mmc_read_cd(dev, wlba, wn, ADSC_SECTOR_CDDA,
                                  ACCUDISC_C2_PTRS, ACCUDISC_SUB_NONE,
                                  win + (size_t)got * wmax * sector_len,

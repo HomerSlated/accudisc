@@ -55,6 +55,7 @@ static struct {
         uint32_t len;         /* READ CD allocation in bytes */
     } cmd[MAXCMD];
     unsigned refused;         /* READ CDs of refuse_lba seen */
+    volatile int *raise_on_read; /* set to 1 during any READ CD, or NULL */
 } fk;
 
 int __real_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd);
@@ -79,6 +80,8 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
     uint32_t nsec = (uint32_t)cmd->cdb[6] << 16 | (uint32_t)cmd->cdb[7] << 8 |
                     cmd->cdb[8];
 
+    if (fk.raise_on_read)
+        *fk.raise_on_read = 1;
     fk.cmd[i].lba = lba;
     fk.cmd[i].nsec = nsec;
     fk.cmd[i].c2 = (cmd->cdb[9] >> 1) & 3u;
@@ -308,22 +311,32 @@ static void test_far_read_follows_the_speed_set(void)
 }
 
 /* No address to try: a span starting below 5000 whose end plus 5000 does not
- * fit in an LBA. Nothing is sent and the record says FAILED. The read is
- * cancelled before its first chunk, since the fake cannot serve four billion
- * sectors; the stats are still exported. */
+ * fit in an LBA. No far read is sent and the record says FAILED. The fake
+ * cannot serve four billion sectors, so it raises the cancel flag during the
+ * first READ CD, which must therefore be the span's own first chunk. (Until
+ * 0.52.0 the flag was set beforehand; a flag already up now refuses the read
+ * before the cache defeat runs, so it can no longer stand in here.) The stats
+ * are still exported on the cancel. */
 static void test_no_address_to_try(void)
 {
     accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
     accudisc_read_stats st;
-    static const volatile int stop = 1;
+    static volatile int stop;
 
+    stop = 0;
     req.lba = 0;
     req.count = UINT32_MAX - FAR / 2;
     req.cache_defeat = 1;
     req.cancel = &stop;
-    assert(run(&req, &st) == ACCUDISC_ERR_CANCELLED);
-    assert(first(0xBE, -1) == -1);
+    fk.raise_on_read = &stop;
+    int rc = run(&req, &st);
+    fk.raise_on_read = NULL;
+    assert(rc == ACCUDISC_ERR_CANCELLED);
+    int r = first(0xBE, -1);
+    assert(r >= 0 && fk.cmd[r].lba == 0 && fk.cmd[r].nsec > 1);
+    assert(count_reads_outside(0, UINT32_MAX) == 0);
     assert(st.cache_defeat == ACCUDISC_CACHE_DEFEAT_FAILED);
+    assert(delivered == 0);
 }
 
 /* A caller built against 0.48.1 declares 80 bytes, so the library never sees

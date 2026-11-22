@@ -316,6 +316,7 @@ int accudisc_read_cdtext(accudisc_device *dev, uint8_t **out, uint32_t *len);
 void accudisc_set_log(accudisc_device *dev,
                       void (*fn)(void *user, const char *msg),
                       void *user);
+int accudisc_set_cancel(accudisc_device *dev, const volatile int *flag);
 
 /* ---- recording (DAO write) --------------------------------------------- */
 #define ACCUDISC_WROTE_WITH_CAVEATS ...

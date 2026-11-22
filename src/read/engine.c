@@ -192,8 +192,30 @@ struct rd {
     uint8_t *context; /* ADSC_ANCHOR_SPAN sectors, one anchoring read */
     uint8_t *anchored; /* one sector, the first corroborated copy */
     uint32_t far_lo, far_hi; /* readable range for far reads; hi 0 = unknown */
+    int cancelled;    /* latched: a cancel flag was seen (0.52.0) */
     accudisc_read_stats st;
 };
+
+/* CANCELLATION WITHIN ONE READ CD (0.52.0, cdda2img 262).
+ *
+ * Until 0.52.0 the flag was polled once per chunk, and a bad chunk's
+ * per-sector retries, rescues and verify passes ran to the end first: minutes
+ * of ignored Ctrl-C. Now every READ CD the engine issues goes through a gated
+ * helper (far_read, read_sector, read_run) that refuses once stop() has seen a
+ * flag, and every loop that retries breaks on it. So no command is issued
+ * after the flag is seen, and a command already running bounds the delay.
+ *
+ * LATCHED, so a flag cleared mid-read cannot resume a chunk half-abandoned.
+ * And checked BEFORE a failure is booked: a sector the engine stopped trying
+ * is not a hard error, and must not reach the stats or the sink as one.
+ *
+ * Ungated on purpose: set_speed_once (ladder_restore runs on the way out). */
+static int stop(struct rd *r)
+{
+    if (!r->cancelled && adsc_cancelled(r->dev, r->req->cancel))
+        r->cancelled = 1;
+    return r->cancelled;
+}
 
 static void count_sense(struct rd *r)
 {
@@ -258,6 +280,8 @@ static void ladder_restore(struct rd *r)
  * read is for, so it counts as done. */
 static int far_read(struct rd *r, uint32_t lba)
 {
+    if (stop(r))
+        return 0;
     int rc = adsc_mmc_read_cd(r->dev, lba, 1, ADSC_SECTOR_ANY,
                               ACCUDISC_C2_NONE, ACCUDISC_SUB_NONE, r->flush,
                               ACCUDISC_BYTES_AUDIO);
@@ -310,7 +334,19 @@ static uint8_t defeat_before_read(struct rd *r)
 
 static int read_sector(struct rd *r, uint32_t lba, uint8_t *dst)
 {
+    if (stop(r))
+        return ACCUDISC_ERR_CANCELLED;
     return adsc_mmc_read_cd(r->dev, lba, 1, r->sector_type, r->req->c2,
+                            r->req->sub, dst, r->sector_len);
+}
+
+/* n sectors in one transfer, in the read's own format. Gated like
+ * read_sector. */
+static int read_run(struct rd *r, uint32_t lba, uint32_t n, uint8_t *dst)
+{
+    if (stop(r))
+        return ACCUDISC_ERR_CANCELLED;
+    return adsc_mmc_read_cd(r->dev, lba, n, r->sector_type, r->req->c2,
                             r->req->sub, dst, r->sector_len);
 }
 
@@ -336,8 +372,7 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
                       uint8_t *buf, uint8_t *hard, uint32_t primary_n)
 {
     memset(hard, 0, total);
-    if (adsc_mmc_read_cd(r->dev, lba, total, r->sector_type, r->req->c2,
-                         r->req->sub, buf, r->sector_len) == ACCUDISC_OK)
+    if (read_run(r, lba, total, buf) == ACCUDISC_OK)
         return;
 
     for (uint32_t s = 0; s < total; s++) {
@@ -346,6 +381,8 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
         int src = -1;
 
         for (unsigned attempt = 0; attempt < r->retries; attempt++) {
+            if (stop(r))
+                return; /* the caller discards the chunk; nothing is booked */
             if (attempt > 0)
                 cache_defeat(r, cur, cur, 1);
             src = read_sector(r, cur, sec);
@@ -356,6 +393,8 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
         }
         if (src == ACCUDISC_OK)
             continue;
+        if (stop(r))
+            return; /* cancelled, not failed: book nothing */
         hard[s] = 1;
         if (s < primary_n) {
             memset(sec, 0, r->audio_len);
@@ -391,6 +430,8 @@ static int qpos_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
         uint8_t qf[12];
         accudisc_q qd;
 
+        if (stop(r))
+            return 0;
         ladder_speed(r, a);
         cache_defeat(r, lba, lba, 1);
         if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
@@ -514,14 +555,14 @@ static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
     for (unsigned a = 0; a < ADSC_ANCHOR_READS; a++) {
         int64_t w = (int64_t)lba + start[a % 3];
 
+        if (stop(r))
+            return 0;
         if (w < 0)
             continue;
         uint32_t w0 = (uint32_t)w;
 
         cache_defeat(r, lba, w0, ADSC_ANCHOR_SPAN);
-        if (adsc_mmc_read_cd(r->dev, w0, ADSC_ANCHOR_SPAN, r->sector_type,
-                             r->req->c2, r->req->sub, r->context,
-                             r->sector_len) != ACCUDISC_OK)
+        if (read_run(r, w0, ADSC_ANCHOR_SPAN, r->context) != ACCUDISC_OK)
             continue;
         r->st.rereads++;
         (*attempts)++;
@@ -576,15 +617,15 @@ static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *bits,
     for (unsigned a = 1; a <= r->req->c2_retries && best > 0; a++) {
         int64_t w = (int64_t)lba + start[(a - 1) % 3];
 
+        if (stop(r))
+            break;
         if (w < 0)
             w = lba;
         uint32_t w0 = (uint32_t)w;
 
         ladder_speed(r, a);
         cache_defeat(r, lba, w0, ADSC_ANCHOR_SPAN);
-        if (adsc_mmc_read_cd(r->dev, w0, ADSC_ANCHOR_SPAN, r->sector_type,
-                             r->req->c2, r->req->sub, r->context,
-                             r->sector_len) != ACCUDISC_OK)
+        if (read_run(r, w0, ADSC_ANCHOR_SPAN, r->context) != ACCUDISC_OK)
             continue;
         r->st.rereads++;
         *attempts = a;
@@ -625,6 +666,8 @@ static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
     }
 
     for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2; a++) {
+        if (stop(r))
+            return 0;
         ladder_speed(r, a);
         cache_defeat(r, lba, lba, 1);
         if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
@@ -654,7 +697,7 @@ static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
             count++;
         }
     }
-    if (!shifted)
+    if (!shifted || stop(r))
         return 0;
     ladder_restore(r);
     return anchor_position(r, lba, sec, refs, nref, attempts);
@@ -678,10 +721,14 @@ static void witness_pass(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
                          uint8_t *susp, unsigned *att, uint32_t *bits,
                          uint32_t *diffb)
 {
+    if (stop(r))
+        return;
     ladder_restore(r);
     cache_defeat(r, lba, lba, n);
     read_span(r, lba, n, buf2, hard2, 0);
     for (uint32_t s = 0; s < n; s++) {
+        if (stop(r))
+            return; /* buf2/hard2 are partial: compare nothing against them */
         if (hard[s] || susp[s])
             continue;
         uint8_t *sec = buf + (size_t)s * r->sector_len;
@@ -888,6 +935,12 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
      * the `speed-uncap` subcommand and `--uncap` are untouched. Reporting a
      * drive's configuration is not the same as refusing to work in it. */
 
+    /* A flag already set refuses the read before it touches the drive: no
+     * speed change to restore, nothing allocated. A handle-level flag left set
+     * after an earlier cancel lands here too (accudisc_set_cancel). */
+    if (adsc_cancelled(dev, req->cancel))
+        return ACCUDISC_ERR_CANCELLED;
+
     r.dev = dev;
     r.req = req;
     r.far_lo = req->readable_lo;
@@ -1023,6 +1076,19 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     uint32_t lba = req->lba;
     uint32_t remaining = req->count;
     int witness_next = 0; /* c2_witness: the previous chunk had a C2 flag */
+
+    /* After each stage that can issue a READ CD. A stage cut short by stop()
+     * leaves its chunk partial (sectors neither tried nor booked), so the
+     * chunk is abandoned here, before anything in it can be classified,
+     * published or delivered. See stop() above. */
+#define CANCEL_POINT()                                                         \
+    do {                                                                       \
+        if (stop(&r)) {                                                        \
+            rc = ACCUDISC_ERR_CANCELLED;                                       \
+            goto out;                                                          \
+        }                                                                      \
+    } while (0)
+
     while (remaining > 0) {
         uint32_t n = remaining < chunk ? remaining : chunk;
         /* Extension only exists when another chunk will follow it. */
@@ -1045,13 +1111,11 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         unsigned *att = cur->att;
         uint32_t *bits = cur->bits, *diffb = cur->diffb;
 
-        if (req->cancel && *req->cancel) {
-            rc = ACCUDISC_ERR_CANCELLED;
-            goto out;
-        }
+        CANCEL_POINT();
 
         ladder_restore(&r);
         read_span(&r, lba, n + ext, buf, hard, n);
+        CANCEL_POINT();
         if (prim)
             memcpy(prim, buf, (size_t)n * r.sector_len);
 
@@ -1125,6 +1189,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                     susp[s] = 1;
                 }
             }
+            CANCEL_POINT();
         }
 
         /* Boundary overlap check: the previous chunk read past its seam;
@@ -1160,6 +1225,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                 susp[s] = 1;
             }
         }
+        CANCEL_POINT();
 
         int c2_hit = 0;
         for (uint32_t s = 0; s < n; s++)
@@ -1187,6 +1253,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                     att[s] += used;
                 }
             }
+            CANCEL_POINT();
         }
 
         /* Verify passes: independent rereads must agree byte-for-byte.
@@ -1198,9 +1265,11 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
          * caller's layer (multiple reads at different speed_x). Pick ladder
          * rungs that differ from speed_x so the deciding votes really are
          * speed-diverse. */
-        for (unsigned pass = 2; pass <= passes; pass++)
+        for (unsigned pass = 2; pass <= passes; pass++) {
             witness_pass(&r, lba, n, buf, prim, hard, buf2, hard2, recov, susp,
                          att, bits, diffb);
+            CANCEL_POINT();
+        }
         if (passes > 1)
             cur->witnessed = 1;
 
@@ -1235,11 +1304,13 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                          pend->hard, buf2, hard2, pend->recov, pend->susp,
                          pend->att, pend->bits, pend->diffb);
             pend->witnessed = 1;
+            CANCEL_POINT();
         }
         if (wit_cur && !cur->witnessed) {
             witness_pass(&r, lba, n, buf, prim, hard, buf2, hard2, recov,
                          susp, att, bits, diffb);
             cur->witnessed = 1;
+            CANCEL_POINT();
         }
         witness_next = c2_trig;
 
@@ -1266,14 +1337,19 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         lba += n;
         remaining -= n;
     }
+#undef CANCEL_POINT
     /* The last chunk has no seam ahead of it. */
     if (pend->live && publish(&r, pend, sink, user, &ab, ab_live) != 0) {
         rc = ACCUDISC_ERR_CANCELLED;
         goto out;
     }
-    ladder_restore(&r);
 
 out:
+    /* On EVERY exit (0.52.0). It used to run on success only, so a cancel or
+     * a refusing sink after a rescue left the drive at a ladder rung. With
+     * cancellation now landing inside the rescue loops, that would be the
+     * common case. set_speed_once is ungated by stop(): clean-up runs. */
+    ladder_restore(&r);
     if (ab_live) {
         /* Discard on any abort, drain on success. A cancel that waited for the
          * backlog would take as long as the backlog, which is the opposite of

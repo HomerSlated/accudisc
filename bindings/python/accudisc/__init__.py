@@ -189,6 +189,10 @@ features = frozenset({
     # Device.read(readable=(lo, hi)), session_extent_at() and CacheDefeat.NEAR
     # exist (0.51.0): every far read stays inside the read's session.
     "readable_range",
+    # Device.set_cancel() exists, and every Cancel is polled before each READ
+    # CD rather than only at chunk boundaries (0.52.0). Absent means a Cancel
+    # is seen at the next chunk, and the probes cannot be cancelled at all.
+    "handle_cancel",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -1766,9 +1770,17 @@ class _SinkTrampoline:
 
 
 class Cancel:
-    """A cancellation flag polled by the engine at each chunk boundary.
+    """A cancellation flag. Since 0.52.0 it is polled before every READ CD the
+    engine issues, so a cancel lands within one READ CD rather than at the next
+    chunk boundary. That one READ CD can still run to its command timeout on a
+    damaged sector.
 
-    ``accudisc_read_cdda`` blocks, so set this from the sink or another thread.
+    Pass it to one call (``cancel=``), or to :meth:`Device.set_cancel` to
+    cover every long read on the handle, including the probes that take no
+    ``cancel=`` of their own. The library never clears it: :meth:`reset` it
+    before reusing it.
+
+    The calls block, so set it from the sink or another thread.
     """
 
     def __init__(self) -> None:
@@ -1776,6 +1788,10 @@ class Cancel:
 
     def cancel(self) -> None:
         self._flag[0] = 1
+
+    def reset(self) -> None:
+        """Clear the flag, so the calls that poll it run again."""
+        self._flag[0] = 0
 
     @property
     def cancelled(self) -> bool:
@@ -2349,6 +2365,7 @@ class Device:
         self._dev = dev
         self._path = path
         self._log_cb = None
+        self._cancel = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -2403,6 +2420,32 @@ class Device:
         # would be left holding a dangling function pointer.
         self._log_cb = ffi.callback("void(void*, const char*)", trampoline)
         lib.accudisc_set_log(self._handle, self._log_cb, ffi.NULL)
+
+    def set_cancel(self, cancel: "Cancel | None") -> None:
+        """Install ``cancel`` as this handle's cancel flag; ``None`` removes it.
+
+        Every long read on the handle polls it before each READ CD and raises
+        :class:`Cancelled` within one: :meth:`read`, the census, pregap scan
+        and verify, and :meth:`probe_speed_ladder` and the C2-lag probe, which
+        take no ``cancel=`` of their own. It works alongside a per-call
+        ``cancel=``; either aborts. The write path ignores it, because a burn
+        stopped mid-disc ruins the blank.
+
+        It stays set until you :meth:`Cancel.reset` it, and every long call
+        is refused until then. Do not call this while another thread is inside
+        a call on this handle.
+        """
+        if cancel is None:
+            _check(lib.accudisc_set_cancel(self._handle, ffi.NULL), self)
+            self._cancel = None
+            return
+        if not isinstance(cancel, Cancel):
+            raise TypeError(f"cancel must be a Cancel or None, not "
+                            f"{type(cancel).__name__}")
+        _check(lib.accudisc_set_cancel(self._handle, cancel._flag), self)
+        # Held on the instance: the library polls this memory until it is
+        # replaced or the handle closes, so it must outlive every call.
+        self._cancel = cancel
 
     # -- identity ----------------------------------------------------------
 

@@ -57,6 +57,9 @@ int accudisc_counter_census(accudisc_device *dev,
 
     cadence = opts->cadence ? opts->cadence : ACCUDISC_CENSUS_CADENCE;
 
+    if (adsc_cancelled(dev, opts->cancel))
+        return ACCUDISC_ERR_CANCELLED; /* refused before anything is armed */
+
     /* Arm last, after every argument check, so a rejected call never leaves the
      * drive armed. */
     rc = accudisc_counter_scan_begin(dev);
@@ -71,7 +74,7 @@ int accudisc_counter_census(accudisc_device *dev,
         accudisc_read_req req;
         uint32_t remain = opts->end - lba;
 
-        if (opts->cancel && *opts->cancel) {
+        if (adsc_cancelled(dev, opts->cancel)) {
             ret = ACCUDISC_ERR_CANCELLED;
             break;
         }
@@ -87,7 +90,15 @@ int accudisc_counter_census(accudisc_device *dev,
         req.retries = 1; /* one attempt: a census maps damage, it does not
                           * rescue it, and rereads would corrupt the counter
                           * interval this sample is measuring */
+        req.cancel = opts->cancel; /* within one READ CD, not one sample */
         s.read_err = accudisc_read_cdda(dev, &req, NULL, NULL, NULL);
+        /* Before the read error is treated as data: a cancelled read is not
+         * an unreadable span, and booking it as one would put a sample of
+         * damage that is not there into the census (0.52.0). */
+        if (s.read_err == ACCUDISC_ERR_CANCELLED) {
+            ret = ACCUDISC_ERR_CANCELLED;
+            break;
+        }
 
         /* A failed read is data, not an abort — an unreadable span is exactly
          * what a census is looking for. The counters are still read so the

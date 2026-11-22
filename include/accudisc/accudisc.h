@@ -27,7 +27,19 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 51 /* 0.51.0: accudisc_read_req.readable_lo/
+#define ACCUDISC_VERSION_MINOR 52 /* 0.52.0: cancellation lands within one
+                                  * READ CD. accudisc_set_cancel (new) gives a
+                                  * HANDLE-level flag that every long read call
+                                  * polls, including the speed-ladder and C2-lag
+                                  * probes, which take no flag of their own; the
+                                  * per-call flags (read_req, census, pregap,
+                                  * verify) are now polled inside the retry,
+                                  * rescue, far-read and verify loops too, not
+                                  * only at chunk boundaries (cdda2img 262). No
+                                  * struct moved; the bump is for the new
+                                  * function and the changed meaning of
+                                  * `cancel`.
+                                  * 0.51.0: accudisc_read_req.readable_lo/
                                   * readable_hi bound every far read to the
                                   * read's session (accudisc_session_extent_at,
                                   * new and pure, gives the pair from a plan);
@@ -919,7 +931,7 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 2 /* 0.51.2: a ROUNDED READ CD that comes
+#define ACCUDISC_VERSION_PATCH 0 /* Previously 0.51.2: a ROUNDED READ CD that comes
                                   * back short is retried at its exact length
                                   * and the handle latches exact lengths. The
                                   * PX-716A's USB bridge (Innostor 1f75:0611)
@@ -1792,6 +1804,38 @@ ACCUDISC_API int accudisc_write_health_get(accudisc_device *dev,
 ACCUDISC_API void accudisc_set_log(accudisc_device *dev,
                                    void (*fn)(void *user, const char *msg),
                                    void *user);
+
+/* Handle-level cancellation (0.52.0). Install a flag that every long READ call
+ * on this handle polls; NULL removes it. ACCUDISC_ERR_INVAL only for a NULL dev.
+ *
+ * Polled by: accudisc_read_cdda, accudisc_counter_census,
+ * accudisc_scan_pregaps, accudisc_verify, accudisc_probe_speed_ladder and
+ * accudisc_probe_c2_lag. A nonzero flag makes the call return
+ * ACCUDISC_ERR_CANCELLED within ONE READ CD: no further READ CD is issued once
+ * it is seen. One READ CD is the bound, not one second. A command on a damaged
+ * sector can run to its full timeout, and a padded READ CD can be retried once
+ * at its exact length (0.51.2), so the worst case is two commands.
+ *
+ * It works alongside the per-call flags (accudisc_read_req.cancel and its
+ * siblings), and either one aborts. Use it where a call takes no flag of its
+ * own, or to stop every call on the handle from one place (a SIGINT watcher).
+ *
+ * THE LIBRARY NEVER WRITES THE FLAG. It stays set until you zero it, and every
+ * long call on the handle returns ACCUDISC_ERR_CANCELLED at once until you
+ * do. A caller that cancels and then reads again, for clean-up or a retry,
+ * must clear it first.
+ *
+ * NOT POLLED BY THE WRITE PATH. accudisc_write ignores it: a burn
+ * stopped mid-disc ruins the blank and can leave the drive mid-write.
+ *
+ * Clean-up still runs after a cancel. Clean-up commands are never refused: a
+ * speed restore, the counter scan's end and a vendor state pop all run. The
+ * flag is checked between commands, never inside the transport.
+ *
+ * The pointer must stay valid until it is replaced or the handle is closed.
+ * Install it between calls, never while a call on this handle is running. */
+ACCUDISC_API int accudisc_set_cancel(accudisc_device *dev,
+                                     const volatile int *flag);
 
 /* ---- vendor drivers ---------------------------------------------------------
  * All proprietary/hardware-specific features live in external driver .so
@@ -3584,7 +3628,15 @@ typedef struct accudisc_read_req {
      * Spelled out because cdda2img had to read `engine.c` to find it
      * (correspondence 199.1). Same for subq_map below. */
     uint8_t *status_map;
-    const volatile int *cancel; /* poll: nonzero aborts at the next chunk; or NULL */
+    /* poll: nonzero aborts; or NULL. Since 0.52.0 it is polled before EVERY
+     * READ CD the engine issues: per-sector retries, the far reads, every
+     * rescue, consensus and anchoring reread, and each verify pass. Before
+     * that, only at chunk boundaries, which on a bad chunk meant minutes.
+     * Ctrl-C now lands within one READ CD (see accudisc_set_cancel for the
+     * bound). A chunk interrupted part-way is NEVER delivered: its sectors are
+     * not reported hard, not counted in the stats and not handed to the sink,
+     * because nothing was learned about them. */
+    const volatile int *cancel;
     /* count bytes, or NULL; see the Q-subchannel health map above. Indexed
      * relative to the request, exactly as status_map above. Requires
      * sub == ACCUDISC_SUB_RAW — anything else is ACCUDISC_ERR_INVAL.
@@ -3833,7 +3885,8 @@ typedef struct accudisc_chunk {
  * change the chunk behind it (see overlap_sectors). Chunks still arrive in
  * address order, each exactly once, and the last is delivered when the read
  * ends. What changes: a map byte stays PENDING about one chunk longer, and a
- * cancel also drops the one chunk read but not yet delivered. */
+ * cancel also drops the one chunk read but not yet delivered, plus, since
+ * 0.52.0, the chunk being processed when the flag was seen. */
 typedef int (*accudisc_sink_fn)(void *user, const accudisc_chunk *chunk);
 
 typedef struct accudisc_read_stats {
@@ -4181,7 +4234,9 @@ typedef struct accudisc_pregap_scan_opts {
     uint16_t speed_x; /* 0 = leave the drive's speed alone. When set, the prior
                        * speed is restored on every exit path — see the note in
                        * src/cdda/pregap_scan.c about what "prior" can mean. */
-    const volatile int *cancel; /* poll: nonzero aborts between boundaries */
+    const volatile int *cancel; /* poll: nonzero aborts; or NULL. Between
+                                 * boundaries, and (0.52.0) inside each
+                                 * boundary's read, within one READ CD */
 } accudisc_pregap_scan_opts;
 
 /* Scan every track boundary in toc, writing up to max entries and the number

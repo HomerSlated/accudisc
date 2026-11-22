@@ -1269,6 +1269,24 @@ def test_read_refuses_a_readable_range_that_cannot_be_meant():
     assert "readable_range" in ad.features
 
 
+def test_set_cancel_marshals_and_holds_its_flag():
+    """Device.set_cancel reaches accudisc_set_cancel (a NULL handle answers
+    ERR_INVAL, so the call got all the way there), refuses a non-Cancel, and
+    the token is resettable. The keep-alive is checked on a real handle's
+    path: a refused install must not be held."""
+    dev = _null_device()
+    dev._cancel = None
+    c = ad.Cancel()
+    _raises(ad.InvalidArgument, lambda: dev.set_cancel(c))
+    assert dev._cancel is None
+    _raises(TypeError, lambda: dev.set_cancel(1))
+    c.cancel()
+    assert c.cancelled
+    c.reset()
+    assert not c.cancelled
+    assert "handle_cancel" in ad.features
+
+
 def test_trusted_is_false_only_for_untrusted_geometry():
     toc = _enhanced_cd()
     assert toc.trusted

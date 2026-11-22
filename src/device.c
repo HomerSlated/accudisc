@@ -31,6 +31,14 @@ void accudisc_set_log(accudisc_device *dev,
     dev->log_user = user;
 }
 
+int accudisc_set_cancel(accudisc_device *dev, const volatile int *flag)
+{
+    if (!dev)
+        return ACCUDISC_ERR_INVAL;
+    dev->cancel = flag;
+    return ACCUDISC_OK;
+}
+
 /* ---- accudisc_host bridge (see accudisc/driver.h) ------------------------ */
 
 static int host_exec(void *devp, const uint8_t *cdb, uint8_t cdb_len,

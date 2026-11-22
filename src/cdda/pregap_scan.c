@@ -106,7 +106,7 @@ int accudisc_scan_pregaps(accudisc_device *dev, const accudisc_toc *toc,
         accudisc_read_req req;
         uint32_t got;
 
-        if (o.cancel && *o.cancel) {
+        if (adsc_cancelled(dev, o.cancel)) {
             rc = ACCUDISC_ERR_CANCELLED;
             goto out;
         }
@@ -121,6 +121,7 @@ int accudisc_scan_pregaps(accudisc_device *dev, const accudisc_toc *toc,
         req.lba = start;
         req.count = count;
         req.sub = ACCUDISC_SUB_RAW;
+        req.cancel = o.cancel; /* within one READ CD, not one boundary */
         rc = accudisc_read_cdda(dev, &req, sub_collect_sink, &sc, NULL);
         if (rc != ACCUDISC_OK)
             goto out; /* first failure ends the scan — see the header */

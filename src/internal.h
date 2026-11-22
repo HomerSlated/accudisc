@@ -106,7 +106,23 @@ struct accudisc_device {
     uint32_t wr_last_pay;
     uint32_t wr_last_sect;
     uint32_t wr_anomaly;     /* ACCUDISC_WRITE_ANOMALY_* bitmask */
+
+    /* Handle-level cancel flag (0.52.0, accudisc_set_cancel), or NULL. The
+     * caller owns it; the library only ever reads it. Polled by the long READ
+     * calls at explicit points (adsc_cancelled), never inside adsc_dev_exec:
+     * the clean-up after a cancel — a speed restore, the counter scan's end, an
+     * uncap pop — goes through the same exec path and must still run, and a
+     * burn must never be cut mid-disc by it. */
+    const volatile int *cancel;
 };
+
+/* Has the caller asked the current call to stop? `own` is the call's own flag
+ * (accudisc_read_req.cancel and its siblings), or NULL; either flag aborts. */
+static inline int adsc_cancelled(const struct accudisc_device *dev,
+                                 const volatile int *own)
+{
+    return (own && *own) || (dev && dev->cancel && *dev->cancel);
+}
 
 /* Record one completed LIVE burn against the handle's write health, and
  * recompute the anomaly mask. `sectors` is the payload sector count (the

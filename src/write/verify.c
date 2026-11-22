@@ -267,7 +267,8 @@ static int cen_prog_sink(const accudisc_census_sample *sample, void *user)
 
 static int align_span(accudisc_device *dev, FILE *bin, uint64_t src_samples,
                       uint32_t start, uint32_t count, uint8_t c2,
-                      uint16_t speed_x, int32_t *shift_out)
+                      uint16_t speed_x, const volatile int *cancel,
+                      int32_t *shift_out)
 {
     uint32_t positions[3];
     int rc = ACCUDISC_ERR_INVAL;
@@ -306,7 +307,15 @@ static int align_span(accudisc_device *dev, FILE *bin, uint64_t src_samples,
         req.c2 = c2;
         req.retries = 2;
         req.speed_x = speed_x;
+        req.cancel = cancel;
         rc = accudisc_read_cdda(dev, &req, anchor_sink, &a, NULL);
+        /* A cancel is not an anchor that failed to read (0.52.0): passing it
+         * on to the next position would end in "could not align", which the
+         * caller reports as a verdict about the disc. */
+        if (rc == ACCUDISC_ERR_CANCELLED) {
+            free(a.buf);
+            return rc;
+        }
         if (rc != ACCUDISC_OK || a.got != nsec) {
             free(a.buf);
             continue;
@@ -441,8 +450,9 @@ int accudisc_verify(accudisc_device *dev, const char *bin_path,
     r.degraded = tier < o.want_tier;
 
     rc = align_span(dev, bin, src_samples, o.start, o.count, c2mode,
-                    o.speed_x, &r.shift_samples);
-    if (rc == ACCUDISC_ERR_NOMEM || rc == ACCUDISC_ERR_IO) {
+                    o.speed_x, o.cancel, &r.shift_samples);
+    if (rc == ACCUDISC_ERR_NOMEM || rc == ACCUDISC_ERR_IO ||
+        rc == ACCUDISC_ERR_CANCELLED) {
         fclose(bin);
         return rc;
     }
@@ -525,10 +535,14 @@ int accudisc_verify(accudisc_device *dev, const char *bin_path,
         co.speed_x = o.speed_x;
         co.cancel = o.cancel;
         /* A census failure does not invalidate the compare that already ran.
-         * Drop the tier and keep what was measured. */
-        if (accudisc_counter_census(dev, &co, progress ? cen_prog_sink : NULL,
-                                    progress ? &cp : NULL, &r.census)
-            != ACCUDISC_OK) {
+         * Drop the tier and keep what was measured. A CANCEL is not a census
+         * failure (0.52.0): the caller asked the whole verify to stop, and a
+         * degraded OK would tell them it finished. */
+        rc = accudisc_counter_census(dev, &co, progress ? cen_prog_sink : NULL,
+                                     progress ? &cp : NULL, &r.census);
+        if (rc == ACCUDISC_ERR_CANCELLED)
+            return rc;
+        if (rc != ACCUDISC_OK) {
             memset(&r.census, 0, sizeof r.census);
             r.tier = ACCUDISC_VERIFY_C2;
             r.degraded = 1;
