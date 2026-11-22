@@ -17,6 +17,7 @@
 
 #include "../mmc/mmc.h"
 #include "c2lag.h"
+#include "../read/far.h"
 
 /* Rereads are STREAMING WINDOW reads, not isolated single-sector reads:
  * marginal defects fire C2 while the drive streams and decode cleanly on
@@ -107,15 +108,23 @@ int adsc_c2lag_result(const struct adsc_c2lag_acc *acc, accudisc_c2_lag *out)
 
 /* ---- device half ----------------------------------------------------------- */
 
-static void cache_defeat(struct accudisc_device *dev, uint32_t cur,
-                         uint32_t span_lo, uint8_t *flush)
+/* The far read before each window re-read (0.51.0: src/read/far.h). It stays
+ * inside the probe's own span [span_lo, span_hi), which the caller chose as
+ * readable audio (the CLI and binding pass the planned audio) and pass 1 has
+ * just read whole, and outside the window [w, w + wn) about to be re-read.
+ * Through 0.50.1 a window less than 5000 into the span sent it 5000 FORWARD,
+ * unbounded, past the end of a short span's session. A span too short for
+ * 5000 gets the nearest-behind in-span sector, which defeats the cache on the
+ * drives measured (TODO.md, 2026-11-22). Sector type ANY, like the engine's. */
+static void cache_defeat(struct accudisc_device *dev, uint32_t w, uint32_t wn,
+                         uint32_t span_lo, uint32_t span_hi, uint8_t *flush)
 {
-    uint32_t away = cur >= span_lo + C2LAG_FLUSH_DISTANCE
-                        ? cur - C2LAG_FLUSH_DISTANCE
-                        : cur + C2LAG_FLUSH_DISTANCE;
+    uint32_t away;
 
-    adsc_mmc_read_cd(dev, away, 1, ADSC_SECTOR_CDDA, ACCUDISC_C2_NONE,
-                     ACCUDISC_SUB_NONE, flush, ACCUDISC_BYTES_AUDIO);
+    if (adsc_far_target(w, wn, span_lo, span_hi, C2LAG_FLUSH_DISTANCE,
+                        &away) != ADSC_FAR_NONE)
+        adsc_mmc_read_cd(dev, away, 1, ADSC_SECTOR_ANY, ACCUDISC_C2_NONE,
+                         ACCUDISC_SUB_NONE, flush, ACCUDISC_BYTES_AUDIO);
 }
 
 static uint32_t c2_bits(const uint8_t *sec)
@@ -138,7 +147,7 @@ int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba, uint32_t count,
     const uint32_t chunk = 8;
     const uint32_t wmax = chunk + C2LAG_RUNUP;
 
-    if (!dev || !out || count == 0)
+    if (!dev || !out || count == 0 || (uint64_t)lba + count > UINT32_MAX)
         return ACCUDISC_ERR_INVAL;
     memset(out, 0, sizeof(*out));
 
@@ -191,7 +200,7 @@ int accudisc_probe_c2_lag(accudisc_device *dev, uint32_t lba, uint32_t count,
         unsigned got = 0;
 
         for (unsigned k = 0; k < C2LAG_WINDOW_READS; k++) {
-            cache_defeat(dev, wlba, lba, flush);
+            cache_defeat(dev, wlba, wn, lba, lba + count, flush);
             if (adsc_mmc_read_cd(dev, wlba, wn, ADSC_SECTOR_CDDA,
                                  ACCUDISC_C2_PTRS, ACCUDISC_SUB_NONE,
                                  win + (size_t)got * wmax * sector_len,

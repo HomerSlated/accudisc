@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "../mmc/mmc.h"
+#include "../read/far.h"
 
 #define ADSC_FEATURE_CD_READ 0x001E
 /* CD Mastering — Session/Disc-At-Once, which is the write type this library
@@ -148,9 +149,21 @@ int accudisc_probe_accurate_stream(accudisc_device *dev, uint32_t lba,
         uint32_t k = starts[t];
 
         /* Cache defeat: a far throwaway read so the staggered read hits
-         * the platter, not the drive's buffer of the base read. */
-        adsc_mmc_read_cd(dev, lba + 5000, 1, ADSC_SECTOR_CDDA,
-                         ADSC_C2_NONE, ADSC_SUB_NONE, shifted, sec);
+         * the platter, not the drive's buffer of the base read. 0.51.0: the
+         * engine's unbounded rule (src/read/far.h), from the probe's whole
+         * footprint [lba, lba + AS_SPAN + 9): 5000 BACK when lba >= 5000,
+         * else 5000 past it. Through 0.50.1 this was lba + 5000, always
+         * forward, so a probe point within 5000 of a session's end aimed past
+         * its lead-out. This API takes no range; the CLI and binding put lba
+         * in the middle of the planned audio, so back stays in the session
+         * whenever that audio is 10000 sectors or more. Sector type ANY. */
+        {
+            uint32_t away;
+            if (adsc_far_target(lba, AS_SPAN + 9, 0, 0, 5000, &away) !=
+                ADSC_FAR_NONE)
+                adsc_mmc_read_cd(dev, away, 1, ADSC_SECTOR_ANY, ADSC_C2_NONE,
+                                 ADSC_SUB_NONE, shifted, sec);
+        }
 
         rc = adsc_mmc_read_cd(dev, lba + k, AS_SPAN, ADSC_SECTOR_CDDA,
                               ADSC_C2_NONE, ADSC_SUB_NONE, shifted, sec);

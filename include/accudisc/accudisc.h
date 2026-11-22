@@ -27,7 +27,18 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 50 /* 0.50.0: accudisc_toc_from_fulltoc_raw,
+#define ACCUDISC_VERSION_MINOR 51 /* 0.51.0: accudisc_read_req.readable_lo/
+                                  * readable_hi bound every far read to the
+                                  * read's session (accudisc_session_extent_at,
+                                  * new and pure, gives the pair from a plan);
+                                  * hi = 0 keeps 0.50.1's rule exactly. Far
+                                  * reads use sector type ANY. New
+                                  * ACCUDISC_CACHE_DEFEAT_NEAR. read_req
+                                  * 88 -> 96: reserved2 covers 0.50.1's tail
+                                  * padding and is never read. The c2lag and
+                                  * accurate-stream probes bound their far
+                                  * reads too (no signature change).
+                                  * Previously 0.50.0: accudisc_toc_from_fulltoc_raw,
                                   * the TOC from a SAVED format-2 response,
                                   * pure. It is read_toc_src's format-2 rung,
                                   * which now calls it, so a dump and a live
@@ -908,7 +919,8 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 1 /* 0.50.1: the engine's own far read (before
+#define ACCUDISC_VERSION_PATCH 0 /* Reset by 0.51.0. Previously:
+                                  * 0.50.1: the engine's own far read (before
                                   * every retry and verify-pass chunk) steps
                                   * BACKWARD whenever the sector is 5000 or more
                                   * in; it stepped forward for every span under
@@ -2800,6 +2812,24 @@ ACCUDISC_API int accudisc_plan_read_range(const accudisc_toc *toc,
 /* Stable lowercase token for the machine interface. Never NULL. */
 ACCUDISC_API const char *accudisc_plan_reason_str(unsigned plan_reason);
 
+/* 0.51.0. The readable extent [*lo, *hi) of the MAPPED session that contains
+ * lba: from that session's first track's pregap (clamped at LBA 0) to its own
+ * lead-out. Data tracks in the session are included: it says what a far read
+ * may TARGET, not what may be ripped. Pass the plan's lba (from
+ * accudisc_plan_read_range, which always lies inside the session it read,
+ * including a plan resolved from an explicit start/count, where plan.session
+ * is 0) and hand the pair to accudisc_read_req.readable_lo/readable_hi.
+ *
+ * ACCUDISC_ERR_NOTFOUND when no mapped session contains lba: a TOC with no
+ * session structure (format 0), or an lba between sessions or past the disc.
+ * Then pass nothing, readable_hi = 0, and the engine keeps its unbounded rule;
+ * never substitute the disc's lead-out, which on a multi-session disc spans
+ * the gap between sessions. ACCUDISC_ERR_INVAL for NULL. Pure: *lo and *hi are
+ * written only on ACCUDISC_OK. */
+ACCUDISC_API int accudisc_session_extent_at(const accudisc_toc *toc,
+                                            uint32_t lba, uint32_t *lo,
+                                            uint32_t *hi);
+
 /* Raw CD-Text packs from the lead-in (READ TOC format 5, undecoded).
  * Returns ACCUDISC_ERR_NOTFOUND when the drive answers but the disc carries
  * no CD-Text; a drive that rejects format 5 outright still surfaces as
@@ -3682,8 +3712,11 @@ typedef struct accudisc_read_req {
      * one sector 5000 away made the next read of a 49-sector span fresh 3/3,
      * and one sector read anywhere else displaced a cached 49-sector span
      * 12/12, which plain LRU cannot do. Limits: one drive, one disc, and "some
-     * sector changed" cannot exclude a read that was partly cached. NOT
-     * MEASURED ON THE PX-716A. A drive that keeps segments across a far read
+     * sector changed" cannot exclude a read that was partly cached. On the
+     * PX-716A since: 5000 back WORKS (2026-11-21, 3/3, through a USB bridge),
+     * and on 2026-11-22 any read that reached the disc invalidated the cache,
+     * from one sector behind the span (TODO.md, the cache-model result).
+     * Two drives, one disc each. A drive that keeps segments across a far read
      * (a segmented buffer) is not defeated by it, and nothing in this library
      * would show that.
      *
@@ -3691,20 +3724,64 @@ typedef struct accudisc_read_req {
      * counted in sense_*, hard_errors or rereads. accudisc_read_stats.
      * cache_defeat records what happened.
      *
-     * NO ROOM. The engine does not read the TOC, so it cannot know where the
-     * disc ends. A span that starts below LBA 5000 and ends within 5000
-     * sectors of the lead-out, such as a one-track disc read whole, sends the
-     * far read past the lead-out. A drive that refuses it leaves the read
-     * exactly as it is without this option, recorded as FAILED. A drive that
-     * reads into the lead-out may complete it, and then it was a real far
-     * read, recorded as DONE. On a Mixed Mode disc the sector before the span
-     * can fall in the data track and be refused the same way, because the far
-     * read uses the read's own sector type.
+     * NO ROOM, WITHOUT A RANGE. The engine does not read the TOC, so unless
+     * the caller passes readable_lo/readable_hi (0.51.0, below) it cannot
+     * know where the disc ends. A span that starts below LBA 5000 and ends
+     * within 5000 sectors of the lead-out, such as a one-track disc read
+     * whole, then sends the far read past the lead-out. A drive that refuses
+     * it leaves the read exactly as it is without this option, recorded as
+     * FAILED. A drive that reads into the lead-out may complete it, and then
+     * it was a real far read, recorded as DONE. Through 0.50.1 a target in a
+     * Mixed Mode data track was refused too; since 0.51.0 the far read uses
+     * sector type ANY and reads it.
      *
      * Costs one seek per read. Off by default, so every existing read is
      * unchanged. A caller that sets it against a library older than 0.49.0
      * gets ACCUDISC_ERR_ABI (the IN rule above), never a silently plain
-     * read. */
+     * read.
+     *
+     * 0.51.0: the far read uses expected sector type ANY, so a target in a
+     * data track is read rather than refused, and it stays inside
+     * readable_lo/readable_hi below when the caller gives them. */
+    uint8_t reserved2[7]; /* NEVER READ. Tail padding from 0.49.0 through
+                           * 0.50.1, so a caller's bytes 81-87 may hold
+                           * anything and `size` reads 88 either way: the
+                           * reserved0 and reserved1 case a third time. The
+                           * range below starts at 88. Leave zero; the library
+                           * ignores it. */
+    uint32_t readable_lo;
+    uint32_t readable_hi;
+    /* 0.51.0: [readable_lo, readable_hi), the sectors a far read may target:
+     * the read's session from its first track's pregap to its lead-out
+     * (accudisc_session_extent_at gives exactly that from the plan's lba).
+     * readable_hi == 0 means UNKNOWN, and the far reads keep 0.50.1's rule:
+     * 5000 back when there is room, else 5000 past the span. readable_lo == 0
+     * is a real bound, session 1 starts there, so it is not the sentinel.
+     * readable_hi != 0 with readable_hi <= readable_lo, or readable_lo != 0
+     * with readable_hi == 0, is ACCUDISC_ERR_INVAL: refused, never ignored.
+     *
+     * WHO USES IT. Every far read the engine makes: cache_defeat above, and
+     * the one before every per-sector retry, Q rescue, anchor re-read and
+     * verify pass. With a range, a far read goes 5000 back if that lands in
+     * range, else 5000 past the span if that does, else to the in-range
+     * sector furthest behind the span (failing that, the last in-range
+     * sector past it). Never inside the span being re-read. No such sector
+     * (the range is the span) = no far read at all.
+     *
+     * WHY. The engine holds no TOC, so without this it guesses. Its guesses
+     * fail on audio in a later session (a step back lands between sessions),
+     * on Mixed Mode (a step back lands in the data track), and on a session
+     * shorter than ~10000 sectors (a step forward lands past its lead-out:
+     * correspondence 251, *Under My Skin*).
+     *
+     * WHY A NEAR TARGET IS STILL A DEFEAT. Measured 2026-11-22 on the PX-716A
+     * (TODO.md, the cache-model result): ANY read that reaches the disc
+     * invalidates its cache, from one sector behind the span and in either
+     * direction, as on the LITE-ON LH-20A1S (2026-09-18). A read the drive
+     * serves from its read-ahead buffer (the sector just past the span) does
+     * not. Two drives; one disc on the PX-716A. 5000 stays the first choice,
+     * because a drive that evicts sector by sector would need it.
+     * cache_defeat records a near target as ACCUDISC_CACHE_DEFEAT_NEAR. */
 } accudisc_read_req;
 
 /* One delivered chunk. data holds nsec sectors, each sector_len bytes laid
@@ -3873,6 +3950,11 @@ typedef struct accudisc_read_stats {
 #define ACCUDISC_CACHE_DEFEAT_DONE   1 /* the far read completed */
 #define ACCUDISC_CACHE_DEFEAT_FAILED 2 /* refused, or no address to try; the
                                         * read went ahead without it */
+#define ACCUDISC_CACHE_DEFEAT_NEAR   3 /* 0.51.0: completed, but closer than
+                                        * 5000 sectors, because the readable
+                                        * range had no room. A defeat on both
+                                        * drives measured (see readable_lo);
+                                        * recorded so a caller can tell */
 
 /* Blocking. Streams req->count sectors from req->lba into sink (which may be
  * NULL to read for status/stats only). stats may be NULL. */

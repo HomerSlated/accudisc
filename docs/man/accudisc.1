@@ -1048,12 +1048,17 @@ re-read straight after another read is not answered from the drive's cache.
 One command, never retried, and it never fails the read; the summary line
 reports
 .BR cache_defeat=done ,
+.B near
+(completed, but closer than 5000 sectors because the session had no room),
 .B failed
-(refused, typically past the lead-out), or
+(refused, or nowhere to go), or
 .B off
-when not asked for. It assumes the drive drops its cache on a non-sequential
-read: measured on a LITE-ON LH-20A1S, not on a Plextor PX-716A. Off by
-default (0.49.0).
+when not asked for. Since 0.51.0 this far read, and the ones the engine makes
+before every retry and verify pass, stay inside the planned session and use
+sector type ANY, so one that lands in a data track is read rather than
+refused. It assumes the drive drops its cache on a non-sequential read:
+measured on a LITE-ON LH-20A1S and a Plextor PX-716A, where any read that
+reaches the disc does it. Off by default (0.49.0).
 .TP
 .BI \-\-speed " X"
 Set the drive read speed to

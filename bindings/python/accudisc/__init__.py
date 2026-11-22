@@ -84,7 +84,7 @@ __all__ = [
     "MAX_SPAN_BYTES", "UNTRUSTED_GEOMETRY", "features", "withheld",
     # the acquisition strategies (API_PLAN §5) and the rest of the surface,
     # bound 2026-08-29 under Keith's "library implies binding" ruling
-    "PlanReason", "RangePlan", "RangeCheck", "plan_read_range",
+    "PlanReason", "RangePlan", "RangeCheck", "plan_read_range", "session_extent_at",
     "PregapState", "IndexMap", "index_map_decode",
     "FullToc", "FullTocEntry", "parse_full_toc", "toc_from_full_toc",
     "Atip", "atip_manufacturer",
@@ -186,6 +186,9 @@ features = frozenset({
     # a saved format-2 response with no drive. Absent means only
     # parse_full_toc's raw entries are available offline.
     "toc_from_full_toc",
+    # Device.read(readable=(lo, hi)), session_extent_at() and CacheDefeat.NEAR
+    # exist (0.51.0): every far read stays inside the read's session.
+    "readable_range",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -709,6 +712,11 @@ class CacheDefeat(enum.IntEnum):
     OFF = lib.ACCUDISC_CACHE_DEFEAT_OFF
     DONE = lib.ACCUDISC_CACHE_DEFEAT_DONE
     FAILED = lib.ACCUDISC_CACHE_DEFEAT_FAILED
+    #: 0.51.0: the far read completed, but closer than 5000 sectors because
+    #: ``readable`` had no room. On both drives measured (TODO.md, 2026-11-22)
+    #: any read that reaches the disc defeats the cache, so this is a defeat;
+    #: it is recorded so a caller can tell.
+    NEAR = lib.ACCUDISC_CACHE_DEFEAT_NEAR
 
 
 class WriteResult(enum.Enum):
@@ -3337,6 +3345,7 @@ class Device:
         buffer_bytes: int = 0,
         c2_witness: bool = False,
         cache_defeat: bool = False,
+        readable: tuple[int, int] | None = None,
     ) -> ReadResult:
         """Stream ``count`` sectors from ``lba`` to ``sink``.
 
@@ -3345,9 +3354,17 @@ class Device:
         after another read is not answered from the drive's cache. One command,
         no retry, and it never fails the read; ``ReadStats.cache_defeat`` says
         whether it ran (:class:`CacheDefeat`). It assumes the drive drops its
-        cache on a non-sequential read: measured on a LITE-ON LH-20A1S, not on
-        a PX-716A. Detect it with ``"cache_defeat" in accudisc.features``; see
-        ``cache_defeat`` in accudisc.h.
+        cache on a non-sequential read: measured on a LITE-ON LH-20A1S and, on
+        2026-11-22, on a PX-716A (any read that reaches the disc, from one
+        sector away). Detect it with ``"cache_defeat" in accudisc.features``;
+        see ``cache_defeat`` in accudisc.h.
+
+        ``readable`` (0.51.0): ``(lo, hi)``, the sectors any far read may
+        target, normally :func:`session_extent_at` of the plan's lba. It
+        bounds this option's far read AND the engine's own, before every
+        retry, rescue and verify pass, so none lands between sessions or past
+        a short session's lead-out. ``None`` keeps 0.50.1's unbounded rule.
+        Detect it with ``"readable_range" in accudisc.features``.
 
         ``c2_witness`` (0.45.0, off by default, needs ``c2`` other than
         ``C2.NONE`` or the read raises): where C2 fires, that chunk and both
@@ -3439,6 +3456,11 @@ class Device:
         """
         if count <= 0:
             raise ValueError("count must be > 0")
+        if readable is not None:
+            lo, hi = readable
+            if not 0 <= lo < hi <= 0xFFFFFFFF:
+                raise ValueError(
+                    f"readable must be (lo, hi) with 0 <= lo < hi, got {readable!r}")
 
         req = ffi.new("accudisc_read_req*")
         req.size = ffi.sizeof("accudisc_read_req")
@@ -3456,6 +3478,8 @@ class Device:
         req.overlap_sectors = overlap_sectors
         req.c2_witness = 1 if c2_witness else 0
         req.cache_defeat = 1 if cache_defeat else 0
+        if readable is not None:
+            req.readable_lo, req.readable_hi = readable
 
         keepalive: list = []
         if speed_ladder:
@@ -4430,6 +4454,38 @@ def plan_read_range(toc: Toc, *, session: int = -1, first_track: int = -1,
     if rc == lib.ACCUDISC_ERR_INVAL or rc == lib.ACCUDISC_ERR_ABI:
         _raise(rc)
     return _range_plan_from_c(out, rc)
+
+
+def session_extent_at(toc: Toc, lba: int) -> tuple[int, int] | None:
+    """The readable extent ``(lo, hi)`` of the session containing ``lba``
+    (0.51.0). **Pure.**
+
+    From that session's first track's pregap (clamped at LBA 0) to its own
+    lead-out, data tracks included: it says where a far read may go, not what
+    may be ripped. Pass the plan's :attr:`RangePlan.lba`, which always lies in
+    the session the plan reads, even when :attr:`RangePlan.session` is 0
+    because an explicit ``start``/``count`` was given::
+
+        plan = accudisc.plan_read_range(toc)
+        dev.read(plan.lba, plan.count, cache_defeat=True,
+                 readable=accudisc.session_extent_at(toc, plan.lba))
+
+    ``None`` when no mapped session contains ``lba``: a TOC with no session
+    structure (format 0, as from :meth:`Device.read_toc`), or an ``lba``
+    between sessions or past the disc. ``readable=None`` then keeps the
+    engine's unbounded rule. Never substitute the disc's lead-out, which on a
+    multi-session disc spans the gap between sessions.
+    """
+    if not 0 <= lba <= 0xFFFFFFFF:
+        raise ValueError(f"lba out of range: {lba}")
+    lo = ffi.new("uint32_t*")
+    hi = ffi.new("uint32_t*")
+    rc = lib.accudisc_session_extent_at(_toc_to_c(toc), lba, lo, hi)
+    if rc == lib.ACCUDISC_ERR_NOTFOUND:
+        return None
+    if rc != lib.ACCUDISC_OK:
+        _raise(rc)
+    return (int(lo[0]), int(hi[0]))
 
 
 def index_map_decode(raw: bytes, base_lba: int, toc: Toc,

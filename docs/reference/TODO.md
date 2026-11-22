@@ -7941,7 +7941,86 @@ reading to `toc.leadout_lba` instead of `plan_read_range`. Fixed in their
   about 10000 sectors. `c2lag.c:113-115` keeps the engine's OLD rule relative
   to the probe's span. With the default span (all the audio) it stays inside;
   an explicit short span near the end of a session can step past it. Neither
-  probe is on cdda2img's rip path.
+  probe is on cdda2img's rip path. **Both done in 0.51.0, below.**
+
+**BUILT 0.51.0 (2026-11-22, Keith 12:36: "Go ahead and build 0.51.0"), after
+the cache-model and FUA tests.** Every far read now stays inside the read's
+session when the caller says where that is.
+- **API:** `accudisc_read_req.readable_lo/readable_hi` (88 -> 96; `reserved2`
+  covers 0.50.1's tail padding at 81-87 and is never read). `readable_hi == 0`
+  means unknown, and the targets are exactly 0.50.1's: the 11 earlier cases in
+  `tests/test_cache_defeat.c` pass unmodified. An impossible range is
+  `ERR_INVAL`. New pure `accudisc_session_extent_at(toc, lba, &lo, &hi)`: the
+  mapped session containing `lba`, from its first track's pregap (signed,
+  clamped at 0) to its own lead-out, data tracks included; `ERR_NOTFOUND` for
+  an LBA in no mapped session (format-0 TOC, a gap, past the disc). Keyed by
+  LBA, not session number, because a plan from an explicit start/count has
+  `plan.session == 0` but its `lba` is always in the session it reads. The
+  first draft took a session number, and the CDEmu check below caught it: a
+  `read --start --count` passed no range at all. New
+  `ACCUDISC_CACHE_DEFEAT_NEAR` (CLI token `near`).
+- **Rule** (`src/read/far.h`, shared): 5000 back if in range, else 5000 past
+  the span's end if in range, else the in-range sector furthest behind the
+  span, else the last one past it, never inside the span. Behind first,
+  because the sector just past a span was served from the read-ahead buffer in
+  the cache-model test and did not flush. The engine uses it for
+  `cache_defeat` and for its own far reads (retry, Q rescue, anchor, verify
+  pass). With a range, the anchor and verify spans are avoided as whole spans.
+- **Sector type ANY** for every far read, so a target in a data track is read,
+  not refused 5/64/00 (Mixed Mode, with or without a range). A short GOOD
+  answer counts as done. Measured on hardware: ANY with sync, headers and
+  EDC (0xF8) on data sectors. Not measured: ANY with user data only (0x10),
+  which is what the engine sends. It is standard MMC.
+- **Probes:** `c2lag` bounds its far reads by its own span `[lba, lba+count)`
+  (the planned audio from the CLI and binding), and refuses an `lba + count`
+  past uint32. The accurate-stream probe uses the unbounded rule (back first)
+  from its footprint, since its API takes no range.
+- **Callers:** CLI `read` passes `accudisc_session_extent_at` of the plan's
+  lba; a `--force` read with an explicit `--count` is not planned and stays
+  unbounded. Python: `Device.read(readable=(lo, hi))`, `session_extent_at()`,
+  `CacheDefeat.NEAR`, feature token `readable_range`; binding 0.51.0.
+- **Tests:** `test_cache_defeat` 17/17. The picker at every boundary; a
+  later-session span (NEAR to the session's start); retry far reads kept in
+  range; a Mixed Mode data-track target read as ANY; impossible ranges
+  refused; range == span means no far read. The fake drive gained a data
+  region. Mutants caught: CD-DA type restored, range ignored by the engine,
+  range never stored. NOT caught: "a short answer counts as failure". That one
+  survives because of the bug below. Binding: `session_extent_at` on the real
+  Enhanced CD parse (session 1 = (0, 195656), never the disc's lead-out; the
+  lead-out, the gap and past the disc give None; a default and an explicit
+  start/count plan alike), the LBA-0 pregap clamp, refused ranges, and the
+  pinned layout. Suite 58/58.
+- **CDEmu check** (an Enhanced CD image: session 1 audio [0, 8000), session 2
+  data from 19250), `read --cache-defeat`, far read decoded from
+  `--debug-data`. `--start 4000 --count 40`: LBA 0, `near` (no room for 5000
+  either way; the unbounded rule sent it to 9039, past session 1's lead-out).
+  `--start 6000`: LBA 1000, `done`. `--force --start 4000 --count 40` (not
+  planned): 9039, the documented unbounded rule. All three as sector type ANY
+  (`be 00`).
+- **Recorded, not changed:**
+  - A `c2lag` span no wider than one window (~24 sectors) now has no far-read
+    target, where it used to read `cur + 5000`. Its re-reads are then back to
+    back, served from the cache, and the probe returns NOTFOUND rather than a
+    wrong lag.
+  - For a session after the first, the near fallback targets the start of
+    its first track's pregap. No hardware run has read that sector: test 1's
+    data-track targets were inside track 14.
+
+**[P1] FOUND 2026-11-22 while testing 0.51.0, NOT FIXED (Keith to decide): the
+short-READ-CD guard has never worked.** `src/mmc/mmc.c` `read_cd_once`:
+`rc = adsc_exec_check_short(adsc_dev_exec(dev, &cmd), cmd.resid, ...)`. C
+leaves the order of argument evaluation unspecified, and this build reads
+`cmd.resid` BEFORE the exec runs, so the residual is always the initial 0.
+Proved with a fake that answers GOOD with resid 304: `adsc_mmc_read_cd`
+returns `ACCUDISC_OK` (a 25-line probe, -O2 and -O0 alike, both linking
+`libaccudisc.a`). So a drive that answered GOOD but short would have its
+buffer tail streamed as audio, which is exactly what the guard's comment says
+cannot happen. The fix is one line (call the exec first, then pass
+`cmd.resid`). It is held back because it turns the guard ON for every rip.
+Plain audio READ CDs through the PX-716A's bridge came back with resid 0 in
+every probe today. C2 and subchannel reads, and other drives, are unmeasured,
+and the LITE-ON notes say SG_IO's residual was not a usable length there. Only
+`read_cd_once` uses `adsc_exec_check_short`.
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 

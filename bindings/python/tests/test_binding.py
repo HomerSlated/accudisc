@@ -132,8 +132,8 @@ def test_struct_sizes_match_api_plan():
     table and the ABI rules were reasoned about, so a silent change should
     fail something.
     """
-    assert ffi.sizeof("accudisc_read_req") == 88   # 64 -> 72 in 0.22.0, 72 -> 80 in 0.45.0,
-                                                   # 80 -> 88 in 0.49.0
+    assert ffi.sizeof("accudisc_read_req") == 96   # 64 -> 72 in 0.22.0, 72 -> 80 in 0.45.0,
+                                                   # 80 -> 88 in 0.49.0, 88 -> 96 in 0.51.0
     assert ffi.sizeof("accudisc_read_stats") == 160  # 136 -> 144 in 0.7.0,
                                                      # 144 -> 160 in 0.22.0
     assert ffi.sizeof("accudisc_chunk") == 32
@@ -655,7 +655,7 @@ def test_public_dataclass_field_names_are_pinned():
     assert {m.name for m in ad.SubQState} == {
         "PENDING", "OK", "BAD", "NO_POSITION", "NO_AUDIO", "MISPOSITION",
     }
-    assert {m.name for m in ad.CacheDefeat} == {"OFF", "DONE", "FAILED"}
+    assert {m.name for m in ad.CacheDefeat} == {"OFF", "DONE", "FAILED", "NEAR"}
 
 
 def test_cache_defeat_is_wired_through():
@@ -672,13 +672,14 @@ def test_cache_defeat_is_wired_through():
     assert int(ad.CacheDefeat.OFF) == lib.ACCUDISC_CACHE_DEFEAT_OFF
     assert int(ad.CacheDefeat.DONE) == lib.ACCUDISC_CACHE_DEFEAT_DONE
     assert int(ad.CacheDefeat.FAILED) == lib.ACCUDISC_CACHE_DEFEAT_FAILED
-    assert len({int(m) for m in ad.CacheDefeat}) == 3
+    assert int(ad.CacheDefeat.NEAR) == lib.ACCUDISC_CACHE_DEFEAT_NEAR
+    assert len({int(m) for m in ad.CacheDefeat}) == 4
 
     p = inspect.signature(ad.Device.read).parameters["cache_defeat"]
     assert p.default is False
 
     for value in (lib.ACCUDISC_CACHE_DEFEAT_OFF, lib.ACCUDISC_CACHE_DEFEAT_DONE,
-                  lib.ACCUDISC_CACHE_DEFEAT_FAILED):
+                  lib.ACCUDISC_CACHE_DEFEAT_FAILED, lib.ACCUDISC_CACHE_DEFEAT_NEAR):
         c = ffi.new("accudisc_read_stats*")
         c.size = ffi.sizeof("accudisc_read_stats")
         c.cache_defeat = value
@@ -688,6 +689,9 @@ def test_cache_defeat_is_wired_through():
 
     # The C field the keyword sets, at the offset the ABI test pins.
     assert ffi.offsetof("accudisc_read_req", "cache_defeat") == 80
+    # 0.51.0: the far-read range, past 0.50.1's end (reserved2 covers 81-87).
+    assert ffi.offsetof("accudisc_read_req", "readable_lo") == 88
+    assert ffi.offsetof("accudisc_read_req", "readable_hi") == 92
     assert ffi.offsetof("accudisc_read_stats", "cache_defeat") == 148
 
 
@@ -1218,6 +1222,53 @@ def test_a_format_0_toc_plans_nothing_on_an_enhanced_cd():
     e = _raises(ad.Unsupported, ad._planned_span, f0)
     assert "guard_refused: no_session_info" in str(e)
 
+def test_session_extent_at_bounds_each_session_of_an_enhanced_cd():
+    """0.51.0: the far-read range of the session containing an LBA, from the
+    real format-2 parser. Session 1 is the audio up to ITS lead-out (195656),
+    never the disc's (211185, which spans the gap); session 2 starts at its
+    first track's pregap. An LBA in the gap, past the disc, or on a TOC with no
+    sessions gives None, so a caller passes nothing rather than a guess."""
+    toc, _ = ad.toc_from_full_toc(_ENHANCED_LEADIN)
+    assert ad.session_extent_at(toc, 0) == (0, 195656)
+    assert ad.session_extent_at(toc, 195655) == (0, 195656)
+    t14 = toc.tracks[-1]
+    s2 = (t14.lba - t14.pregap, 211185)
+    assert ad.session_extent_at(toc, 207056) == s2
+    assert ad.session_extent_at(toc, 195656) is None     # session 1's lead-out
+    assert ad.session_extent_at(toc, s2[0] - 1) is None  # the gap
+    assert ad.session_extent_at(toc, 211185) is None     # past the disc
+    # A default plan and an explicit start/count (plan.session == 0) alike.
+    for plan in (ad.plan_read_range(toc),
+                 ad.plan_read_range(toc, start=4000, count=40)):
+        assert plan.ok
+        assert ad.session_extent_at(toc, plan.lba) == (0, 195656)
+    assert ad.plan_read_range(toc, start=4000, count=40).session == 0
+    f0 = dataclasses.replace(
+        toc, sessions=(), sessions_total=0,
+        tracks=tuple(dataclasses.replace(t, session=0) for t in toc.tracks))
+    assert ad.session_extent_at(f0, 4000) is None
+
+
+def test_session_extent_at_clamps_a_pregap_before_lba_0():
+    """A track 1 at LBA 0 with a pregap must give lo = 0, not lba - pregap
+    wrapped in uint32 (~4.29e9), which would put every far read out of range."""
+    toc, _ = ad.toc_from_full_toc(_ENHANCED_LEADIN)
+    t1 = dataclasses.replace(toc.tracks[0], lba=0, pregap=150)
+    bad = dataclasses.replace(toc, tracks=(t1,) + tuple(toc.tracks[1:]))
+    assert ad.session_extent_at(bad, 0) == (0, 195656)
+
+
+def test_read_refuses_a_readable_range_that_cannot_be_meant():
+    """lo >= hi is refused before the library, and the library refuses
+    lo != 0 with hi == 0 too: never quietly read as "unknown"."""
+    dev = _null_device()
+    for bad in ((5, 5), (10, 3), (-1, 10), (0, 1 << 32)):
+        _raises(ValueError, lambda b=bad: dev.read(0, 10, readable=b))
+    import inspect
+    assert inspect.signature(ad.Device.read).parameters["readable"].default is None
+    assert "readable_range" in ad.features
+
+
 def test_trusted_is_false_only_for_untrusted_geometry():
     toc = _enhanced_cd()
     assert toc.trusted
@@ -1331,7 +1382,8 @@ def test_read_marshals_every_optional_argument():
         dev.read(0, 10, sink=None, c2=ad.C2.PTRS, sub=ad.Sub.RAW,
                  speed_ladder=[32, 16, 8], status_map=True, cancel=flag,
                  retries=3, c2_retries=4, verify_passes=2, overlap_sectors=2,
-                 chunk_sectors=16, speed_x=8, any_type=True)
+                 chunk_sectors=16, speed_x=8, any_type=True,
+                 cache_defeat=True, readable=(0, 1000))
     except ad.InvalidArgument:
         pass  # reached the library with every field set: the point of the test
     except Exception as exc:  # noqa: BLE001

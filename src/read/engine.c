@@ -22,6 +22,7 @@
 #include "../mmc/mmc.h"
 #include "accubuf.h"
 #include "engine.h"
+#include "far.h"
 
 /* Keep one READ CD transfer under 64 KiB (sg one-shot buffer comfort zone). */
 #define ADSC_MAX_XFER 65535
@@ -190,6 +191,7 @@ struct rd {
     uint8_t *samples; /* ADSC_SAMPLES_MAX sectors, consensus memory */
     uint8_t *context; /* ADSC_ANCHOR_SPAN sectors, one anchoring read */
     uint8_t *anchored; /* one sector, the first corroborated copy */
+    uint32_t far_lo, far_hi; /* readable range for far reads; hi 0 = unknown */
     accudisc_read_stats st;
 };
 
@@ -240,49 +242,70 @@ static void ladder_restore(struct rd *r)
 /* A back-to-back reread often just replays the drive cache; read one sector
  * far away first so the next read is a real disc access (readcd pattern).
  *
- * BACKWARD whenever there is room (0.50.1). The engine holds no TOC, so it
- * cannot see where the readable disc ends; it can see where it begins. Every
- * sector below a session-1 audio sector is session-1 program area or track 1's
- * pregap. Forward could not promise that: until 0.50.1 this stepped forward
- * unless cur was 5000 into the span, so every span shorter than 5000 sectors —
- * the recovery re-read shape — seeked forward, and near the end of session 1
- * the far read landed past its lead-out (correspondence 251, *Under My Skin*).
- * 5000 is over twice the PX-716A's ~2040-sector buffer, so read-ahead from the
- * far sector does not reach cur. Forward remains only below 5000, where there
- * is no room behind; that is past the end only on a session-1 shorter than
- * about 10000 sectors. What backward does NOT cover: audio in a later session,
- * where a step back from near its start can land between sessions. */
-static void cache_defeat(struct rd *r, uint32_t cur)
+ * WHERE: src/read/far.h. With the caller's readable range (0.51.0,
+ * accudisc_read_req.readable_lo/hi) the target stays inside the read's session
+ * and outside the span [a, a + n) being re-read. Without one the target is
+ * 0.50.1's, from the same sector as before (cur, as one sector): BACKWARD
+ * whenever cur >= 5000, else forward. The engine holds no TOC, so unbounded it
+ * can see where the disc begins but not where it ends; backward was the safer
+ * guess (correspondence 251, *Under My Skin*), and it still fails for audio in
+ * a later session, which is what the range is for.
+ *
+ * SECTOR TYPE ANY (0.51.0), whatever the read's own type, so a target in a
+ * data track is read rather than refused with 5/64/00. A data sector answers
+ * GOOD with fewer bytes than the 2352 asked for, which the transport reports
+ * as ACCUDISC_ERR_SHORT: that sector WAS read from the disc, which is all a far
+ * read is for, so it counts as done. */
+static int far_read(struct rd *r, uint32_t lba)
 {
-    uint32_t away = cur >= ADSC_FLUSH_DISTANCE ? cur - ADSC_FLUSH_DISTANCE
-                                               : cur + ADSC_FLUSH_DISTANCE;
+    int rc = adsc_mmc_read_cd(r->dev, lba, 1, ADSC_SECTOR_ANY,
+                              ACCUDISC_C2_NONE, ACCUDISC_SUB_NONE, r->flush,
+                              ACCUDISC_BYTES_AUDIO);
+    return rc == ACCUDISC_OK || rc == ACCUDISC_ERR_SHORT;
+}
 
-    adsc_mmc_read_cd(r->dev, away, 1, r->sector_type, ACCUDISC_C2_NONE,
-                     ACCUDISC_SUB_NONE, r->flush, ACCUDISC_BYTES_AUDIO);
+static enum adsc_far far_pick(const struct rd *r, uint32_t cur, uint32_t a,
+                              uint32_t n, uint32_t *away)
+{
+    if (!r->far_hi)
+        return adsc_far_target(cur, 1, 0, 0, ADSC_FLUSH_DISTANCE, away);
+    return adsc_far_target(a, n, r->far_lo, r->far_hi, ADSC_FLUSH_DISTANCE,
+                           away);
+}
+
+/* cur: the sector the 0.50.1 rule measured from. [a, a + n): the span about
+ * to be re-read, which a ranged target must avoid. */
+static void cache_defeat(struct rd *r, uint32_t cur, uint32_t a, uint32_t n)
+{
+    uint32_t away;
+
+    if (far_pick(r, cur, a, n, &away) != ADSC_FAR_NONE)
+        far_read(r, away);
 }
 
 /* accudisc_read_req.cache_defeat (0.49.0): the same one-sector far read, once,
- * before the FIRST transfer, placed OUTSIDE the span. cache_defeat() above
- * steps forward from a sector below 5000, which for the head of a long span
- * lands inside it, and a drive that reads ahead would then cache sectors
- * this read is about to ask for. One command and no retry:
+ * before the FIRST transfer, placed OUTSIDE the span: back from its first
+ * sector, else forward from its last, so a drive that reads ahead does not
+ * cache sectors this read is about to ask for. One command and no retry:
  * the caller asked for exactly that, and a failure only means the read goes
  * ahead as it would have without the option. */
 static uint8_t defeat_before_read(struct rd *r)
 {
     const accudisc_read_req *req = r->req;
-    uint64_t away = req->lba >= ADSC_FLUSH_DISTANCE
-                        ? (uint64_t)req->lba - ADSC_FLUSH_DISTANCE
-                        : (uint64_t)req->lba + req->count - 1 +
-                              ADSC_FLUSH_DISTANCE;
+    uint32_t away;
+    enum adsc_far k = r->far_hi
+                          ? adsc_far_target(req->lba, req->count, r->far_lo,
+                                            r->far_hi, ADSC_FLUSH_DISTANCE,
+                                            &away)
+                          : adsc_far_target(req->lba, req->count, 0, 0,
+                                            ADSC_FLUSH_DISTANCE, &away);
 
-    if (away > UINT32_MAX)
+    if (k == ADSC_FAR_NONE)
         return ACCUDISC_CACHE_DEFEAT_FAILED; /* no address to try */
-    return adsc_mmc_read_cd(r->dev, (uint32_t)away, 1, r->sector_type,
-                            ACCUDISC_C2_NONE, ACCUDISC_SUB_NONE, r->flush,
-                            ACCUDISC_BYTES_AUDIO) == ACCUDISC_OK
-               ? ACCUDISC_CACHE_DEFEAT_DONE
-               : ACCUDISC_CACHE_DEFEAT_FAILED;
+    if (!far_read(r, away))
+        return ACCUDISC_CACHE_DEFEAT_FAILED;
+    return k == ADSC_FAR_NEAR ? ACCUDISC_CACHE_DEFEAT_NEAR
+                              : ACCUDISC_CACHE_DEFEAT_DONE;
 }
 
 static int read_sector(struct rd *r, uint32_t lba, uint8_t *dst)
@@ -324,7 +347,7 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
 
         for (unsigned attempt = 0; attempt < r->retries; attempt++) {
             if (attempt > 0)
-                cache_defeat(r, cur);
+                cache_defeat(r, cur, cur, 1);
             src = read_sector(r, cur, sec);
             if (src == ACCUDISC_OK)
                 break;
@@ -369,7 +392,7 @@ static int qpos_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
         accudisc_q qd;
 
         ladder_speed(r, a);
-        cache_defeat(r, lba);
+        cache_defeat(r, lba, lba, 1);
         if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
             continue;
         r->st.rereads++;
@@ -495,7 +518,7 @@ static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
             continue;
         uint32_t w0 = (uint32_t)w;
 
-        cache_defeat(r, lba);
+        cache_defeat(r, lba, w0, ADSC_ANCHOR_SPAN);
         if (adsc_mmc_read_cd(r->dev, w0, ADSC_ANCHOR_SPAN, r->sector_type,
                              r->req->c2, r->req->sub, r->context,
                              r->sector_len) != ACCUDISC_OK)
@@ -558,7 +581,7 @@ static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *bits,
         uint32_t w0 = (uint32_t)w;
 
         ladder_speed(r, a);
-        cache_defeat(r, lba);
+        cache_defeat(r, lba, w0, ADSC_ANCHOR_SPAN);
         if (adsc_mmc_read_cd(r->dev, w0, ADSC_ANCHOR_SPAN, r->sector_type,
                              r->req->c2, r->req->sub, r->context,
                              r->sector_len) != ACCUDISC_OK)
@@ -603,7 +626,7 @@ static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
 
     for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2; a++) {
         ladder_speed(r, a);
-        cache_defeat(r, lba);
+        cache_defeat(r, lba, lba, 1);
         if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
             continue;
         r->st.rereads++;
@@ -656,7 +679,7 @@ static void witness_pass(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
                          uint32_t *diffb)
 {
     ladder_restore(r);
-    cache_defeat(r, lba);
+    cache_defeat(r, lba, lba, n);
     read_span(r, lba, n, buf2, hard2, 0);
     for (uint32_t s = 0; s < n; s++) {
         if (hard[s] || susp[s])
@@ -841,6 +864,13 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     if (req->c2_witness && req->c2 == ACCUDISC_C2_NONE)
         return ACCUDISC_ERR_INVAL;
 
+    /* 0.51.0: the far-read range. hi == 0 is the only "unknown"; lo == 0 is
+     * session 1's real start. A range that cannot be meant is refused, never
+     * quietly treated as unknown. */
+    if (req->readable_hi ? req->readable_hi <= req->readable_lo
+                         : req->readable_lo != 0)
+        return ACCUDISC_ERR_INVAL;
+
     /* REMOVED IN 0.6.0: a refusal to capture subchannel while the vendor
      * read-speed uncap was authoritatively on, overridable via
      * req->allow_unsafe. Keith's ruling, 2026-08-09.
@@ -860,6 +890,8 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
     r.dev = dev;
     r.req = req;
+    r.far_lo = req->readable_lo;
+    r.far_hi = req->readable_hi;
     r.sector_type = req->any_type ? ADSC_SECTOR_ANY : ADSC_SECTOR_CDDA;
     r.sector_len = adsc_read_cd_sector_len(req->c2, req->sub);
     r.audio_len = ACCUDISC_BYTES_AUDIO;

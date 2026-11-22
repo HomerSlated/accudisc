@@ -57,7 +57,16 @@ _Static_assert(sizeof(accudisc_speed_rung) == 20,
  * updating the number below, bumping ACCUDISC_VERSION_MINOR so the .so version
  * moves with the layout, and adding a row to API_PLAN §8. Tripping these is a
  * reminder, not a defect. */
-_Static_assert(sizeof(accudisc_read_req) == 88, "read_req grew — see above");
+_Static_assert(sizeof(accudisc_read_req) == 96, "read_req grew — see above");
+/* 0.51.0: 88 -> 96, the third time. 0.50.1's struct ended in seven bytes of
+ * tail padding at 81, so reserved2 covers 81-87 and is never read, and the
+ * far-read range starts at 88, beyond a 0.50.1 caller's declared end. */
+_Static_assert(offsetof(accudisc_read_req, reserved2) == 81,
+               "read_req: reserved2 must cover 0.50.1's padding");
+_Static_assert(offsetof(accudisc_read_req, readable_lo) == 88,
+               "read_req: readable_lo must sit past 0.50.1's end");
+_Static_assert(offsetof(accudisc_read_req, readable_hi) == 92,
+               "read_req: readable_hi follows readable_lo");
 /* 0.49.0: 80 -> 88, the same move again. 0.45.0's struct ended in seven bytes
  * of tail padding at 73, so cache_defeat does not go there: reserved1 covers
  * 73-79 and is never read, and cache_defeat sits at 80, beyond a 0.48.1

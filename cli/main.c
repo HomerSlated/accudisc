@@ -2439,6 +2439,7 @@ static const char *cache_defeat_str(uint8_t s)
     case ACCUDISC_CACHE_DEFEAT_OFF:    return "off";
     case ACCUDISC_CACHE_DEFEAT_DONE:   return "done";
     case ACCUDISC_CACHE_DEFEAT_FAILED: return "failed";
+    case ACCUDISC_CACHE_DEFEAT_NEAR:   return "near";
     default:                           return "unknown";
     }
 }
@@ -2743,6 +2744,19 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
 
         start = (long)plan.lba;
         count = (long)plan.count;
+        /* 0.51.0: every far read stays inside the session the plan reads,
+         * found from plan.lba (plan.session is 0 for an explicit --start /
+         * --count). A TOC with no session structure gives nothing, and the
+         * engine keeps its unbounded rule; the disc's lead-out is never a
+         * substitute. */
+        {
+            uint32_t lo, hi;
+            if (accudisc_session_extent_at(&toc, plan.lba, &lo, &hi) ==
+                ACCUDISC_OK) {
+                req.readable_lo = lo;
+                req.readable_hi = hi;
+            }
+        }
         /* Describe the range by what was ASKED for, not by plan.session — the
          * planner reports the tracks' session too, and keying off that would
          * silently turn a "tracks A-B" line into a "session N" one. */
@@ -2944,6 +2958,9 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
         fprintf(stderr, "  cache defeat     : %s\n",
                 st.cache_defeat == ACCUDISC_CACHE_DEFEAT_DONE
                     ? "done (one far read before the first transfer)"
+                : st.cache_defeat == ACCUDISC_CACHE_DEFEAT_NEAR
+                    ? "near (one far read, closer than 5000 sectors: the "
+                      "session had no room)"
                     : "FAILED (the far read did not complete; the read "
                       "went ahead without it)");
     if (req.c2_retries || req.verify_passes >= 2 || req.overlap_sectors ||

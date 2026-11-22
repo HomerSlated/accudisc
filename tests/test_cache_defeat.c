@@ -22,6 +22,7 @@
 
 #include "internal.h"
 #include "mmc/mmc.h"
+#include "read/far.h"
 
 #define FAR 5000u /* the engine's ADSC_FLUSH_DISTANCE */
 #define MAXCMD 4096
@@ -30,11 +31,16 @@ static struct {
     uint32_t refuse_lba;      /* a READ CD of this one sector is refused */
     int refuse;               /* refuse_lba is armed */
     int fail_multi;           /* every multi-sector READ CD fails (MEDIUM) */
+    uint32_t data_lo, data_hi;/* 0.51.0: a "data track". A CD-DA-type READ CD
+                               * there is refused 5/64/00; an ANY-type one
+                               * answers GOOD but SHORT (2048 of 2352), as a
+                               * Mode 1 sector does with user data only */
     unsigned n;               /* commands recorded */
     struct {
         uint8_t op;
         uint32_t lba, nsec;   /* READ CD only */
         unsigned c2, sub;     /* READ CD only */
+        unsigned type;        /* READ CD expected sector type: 0 ANY, 1 CDDA */
     } cmd[MAXCMD];
     unsigned refused;         /* READ CDs of refuse_lba seen */
 } fk;
@@ -65,6 +71,20 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
     fk.cmd[i].nsec = nsec;
     fk.cmd[i].c2 = (cmd->cdb[9] >> 1) & 3u;
     fk.cmd[i].sub = cmd->cdb[10] & 7u;
+    fk.cmd[i].type = (cmd->cdb[1] >> 2) & 7u;
+    if (lba >= fk.data_lo && lba < fk.data_hi) {
+        if (fk.cmd[i].type != 0) {
+            dev->last_sense.valid = 1;
+            dev->last_sense.key = 0x05; /* ILLEGAL MODE FOR THIS TRACK */
+            dev->last_sense.asc = 0x64;
+            dev->last_sense.ascq = 0x00;
+            return ACCUDISC_ERR_SENSE;
+        }
+        memset(cmd->buf, 0x5A, cmd->buf_len);
+        cmd->resid = cmd->buf_len - 2048u * nsec;
+        cmd->scsi_status = 0;
+        return ACCUDISC_OK;
+    }
     if (fk.fail_multi && nsec > 1) {
         dev->last_sense.valid = 1;
         dev->last_sense.key = 0x03; /* MEDIUM ERROR, so it is retried */
@@ -375,6 +395,163 @@ static void test_far_read_near_lba_zero_steps_forward(void)
     assert(f >= 0 && fk.cmd[f].lba == 100 + FAR);
 }
 
+/* ---- 0.51.0: the readable range ------------------------------------------ */
+
+/* The picker alone, at every boundary the rule has. */
+static void test_picker_boundaries(void)
+{
+    uint32_t t = 0;
+
+    /* No range: exactly 0.50.1's rule. */
+    assert(adsc_far_target(20000, 8, 0, 0, FAR, &t) == ADSC_FAR_FULL && t == 15000);
+    assert(adsc_far_target(100, 8, 0, 0, FAR, &t) == ADSC_FAR_FULL && t == 107 + FAR);
+    assert(adsc_far_target(0, UINT32_MAX, 0, 0, FAR, &t) == ADSC_FAR_NONE);
+
+    /* a - D == lo: in range, full distance back. */
+    assert(adsc_far_target(15000, 8, 10000, 30000, FAR, &t) == ADSC_FAR_FULL &&
+           t == 10000);
+    /* a - D == lo - 1: not in range, so forward from the span's end. */
+    assert(adsc_far_target(14999, 8, 10000, 30000, FAR, &t) == ADSC_FAR_FULL &&
+           t == 15006 + FAR);
+    /* end + D == hi - 1: in range. */
+    assert(adsc_far_target(14999, 8, 10000, 20007, FAR, &t) == ADSC_FAR_FULL &&
+           t == 20006);
+    /* end + D == hi: out, so the furthest in-range sector behind: lo. */
+    assert(adsc_far_target(14999, 8, 10000, 20006, FAR, &t) == ADSC_FAR_NEAR &&
+           t == 10000);
+    /* One sector wider than the span, behind it, then ahead of it. */
+    assert(adsc_far_target(500, 8, 499, 508, FAR, &t) == ADSC_FAR_NEAR && t == 499);
+    assert(adsc_far_target(500, 8, 500, 509, FAR, &t) == ADSC_FAR_NEAR && t == 508);
+    /* The range IS the span: nowhere to go, and never inside it. */
+    assert(adsc_far_target(500, 8, 500, 508, FAR, &t) == ADSC_FAR_NONE);
+    /* A forced span wholly past the range: the target stays in range. */
+    assert(adsc_far_target(50000, 8, 10000, 20000, FAR, &t) == ADSC_FAR_NEAR &&
+           t == 10000);
+    /* A span starting before the range: forward lands in it. */
+    assert(adsc_far_target(5000, 8, 10000, 30000, FAR, &t) == ADSC_FAR_FULL &&
+           t == 10007);
+}
+
+static unsigned single_reads_outside(uint32_t lo, uint32_t hi)
+{
+    unsigned k = 0;
+
+    for (unsigned i = 0; i < fk.n; i++)
+        if (fk.cmd[i].op == 0xBE && fk.cmd[i].nsec == 1 &&
+            (fk.cmd[i].lba < lo || fk.cmd[i].lba >= hi))
+            k++;
+    return k;
+}
+
+/* Audio in a later session (Under My Skin's shape, session 2 from 206906):
+ * 5000 back lands between the sessions and 5000 forward past the disc, so
+ * the far read goes to the furthest in-range sector behind the span, and says
+ * NEAR. */
+static void test_later_session_far_read_stays_in_it(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st;
+
+    req.lba = 207100;
+    req.count = 8;
+    req.cache_defeat = 1;
+    req.readable_lo = 206906;
+    req.readable_hi = 211185;
+    assert(run(&req, &st) == ACCUDISC_OK);
+    int f = first(0xBE, 1);
+    assert(f >= 0 && fk.cmd[f].lba == 206906);
+    assert(count_reads_outside(206906, 211185) == 0);
+    assert(st.cache_defeat == ACCUDISC_CACHE_DEFEAT_NEAR);
+    assert(delivered == 8);
+}
+
+/* The engine's OWN far reads (before every per-sector retry) obey the range
+ * too, not only the opt-in one. */
+static void test_retry_far_reads_stay_in_range(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st;
+
+    fk.fail_multi = 1;
+    fk.refuse = 1;
+    fk.refuse_lba = 21003; /* every attempt refused: 3 attempts, 2 far reads */
+    req.lba = 21000;
+    req.count = 8;
+    req.retries = 3;
+    req.readable_lo = 20000;
+    req.readable_hi = 23000;
+    run(&req, &st);
+    fk.fail_multi = 0;
+    fk.refuse = 0;
+    assert(fk.refused == 3);
+    /* the far reads happened: single reads outside the span, inside range */
+    assert(single_reads_outside(21000, 21008) >= 2);
+    assert(count_reads_outside(20000, 23000) == 0);
+    /* and none of them inside the sector being retried */
+    for (unsigned i = 1; i < fk.n; i++)
+        if (fk.cmd[i].op == 0xBE && fk.cmd[i].nsec == 1 &&
+            fk.cmd[i - 1].op == 0xBE && fk.cmd[i - 1].nsec == 1 &&
+            fk.cmd[i].lba == fk.cmd[i - 1].lba)
+            assert(0 && "a far read must not be the retried sector itself");
+}
+
+/* Mixed Mode with no range: 5000 back lands in the data track. Through 0.50.1
+ * the far read used CD-DA and was refused 5/64/00. Now it is ANY, the sector
+ * answers short, and that is a completed far read. */
+static void test_data_track_target_is_read_as_any(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st;
+
+    fk.data_lo = 0;
+    fk.data_hi = 30000;
+    req.lba = 32000;
+    req.count = 8;
+    req.cache_defeat = 1;
+    assert(run(&req, &st) == ACCUDISC_OK);
+    fk.data_lo = fk.data_hi = 0;
+    int f = first(0xBE, 1);
+    assert(f >= 0 && fk.cmd[f].lba == 27000);
+    assert(fk.cmd[f].type == 0); /* ANY */
+    assert(st.cache_defeat == ACCUDISC_CACHE_DEFEAT_DONE);
+    assert(delivered == 8);
+}
+
+/* A range that cannot be meant is refused before any command. */
+static void test_impossible_range_is_refused(void)
+{
+    static const uint32_t bad[][2] = {{5, 0}, {10, 10}, {10, 5}};
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st;
+
+    for (unsigned i = 0; i < 3; i++) {
+        req.lba = 20000;
+        req.count = 8;
+        req.readable_lo = bad[i][0];
+        req.readable_hi = bad[i][1];
+        assert(run(&req, &st) == ACCUDISC_ERR_INVAL);
+        assert(first(0xBE, -1) < 0);
+    }
+}
+
+/* The range is exactly the span: no far read at all, never one inside it. */
+static void test_range_equal_to_span_has_no_target(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st;
+
+    req.lba = 20000;
+    req.count = 8;
+    req.cache_defeat = 1;
+    req.readable_lo = 20000;
+    req.readable_hi = 20008;
+    assert(run(&req, &st) == ACCUDISC_OK);
+    assert(first(0xBE, 1) < 0);
+    assert(single_reads_outside(20000, 20008) == 0);
+    assert(st.cache_defeat == ACCUDISC_CACHE_DEFEAT_FAILED);
+    assert(delivered == 8);
+}
+
 int main(void)
 {
     test_off_is_the_old_path();
@@ -388,6 +565,12 @@ int main(void)
     test_verify_pass_far_read_steps_back();
     test_retry_far_read_steps_back();
     test_far_read_near_lba_zero_steps_forward();
-    printf("test_cache_defeat: 11/11\n");
+    test_picker_boundaries();
+    test_later_session_far_read_stays_in_it();
+    test_retry_far_reads_stay_in_range();
+    test_data_track_target_is_read_as_any();
+    test_impossible_range_is_refused();
+    test_range_equal_to_span_has_no_target();
+    printf("test_cache_defeat: 17/17\n");
     return 0;
 }

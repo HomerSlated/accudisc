@@ -659,6 +659,9 @@ typedef struct accudisc_read_req {
     uint8_t c2_witness;
     uint8_t reserved1[7];
     uint8_t cache_defeat;
+    uint8_t reserved2[7];
+    uint32_t readable_lo;
+    uint32_t readable_hi;
     ...;
 } accudisc_read_req;
 
@@ -705,6 +708,7 @@ typedef struct accudisc_read_stats {
 #define ACCUDISC_CACHE_DEFEAT_OFF ...
 #define ACCUDISC_CACHE_DEFEAT_DONE ...
 #define ACCUDISC_CACHE_DEFEAT_FAILED ...
+#define ACCUDISC_CACHE_DEFEAT_NEAR ...
 
 int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                        accudisc_sink_fn sink, void *user,
@@ -785,6 +789,8 @@ int accudisc_plan_read_range(const accudisc_toc *toc,
                              const accudisc_range_spec *spec,
                              accudisc_range_plan *out);
 const char *accudisc_plan_reason_str(unsigned plan_reason);
+int accudisc_session_extent_at(const accudisc_toc *toc, uint32_t lba,
+                               uint32_t *lo, uint32_t *hi);
 
 /* ---- pregap / index scan (§5.1) ---------------------------------------- */
 #define ACCUDISC_PREGAP_WINDOW ...

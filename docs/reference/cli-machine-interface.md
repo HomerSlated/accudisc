@@ -384,7 +384,7 @@ Newline-delimited machine tokens on caller-supplied fd `N` (unaffected by
 progress <done> <total>
 summary hard=<n> c2=<n> recovered=<n> suspect=<n> rereads=<n> slips=<n>
         subq_total=<n> subq_ok=<n> subq_bad=<n> subq_misposition=<n>
-        buffer_peak=<n> buffer_stalls=<n> cache_defeat=<off|done|failed>
+        buffer_peak=<n> buffer_stalls=<n> cache_defeat=<off|done|near|failed>
 error write <lane> <strerror>
 ```
 (the `summary` line is one physical line; wrapped here only to fit)
@@ -414,11 +414,20 @@ means it was refused (typically past the lead-out, on a span that starts below
 LBA 5000 and ends near the end of the disc) and the read went ahead without it.
 `failed` does not change the exit code: it is not a read error. It means the
 read may have been answered partly from the drive's cache, which is what the
-option was asked to rule out. Library: `accudisc_read_req.cache_defeat` and
+option was asked to rule out. `near` (0.51.0) means it completed, but closer
+than 5000 sectors, because the planned session had no room for 5000; on both
+drives measured (a LITE-ON LH-20A1S and, 2026-11-22, a PX-716A) any read that
+reaches the disc empties the cache, so `near` is still a defeat. Since 0.51.0
+`read` passes the planned session's extent with every request, so this far
+read and the engine's own (before every retry and verify pass) stay inside
+that session; a `--force` read with an explicit `--count` is not planned and
+keeps the unbounded rule. Library: `accudisc_read_req.cache_defeat`,
+`readable_lo`/`readable_hi`, `accudisc_session_extent_at` and
 `accudisc_read_stats.cache_defeat` (`ACCUDISC_CACHE_DEFEAT_*`); Python:
-`read(cache_defeat=True)` and `ReadStats.cache_defeat`, detected by
-`"cache_defeat" in accudisc.features`. Measured on a LITE-ON LH-20A1S only;
-see the header for what it assumes about the drive's cache.
+`read(cache_defeat=True, readable=session_extent_at(toc, plan.lba))` and
+`ReadStats.cache_defeat`, detected by `"cache_defeat"` and `"readable_range"`
+in `accudisc.features`. See the header for what it assumes about the drive's
+cache.
 
 **`buffer_stalls=0` means the buffer did nothing.** It is the honest answer to
 "did it help?", which a throughput figure cannot give — a read that was never

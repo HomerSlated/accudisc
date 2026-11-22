@@ -190,3 +190,48 @@ const char *accudisc_plan_reason_str(unsigned plan_reason)
     default:                                  return "unknown";
     }
 }
+
+/* 0.51.0: [lo, hi) of the MAPPED session containing lba, for
+ * accudisc_read_req's far-read range. A session's lo is the earliest sector
+ * any of its tracks owns (INDEX 01 minus its pregap), computed signed and
+ * clamped at 0: a track at LBA 0 with a pregap would otherwise wrap to
+ * ~4.29e9. Its hi is its own lead-out, never the disc's, which on a
+ * multi-session disc lies past the gap between sessions. */
+static int session_bounds(const accudisc_toc *toc, const accudisc_session *s,
+                          uint32_t *lo, uint32_t *hi)
+{
+    int64_t first = -1;
+
+    for (unsigned t = 0; t < toc->track_count && t < 99; t++) {
+        const accudisc_track *tr = &toc->tracks[t];
+        if (tr->session != s->number)
+            continue;
+        int64_t start = (int64_t)tr->lba - (int64_t)tr->pregap;
+        if (start < 0)
+            start = 0;
+        if (first < 0 || start < first)
+            first = start;
+    }
+    if (first < 0 || (uint64_t)first >= s->leadout_lba)
+        return ACCUDISC_ERR_NOTFOUND;
+    *lo = (uint32_t)first;
+    *hi = s->leadout_lba;
+    return ACCUDISC_OK;
+}
+
+int accudisc_session_extent_at(const accudisc_toc *toc, uint32_t lba,
+                               uint32_t *lo, uint32_t *hi)
+{
+    if (!toc || !lo || !hi)
+        return ACCUDISC_ERR_INVAL;
+    for (unsigned i = 0; i < toc->session_count && i < 99; i++) {
+        uint32_t l, h;
+        if (session_bounds(toc, &toc->sessions[i], &l, &h) == ACCUDISC_OK &&
+            lba >= l && lba < h) {
+            *lo = l;
+            *hi = h;
+            return ACCUDISC_OK;
+        }
+    }
+    return ACCUDISC_ERR_NOTFOUND;
+}
