@@ -1157,6 +1157,67 @@ def test_toc_from_full_toc_refuses_what_does_not_fold():
         raise AssertionError(f"{raw!r} folded into a TOC")
 
 
+# *Under My Skin*'s shape (correspondence 251): 13 audio tracks in session 1,
+# lead-out 195656; a data track 14 in session 2 at 207056; disc lead-out 211185.
+_ENHANCED_LEADIN = _leadin(
+    (1, 0x10, 0xA0, (1, 0, 0)),
+    (1, 0x10, 0xA1, (13, 0, 0)),
+    (1, 0x10, 0xA2, 195656),
+    *[(1, 0x10, n + 1, 15000 * n) for n in range(13)],
+    (2, 0x14, 0xA0, (14, 0x20, 0)),
+    (2, 0x14, 0xA1, (14, 0, 0)),
+    (2, 0x14, 0xA2, 211185),
+    (2, 0x14, 14, 207056),
+    first=1, last=2,
+)
+
+
+def _raises(exc, fn, *a):
+    try:
+        fn(*a)
+    except exc as e:
+        return e
+    raise AssertionError(f"{fn.__name__} did not raise {exc.__name__}")
+
+
+def test_probe_defaults_span_the_planned_audio_not_the_disc():
+    """0.50.1: a probe's default span is the audio a rip would read.
+
+    Until then probe_speed_ladder and probe_c2_lag ran to the disc's LAST
+    lead-out, which on this shape is past session 1, through its lead-out,
+    session 2's lead-in and the data track (correspondence 251).
+    """
+    toc, _ = ad.toc_from_full_toc(_ENHANCED_LEADIN)
+    assert toc.leadout_lba == 211185
+    audio = ad._planned_span(toc)
+    assert audio == (0, 195656)
+    # speeds: three bands over all of the audio; one band = its middle half.
+    assert ad._speed_ladder_span(audio, None, None, 3) == (0, 195656)
+    assert ad._speed_ladder_span(audio, None, None, 1) == (48914, 97828)
+    assert ad._speed_ladder_span(audio, 1000, None, 3) == (1000, 194656)
+    assert ad._speed_ladder_span(audio, 5, 7, 3) == (5, 7)
+    # c2lag: the rest of the audio from lba; past its end is a caller error.
+    assert ad._c2_lag_span(audio, None, None) == (0, 195656)
+    assert ad._c2_lag_span(audio, 195000, None) == (195000, 656)
+    _raises(ad.InvalidArgument, ad._c2_lag_span, audio, 195656, None)
+
+
+def test_a_format_0_toc_plans_nothing_on_an_enhanced_cd():
+    """Why the probes plan from read_toc_src, not read_toc (correspondence
+    251/2026-11-22b): format 0 carries no sessions, so the planner cannot see
+    the seam and the guard refuses the flat range at the data track. A refusal
+    names the reason; it never falls back to the disc's lead-out."""
+    toc, _ = ad.toc_from_full_toc(_ENHANCED_LEADIN)
+    f0 = dataclasses.replace(
+        toc, sessions=(), sessions_total=0,
+        tracks=tuple(dataclasses.replace(t, session=0) for t in toc.tracks))
+    plan = ad.plan_read_range(f0)
+    assert not plan.ok
+    assert isinstance(plan.reason.token, str)  # a property, not a method
+    assert plan.reason.token == "guard_refused"
+    e = _raises(ad.Unsupported, ad._planned_span, f0)
+    assert "guard_refused: no_session_info" in str(e)
+
 def test_trusted_is_false_only_for_untrusted_geometry():
     toc = _enhanced_cd()
     assert toc.trusted
@@ -1384,13 +1445,20 @@ def test_c2_fired_separates_a_clean_span_from_thin_evidence():
 
 
 def test_probe_c2_lag_refuses_an_lba_past_leadout():
-    """The guard is in the wrapper, so it fires before any drive I/O."""
+    """The guard is in the wrapper, so it fires before any drive I/O.
+
+    Since 0.50.1 the end is the planned audio's, not the disc's lead-out, and
+    the format-0 TOC is never consulted: it has no sessions to plan from."""
+    def _no_format_0():
+        raise AssertionError("probe_c2_lag must not plan from read_toc()")
+
     d = object.__new__(ad.Device)
-    d.read_toc = lambda: types.SimpleNamespace(leadout_lba=1000)
+    d.read_toc = _no_format_0
+    d._planned_audio = lambda: (0, 1000)
     try:
         ad.Device.probe_c2_lag(d, lba=1000)
     except ad.InvalidArgument as exc:
-        assert "lead-out" in str(exc), exc
+        assert "end of the audio" in str(exc), exc
     else:
         raise AssertionError("an lba at lead-out must be refused")
 

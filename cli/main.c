@@ -335,6 +335,63 @@ static int fail_dev(accudisc_device *dev, const char *what, int err)
     return 2;
 }
 
+/* The default span of a probe: the audio `read` would rip (0.50.1).
+ *
+ * Until 0.50.1 cxscan, speeds and c2lag defaulted to [0, lead-out), and
+ * features probed at lead-out / 2, from a format-0 TOC. Format 0's lead-out is
+ * the disc's LAST one, so on an Enhanced CD those spans ran through session
+ * 1's lead-out, session 2's lead-in and its data track — the shape that ground
+ * a rip of *Under My Skin* to a halt one failed read at a time
+ * (correspondence 251). The probes now take the planner's default range from
+ * the same format-2 TOC `read` plans from, so a probe measures exactly the
+ * audio a rip would read. A refusal is stated, not worked around; --start
+ * (and --count, where the command takes it) still names any range.
+ *
+ * default_extent is the quiet half: *toc_err is the TOC read's error (the
+ * plan is then all zero), else the planner's return. probe_extent prints
+ * and returns 0 with *lba and *count set, or the command's exit status. */
+static int default_extent(accudisc_device *dev, accudisc_range_plan *plan,
+                          int *toc_err)
+{
+    accudisc_toc toc;
+    accudisc_toc_info info = {0};
+    accudisc_range_spec spec = ACCUDISC_RANGE_SPEC_INIT;
+
+    memset(plan, 0, sizeof *plan);
+    *toc_err = accudisc_read_toc_src(dev, &toc, &info);
+    if (*toc_err != ACCUDISC_OK)
+        return *toc_err;
+    /* _INIT sets only size; every field below means "unspecified". */
+    spec.session = -1;
+    spec.first_track = -1;
+    spec.last_track = 0;
+    spec.start = -1;
+    spec.count = -1;
+    return accudisc_plan_read_range(&toc, &spec, plan);
+}
+
+static int probe_extent(accudisc_device *dev, const char *cmd, uint32_t *lba,
+                        uint32_t *count)
+{
+    accudisc_range_plan plan;
+    int toc_err;
+
+    if (default_extent(dev, &plan, &toc_err) != ACCUDISC_OK) {
+        if (toc_err != ACCUDISC_OK)
+            return fail_dev(dev, "read toc", toc_err);
+        fprintf(stderr, "accudisc: %s: no default span on this disc (%s",
+                cmd, accudisc_plan_reason_str(plan.plan_reason));
+        if (plan.plan_reason == ACCUDISC_PLAN_GUARD_REFUSED)
+            fprintf(stderr, ": %s", accudisc_range_reason_str(plan.check.reason));
+        fprintf(stderr, "); `accudisc read` would refuse it too. Name the "
+                        "span with --start\n");
+        return 1;
+    }
+    *lba = plan.lba;
+    *count = plan.count;
+    return 0;
+}
+
 static int cmd_info(accudisc_device *dev)
 {
     accudisc_drive_id id;
@@ -544,7 +601,7 @@ static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
 {
     accudisc_census_opts opts = ACCUDISC_CENSUS_OPTS_INIT;
     accudisc_census_stats st;
-    long start = 0;
+    long start = -1; /* -1 = the planned audio's start */
     unsigned speed = 0;
 
     const char *optv = NULL;
@@ -564,14 +621,21 @@ static int cmd_cxscan(accudisc_device *dev, int argc, char **argv)
 
     /* Read the TOC before arming, not after. The old order armed the counters
      * first, so the lead-in traffic of the TOC read landed in the first
-     * sample's interval — sectors the census never claimed to cover. */
-    accudisc_toc toc;
-    int err = accudisc_read_toc(dev, &toc);
-    if (err != ACCUDISC_OK)
-        return fail_dev(dev, "read toc", err);
+     * sample's interval — sectors the census never claimed to cover. The
+     * span ends where the planned audio does, never at the disc's last
+     * lead-out (probe_extent). */
+    uint32_t alba = 0, acount = 0;
+    int err = probe_extent(dev, "cxscan", &alba, &acount);
+    if (err)
+        return err;
+    if (start >= (long)alba + (long)acount) {
+        fprintf(stderr, "accudisc: cxscan: start %ld is past the audio "
+                        "(ends at %u)\n", start, alba + acount);
+        return 1;
+    }
 
-    opts.start = (uint32_t)(start < 0 ? 0 : start);
-    opts.end = toc.leadout_lba;
+    opts.start = (uint32_t)(start < 0 ? (long)alba : start);
+    opts.end = alba + acount;
     opts.speed_x = (uint16_t)speed;
 
     err = accudisc_counter_census(dev, &opts, cxscan_sample, NULL, &st);
@@ -1181,7 +1245,6 @@ static int cmd_features(accudisc_device *dev, int argc, char **argv)
     if (stream || all) {
         /* Positional determinism, probed mid-disc where damage is least likely
          * to masquerade as jitter. */
-        accudisc_toc toc;
         uint8_t accurate = 0;
 
         /* A classified disc with no audio (or no disc) has nothing to probe,
@@ -1192,9 +1255,18 @@ static int cmd_features(accudisc_device *dev, int argc, char **argv)
             !(dp.reason == ACCUDISC_DISC_WHY_NOT_CD_PROFILE && dp.profile == 0)) {
             printf("accurate_stream unknown\n");
         } else {
-            uint32_t probe_lba = accudisc_read_toc(dev, &toc) == ACCUDISC_OK
-                                     ? toc.leadout_lba / 2 : 3000;
-            if (accudisc_probe_accurate_stream(dev, probe_lba, &accurate)
+            /* The middle of the audio a rip would read (0.50.1). Half the
+             * disc's last lead-out could fall in a later session's data. A
+             * TOC that will not read keeps the old fixed fallback; a disc
+             * the planner refuses has no audio span to probe in. */
+            accudisc_range_plan plan;
+            int toc_err;
+            int prc = default_extent(dev, &plan, &toc_err);
+            uint32_t probe_lba = prc == ACCUDISC_OK
+                                     ? plan.lba + plan.count / 2 : 3000;
+            if (prc != ACCUDISC_OK && toc_err == ACCUDISC_OK)
+                printf("accurate_stream unknown\n");
+            else if (accudisc_probe_accurate_stream(dev, probe_lba, &accurate)
                 == ACCUDISC_OK)
                 printf("accurate_stream %s\n", accurate ? "yes" : "no");
             else
@@ -1277,8 +1349,8 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
      * 2026-09-12). Refuse before touching the drive and say which it is.
      *
      * The check is "has an audio track", not "is an audio disc": a Mixed Mode
-     * disc is a legitimate target, and its data track shows up below as bands
-     * that report no figure rather than as a refusal here. */
+     * disc is a legitimate target. Since 0.50.1 its bands lie in the audio
+     * the planner picks, so its data track is not probed at all. */
     unsigned audio_tracks = 0;
     for (unsigned t = 0; t < toc.track_count; t++)
         if (ACCUDISC_TRACK_IS_AUDIO(&toc.tracks[t]))
@@ -1325,10 +1397,19 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
      * headroom for one fresh window per rung. --start overrides the start
      * in both cases and keeps its existing meaning (the start of the
      * probed span, never a centre point). */
-    uint32_t lba = start >= 0 ? (uint32_t)start : (quick ? toc.leadout_lba / 4 : 0);
-    uint32_t count = toc.leadout_lba > lba ? toc.leadout_lba - lba : 0;
-    if (quick && count > toc.leadout_lba / 2 && start < 0)
-        count = toc.leadout_lba / 2;
+    /* "The whole disc" is the audio a rip would read (0.50.1, probe_extent):
+     * [0, lead-out) put an Enhanced CD's outer bands past session 1, where
+     * the slow rungs' windows read nothing but failures. */
+    uint32_t alba = 0, acount = 0;
+    err = probe_extent(dev, "speeds", &alba, &acount);
+    if (err)
+        return err;
+    uint32_t aend = alba + acount;
+    uint32_t lba = start >= 0 ? (uint32_t)start
+                              : (quick ? alba + acount / 4 : alba);
+    uint32_t count = aend > lba ? aend - lba : 0;
+    if (quick && count > acount / 2 && start < 0)
+        count = acount / 2;
 
     accudisc_speed_rung rungs[16];
     err = accudisc_probe_speed_ladder(dev, lba, count, cand, ncand, points,
@@ -1478,7 +1559,7 @@ static int cmd_speeds(accudisc_device *dev, int argc, char **argv)
  * the read offset): print it, record it, never apply it here. */
 static int cmd_c2lag(accudisc_device *dev, int argc, char **argv)
 {
-    long start = 0, count = -1;
+    long start = -1, count = -1; /* -1 = from the planned audio */
     unsigned speed = 0;
 
     const char *optv = NULL;
@@ -1497,17 +1578,26 @@ static int cmd_c2lag(accudisc_device *dev, int argc, char **argv)
     }
     if (optbad)
         return 1;
-    if (count < 0) {
-        accudisc_toc toc;
-        int err = accudisc_read_toc(dev, &toc);
-        if (err != ACCUDISC_OK)
-            return fail_dev(dev, "read toc", err);
-        if ((uint32_t)start >= toc.leadout_lba) {
-            fprintf(stderr, "accudisc: start %ld >= lead-out %u\n", start,
-                    toc.leadout_lba);
-            return 1;
+    /* An unnamed start or count comes from the audio a rip would read
+     * (0.50.1, probe_extent), never from the disc's last lead-out. */
+    if (start < 0 || count < 0) {
+        uint32_t alba = 0, acount = 0;
+        int perr = probe_extent(dev, "c2lag", &alba, &acount);
+        long aend;
+
+        if (perr)
+            return perr;
+        aend = (long)alba + (long)acount;
+        if (start < 0)
+            start = (long)alba;
+        if (count < 0) {
+            if (start >= aend) {
+                fprintf(stderr, "accudisc: c2lag: start %ld is past the "
+                                "audio (ends at %ld)\n", start, aend);
+                return 1;
+            }
+            count = aend - start;
         }
-        count = (long)toc.leadout_lba - start;
     }
     if (speed)
         accudisc_set_speed(dev, speed);

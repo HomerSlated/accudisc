@@ -575,8 +575,10 @@ sense appended when there is one. The stdout tokens are unchanged: a window
 that did not measure has no token, exactly as before, and never a `0.00`.
 
 **The three-band sweep is the DEFAULT as of 0.9.0.** Each rung is timed
-once in each third of the probed span, which defaults to the whole disc —
-so the thirds are inner/middle/outer. `--start` narrows the span and the
+once in each third of the probed span, which defaults to all of the audio
+`read` would rip — so the thirds are inner/middle/outer. (Until 0.50.1 the
+default was `[0, disc lead-out)`, which on an Enhanced CD put the outer band
+past session 1; a disc `read` refuses is now refused here with exit 1.) `--start` narrows the span and the
 bands become thirds of the narrowed span, noted on stderr. `--sweep` is
 still accepted and now selects the default; `--quick` is the old
 single-band behaviour (3x faster, and `measured` is then the only rate

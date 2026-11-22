@@ -29,6 +29,7 @@
 static struct {
     uint32_t refuse_lba;      /* a READ CD of this one sector is refused */
     int refuse;               /* refuse_lba is armed */
+    int fail_multi;           /* every multi-sector READ CD fails (MEDIUM) */
     unsigned n;               /* commands recorded */
     struct {
         uint8_t op;
@@ -64,6 +65,13 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
     fk.cmd[i].nsec = nsec;
     fk.cmd[i].c2 = (cmd->cdb[9] >> 1) & 3u;
     fk.cmd[i].sub = cmd->cdb[10] & 7u;
+    if (fk.fail_multi && nsec > 1) {
+        dev->last_sense.valid = 1;
+        dev->last_sense.key = 0x03; /* MEDIUM ERROR, so it is retried */
+        dev->last_sense.asc = 0x11;
+        dev->last_sense.ascq = 0x00;
+        return ACCUDISC_ERR_SENSE;
+    }
     if (fk.refuse && nsec == 1 && lba == fk.refuse_lba) {
         /* What a drive says to a sector past the lead-out: ILLEGAL REQUEST,
          * LOGICAL BLOCK ADDRESS OUT OF RANGE. */
@@ -288,6 +296,85 @@ static void test_old_caller_size_never_defeats(void)
     assert(st.cache_defeat == ACCUDISC_CACHE_DEFEAT_OFF);
 }
 
+/* ---- the engine's own far read (0.50.1) ----------------------------------
+ * Separate from the option above: cache_defeat() runs before every verify-pass
+ * chunk and every per-sector retry, whatever req.cache_defeat says. It used to
+ * step FORWARD whenever the sector was less than 5000 into the span, so a short
+ * re-read near the end of session 1 aimed past session 1's lead-out
+ * (correspondence 251, *Under My Skin*: session 1 ends at 195656, session 2's
+ * lead-in starts at 202406). The engine holds no TOC; backward from a session-1
+ * sector is the one direction that stays inside session 1 without one. */
+
+/* Every one-sector READ CD outside [lo, hi): all must be at or before lo. */
+static void assert_far_reads_backward(uint32_t lo, uint32_t hi, unsigned want)
+{
+    unsigned k = 0;
+
+    for (unsigned i = 0; i < fk.n; i++) {
+        if (fk.cmd[i].op != 0xBE || fk.cmd[i].nsec != 1)
+            continue;
+        if (fk.cmd[i].lba >= lo && fk.cmd[i].lba < hi)
+            continue;
+        /* exactly 5000 behind some sector of the span */
+        assert(fk.cmd[i].lba < lo);
+        assert(fk.cmd[i].lba + FAR >= lo && fk.cmd[i].lba + FAR < hi);
+        k++;
+    }
+    assert(k >= want);
+}
+
+/* A short span near the end of a session, read with a verify pass: the far
+ * read before the second transfer goes 5000 BACK, not 5000 on. */
+static void test_verify_pass_far_read_steps_back(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st;
+
+    req.lba = 195600; /* 56 sectors before session 1's lead-out */
+    req.count = 8;
+    req.verify_passes = 2;
+    assert(run(&req, &st) == ACCUDISC_OK);
+    assert(fk.n > 0);
+    assert_far_reads_backward(195600, 195608, 1);
+    assert(delivered == 8);
+}
+
+/* A per-sector retry: the chunk read fails, every sector is re-read alone, and
+ * a failed sector's second attempt is preceded by a far read — backward. */
+static void test_retry_far_read_steps_back(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st;
+
+    req.lba = 195600;
+    req.count = 8;
+    req.retries = 3;
+    fk.fail_multi = 1;
+    fk.refuse = 1;
+    fk.refuse_lba = 195603; /* refused on every attempt */
+    assert(run(&req, &st) == ACCUDISC_OK);
+    fk.refuse = 0;
+    fk.fail_multi = 0;
+    assert(fk.refused == 3);
+    assert_far_reads_backward(195600, 195608, 2);
+    assert(st.hard_errors == 1);
+}
+
+/* With no room behind (a sector below 5000), forward is the only choice, and
+ * is what it was. */
+static void test_far_read_near_lba_zero_steps_forward(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st;
+
+    req.lba = 100;
+    req.count = 8;
+    req.verify_passes = 2;
+    assert(run(&req, &st) == ACCUDISC_OK);
+    int f = first(0xBE, 1);
+    assert(f >= 0 && fk.cmd[f].lba == 100 + FAR);
+}
+
 int main(void)
 {
     test_off_is_the_old_path();
@@ -298,6 +385,9 @@ int main(void)
     test_far_read_follows_the_speed_set();
     test_no_address_to_try();
     test_old_caller_size_never_defeats();
-    printf("test_cache_defeat: 8/8\n");
+    test_verify_pass_far_read_steps_back();
+    test_retry_far_read_steps_back();
+    test_far_read_near_lba_zero_steps_forward();
+    printf("test_cache_defeat: 11/11\n");
     return 0;
 }

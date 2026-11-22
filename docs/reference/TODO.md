@@ -7691,6 +7691,38 @@ struct with no `size` (32 bytes, pinned in the binding). Measured 2026-10-22:
 bytes 18-19 and 28-31 are padding. Growing it would let a library write past
 an older caller's allocation.
 
+**BUILT 0.50.1 (2026-11-22, Keith: "Go ahead with both fixes"), after
+correspondence 251.** Keith's rip of *Under My Skin* (Enhanced CD: session 1
+ends at 195656, session 2's data track 14 at 207056, disc lead-out 211185)
+stopped at 202377. The capture read `[0, disc lead-out)`, ran through session
+1's lead-out (which the PX-716A reads as audio silence, 195656-202405), and
+ground on session 2's lead-in, one failed read every ~20 s (cdda2img's
+evidence, 252: the capture file held 202,345 sectors). The bug was theirs:
+reading to `toc.leadout_lba` instead of `plan_read_range`. Fixed in their
+`a2bbb00`. Two exposures of the same kind were ours:
+
+- **The engine's own far read** (`cache_defeat()`, before every retry, Q-position
+  rescue and verify-pass chunk, whatever `req.cache_defeat` says) stepped
+  FORWARD unless the sector was 5000 into the span. So every span under 5000
+  sectors seeked forward, and a short re-read near the end of session 1 aimed
+  past its lead-out. It now steps backward whenever the sector is at 5000 or
+  more. The engine holds no TOC, and backward from a session-1 sector stays in
+  session 1. It still does not cover audio in a later session. On this drive
+  and disc the old forward target (at most 200655) lay in the lead-out the
+  drive reads, so this did not grind here. It is hygiene, not the stall's
+  cause. Three new cases in `tests/test_cache_defeat.c` (verify pass, retry,
+  and LBA below 5000); the first two each fail on the old rule.
+- **Probe defaults.** CLI `cxscan`, `speeds`, `c2lag` and the `features` stream
+  probe, and the binding's `probe_speed_ladder`/`probe_c2_lag`, defaulted to
+  `[0, lead-out)` from a FORMAT-0 TOC. They now take the planner's default range
+  from the format-2 `read_toc_src` TOC (CLI `probe_extent`, binding
+  `_planned_span`), and a disc the planner refuses is refused with its token.
+  Format 0 matters on its own: it has no sessions, so the planner refuses any
+  disc with a data track from it. That was cdda2img's next bug, caught
+  offline before a rip (our 2026-11-22b). They planned from `dev.read_toc()`.
+  The same message flags that `PlanReason.token` is a property (our docstring
+  said `:meth:`).
+
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 
 8trax is the third correspondent and the first **GUI** consumer. Keith's ruling

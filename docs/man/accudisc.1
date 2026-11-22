@@ -524,8 +524,13 @@ and
 .RS 4
 .TP
 .BI \-\-start " LBA"
-Where to probe. Default: 0, or one quarter of the way into the disc under
+Where to probe. Default: the start of the audio
+.B read
+would rip, or one quarter of the way into it under
 .BR \-\-quick .
+The span ends where that audio ends, never in a later session (0.50.1). A disc
+.B read
+would refuse is refused here with exit 1.
 Narrowing the span makes the bands thirds of whatever was probed rather than
 of the disc, which is noted on stderr \(em three bands of the last sixth of a
 disc are still three well-formed numbers with nothing to mark them as local.
@@ -537,7 +542,7 @@ Default: 52,48,40,32,24,16,8,4 filtered to those at or below the drive's page
 2A maximum.
 .TP
 .B \-\-quick
-Time each rung once, in the middle half of the disc, instead of once per third.
+Time each rung once, in the middle half of the audio, instead of once per third.
 Three times faster, and it reports
 .I measured
 alone: no
@@ -609,10 +614,14 @@ from
 .RS 4
 .TP
 .BI \-\-start " LBA"
-First sector. Default 0.
+First sector. Default: the start of the audio
+.B read
+would rip.
 .TP
 .BI \-\-count " N"
-Sectors to scan. Default: to the lead-out.
+Sectors to scan. Default: to the end of that audio. A disc
+.B read
+would refuse is refused here too, with exit 1, unless both are given.
 .TP
 .BI \-\-speed " X"
 Set the read speed first. A higher speed can be what makes marginal defects
@@ -854,7 +863,12 @@ capability.
 .RS 4
 .TP
 .BI \-\-start " LBA"
-First sector. Default 0. The scan always runs to the lead-out.
+First sector. Default: the start of the audio
+.B read
+would rip. The scan always runs to the end of that audio, never into a later
+session (0.50.1; until then it ran to the disc's last lead-out). A disc
+.B read
+would refuse is refused here with exit 1.
 .TP
 .BI \-\-speed " X"
 Set the read speed before scanning.

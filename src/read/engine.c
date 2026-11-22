@@ -238,12 +238,24 @@ static void ladder_restore(struct rd *r)
 }
 
 /* A back-to-back reread often just replays the drive cache; read one sector
- * far away first so the next read is a real disc access (readcd pattern). */
+ * far away first so the next read is a real disc access (readcd pattern).
+ *
+ * BACKWARD whenever there is room (0.50.1). The engine holds no TOC, so it
+ * cannot see where the readable disc ends; it can see where it begins. Every
+ * sector below a session-1 audio sector is session-1 program area or track 1's
+ * pregap. Forward could not promise that: until 0.50.1 this stepped forward
+ * unless cur was 5000 into the span, so every span shorter than 5000 sectors —
+ * the recovery re-read shape — seeked forward, and near the end of session 1
+ * the far read landed past its lead-out (correspondence 251, *Under My Skin*).
+ * 5000 is over twice the PX-716A's ~2040-sector buffer, so read-ahead from the
+ * far sector does not reach cur. Forward remains only below 5000, where there
+ * is no room behind; that is past the end only on a session-1 shorter than
+ * about 10000 sectors. What backward does NOT cover: audio in a later session,
+ * where a step back from near its start can land between sessions. */
 static void cache_defeat(struct rd *r, uint32_t cur)
 {
-    uint32_t away = cur >= r->req->lba + ADSC_FLUSH_DISTANCE
-                        ? cur - ADSC_FLUSH_DISTANCE
-                        : cur + ADSC_FLUSH_DISTANCE;
+    uint32_t away = cur >= ADSC_FLUSH_DISTANCE ? cur - ADSC_FLUSH_DISTANCE
+                                               : cur + ADSC_FLUSH_DISTANCE;
 
     adsc_mmc_read_cd(r->dev, away, 1, r->sector_type, ACCUDISC_C2_NONE,
                      ACCUDISC_SUB_NONE, r->flush, ACCUDISC_BYTES_AUDIO);
@@ -251,8 +263,8 @@ static void cache_defeat(struct rd *r, uint32_t cur)
 
 /* accudisc_read_req.cache_defeat (0.49.0): the same one-sector far read, once,
  * before the FIRST transfer, placed OUTSIDE the span. cache_defeat() above
- * steps forward from the sector being re-read, which for the head of a long
- * span lands inside it, and a drive that reads ahead would then cache sectors
+ * steps forward from a sector below 5000, which for the head of a long span
+ * lands inside it, and a drive that reads ahead would then cache sectors
  * this read is about to ask for. One command and no retry:
  * the caller asked for exactly that, and a failure only means the read goes
  * ahead as it would have without the option. */

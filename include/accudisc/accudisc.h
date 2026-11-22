@@ -908,7 +908,19 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 0 /* reset by 0.50.0 (and by 0.49.0). Previously:
+#define ACCUDISC_VERSION_PATCH 1 /* 0.50.1: the engine's own far read (before
+                                  * every retry and verify-pass chunk) steps
+                                  * BACKWARD whenever the sector is 5000 or more
+                                  * in; it stepped forward for every span under
+                                  * 5000 sectors, so a short re-read near the
+                                  * end of session 1 aimed past its lead-out
+                                  * (correspondence 251). The CLI's cxscan,
+                                  * speeds, c2lag and features stream probe, and
+                                  * the binding's probe_speed_ladder and
+                                  * probe_c2_lag, default to the planner's audio
+                                  * span from the format-2 TOC, not [0, disc
+                                  * lead-out) from format 0. No layout change.
+                                  * Reset by 0.50.0 (and by 0.49.0). Previously:
                                   * 0.48.1: a live burn reads page 05 back a
                                   * SECOND time, after SEND OPC and before the
                                   * cue sheet, so a drive that resets the page

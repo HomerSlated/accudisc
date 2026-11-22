@@ -2939,7 +2939,8 @@ class Device:
         _check(lib.accudisc_probe_disc(self._handle, out), self)
         return _disc_probe_from_c(out[0])
 
-    def probe_c2_lag(self, lba: int = 0, count: int | None = None) -> C2Lag:
+    def probe_c2_lag(self, lba: int | None = None,
+                     count: int | None = None) -> C2Lag:
         """Measure this drive's C2-bitmap/audio alignment. **Needs DAMAGED media.**
 
         Some drives return the C2 bitmap shifted from the audio bytes of the
@@ -2956,8 +2957,14 @@ class Device:
         evidence is not an I/O failure, and it is common enough that making it
         an exception would put a ``try`` around the normal case.
 
-        ``count`` defaults to the rest of the disc from ``lba``, matching
-        ``accudisc c2lag``. A wider span gives the correlation more to work
+        ``lba`` defaults to the start of the audio a rip would read and
+        ``count`` to the rest of it, matching ``accudisc c2lag`` (both since
+        0.50.1: until then the defaults ran to the disc's LAST lead-out, through
+        an Enhanced CD's inter-session gap and data track). The audio is
+        :func:`plan_read_range` with every argument at its default, on the
+        :meth:`read_toc_src` TOC; a disc it refuses raises :class:`Unsupported`
+        with the reason token, and an explicit ``lba``/``count`` still names
+        any span. A wider span gives the correlation more to work
         with; the probe scans for C2-active sectors and only rereads those, so
         span costs less than it looks.
 
@@ -2971,14 +2978,8 @@ class Device:
         delivering raw bitmaps, and applying the correction is the caller's
         job. See :class:`C2Lag`.
         """
-        if count is None:
-            leadout = self.read_toc().leadout_lba
-            if lba >= leadout:
-                raise InvalidArgument(
-                    lib.ACCUDISC_ERR_INVAL,
-                    f"lba {lba} is at or past lead-out {leadout}",
-                )
-            count = leadout - lba
+        if lba is None or count is None:
+            lba, count = _c2_lag_span(self._planned_audio(), lba, count)
 
         out = ffi.new("accudisc_c2_lag*")
         rc = lib.accudisc_probe_c2_lag(self._handle, lba, count, out)
@@ -3027,8 +3028,14 @@ class Device:
         stay comparable with every ``accudisc speeds`` measurement without the
         caller re-deriving it. Note the two are NOT the same span, which is
         the part worth reading: at ``points > 1`` the bands are the point, so
-        the span opens out to the WHOLE disc to make them inner/middle/outer;
+        the span opens out to ALL the audio to make them inner/middle/outer;
         at ``points == 1`` it is the middle half, one representative radius.
+        "The audio" is what a rip would read — :func:`plan_read_range` at its
+        defaults, on the :meth:`read_toc_src` TOC — since 0.50.1. Until then
+        it was ``[0, disc lead-out)``, which put an Enhanced CD's outer band
+        past session 1, where the slow rungs timed nothing but failed reads.
+        A disc the planner refuses raises :class:`Unsupported` unless both
+        ``lba`` and ``count`` are given.
         Passing ``lba`` yourself narrows the span, and three bands of the last
         sixth of a disc are still three well-formed numbers with nothing to
         mark them as local.
@@ -3072,13 +3079,8 @@ class Device:
                                   "at most 255 candidates (ncand is a uint8_t)")
 
         if lba is None or count is None:
-            leadout = self.read_toc().leadout_lba
-            if lba is None:
-                lba = 0 if points > 1 else leadout // 4
-            if count is None:
-                count = leadout - lba if leadout > lba else 0
-                if points <= 1 and count > leadout // 2:
-                    count = leadout // 2
+            lba, count = _speed_ladder_span(self._planned_audio(), lba, count,
+                                            points)
 
         c_cand = ffi.new("uint16_t[]", list(cand))
         out = ffi.new("accudisc_speed_rung[]", len(cand))
@@ -3235,8 +3237,19 @@ class Device:
 
     # -- TOC ---------------------------------------------------------------
 
+    def _planned_audio(self) -> tuple[int, int]:
+        """``(lba, count)`` of the audio a rip would read: the default span of
+        every probe (0.50.1). See :func:`_planned_span`."""
+        return _planned_span(self.read_toc_src()[0])
+
     def read_toc(self) -> Toc:
-        """READ TOC format 0, parsed. Requires a disc."""
+        """READ TOC format 0, parsed. Requires a disc.
+
+        **Not the TOC to plan a read from.** Format 0 has no session structure
+        (``sessions`` is empty, every track's ``session`` is 0), so
+        :func:`plan_read_range` on it refuses any disc with a data track,
+        Enhanced CDs included. Plan from :meth:`read_toc_src`, as
+        ``accudisc read`` does."""
         out = ffi.new("accudisc_toc*")
         _check(lib.accudisc_read_toc(self._handle, out), self)
         return _toc_from_c(out)
@@ -4332,6 +4345,55 @@ def _stats_from_c(s) -> ReadStats:
 # ---------------------------------------------------------------------------
 
 
+def _planned_span(toc: Toc) -> tuple[int, int]:
+    """``(lba, count)`` from :func:`plan_read_range` at its defaults: the audio a
+    rip would read. Pure. A refusal raises :class:`Unsupported` naming the
+    reason token, never falls back to the disc's lead-out — that fallback is
+    the defect this replaced (0.50.1)."""
+    plan = plan_read_range(toc)
+    if not plan.ok:
+        why = plan.reason.token
+        if plan.check is not None and not plan.check.ok:
+            why += f": {plan.check.reason}"
+        raise Unsupported(
+            lib.ACCUDISC_ERR_UNSUPPORTED,
+            f"no default span on this disc ({why}); pass lba and count",
+        )
+    return plan.lba, plan.count
+
+
+def _c2_lag_span(audio: tuple[int, int], lba: int | None,
+                 count: int | None) -> tuple[int, int]:
+    """probe_c2_lag's defaults, given the planned audio. Pure."""
+    alba, acount = audio
+    end = alba + acount
+    if lba is None:
+        lba = alba
+    if count is None:
+        if lba >= end:
+            raise InvalidArgument(
+                lib.ACCUDISC_ERR_INVAL,
+                f"lba {lba} is at or past the end of the audio ({end})",
+            )
+        count = end - lba
+    return lba, count
+
+
+def _speed_ladder_span(audio: tuple[int, int], lba: int | None,
+                       count: int | None, points: int) -> tuple[int, int]:
+    """probe_speed_ladder's defaults, given the planned audio. Pure. The CLI's
+    ``speeds`` computes the same span (cli/main.c, probe_extent)."""
+    alba, acount = audio
+    end = alba + acount
+    if lba is None:
+        lba = alba if points > 1 else alba + acount // 4
+    if count is None:
+        count = end - lba if end > lba else 0
+        if points <= 1 and count > acount // 2:
+            count = acount // 2
+    return lba, count
+
+
 def plan_read_range(toc: Toc, *, session: int = -1, first_track: int = -1,
                     last_track: int = 0, start: int = -1, count: int = -1,
                     force: bool = False) -> RangePlan:
@@ -4343,7 +4405,7 @@ def plan_read_range(toc: Toc, *, session: int = -1, first_track: int = -1,
     API_PLAN §5 exists to close.
 
     **A refusal is a RESULT.** Check :attr:`RangePlan.ok`; the reason is always
-    populated and :meth:`PlanReason.token` gives the CLI's spelling of it, so a
+    populated and :attr:`PlanReason.token` gives the CLI's spelling of it, so a
     disagreement with another implementation is a stated policy difference
     rather than an inferred one.
 
