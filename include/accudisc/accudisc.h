@@ -1936,7 +1936,10 @@ typedef struct accudisc_census_sample {
                                  * A failed read does NOT stop the census — the
                                  * point is to map damage — but its sample is
                                  * flagged so a caller never mistakes "unread"
-                                 * for "read clean". */
+                                 * for "read clean". A CANCELLED read is not a
+                                 * failed one: it ends the census with
+                                 * ACCUDISC_ERR_CANCELLED and is never a
+                                 * sample (0.52.0). */
 } accudisc_census_sample;
 
 /* Called once per sample. Return nonzero to stop the census early (reported as
@@ -2113,7 +2116,12 @@ typedef struct accudisc_verify_result {
  *
  * Returns ACCUDISC_OK when the verification RAN, whatever it found — a disc
  * that differs is a result, not an error. Read the result to learn the
- * verdict; the return code only says whether the question could be put. */
+ * verdict; the return code only says whether the question could be put.
+ *
+ * A cancel (opts->cancel, or the handle's flag) returns ACCUDISC_ERR_CANCELLED
+ * from every stage (0.52.0). Before 0.52.0, a cancel during alignment came back
+ * OK with aligned = 0, and one during the census came back as a degraded OK.
+ * Both read as verdicts about a run that never finished. */
 ACCUDISC_API int accudisc_verify(accudisc_device *dev, const char *bin_path,
                                  const accudisc_verify_opts *opts,
                                  accudisc_verify_result *out,
