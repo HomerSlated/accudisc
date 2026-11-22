@@ -108,9 +108,16 @@ static int read_cd_once(struct accudisc_device *dev, uint32_t lba,
     /* READ CD is exact-length: a GOOD-status short transfer leaves stale bytes
      * in the buffer tail. Promote it to ACCUDISC_ERR_SHORT so callers fall
      * back to the per-sector path (or fail the sector) instead of streaming
-     * stale contents as valid audio. The rounding slack is not data. */
-    rc = adsc_exec_check_short(adsc_dev_exec(dev, &cmd), cmd.resid,
-                               xfer - exact);
+     * stale contents as valid audio. The rounding slack is not data.
+     *
+     * The exec MUST run as its own statement first. Through 0.51.0 it was an
+     * argument beside cmd.resid in one call; C leaves the order of argument
+     * evaluation unspecified, and this build read cmd.resid (still 0) before
+     * the command ran, so a GOOD short transfer came back ACCUDISC_OK and this
+     * guard never fired (found 2026-11-22, tests/test_cache_defeat.c,
+     * test_short_read_cd_is_refused). */
+    rc = adsc_dev_exec(dev, &cmd);
+    rc = adsc_exec_check_short(rc, cmd.resid, xfer - exact);
     /* DRIVER_TIMEOUT: the classic marginal-sector failure, and one that says
      * nothing about the transfer length (see adsc_io_detail). */
     *timed_out = rc == ACCUDISC_ERR_IO && (cmd.driver_status & 0x0f) == 0x06;

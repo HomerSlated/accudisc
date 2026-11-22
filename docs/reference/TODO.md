@@ -8006,8 +8006,26 @@ session when the caller says where that is.
     its first track's pregap. No hardware run has read that sector: test 1's
     data-track targets were inside track 14.
 
-**[P1] FOUND 2026-11-22 while testing 0.51.0, NOT FIXED (Keith to decide): the
-short-READ-CD guard has never worked.** `src/mmc/mmc.c` `read_cd_once`:
+**FIXED 0.51.1 (Keith 13:21: "Please fix the broken guard now"):** the exec
+now runs as its own statement, then the residual is checked. Three new cases
+in `tests/test_cache_defeat.c` (20/20). A GOOD transfer 100 bytes short is
+`ERR_SHORT`, a C2+raw-P-W read with a residual of 10 (the 16-byte rounding
+slack) is OK and 11 is SHORT, a short chunk falls back to 8 single sectors and
+reads clean, and a sector short on every attempt is one hard error. With the
+old line, the first case fails. The 0.51.0 mutant that survived ("a short far
+read counts as failure") is now caught by the data-track case. CDEmu: all
+eight `read` combinations (no C2, C2, C2+BEB; no sub, raw, Q) read 300
+sectors with exit 0, no residual on any READ CD and no hard errors. **Not
+verified on the PX-716A's bridge for C2/subchannel reads.** Every saved
+hardware trace shows residuals only on allocation-length commands (READ TOC,
+READ DISC INFORMATION, GET CONFIGURATION), which never pass this guard, and
+plain audio READ CDs at 0 (2026-11-21 and today's probes). If a rip on the
+bridge starts showing sudden hard errors or per-sector fallback on clean
+discs, this guard is the first suspect: run `--debug-data` and look for
+`resid=` on `READ CD`.
+
+**[P1] FOUND 2026-11-22 while testing 0.51.0: the short-READ-CD guard had
+never worked** (record kept): `src/mmc/mmc.c` `read_cd_once`:
 `rc = adsc_exec_check_short(adsc_dev_exec(dev, &cmd), cmd.resid, ...)`. C
 leaves the order of argument evaluation unspecified, and this build reads
 `cmd.resid` BEFORE the exec runs, so the residual is always the initial 0.

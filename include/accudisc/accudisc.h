@@ -919,7 +919,16 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 0 /* Reset by 0.51.0. Previously:
+#define ACCUDISC_VERSION_PATCH 1 /* 0.51.1: READ CD's short-transfer guard
+                                  * WORKS. It read the residual in the same
+                                  * call that ran the command, and this build
+                                  * evaluated the residual first, so a GOOD
+                                  * transfer that arrived short came back OK
+                                  * and its stale tail was delivered as audio.
+                                  * Now ACCUDISC_ERR_SHORT: a short chunk falls
+                                  * back to single sectors, and a sector short
+                                  * on every attempt is a hard error. No API or
+                                  * layout change. Reset by 0.51.0. Previously:
                                   * 0.50.1: the engine's own far read (before
                                   * every retry and verify-pass chunk) steps
                                   * BACKWARD whenever the sector is 5000 or more

@@ -35,6 +35,12 @@ static struct {
                                * there is refused 5/64/00; an ANY-type one
                                * answers GOOD but SHORT (2048 of 2352), as a
                                * Mode 1 sector does with user data only */
+    int short_multi;          /* 0.51.1: every multi-sector READ CD answers
+                               * GOOD but one sector short */
+    int short_lba_armed;      /* a one-sector READ CD of short_lba answers */
+    uint32_t short_lba;       /* GOOD with 100 bytes missing */
+    uint32_t pad_resid;       /* resid reported on every GOOD READ CD (the
+                               * 0.39.0 rounding slack case) */
     unsigned n;               /* commands recorded */
     struct {
         uint8_t op;
@@ -103,6 +109,12 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
         return ACCUDISC_ERR_SENSE;
     }
     memset(cmd->buf, (int)(lba & 0xFF), cmd->buf_len);
+    if (fk.short_multi && nsec > 1)
+        cmd->resid = cmd->buf_len / nsec; /* one sector's worth missing */
+    else if (fk.short_lba_armed && nsec == 1 && lba == fk.short_lba)
+        cmd->resid = 100;
+    else
+        cmd->resid = fk.pad_resid;
     return ACCUDISC_OK;
 }
 
@@ -552,6 +564,83 @@ static void test_range_equal_to_span_has_no_target(void)
     assert(delivered == 8);
 }
 
+/* ---- 0.51.1: the short-READ-CD guard ------------------------------------- */
+
+/* A GOOD transfer that arrives short is ERR_SHORT, never OK; a residual no
+ * larger than the 16-byte rounding slack is not a short read. Through 0.51.0
+ * the residual was read before the command ran, so the first assertion
+ * failed: the transfer came back OK with a stale tail. */
+static void test_short_read_cd_is_refused(void)
+{
+    static struct accudisc_device dev;
+    static uint8_t b[2 * (2352 + 294 + 96)];
+
+    memset(&dev, 0, sizeof dev);
+    fk.n = 0;
+    fk.short_lba_armed = 1;
+    fk.short_lba = 100;
+    assert(adsc_mmc_read_cd(&dev, 100, 1, ADSC_SECTOR_CDDA, ADSC_C2_NONE,
+                            ADSC_SUB_NONE, b, 2352) == ACCUDISC_ERR_SHORT);
+    assert(adsc_mmc_read_cd(&dev, 101, 1, ADSC_SECTOR_CDDA, ADSC_C2_NONE,
+                            ADSC_SUB_NONE, b, 2352) == ACCUDISC_OK);
+    fk.short_lba_armed = 0;
+
+    /* C2 + raw P-W: 2742 bytes, rounded to 2752 (0.39.0). A residual of 10 is
+     * the slack, not data. 11 is one byte of data missing. */
+    free(dev.xfer_bounce);
+    memset(&dev, 0, sizeof dev);
+    fk.pad_resid = 10;
+    assert(adsc_mmc_read_cd(&dev, 200, 1, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_RAW, b, 2742) == ACCUDISC_OK);
+    fk.pad_resid = 11;
+    assert(adsc_mmc_read_cd(&dev, 200, 1, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_RAW, b, 2742) == ACCUDISC_ERR_SHORT);
+    fk.pad_resid = 0;
+    free(dev.xfer_bounce);
+    dev.xfer_bounce = NULL;
+}
+
+/* In the engine: a short CHUNK is not delivered; the span falls back to one
+ * sector at a time, which here arrive whole, so the read is clean. */
+static void test_short_chunk_falls_back_per_sector(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st;
+
+    fk.short_multi = 1;
+    req.lba = 20000;
+    req.count = 8;
+    assert(run(&req, &st) == ACCUDISC_OK);
+    fk.short_multi = 0;
+    unsigned singles = 0;
+    for (unsigned i = 0; i < fk.n; i++)
+        if (fk.cmd[i].op == 0xBE && fk.cmd[i].nsec == 1)
+            singles++;
+    assert(singles == 8);
+    assert(st.hard_errors == 0);
+    assert(delivered == 8);
+}
+
+/* A sector that is short on every attempt is a hard error (zero-filled,
+ * counted), not stale bytes delivered as audio. */
+static void test_always_short_sector_is_a_hard_error(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st;
+
+    fk.short_multi = 1;
+    fk.short_lba_armed = 1;
+    fk.short_lba = 20003;
+    req.lba = 20000;
+    req.count = 8;
+    req.retries = 3;
+    run(&req, &st);
+    fk.short_multi = 0;
+    fk.short_lba_armed = 0;
+    assert(st.hard_errors == 1);
+    assert(delivered == 8);
+}
+
 int main(void)
 {
     test_off_is_the_old_path();
@@ -571,6 +660,9 @@ int main(void)
     test_data_track_target_is_read_as_any();
     test_impossible_range_is_refused();
     test_range_equal_to_span_has_no_target();
-    printf("test_cache_defeat: 17/17\n");
+    test_short_read_cd_is_refused();
+    test_short_chunk_falls_back_per_sector();
+    test_always_short_sector_is_a_hard_error();
+    printf("test_cache_defeat: 20/20\n");
     return 0;
 }
