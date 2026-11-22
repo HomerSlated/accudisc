@@ -8006,6 +8006,42 @@ session when the caller says where that is.
     its first track's pregap. No hardware run has read that sector: test 1's
     data-track targets were inside track 14.
 
+**0.51.2 (2026-11-22 15:4x, cdda2img 257, Keith: "Diagnose, then fix"). 0.51.1
+broke C2+subchannel capture through the PX-716A's bridge, and the guard was
+RIGHT.** kgr's *Under My Skin* capture (C2 + raw P-W, 2742-byte records) ran
+~20x slow with constant seeking: every 23-sector chunk `ERR_SHORT`, per-sector
+fallback, retries. Measured with `tools/residprobe.c` and a byte-compare
+probe, PX-716A through its Innostor bridge (`1f75:0611`, `usb-storage`, no
+quirks):
+- Exact-length READ CDs report resid 0 in every record format (2352, 2646,
+  2448, 2742; 1, 8 and 23 sectors).
+- A transfer ROUNDED up to 16 reports the slack plus 2 (2742 -> 2752: 12;
+  2646 -> 2656: 12; 63066 -> 63072: 8). Its last two data bytes are really
+  missing: the bridge moves whole 4-byte words and zeroes the rest. Byte-for-
+  byte against the exact read, 2 of 4 comparisons differed in exactly that
+  byte (0x40 exact, 0x00 rounded); in the other 2 the true bytes were 00 00.
+  The sentinel test alone said "all arrived", because the zeros overwrite the
+  sentinel. Only the content comparison showed the loss.
+- **So since 0.39.0 (2026-09-14), every rounded C2+sub chunk through this
+  bridge has delivered the last 2 bytes of its last sector's raw subchannel as
+  zeros.** That is one sector in 23 of a C2+sub capture. Those bytes carry Q
+  bits 94-95, part of the CRC, so that sector's Q fails its CRC whenever those
+  bits were not 0. Audio was never affected: it comes first in each record,
+  and 2352-byte reads are never rounded. A C2-only read is rounded only in a
+  partial last chunk (24 x 2646 is a multiple of 16).
+- **Fix:** a rounded read that comes back `ERR_SHORT` is retried at its exact
+  length, whatever the latch says, and a clean retry latches exact lengths
+  for the handle. "Whatever the latch says" matters: a rounded read whose data
+  is already whole words (2 x 2742 = 5484) arrives whole and sets the latch to
+  -1 first. Three new cases: the measured bridge through `adsc_mmc_read_cd`
+  (rounded short, exact retry whole with the real last bytes, latched, next
+  read exact first time); the -1 trap; and a 276-sector engine C2+sub read with
+  no fallback and no hard errors. 23/23. Mutants caught: retry disabled (0.51.1),
+  retry only while untested.
+- **Hardware, after the fix:** `read --start 100000 --count 2300 --sub raw`
+  (C2 on), 2300 sectors in 2.3 s, 0 hard errors, the latch message logged
+  once.
+
 **FIXED 0.51.1 (Keith 13:21: "Please fix the broken guard now"):** the exec
 now runs as its own statement, then the residual is checked. Three new cases
 in `tests/test_cache_defeat.c` (20/20). A GOOD transfer 100 bytes short is

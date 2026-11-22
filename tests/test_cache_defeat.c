@@ -41,12 +41,18 @@ static struct {
     uint32_t short_lba;       /* GOOD with 100 bytes missing */
     uint32_t pad_resid;       /* resid reported on every GOOD READ CD (the
                                * 0.39.0 rounding slack case) */
+    int bridge;               /* 0.51.2: the PX-716A's USB bridge, as measured
+                               * 2026-11-22: a READ CD whose allocation exceeds
+                               * its data (rounded up to 16) moves only whole
+                               * 4-byte words of the data, zeroes the rest and
+                               * reports that residual; an exact one is whole */
     unsigned n;               /* commands recorded */
     struct {
         uint8_t op;
         uint32_t lba, nsec;   /* READ CD only */
         unsigned c2, sub;     /* READ CD only */
         unsigned type;        /* READ CD expected sector type: 0 ANY, 1 CDDA */
+        uint32_t len;         /* READ CD allocation in bytes */
     } cmd[MAXCMD];
     unsigned refused;         /* READ CDs of refuse_lba seen */
 } fk;
@@ -78,6 +84,7 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
     fk.cmd[i].c2 = (cmd->cdb[9] >> 1) & 3u;
     fk.cmd[i].sub = cmd->cdb[10] & 7u;
     fk.cmd[i].type = (cmd->cdb[1] >> 2) & 7u;
+    fk.cmd[i].len = cmd->buf_len;
     if (lba >= fk.data_lo && lba < fk.data_hi) {
         if (fk.cmd[i].type != 0) {
             dev->last_sense.valid = 1;
@@ -109,6 +116,13 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
         return ACCUDISC_ERR_SENSE;
     }
     memset(cmd->buf, (int)(lba & 0xFF), cmd->buf_len);
+    if (fk.bridge) {
+        uint32_t exact = nsec * adsc_read_cd_sector_len(fk.cmd[i].c2, fk.cmd[i].sub);
+        uint32_t moved = cmd->buf_len > exact ? exact & ~3u : cmd->buf_len;
+        memset((uint8_t *)cmd->buf + moved, 0, cmd->buf_len - moved);
+        cmd->resid = cmd->buf_len - moved;
+        return ACCUDISC_OK;
+    }
     if (fk.short_multi && nsec > 1)
         cmd->resid = cmd->buf_len / nsec; /* one sector's worth missing */
     else if (fk.short_lba_armed && nsec == 1 && lba == fk.short_lba)
@@ -641,6 +655,97 @@ static void test_always_short_sector_is_a_hard_error(void)
     assert(delivered == 8);
 }
 
+/* ---- 0.51.2: a transport that truncates rounded transfers ---------------- */
+
+static uint32_t c2sub_bytes(uint8_t *last2, const uint8_t *b, uint32_t n)
+{
+    uint32_t len = n * 2742u;
+    last2[0] = b[len - 2];
+    last2[1] = b[len - 1];
+    return len;
+}
+
+/* The measured bridge, through adsc_mmc_read_cd. A 23-sector C2+sub read is
+ * short when rounded; the exact retry is whole, its last two bytes are the
+ * real data (not the bridge's zeros), and the handle switches to exact
+ * lengths, so the next read is sent exact first time. */
+static void test_rounded_short_retries_exact_and_latches(void)
+{
+    static struct accudisc_device dev;
+    static uint8_t b[24 * 2742];
+    uint8_t t[2];
+
+    memset(&dev, 0, sizeof dev);
+    fk.n = 0;
+    fk.bridge = 1;
+    assert(adsc_mmc_read_cd(&dev, 30000, 23, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_RAW, b, 2742) == ACCUDISC_OK);
+    c2sub_bytes(t, b, 23);
+    assert(t[0] == (30000 & 0xFF) && t[1] == (30000 & 0xFF));
+    assert(fk.n == 2 && fk.cmd[0].len == 63072 && fk.cmd[1].len == 63066);
+    assert(dev.xfer_exact == 1);
+    fk.n = 0;
+    assert(adsc_mmc_read_cd(&dev, 31000, 23, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_RAW, b, 2742) == ACCUDISC_OK);
+    assert(fk.n == 1 && fk.cmd[0].len == 63066);
+    fk.bridge = 0;
+    free(dev.xfer_bounce);
+    dev.xfer_bounce = NULL;
+}
+
+/* The trap the latch had: a rounded read whose data is already whole words
+ * (2 x 2742 = 5484) arrives whole, which marks rounding as working (-1). The
+ * next 23-sector chunk must still fall back, not fail forever. */
+static void test_short_after_a_good_rounded_read_still_falls_back(void)
+{
+    static struct accudisc_device dev;
+    static uint8_t b[24 * 2742];
+
+    memset(&dev, 0, sizeof dev);
+    fk.n = 0;
+    fk.bridge = 1;
+    assert(adsc_mmc_read_cd(&dev, 40000, 2, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_RAW, b, 2742) == ACCUDISC_OK);
+    assert(dev.xfer_exact == -1);
+    assert(adsc_mmc_read_cd(&dev, 41000, 23, ADSC_SECTOR_CDDA, ADSC_C2_294,
+                            ADSC_SUB_RAW, b, 2742) == ACCUDISC_OK);
+    assert(dev.xfer_exact == 1);
+    fk.bridge = 0;
+    free(dev.xfer_bounce);
+    dev.xfer_bounce = NULL;
+}
+
+/* The whole engine on the bridge: a C2 + raw-subchannel read of 300 sectors
+ * (276 here, twelve whole chunks) reads clean, with no per-sector fallback and no hard errors, and after the
+ * first chunk every READ CD is sent at its exact length. 0.51.1 crawled here
+ * (cdda2img 257): every rounded chunk short, every sector retried. */
+static void test_c2sub_read_on_the_bridge_is_clean(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st;
+
+    fk.bridge = 1;
+    req.lba = 50000;
+    req.count = 276; /* 12 chunks of 23: any one-sector READ CD is a fallback */
+    req.c2 = ACCUDISC_C2_PTRS;
+    req.sub = ACCUDISC_SUB_RAW;
+    assert(run(&req, &st) == ACCUDISC_OK);
+    fk.bridge = 0;
+    assert(st.hard_errors == 0);
+    assert(delivered == 276);
+    unsigned singles = 0, rounded_after_first = 0;
+    for (unsigned i = 0; i < fk.n; i++) {
+        if (fk.cmd[i].op != 0xBE)
+            continue;
+        if (fk.cmd[i].nsec == 1)
+            singles++;
+        if (i > 1 && fk.cmd[i].len != fk.cmd[i].nsec * 2742u)
+            rounded_after_first++;
+    }
+    assert(singles == 0);
+    assert(rounded_after_first == 0);
+}
+
 int main(void)
 {
     test_off_is_the_old_path();
@@ -663,6 +768,9 @@ int main(void)
     test_short_read_cd_is_refused();
     test_short_chunk_falls_back_per_sector();
     test_always_short_sector_is_a_hard_error();
-    printf("test_cache_defeat: 20/20\n");
+    test_rounded_short_retries_exact_and_latches();
+    test_short_after_a_good_rounded_read_still_falls_back();
+    test_c2sub_read_on_the_bridge_is_clean();
+    printf("test_cache_defeat: 23/23\n");
     return 0;
 }

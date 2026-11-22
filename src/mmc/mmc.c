@@ -264,15 +264,34 @@ int adsc_mmc_read_cd(struct accudisc_device *dev, uint32_t lba, uint32_t nsec,
      * marginal sector can be followed by a successful re-read for reasons that
      * have nothing to do with length; latching on that would put the rest of
      * the rip back on PIO for a refusal that never happened. So a timeout is
-     * retried and forgotten. */
-    if (xfer != exact && dev->xfer_exact == 0 && rounding_suspect(dev, rc)) {
+     * retried and forgotten.
+     *
+     * A ROUNDED read that comes back SHORT is retried at the exact length too,
+     * whatever the latch says (0.51.2). MEASURED 2026-11-22 on the PX-716A
+     * through its USB bridge (Innostor 1f75:0611, usb-storage): a transfer
+     * rounded up to 16 arrives with its LAST TWO DATA BYTES zeroed and a
+     * residual that says so (2742 -> 2752: resid 12, slack 10; 63066 -> 63072:
+     * resid 8, slack 6), while the exact length arrives whole with resid 0.
+     * The bridge moves whole 4-byte words. A rounded length whose data is
+     * already a multiple of 4 arrives whole, so the latch can read -1
+     * ("rounding works") before the first 23-sector C2+sub chunk fails; that
+     * is why this case ignores it. On a transport where rounding works, a
+     * genuinely short read is short at the exact length as well, the retry
+     * fails, and nothing latches. */
+    int short_rounded = xfer != exact && rc == ACCUDISC_ERR_SHORT;
+    if (xfer != exact &&
+        ((dev->xfer_exact == 0 && rounding_suspect(dev, rc)) || short_rounded)) {
         int rc2 = read_cd_once(dev, lba, nsec, sector_type, c2, sub, buf,
                                exact, exact, &(int){0});
         if (rc2 == ACCUDISC_OK && !timed_out) {
             dev->xfer_exact = 1;
-            adsc_dev_log(dev, "READ CD: a transfer rounded to 16 bytes was "
-                              "refused where the exact length succeeded; "
-                              "using exact lengths on this device");
+            adsc_dev_log(dev, short_rounded
+                ? "READ CD: a transfer rounded to 16 bytes came back short "
+                  "(the transport truncates it) where the exact length is "
+                  "whole; using exact lengths on this device"
+                : "READ CD: a transfer rounded to 16 bytes was refused where "
+                  "the exact length succeeded; using exact lengths on this "
+                  "device");
         }
         rc = rc2;
         dst = buf;

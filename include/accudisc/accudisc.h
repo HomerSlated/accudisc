@@ -919,7 +919,17 @@ extern "C" {
                                   * is now bound, so the rung layout is frozen.
                                   * 0.2.0: read_req/read_stats layout changed
                                   * (API_PLAN §7.1). soname stays .so.0. */
-#define ACCUDISC_VERSION_PATCH 1 /* 0.51.1: READ CD's short-transfer guard
+#define ACCUDISC_VERSION_PATCH 2 /* 0.51.2: a ROUNDED READ CD that comes
+                                  * back short is retried at its exact length
+                                  * and the handle latches exact lengths. The
+                                  * PX-716A's USB bridge (Innostor 1f75:0611)
+                                  * moves only whole 4-byte words of a transfer
+                                  * rounded up to 16: the last 2 data bytes of
+                                  * every 23-sector C2+sub chunk arrived zeroed
+                                  * since 0.39.0, and 0.51.1's working guard
+                                  * then failed every such chunk (cdda2img 257).
+                                  * No API or layout change.
+                                  * Previously 0.51.1: READ CD's short-transfer guard
                                   * WORKS. It read the residual in the same
                                   * call that ran the command, and this build
                                   * evaluated the residual first, so a GOOD
