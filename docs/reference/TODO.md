@@ -426,6 +426,38 @@ has tested it.
 - Before the session, get what EAC's option actually sends from sources (the
   wayback skill, or the deep-research agent): opcode, FUA, transfer length,
   and which sector it targets. Then measure that, not a guess at it.
+  **DONE 2026-11-22 11:09 — what the sources say:**
+  - **The command, from code (DiscImageCreator, `execScsiCmdforCD.cpp`,
+    `FlushDriveCache`):** READ(12) (`A8h`), FUA = 1, LBA = **n + 1** (the
+    sector after the one about to be re-read), **transfer length 0**, no data
+    buffer. It is a separate command sent before the re-read, not a flag on
+    the audio read. A zero-length transfer has no block size, so the 2048-byte
+    objection above does not apply to it. DIC calls it before re-reads after
+    C2 errors, and on every read under its `/f` option. Its code comment cites
+    dBpoweramp's forum, thread 33676, which was not read.
+  - **EAC's `-usefua`:** a hidden command-line switch, not a GUI option. By the
+    CacheExplorer author's account, quoted in search-result summaries (the
+    Hydrogenaudio threads refuse automated fetches, so not read first-hand),
+    EAC's switch implements the "Plextor flush command": a flush that "is not
+    the normal use of the FUA bit". That fits DIC's zero-length READ(12).
+    **That EAC sends exactly DIC's bytes is inferred, not read.**
+  - **Two different FUA uses:** spath's CacheExplorer 0.8 tests them separately.
+    `-i` sets the standard FUA bit on the audio read itself (reported as e.g.
+    `D8h (FUA)`; "supported by very few drives"). `-p` sends the Plextor flush
+    command ("more drives support it"). READ CD (`BEh`) has no FUA bit; the
+    Plextor READ CDDA (`D8h`) does, at byte 1 bit 2 (cdda2wav's
+    `scsi_cmds.c`, taken from cdparanoia).
+  - **Seek-back:** tmkk's (XLD's author's) secure-ripping overview says many
+    drives flush the cache when the read position jumps far *back*, and that
+    cdparanoia uses this as well as overreading. That is independent support
+    for 0.50.1's backward far read. It is a general statement, not a
+    measurement.
+  - **Not found:** any first-hand list of drives that honour the flush. Results
+    reported in forum posts that could not be read are not evidence here.
+  - **So the arm to measure** is READ(12) FUA=1, length 0, at the sector after
+    the target. Time it against the READ CD to READ CD control and the
+    known-good far read. The 2048-byte READ(10)/(12) of an audio sector stays
+    as the "does it answer at all" check.
 - Tooling: the public API has no raw CDB call. The probe needs a small C tool
   over `adsc_dev_exec`, like `tools/rangeprobe.c`, or a raw-command mode added
   to `cache_defeat_probe.py`'s driver. The probe's `MEDIA` table already
