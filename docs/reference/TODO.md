@@ -452,12 +452,42 @@ has tested it.
     cdparanoia uses this as well as overreading. That is independent support
     for 0.50.1's backward far read. It is a general statement, not a
     measurement.
-  - **Not found:** any first-hand list of drives that honour the flush. Results
-    reported in forum posts that could not be read are not evidence here.
+  - **Read first-hand 11:25 (Keith's browser), Hydrogenaudio "EAC and
+    'usefua'" (topic 41028, three pages) and "Plextor Premium 2 and usefua"
+    (topic 64310).** Neither thread gives the CDB bytes, so DIC's code is still
+    the only source for them.
+    - spath (CacheExplorer's author), reply #5, 2006-01-30: EAC "will issue an
+      additional cache flushing command using the FUA bit before reading
+      again", and it "is the same command used by Plextools". In reply #8 he
+      says the command's semantics are "very specific". In reply #9 he says
+      every drive accepts it without error, so an accepted command proves
+      nothing.
+    - Wiethoff, quoted in reply #12 from the EAC forum: "I just used a sniffer
+      to have a look how PlexTools is clearing the cache". He was unsure his
+      implementation was correct, and warned that EAC's "Test Drive Features"
+      can report no cache while the drive still uses one.
+    - **PX-716A:** valnar, reply #43, 2007-06-17, says without SPTD "the FUA
+      command works fine (shows no caching)". That is EAC's caching test,
+      which greynol (reply #45) calls unreliable for this purpose; he reports
+      that it varies with the test CD on his PX-716A. Topic 64310, reply #5:
+      "With my PX-716, -usefua doesn't buy me much just by itself." So: **no
+      timing measurement of the flush on a PX-716A** in either thread.
+    - **CacheExplorer timing output** has our shape. A LITE-ON SHW-160P6S
+      passed the "Plextor flush tests" 5/5, about 1.65 ms for a cached re-read
+      against 42–44 ms after the flush, using READ CD (`BEh`). PX-W4012A,
+      PX-760A, Premium and Premium 2 all report "Plextor flush command:
+      accepted" and 5/5 or 16/16. In smz's results (reply #28), the PX-W2410A
+      and PX-712 scored 3/5–5/5 against the Premium's 5/5. Some reported runs
+      were disturbed by Daemon Tools' SPTD driver.
+    - Later CacheExplorer builds list "Supported cache flush commands: A8h 28h
+      28h_12", which suggests the flush also works through READ(10).
   - **So the arm to measure** is READ(12) FUA=1, length 0, at the sector after
     the target. Time it against the READ CD to READ CD control and the
     known-good far read. The 2048-byte READ(10)/(12) of an audio sector stays
-    as the "does it answer at all" check.
+    as the "does it answer at all" check. The same zero-length flush through
+    READ(10) (`28h`) costs one more arm, if Keith wants it.
+    Per spath, a drive that accepts the command has proved nothing. **Only the
+    timing counts.**
 - Tooling: the public API has no raw CDB call. The probe needs a small C tool
   over `adsc_dev_exec`, like `tools/rangeprobe.c`, or a raw-command mode added
   to `cache_defeat_probe.py`'s driver. The probe's `MEDIA` table already
