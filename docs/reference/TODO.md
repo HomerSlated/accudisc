@@ -406,6 +406,47 @@ distance has been measured (2026-11-21: WORKS, backward). Its buffer is
   what the 0.51.0 bounded-range design (Keith, 2026-11-22, not yet approved to
   build) would rely on.
 
+**RESULT 2026-11-22 11:50 GMT. PX-716A (original unit, USB bridge), *Under My
+Skin*, no speed set: ANY out-of-sequence MEDIA read invalidates the cached
+span. Distance does not matter, from 1 sector, either direction, and a type-ANY
+read into the data track does it too.** Tool: `tools/cacheprobe.c` (raw READ
+CD, one read-only handle, layout and reading rule in its header, fixed before
+the run). 57 instances, 3 per arm, shuffled with a fixed seed. Raw rows:
+`/var/tmp/cacheprobe-20261122-115016.tsv`. Controls (re-read with nothing
+between): t2 1.78–2.24 ms against cold t1 43–108 ms, so c = 2.236 ms, FRESH ≥
+8.94 ms, CACHED ≤ 4.47 ms.
+
+| arm | t2 (ms), 3 instances | result |
+|---|---|---|
+| B5000 (21 Nov agreement check) | 66.5, 63.7, 46.9 | FLUSHES |
+| B1 | 15.7, 12.3, 11.0 | FLUSHES |
+| B24, B100, B500, B1000 | 19.8–40.8 | FLUSHES, all 12 |
+| B2040, B3000 | 45.2–69.9 | FLUSHES, all 6 |
+| F1 | 1.9, 2.0, 2.2 | KEEPS, but **far read 0.68–0.89 ms = served from the buffer, not a media read** |
+| F24 … F5000 | 24.4–118.8 | FLUSHES, all 21 |
+| X (track 14, type ANY, far read 76–316 ms) | 156.3, 142.0, 67.8 | FLUSHES |
+
+How to read it:
+- The PX-716A behaves like the LITE-ON (2026-09-18): the cache is
+  **invalidated by a media read elsewhere**, not evicted sector by sector. The
+  rule's discriminating arms, B100–B1000, flush 12/12. Eviction would need a
+  read past the ~2040-sector buffer.
+- B1's t2 of 11–16 ms sits well below a cold read (43–108 ms). That fits
+  invalidation followed by read-ahead streaming from S−1 straight back into S
+  (no seek, as the header predicted). Even so it is 5–7× the cached time, so
+  the re-read did not come from the cache.
+- The one far read that did not flush, F1 (the sector right after the span),
+  never reached the disc: 0.7–0.9 ms. F24's far read took 10–14 ms, so it went
+  to the disc. So at the moment of the far read, read-ahead had buffered fewer
+  than 48 sectors past the span.
+- **For 0.51.0 on this drive:** a target needs only to be a sector the drive
+  must fetch from the disc, not one 5000 away. The sector just behind the span
+  works, and so does a data sector read as type ANY. A "too small to defeat"
+  session would then need only a span plus one sector outside it. **One drive
+  (plus the LITE-ON's matching result), one disc, 3 per arm:** this is not a
+  basis for dropping the 5000-sector default on unknown drives. That is
+  Keith's call.
+
 ### 2. READ(10)/(12) with FUA as a cache bypass
 
 What the spec says (MMC-5 §6.15.2.3, and its general section on caching). FUA = 1 on READ(10)
