@@ -366,6 +366,76 @@ specification). Then one fed 16x
 burn per drive. Around each burn, `accudisc --driver auto settings` before and
 after: `life.cd_write` must advance by about the burn's duration.
 
+## QUEUED for the next session — Keith, 2026-11-22 02:34: the PX-716A's cache model, then READ(10)/(12) with FUA
+
+Verbatim: *"Queue up testing of the drive cache and READ(10)/(12) for next
+session."* Directed hardware work on the PX-716A (USB bridge, the only path on
+this PC), so it is not a proposal. Disc, arm count and the claim with cdda2img
+are fixed with Keith at the start, as on 2026-11-21. Where it came from: the
+0.50.1 discussion of bounding the far read to the session's readable range. A
+far read needs a target "far enough" from the re-read sector. On a short
+session there may be no such target, unless the drive's cache gives way to
+something smaller than 5000 sectors, or can be bypassed outright.
+
+**Method, reused:** `tools/cache_defeat_probe.py`. It times each command from
+the per-command trace (`trace=2`), in one process and one handle, with no speed
+set (`speed_x = 0`; whether a speed command flushes the cache is still
+unknown), and alternates control and test arms. On 2026-11-21 the scale was
+1.8-2.2 ms for a cached re-read and 51-70 ms for a fresh one. A span stays at
+24 sectors so each re-read is one transfer.
+
+### 1. The cache model: invalidated by any out-of-sequence read, or evicted sector by sector?
+
+What we know. On the LITE-ON LH-20A1S, one sector read elsewhere invalidated a
+49-sector span 12/12, and the effect did not depend on the far read's size
+(the 2026-09-18 entry, "cache not LRU"). On the PX-716A only the 5000-sector
+distance has been measured (2026-11-21: WORKS, backward). Its buffer is
+4,802,784 B by READ BUFFER CAPACITY, about 2040 audio sectors.
+
+- **Distance:** far reads at a ladder of distances, from inside the read-ahead
+  window to past it. For example 1, 24, 100, 500, 1000, 2040, 3000 and 5000,
+  where 5000 is the known-working control. Run both directions, because
+  read-ahead runs forward, so the two sides need not behave alike. If a
+  one-sector read just outside the span flushes it, the PX-716A behaves like
+  the LITE-ON and the distance hardly matters. If only distances past the
+  buffer flush it, the cache evicts sector by sector and distance is the whole
+  story.
+- **Sector type:** a far read into a data track with expected sector type ANY.
+  *Under My Skin* has one (track 14, LBA 207056), so it can serve as the disc.
+  It shows whether the far read's target may be any readable sector, which is
+  what the 0.51.0 bounded-range design (Keith, 2026-11-22, not yet approved to
+  build) would rely on.
+
+### 2. READ(10)/(12) with FUA as a cache bypass
+
+What the spec says (MMC-5 §6.15.2.3, and its general section on caching). FUA = 1 on READ(10)
+means the drive "shall access the media" and not the cache. But MMC drives
+have no block descriptors, and READ(10)/(12) use a **2048-byte block**. So on
+a standard MMC drive an audio sector read through READ(10) is expected to fail
+(ILLEGAL MODE FOR THIS TRACK). There is no FUA bit in READ CD. EAC offers "FUA
+cache invalidating" for some drives, so the useful question is the side
+effect: **does a FUA read of the sector about to be re-read, even one that
+fails, leave the next READ CD of it fresh?** Not established; nothing here
+has tested it.
+
+- Whether the PX-716A answers READ(10)/(12) on a CD-DA sector at all, FUA 0
+  and 1, and with what sense.
+- The timing test: FUA read of the span, then READ CD of the same span,
+  against a READ CD to READ CD control. Do the same with a transfer length of
+  0 if the drive accepts one.
+- Before the session, get what EAC's option actually sends from sources (the
+  wayback skill, or the deep-research agent): opcode, FUA, transfer length,
+  and which sector it targets. Then measure that, not a guess at it.
+- Tooling: the public API has no raw CDB call. The probe needs a small C tool
+  over `adsc_dev_exec`, like `tools/rangeprobe.c`, or a raw-command mode added
+  to `cache_defeat_probe.py`'s driver. The probe's `MEDIA` table already
+  counts READ(10)/(12) as media commands. It changes no drive state (no MODE
+  SELECT), so there is nothing to restore.
+
+**Why it matters:** if either bypass works, a short session can be defeated
+without a distant target, and the "defeat may be weak" record in the 0.51.0
+design would be needed only where neither applies.
+
 ## QUEUED for the next session — Keith, 2026-10-22 19:47: the track-1 pre-gap rule, then the one-sector far read on the PX-716A
 
 Verbatim: *"Queue up the track-1 pre-gap rule next and one-sector far read
