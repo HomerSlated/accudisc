@@ -8133,6 +8133,8 @@ on a damaged chunk, and over a minute in 0.51.1's crawl.
 - **Python:** `Device.set_cancel(Cancel | None)` holds the token on the
   instance. There is also `Cancel.reset()` and the feature token
   `handle_cancel`.
+- **Hardware (Keith, 2026-11-22 19:34, through cdda2img's rip):** "Ctrl-C
+  works perfectly." The speed restore was not separately reported on.
 - **Not done:** census is not covered by a test (it needs a driver offering the
   counters). The CLI is unchanged: it installs no SIGINT handler, so Ctrl-C
   still ends it by the default action, with no speed restore.
