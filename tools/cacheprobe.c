@@ -73,6 +73,51 @@
  *     real forward seeks past the buffer.
  * No further reads follow any outcome without Keith.
  *
+ * Mode "fua" (test 2, Keith 12:29): does a READ with FUA flush the cache?
+ * ---------------------------------------------------------------------
+ * Sources (TODO.md): DiscImageCreator's FlushDriveCache sends READ(12), FUA=1,
+ * LBA = n+1, transfer length 0, no data, before re-reading sector n. EAC's
+ * -usefua is reported to copy PlexTools' flush command; spath: every drive
+ * ACCEPTS it, so only the timing counts. Test 1 showed that any read reaching
+ * the disc flushes this drive, so the question is whether a command that
+ * moves NO data (or is refused) does so.
+ *
+ * Instance: READ CD span S (t1), the middle command (tf, status and sense
+ * recorded), READ CD S (t2). Arms, 3 each, plus 2 controls per repetition,
+ * shuffled with the fixed seed, laid out ascending with the same guard:
+ *   A    nothing
+ *   U    READ(12) A8h FUA=1 LBA S+1 length 0, no data   (DIC's flush)
+ *   N    READ(12) A8h FUA=0 LBA S+1 length 0, no data   (is it FUA or the CDB?)
+ *   R    READ(10) 28h FUA=1 LBA S+1 length 0, no data   (CacheExplorer's 28h)
+ *   D    READ(12) A8h FUA=1 LBA S+1 length 1, 2048-byte buffer
+ *   D0   READ(12) A8h FUA=0 LBA S+1 length 1, 2048-byte buffer
+ *        (D/D0: expected CHECK CONDITION on an audio sector; the sense is
+ *         the "does it answer at all" result, t2 says whether the refusal
+ *         flushed anyway)
+ * Rule: as above. Only the two span READ CDs must be GOOD (else UNRESOLVED);
+ *   the middle command's status is a RESULT, never a validity failure.
+ *   Same MOOT control, same c / FRESH / CACHED / per-arm verdicts.
+ * Reading: U FLUSHES with N KEEPS = the FUA bit does it (the flush works on
+ *   this drive, through this bridge). U and N both FLUSH = the zero-length
+ *   read itself does it; FUA is irrelevant here. A USB bridge may mishandle a
+ *   no-data READ, so every result is "through the bridge".
+ * Status splits the verdict, for U, N and R alike:
+ *   KEEPS + GOOD          = accepted and ignored: a real negative (spath's
+ *                           caveat), for this drive through this bridge.
+ *   KEEPS + CHECK COND.   = refused (sense recorded). The drive cannot be told
+ *                           apart from the bridge here: "not delivered or
+ *                           refused", NOT "does not work on the PX-716A".
+ *   st = -1               = transport failure: no drive result; that arm is
+ *                           void.
+ *   FLUSHES + CHECK COND. = refused but flushed anyway; not a clean success.
+ * What tf (the middle command's time) means if U FLUSHES: tens of ms = it
+ *   forced a disc access, i.e. test 1's mechanism, no cheaper than a 1-sector
+ *   far read. About 1 ms or less = the drive dropped its cache WITHOUT a disc
+ *   access, a genuinely cheaper flush. That is the only outcome that adds
+ *   something practical beyond test 1.
+ * D/D0 ask for 1 block into a 2352-byte buffer, so an over-length answer
+ *   shows as a smaller residual rather than an over-transfer on the bridge.
+ *
  * Build and run (CAP_SYS_RAWIO is not needed for READ CD, but the library's
  * open path is the same as the CLI's):
  *   gcc -O2 -Wall -Wextra -o build/cacheprobe tools/cacheprobe.c \
@@ -165,10 +210,156 @@ static const char *name(const inst *x, char *o, size_t n)
     return o;
 }
 
+/* ---- mode "fua" ------------------------------------------------------- */
+
+enum farm { M_A, M_U, M_N, M_R, M_D, M_D0, M_COUNT };
+static const char *FNAME[] = {"A", "U", "N", "R", "D", "D0"};
+
+typedef struct {
+    enum farm k;
+    int rep;
+    uint32_t s;
+    double t1, tf, t2;
+    int ok;                /* both span reads GOOD */
+    int st;                /* middle command: rc==OK ? scsi_status : -1 */
+    int key, asc, ascq;    /* middle command sense, -1 if none */
+    uint32_t resid;
+    char why[96];
+} finst;
+
+/* The middle command. Returns ms; status and sense go into x. */
+static double middle(accudisc_device *dev, finst *x)
+{
+    static uint8_t blk[2352];
+    adsc_cmd c;
+    memset(&c, 0, sizeof c);
+    uint32_t lba = x->s + 1;
+    int r10 = x->k == M_R;
+    int fua = x->k == M_U || x->k == M_R || x->k == M_D;
+    uint32_t len = (x->k == M_D || x->k == M_D0) ? 1 : 0;
+    c.cdb[0] = r10 ? 0x28 : 0xA8;
+    c.cdb[1] = fua ? 0x08 : 0;   /* FUA = byte 1 bit 3 in READ(10)/(12) */
+    c.cdb[2] = (uint8_t)(lba >> 24); c.cdb[3] = (uint8_t)(lba >> 16);
+    c.cdb[4] = (uint8_t)(lba >> 8);  c.cdb[5] = (uint8_t)lba;
+    if (r10) {
+        c.cdb[7] = (uint8_t)(len >> 8); c.cdb[8] = (uint8_t)len;
+        c.cdb_len = 10;
+    } else {
+        c.cdb[6] = (uint8_t)(len >> 24); c.cdb[7] = (uint8_t)(len >> 16);
+        c.cdb[8] = (uint8_t)(len >> 8);  c.cdb[9] = (uint8_t)len;
+        c.cdb_len = 12;
+    }
+    c.dir = len ? ADSC_XFER_IN : ADSC_XFER_NONE;
+    c.buf = len ? blk : NULL;
+    c.buf_len = len ? sizeof blk : 0;
+    c.timeout_ms = 20000;
+    double a = now_ms();
+    int rc = adsc_dev_exec(dev, &c);
+    double b = now_ms();
+    /* -1 = no SCSI status at all (transport/host error); detail kept in why */
+    x->st = (rc != ACCUDISC_OK && !c.scsi_status) ? -1 : c.scsi_status;
+    if (x->st < 0) adsc_io_detail(&c, x->why, sizeof x->why);
+    x->key = c.sense_len > 2 ? c.sense[2] & 0x0f : -1;
+    x->asc = c.sense_len > 13 ? c.sense[12] : -1;
+    x->ascq = c.sense_len > 13 ? c.sense[13] : -1;
+    x->resid = c.resid;
+    return b - a;
+}
+
+static int run_fua(accudisc_device *dev, uint32_t audio_end, const char *out)
+{
+    const enum farm per[] = {M_A, M_A, M_U, M_N, M_R, M_D, M_D0};
+    const unsigned NP = sizeof per / sizeof per[0];
+    finst v[REPS * 7];
+    unsigned nv = 0;
+    srand(SEED);
+    for (int r = 0; r < REPS; r++) {
+        enum farm arm[7];
+        memcpy(arm, per, sizeof arm);
+        for (unsigned i = NP - 1; i > 0; i--) {
+            unsigned j = (unsigned)rand() % (i + 1);
+            enum farm t = arm[i]; arm[i] = arm[j]; arm[j] = t;
+        }
+        for (unsigned i = 0; i < NP; i++) {
+            memset(&v[nv], 0, sizeof v[nv]);
+            v[nv].k = arm[i]; v[nv].rep = r; nv++;
+        }
+    }
+    uint32_t cur = 3000;
+    for (unsigned i = 0; i < nv; i++) { v[i].s = cur; cur += SPAN + GUARD; }
+    if (cur > audio_end) { fprintf(stderr, "layout overruns audio\n"); return 2; }
+    printf("fua mode: %u instances, layout %u..%u\n", nv, 3000u, cur - GUARD);
+    fflush(stdout);
+
+    {
+        char w[96];
+        if (read_cd(dev, 500, SPAN, 1, w, sizeof w) < 0)
+            printf("warm-up failed (continuing): %s\n", w);
+    }
+    for (unsigned i = 0; i < nv; i++) {
+        finst *x = &v[i];
+        x->ok = 1; x->st = 0; x->key = x->asc = x->ascq = -1;
+        x->t1 = read_cd(dev, x->s, SPAN, 1, x->why, sizeof x->why);
+        if (x->t1 < 0) { x->ok = 0; continue; }
+        if (x->k != M_A) x->tf = middle(dev, x);
+        x->t2 = read_cd(dev, x->s, SPAN, 1, x->why, sizeof x->why);
+        if (x->t2 < 0) x->ok = 0;
+    }
+
+    FILE *f = fopen(out, "w");
+    if (!f) { perror(out); return 2; }
+    fprintf(f, "# cacheprobe fua seed=%u guard=%u span=%u\n", SEED, GUARD, SPAN);
+    fprintf(f, "i\trep\tarm\tspan\tt1_ms\tmid_ms\tmid_status\tsense\tresid\tt2_ms\tok\twhy\n");
+    for (unsigned i = 0; i < nv; i++) {
+        finst *x = &v[i];
+        fprintf(f, "%u\t%d\t%s\t%u\t%.3f\t%.3f\t%d\t%x/%02x/%02x\t%u\t%.3f\t%d\t%s\n",
+                i, x->rep, FNAME[x->k], x->s, x->t1, x->tf, x->st,
+                x->key & 0xff, x->asc & 0xff, x->ascq & 0xff, x->resid, x->t2,
+                x->ok, (!x->ok || x->st < 0) ? x->why : "");
+    }
+    fclose(f);
+
+    int bad = 0;
+    for (unsigned i = 0; i < nv; i++)
+        if (!v[i].ok) { printf("INVALID %s @%u: %s\n", FNAME[v[i].k], v[i].s, v[i].why); bad = 1; }
+    if (bad) { printf("VERDICT: UNRESOLVED (a span READ CD failed)\n"); return 1; }
+
+    double c = 0;
+    int moot = 0;
+    for (unsigned i = 0; i < nv; i++) {
+        if (v[i].k != M_A) continue;
+        printf("A     rep%d  t1=%8.3f  t2=%8.3f\n", v[i].rep, v[i].t1, v[i].t2);
+        if (v[i].t2 > v[i].t1 / 4) moot = 1;
+        if (v[i].t2 > c) c = v[i].t2;
+    }
+    if (moot) { printf("VERDICT: MOOT (a control re-read was not clearly cached)\n"); return 0; }
+    printf("c = %.3f ms: FRESH >= %.3f, CACHED <= %.3f\n\n", c, 4 * c, 2 * c);
+
+    for (int k = M_U; k < M_COUNT; k++) {
+        int fr = 0, ca = 0, n = 0;
+        printf("%-3s", FNAME[k]);
+        for (unsigned i = 0; i < nv; i++) {
+            finst *x = &v[i];
+            if ((int)x->k != k) continue;
+            const char *cl = x->t2 >= 4 * c ? "FRESH" : x->t2 <= 2 * c ? "CACHED" : "AMBIG";
+            fr += cl[0] == 'F'; ca += cl[0] == 'C'; n++;
+            if (x->key >= 0)
+                printf("  t2=%7.2f mid=%6.2f st=%d %x/%02x/%02x %-6s", x->t2, x->tf,
+                       x->st, x->key, x->asc, x->ascq, cl);
+            else
+                printf("  t2=%7.2f mid=%6.2f st=%d%s%s %-6s", x->t2, x->tf, x->st,
+                       x->st < 0 ? " " : "", x->st < 0 ? x->why : "", cl);
+        }
+        printf("  -> %s\n", fr == n ? "FLUSHES" : ca == n ? "KEEPS" : "MIXED");
+    }
+    printf("\n(mid = the middle command's ms; st = its SCSI status, -1 = transport error)\n");
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
-        fprintf(stderr, "usage: %s DEVICE OUT.tsv\n", argv[0]);
+    if (argc != 3 && !(argc == 4 && !strcmp(argv[3], "fua"))) {
+        fprintf(stderr, "usage: %s DEVICE OUT.tsv [fua]\n", argv[0]);
         return 2;
     }
     int err = 0;
@@ -192,6 +383,12 @@ int main(int argc, char **argv)
     if (!data_lo || data_end - data_lo < 4000) {
         fprintf(stderr, "no data track of >= 4000 sectors\n");
         return 2;
+    }
+
+    if (argc == 4) {
+        int rc = run_fua(dev, audio_end, argv[2]);
+        accudisc_close(dev);
+        return rc;
     }
 
     /* Build and shuffle. */

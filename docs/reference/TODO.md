@@ -539,6 +539,44 @@ has tested it.
 without a distant target, and the "defeat may be weak" record in the 0.51.0
 design would be needed only where neither applies.
 
+**RESULT 2026-11-22 12:32 GMT. PX-716A (original unit, USB bridge), *Under My
+Skin*, no speed set: the "FUA flush" flushes, but FUA plays no part. A
+zero-length READ(12) or READ(10) addressing a sector flushes the cached span
+with FUA = 0 as well.** Tool: `tools/cacheprobe.c`, mode `fua` (arms and the
+reading rule, including the status split and the meaning of the middle
+command's time, are in its header, fixed before the run). 21 instances, 3 per
+arm. Raw rows: `/var/tmp/cacheprobe-fua-20261122-123245.tsv`. Controls: t2
+1.77–2.00 ms, c = 2.004 ms.
+
+| arm (middle command, at span + 1) | status | middle ms | t2 ms | result |
+|---|---|---|---|---|
+| U: READ(12) FUA=1, length 0 (DIC's flush) | GOOD ×3 | 5.6, 10.2, 10.9 | 35.3, 37.7, 43.9 | FLUSHES |
+| N: READ(12) FUA=0, length 0 | GOOD ×3 | 5.6, 8.8, 16.1 | 36.7, 32.5, 38.6 | FLUSHES |
+| R: READ(10) FUA=1, length 0 | GOOD ×3 | 5.6, 8.8, 11.1 | 35.6, 32.3, 36.7 | FLUSHES |
+| D: READ(12) FUA=1, 1 block | CHECK CONDITION 5/64/00 ×3 | 1563–1602 | 35.9–48.2 | FLUSHES (refused) |
+| D0: READ(12) FUA=0, 1 block | CHECK CONDITION 5/64/00 ×3 | 1559–1568 | 36.0–45.0 | FLUSHES (refused) |
+
+How to read it:
+- **N flushes like U.** On this drive the FUA bit is not the cause: any READ
+  that names a sector drops the cache, even one that moves no data. That fits
+  test 1 (any media access invalidates).
+- **The middle commands took 5.6–16 ms,** between the two pre-registered
+  bands. That is well above the ~0.7–0.9 ms of a command answered from the
+  buffer (test 1, F1), and in the range of test 1's F24 media far reads
+  (10–14 ms). So the most likely reading is a short disc access near the span,
+  not an invalidation without access. It is **no cheaper than a 1-sector far
+  read**, which we already have.
+- **D/D0:** READ(12) of a 2048-byte block on an audio sector is refused with
+  ILLEGAL MODE FOR THIS TRACK (5/64/00), as MMC says. That is the "does it
+  answer at all" result. Each refusal took **~1.6 s** (presumably retries
+  before giving up), and it flushed the cache anyway. Never use it as a flush.
+- **For the library:** nothing new is needed. A zero-length READ(12) would
+  work as a far read that needs no buffer and no sector type, but the 1-sector
+  READ CD (behind the span, or type ANY into data) already does the job on
+  this drive. The FUA flush is not a bypass that avoids a disc access; on the
+  PX-716A there is no cache to bypass, only one to invalidate. One drive,
+  through the bridge, 3 per arm.
+
 ## QUEUED for the next session — Keith, 2026-10-22 19:47: the track-1 pre-gap rule, then the one-sector far read on the PX-716A
 
 Verbatim: *"Queue up the track-1 pre-gap rule next and one-sector far read
