@@ -7694,10 +7694,12 @@ an older caller's allocation.
 **BUILT 0.50.1 (2026-11-22, Keith: "Go ahead with both fixes"), after
 correspondence 251.** Keith's rip of *Under My Skin* (Enhanced CD: session 1
 ends at 195656, session 2's data track 14 at 207056, disc lead-out 211185)
-stopped at 202377. The capture read `[0, disc lead-out)`, ran through session
-1's lead-out (which the PX-716A reads as audio silence, 195656-202405), and
-ground on session 2's lead-in, one failed read every ~20 s (cdda2img's
-evidence, 252: the capture file held 202,345 sectors). The bug was theirs:
+stopped at 202377. The capture read `[0, disc lead-out)`, passed through session
+1's lead-out area (195656-202405) without stalling, and ground on session 2's
+lead-in, one failed read every ~20 s (cdda2img's evidence, 252: the capture
+file held 202,345 sectors). Whether the PX-716A READ that lead-out area as
+silence or failed each sector fast is not established: the engine zero-fills a
+failed sector and delivers it, so a capture of zeros cannot tell the two apart. The bug was theirs:
 reading to `toc.leadout_lba` instead of `plan_read_range`. Fixed in their
 `a2bbb00`. Two exposures of the same kind were ours:
 
@@ -7708,8 +7710,8 @@ reading to `toc.leadout_lba` instead of `plan_read_range`. Fixed in their
   past its lead-out. It now steps backward whenever the sector is at 5000 or
   more. The engine holds no TOC, and backward from a session-1 sector stays in
   session 1. It still does not cover audio in a later session. On this drive
-  and disc the old forward target (at most 200655) lay in the lead-out the
-  drive reads, so this did not grind here. It is hygiene, not the stall's
+  and disc the old forward target (at most 200655) lay in the lead-out area
+  the capture passed through without stalling, so it did not grind here. It is hygiene, not the stall's
   cause. Three new cases in `tests/test_cache_defeat.c` (verify pass, retry,
   and LBA below 5000); the first two each fail on the old rule.
 - **Probe defaults.** CLI `cxscan`, `speeds`, `c2lag` and the `features` stream
@@ -7722,6 +7724,13 @@ reading to `toc.leadout_lba` instead of `plan_read_range`. Fixed in their
   offline before a rip (our 2026-11-22b). They planned from `dev.read_toc()`.
   The same message flags that `PlanReason.token` is a property (our docstring
   said `:meth:`).
+- **Not changed (left for Keith, 2026-11-22):** two probes keep forward far
+  reads of their own. `features.c:152` reads `lba + 5000` unconditionally; from
+  the new midpoint default that leaves the audio only when it is shorter than
+  about 10000 sectors. `c2lag.c:113-115` keeps the engine's OLD rule relative
+  to the probe's span. With the default span (all the audio) it stays inside;
+  an explicit short span near the end of a session can step past it. Neither
+  probe is on cdda2img's rip path.
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 
