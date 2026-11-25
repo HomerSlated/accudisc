@@ -8179,20 +8179,46 @@ access and no rebuild. Code references are at `cbe6c3d`.
   - The C2 rescue (`engine.c:1238-1257`) runs **before** the verify passes
     (`:1268-1272`). It still lines up against the chunk as first delivered.
   - Five scenarios, one 12-sector chunk, transfers landing exact or 96 bytes
-    late. **Adding `c2_retries 3` to `verify 2` never changed the delivered
-    audio.**
-  - When the first transfer is late and the witness lands true, the anchoring
-    re-reads decide the result. If they share the first transfer's
-    displacement, **verify 2 alone delivers all 12 sectors wrong and
+    late. When the first transfer is late and the witness lands true, the
+    anchoring re-reads decide the result. If they share the first transfer's
+    displacement, **verify 2 alone delivers every undamaged sector wrong and
     RECOVERED**. This is the documented anchoring limit (`engine.c:540-547`),
     and it applies to verify itself.
-  - When both transfers are late, `c2_retries` relabels the flagged sector from
-    C2 to a wrong RECOVERED, and `sectors_flagged` goes from 1 to 0. The read's
-    caveat verdict turns clean with 12 of 12 wrong. The same mechanism is the
-    gain when the rescue is right.
-  - With the 0.43.0 gate relaxed in a scratch copy, `c2_witness + c2_retries`
-    matched `verify 2 + c2_retries` exactly. That is the measured half of the
-    proposal at line 894 above, which is still Keith's call under Posture B.
+  - **`c2_retries` is a trade, not neutral.** The first probe's flagged sector
+    had C2 bits but correct bytes, so "it never changed the delivered audio"
+    held by construction. 25a said so, and 25b withdrew it. Re-run with the
+    flagged sector's bytes damaged identically in every chunk transfer and
+    clean on every re-read:
+    - All exact: verify alone delivers it damaged, flagged C2. With
+      `c2_retries` it is repaired and RECOVERED. This is the gain.
+    - First transfer late and re-reads late or mixed: verify alone delivers it
+      correct. With `c2_retries` it comes back late, RECOVERED or SUSPECT. This
+      is 09-16g's inheritance, measured, and verify ≥2 does not undo it.
+      - Without the rescue, the damage stops the copies being a pure shift of
+        each other, so plain consensus settles the sector.
+      - With the rescue, its clean late copy is a pure shift of the clean
+        re-reads, so it goes to anchoring, which votes late.
+    - Shared displacement: both are wrong, and the rescue also turns
+      `sectors_flagged` from 1 to 0.
+    - With the 0.43.0 gate relaxed in a scratch copy, `c2_witness +
+      c2_retries` matched `verify 2 + c2_retries` in every case. That is the
+      proposal at line 894 above.
+- **Keith's decisions, 10:22, relayed in correspondence 270: "Yes to all".**
+  - **Approved:** design, then build opt-in (a features token, a version bump,
+    no default flips), of:
+    - the policy function
+    - the effort stats, which must land BEFORE any engine recovery runs inside
+      an AR-gated read
+    - the count budget
+    - the reference-compare primitive
+
+    Also approved: the header comment fixes, and the RECOVERY.md B.3/B.5 text
+    once cdda2img's hardlink edit has landed.
+  - **Kept:** Posture B, `c2_retries = 0`, `c2_witness` off. All three are to
+    be settled by a hardware A/B on Tracy after his per-profile series:
+    engine recovery on against off inside AR-gated re-reads, judged by
+    AccurateRip. 25b's result belongs in that design.
+  - **Not yet put to him:** ordering the rescue by rung.
 - **The rescue ladder is walked once per sector.** The attempt index restarts
   for every sector. With `{24,8,4}` and 5 persistently flagged sectors in one
   chunk, that was 17 speed sets, against 5 for one sector. cdda2img fixed the
@@ -8203,8 +8229,9 @@ access and no rebuild. Code references are at `cbe6c3d`.
   its own second transfer (`engine.c:726-728`). We recommended that cdda2img
   set `cache_defeat` there.
 
-**Proposed in 2026-11-25a, none built, all waiting on Keith's go, after his
-per-profile series on Tracy:**
+**Proposed in 2026-11-25a.** Keith approved all but the last for design and
+an opt-in build. Nothing that changes a cdda2img read ships before his series
+closes. The list:
 - A pure policy function in the API_PLAN §2 "Policy" layer. It takes the read's
   purpose and facts and returns a filled `read_req` with reason codes.
 - Effort stats appended to `read_stats`: per-stage counts, per-rung rescue
@@ -8214,8 +8241,8 @@ per-profile series on Tracy:**
 - A reference-compare primitive for speed-diverse whole-range verify. This
   moves cdda2img's `--digital-media` consensus here.
 
-Keith's to decide: whether the ruling reopens Posture A, and the four earlier
-rulings cdda2img listed in its 268.4.
+Posture A stays closed for now, and the earlier rulings in 268.4 are kept until
+the hardware A/B above.
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 
