@@ -8279,8 +8279,39 @@ before `span-flagged` gets its rescue ladder.
     against the 2026-09-16 LITE-ON captures before the build.
     `alignment_signal` stays exact. `read_req` grows 104 → 112 with
     `reserved3[6]` MUST-BE-ZERO, so the budget can take 108-111 later.
-  - Notes 3–5 (budget, policy function, reference-compare) follow once 1–2 are
-    reviewed.
+  - cdda2img reviewed notes 1 and 2 in 273, and we accepted the review in 25i.
+    The revised layouts are in 25j.
+    - `read_stats` becomes 656 bytes at 0.53.0. It adds `speed_changes`,
+      `rung_honoured_x[16]`, and complete booking, including the head far
+      read and the pass-speed set.
+    - `shift_search` gains a third condition, `diff(X,Y@k) ≤
+      diff(X,X@k)/2`, so a quiet or held-sample sector cannot alias at ±1.
+    - `slips_off_frame` adds 8 bytes at 0.54.0, making 664.
+  - Note 3 (25j), 0.55.0: a per-read budget in the last 6 bytes of `read_req`:
+    `budget_speed_changes` (u16 at 106) and `budget_cmds` (u32 at 108).
+    `read_req` stays 112 bytes.
+    - It counts recovery commands only, which matches cdda2img's per-rip
+      units (re-reads, seeks, speed changes), and reports what was spent so
+      they can subtract.
+    - Each limit is checked before a command is issued, and no state is
+      invented. A failed chunk cut short by the budget is zero-filled, marked
+      HARD and counted in `sectors_budget_cut`.
+    - Open question to cdda2img: should those sectors also count in
+      `hard_errors`? We recommend yes.
+  - Note 4 (25k), 0.56.0: `accudisc_read_policy`, a pure function from an
+    intent (purpose, C2 verdict, admitted rungs, speed, range, budget) to a
+    filled request, with a revision number and reason bits.
+    - Revision 1 builds in Keith's current rulings: no engine recovery inside
+      a `GATED_REREAD` until the A/B, and `c2_retries` 0 and `c2_witness` off
+      everywhere.
+    - `SPAN_RESCUE` gets verify 2, `cache_defeat`, the ladder below the
+      attempt speed, `rescue_by_rung` and `shift_search`.
+  - Note 5 (25k), 0.57.0: `accudisc_compare_read`, a pass-major second pass
+    compared against the caller's capture through a reference callback, with
+    a per-sector agree map (`AGREE`, `AGREE_C2`, `DIFFER`, `SHIFTED`, `HARD`).
+    It is the engine home for cdda2img's `--digital-media` consensus, and does
+    one far read in total, not one per chunk.
+  - Build order: 0.53 → 0.57, every step opt-in. Nothing is built yet.
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 
