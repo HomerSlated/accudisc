@@ -8336,6 +8336,24 @@ before `span-flagged` gets its rescue ladder.
     - **No read behaves differently.** Every existing test passed unchanged.
       The only new commands are one MODE SENSE per rung, after that rung's
       first set, on reads that pass a ladder (none of cdda2img's do today).
+  - **0.54.0 `shift_search`: the definition is now cdda2img's corrected form**
+    (275, `shift_margin.py --predicate` at their `2e23787`; our 25n).
+    - **Our 25l reference could never fire.** `has_signal` tested the
+      self-difference out to |k| = 588, where the overlap is empty. Its edge
+      overlaps of a few bytes also made conditions 2 and 3 pass by chance,
+      and raw counts over unequal overlaps favour large |k|.
+    - **The corrected form:**
+      - k is within ±294 for a single sector, so at least 1176 bytes overlap.
+      - The test uses rates per byte of overlap.
+      - Shifted only if `r_k ≤ r_0/2`, `r_k ≤ 1/2` and `r_k ≤ s_k/2`.
+      - Signal means the sector is not all zero and `s_k > 0` everywhere in
+        range.
+    - **Measured by cdda2img:** 0 false positives in 5,938 sectors with
+      signal, across 6 containers. Detection is 94–100% in loud and middle
+      sectors. In quiet ones it is lower, and a miss falls back to today's
+      exact test.
+    - **Acceptance test:** their table must reproduce exactly through a
+      binding entry point (`shift_test`, no drive) before the build lands.
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 
