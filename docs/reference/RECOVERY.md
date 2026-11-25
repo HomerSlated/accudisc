@@ -337,8 +337,8 @@ read-engine side; "caller" means cdda2img (or any application driving AccuDisc).
 
 - **Name**: flagged-span rung — `--profile span-flagged` (`granularity = "span"`).
 - **Role**: re-acquirer, cheaper than 2.5. It re-reads only the sectors the capture
-  pass flagged, clustered into padded spans (`span_gap`, `span_pad`), for up to
-  `passes` passes at speeds taken from the ladder.
+  pass flagged, clustered into padded spans (`span_gap`, `span_pad`), one pass
+  per admitted rung for each of `passes` x `recovery_attempts` sweeps (2.5c).
 - **AccuDisc status**: supported (`read_span_detail`: per-sector status map, C2,
   and the Q-position lane; needs `caller_map_buffers` and the sub-Q map).
 - **cdda2img status**: included, **opt-in only, and not yet exercised on a drive**
@@ -362,7 +362,7 @@ read-engine side; "caller" means cdda2img (or any application driving AccuDisc).
 - **Unmeasured**: `span_gap = 8`, `span_pad = 4`. The captures they were to be tuned
   against were deleted under the scratch rule.
 
-### 2.5b Bench strategies in the rip (opt-in, not yet run on hardware)
+### 2.5b Bench strategies in the rip (opt-in; first hardware runs 2026-11-22)
 
 - **Name**: the recovery bench's arms as rip strategies: `sector-hammer`,
   `sector-runup`, `span-fixed`, `max-variation`, `whole-disc` (the profiles of
@@ -382,15 +382,18 @@ read-engine side; "caller" means cdda2img (or any application driving AccuDisc).
   (`strategy_reads.strategy_kind`: `granularity`, `variation`, `run_up`, `span`),
   never its name. Each read is spliced into an in-memory working copy of the
   track, AccurateRip is checked after every read, and only a match is written
-  (1.1's invariant), as on the bench. `passes` is reads per track (the bench's
-  `--max-attempts`, 8) within `budget_s`. `whole-disc` reads `[0, lead-out)` once
-  per pass and tests every failed track against that read, keeping only their
-  windows (`accudisc_reader.read_span_windows`).
+  (1.1's invariant), as on the bench. `passes` counts sweeps since 2026-11-24
+  (2.5c; until then reads per track, the bench's `--max-attempts`, 8): one sweep
+  is every target at every rung the profile reads at, targets x rungs reads.
+  `whole-disc` reads `[0, lead-out)` once per rung of a sweep and tests every
+  failed track against that read, keeping only their windows
+  (`accudisc_reader.read_span_windows`).
 - **Additions over the bench**: a cache defeat on every read but the whole-disc
   one (AccuDisc 2026-11-21j: its far target lies past the lead-out); every read
   recorded; and **the speed changes on every read**, stepping through the
-  admitted ladder, except in a `ladder = "single"` profile (`span-fixed`), which
-  holds `recovery_speed` (2.5c).
+  admitted ladder (once per round of targets for `sector-hammer` and
+  `sector-runup` since 2026-11-24, below), except in a `ladder = "single"`
+  profile (`span-fixed`), which holds `recovery_speed` (2.5c).
 - **PROV**: `recovery_strategy`, `recovery_seed` (`max-variation`, so its random
   reads can be regenerated), `strategy_targets_track_<n>`,
   `strategy_reads_track_<n>` (`<start>+<count>@<requested>><honoured>:<cache_defeat>`
@@ -401,13 +404,42 @@ read-engine side; "caller" means cdda2img (or any application driving AccuDisc).
   `max-variation` 13/20 (fastest at low n, 0/9 at high n), `whole-disc` 11/20,
   `sector-runup` 2/20, `sector-hammer` 2/20, `span-fixed` 1/16; against
   `track-ladder` 19/20. All five profiles are `experimental`: the plans were
-  scored on a drive, this implementation has not run on one.
+  scored on a drive, and this implementation first ran on one on 2026-11-22,
+  when kgr began testing each profile alone on Tracy (PX-716A, `-x20` copies,
+  `--profile-only`). To 2026-11-24: `sector-hammer` 0 matches in 320 reads on the
+  track 8/9 damage (one or two flagged sectors per track, every read honoured,
+  no time limit hit); `sector-runup` matched on read 1, on track 2's sector
+  15268, the bench's easy target, so the two are not yet compared on the same
+  damage.
 - **Not comparable to the bench without care**: the cache defeat; the speed
   stepping (the bench held one speed, `base_speed = 32`, for every arm but
   `track-ladder` and `max-variation`); the bench's fixed ladder
   (`40,32,24,16,8,4`) against the per-disc admitted one; budgets (bench 240–300 s,
   profiles 120–600 s); targets (bench: C2-flagged sectors of a 32x capture; rip:
   the damage lane of its own capture pass, the final sector excluded).
+- **Speed rounds (kgr, 2026-11-24)**: `sector-hammer` and `sector-runup` take a
+  track's n flagged sectors in turn (`strategy_reads.ROUND_ROBIN`, with
+  `span-fixed` under a profile that steps). Since 2026-11-24 their speed steps
+  once per **round** of targets (`_StrategyRun.speed_for(i, per=n)`, n from
+  `strategy_reads.targets_in_track`, the plan's own list), so every target is
+  read at every rung and the targets of a round share its speed: a round at a
+  speed that reads them all correctly repairs the track. Reaching every rung
+  takes n x L reads. From 2026-11-21 to 2026-11-24 the speed stepped on every
+  read while the target advanced too, so target j met only rungs j, j + n, ...
+  (L/gcd(n, L) of the L rungs, however many passes; five targets on five rungs
+  had one speed each), and since the newest read of a sector replaces the last,
+  only lcm(n, L) of the L^n speed combinations ever stood together (two targets,
+  five rungs: 10 of 25, never both at one speed; the 2026-11-22
+  `sector-hammer-x20` record shows exactly those 10). `strategy_reads_track_<n>`
+  records every read's sector and speed, so both periods can be audited.
+  `max-variation` (random targets) and `whole-disc` (one read per pass) still
+  step per read. **Reach**: `sector-hammer` re-reads only the flagged sectors,
+  so damage in a sector the capture did not flag is beyond it;
+  `sector-runup`'s reads also cover the `run_up` sectors before a target and
+  the 2 after. Shown offline by `tools/strategy_replay.py`, which runs
+  `_recover_by_strategy` at the drive's real read offset, against the live dBAR,
+  on a capture rebuilt from a verified RBI with chosen sectors corrupted, behind
+  a simulated drive.
 
 ### 2.5c The automatic recovery chain (not yet run on hardware)
 
@@ -434,13 +466,31 @@ read-engine side; "caller" means cdda2img (or any application driving AccuDisc).
   The order is the July bench's evidence turned into a rule, and is meant to be
   revised from real rips: PROV records every stage and every read.
 - **Speed**: a profile's `ladder` field is its whole speed policy. `full` reads
-  each attempt at the next admitted rung; `single` holds `recovery_speed`
+  each read at the next admitted rung (each round of targets, for the plans that
+  take them in turn: 2.5b); `single` holds `recovery_speed`
   (config or `--recovery-speed`, default 32, snapped to the nearest admitted
   rung). Shipped `single`: `track-constant` and `span-fixed`, which kgr kept
   fixed so they stay distinct. `--recovery-speed auto` holds, per track, the
   rung whose speed-ladder re-read flagged the fewest C2 errors (the ladder asks
   for C2 for this), the slowest admitted rung until such a re-read has run.
-- **Stopping**: each stage gates its own writes on AccurateRip, and the chain
+- **Effort: sweeps and attempts** (kgr, 2026-11-24: "set the number of passes to
+  the minimum needed to cover all speeds ... Each full round of passes per
+  profile = 1x attempt"). A profile's `passes` counts **sweeps**, a sweep being
+  the least that tries every target at every speed the profile reads at: one
+  ladder sweep for the track profiles (L track reads; one read when the speed is
+  held), one pass per rung for the span rung, targets x rungs reads for the
+  sector strategies (targets x 1 when held), one whole-disc read per rung for
+  `whole-disc`. It is computed per disc and track, since the admitted ladder and
+  the flagged sectors vary, so every shipped profile has `passes = 1`.
+  `recovery_attempts` (config, or `--recovery-attempts`; default 1) repeats each
+  stage's sweeps inside one call, so a strategy's working copy keeps every read.
+  `budget_s` is seconds per read: a track may take `budget_s` x its planned
+  reads, a guard against a stalled drive that should never bind; the track
+  profiles do not read it. Until 2026-11-24 the shipped passes were 3 (track,
+  span) and 8 (strategies), and the track profiles' sweeps were 3. PROV
+  `recovery_attempts`.
+- **Stopping**: each stage gates its own writes on AccurateRip, the first match
+  ends a track's reads however many sweeps or attempts remain, and the chain
   stops at a track's first match. `recovery_ceiling_s` (default 0, none) bounds
   the whole chain; a rip it stops says so (`recovery_ceiling_hit`), so "raise
   the ceiling" is not mistaken for "the disc cannot be recovered".
@@ -2247,4 +2297,4 @@ That set lets a future reader distinguish "we never checked" from "we checked
 thoroughly and this disc cannot be verified" — which is the only useful thing
 left to say about it.
 
-Blake3 54206f22fc4b654cd7944190241f6484430e9c07bc1bf6619402ac1ff2d867a4
+Blake3 6ed8e578cc9edd69ecd319824ef10ee901c4953e2b8458d4765b594e3b47aa50
