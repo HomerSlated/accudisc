@@ -57,7 +57,14 @@ _Static_assert(sizeof(accudisc_speed_rung) == 20,
  * updating the number below, bumping ACCUDISC_VERSION_MINOR so the .so version
  * moves with the layout, and adding a row to API_PLAN §8. Tripping these is a
  * reminder, not a defect. */
-_Static_assert(sizeof(accudisc_read_req) == 104, "read_req grew — see above");
+_Static_assert(sizeof(accudisc_read_req) == 112, "read_req grew — see above");
+/* 0.54.0: 104 -> 112 at the offsets published in 2026-11-25j: rescue_by_rung
+ * at 104, then reserved3 (MUST be zero) over 105-111 for the shift test and
+ * the budget. */
+_Static_assert(offsetof(accudisc_read_req, rescue_by_rung) == 104,
+               "read_req: rescue_by_rung must sit past 0.53.0's end");
+_Static_assert(offsetof(accudisc_read_req, reserved3) == 105,
+               "read_req: reserved3 must cover 105-111");
 /* 0.53.0: 96 -> 104. 0.52.0's struct ended at 96 with no tail padding (it
  * closes on two uint32_t at 88 and 92), so origin_map goes straight to 96,
  * past every older caller's declared end, where the import zero-extends it to

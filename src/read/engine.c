@@ -196,6 +196,8 @@ struct rd {
     int cancelled;    /* latched: a cancel flag was seen (0.52.0) */
     unsigned rung;    /* 0.53.0: 0 = pass speed, n = speed_ladder[n - 1] */
     uint8_t rung_seen[16]; /* rung's honoured speed already read back */
+    uint8_t *bsamples; /* 0.54.0 rung order: ADSC_SAMPLES_MAX sectors per
+                        * chunk sector, or NULL */
     accudisc_read_stats st;
 };
 
@@ -506,31 +508,46 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
  * independent signal that detected the fault, rather than by agreement with
  * the thing it is replacing. A reread whose Q is unreadable is not usable
  * either: with no claim there is nothing to check, and silence is not consent. */
+/* ONE ATTEMPT of a stage, shared by both orders (0.54.0). Sector order calls
+ * it for a = 1, 2, ... on one sector; rung order calls it for every unresolved
+ * sector at a = 1, then a = 2. One body, so the two orders cannot disagree
+ * about what an attempt does. Returns -1 when stopped by a cancel. */
+#define ADSC_QPOS_ATTEMPTS (ADSC_SAMPLES_MAX - 2)
+
+/* 1 = a position-correct copy replaced the sector, 0 = not this attempt. */
+static int qpos_attempt(struct rd *r, uint32_t lba, uint8_t *sec, unsigned a,
+                        unsigned *attempts, uint8_t *origin)
+{
+    uint8_t qf[12];
+    accudisc_q qd;
+
+    if (stop(r))
+        return -1;
+    ladder_speed(r, a);
+    cache_defeat(r, lba, lba, 1);
+    if (read_sector(r, lba, r->scratch, ACCUDISC_STAGE_QPOS) != ACCUDISC_OK)
+        return 0;
+    r->st.rereads++;
+    *attempts = a;
+    accudisc_sub_extract_q(r->scratch + r->audio_len + r->c2_len, qf);
+    accudisc_q_parse(qf, &qd);
+    if (!qd.crc_ok || qd.adr != ACCUDISC_Q_POSITION)
+        return 0;
+    if (adsc_q_position_lba(&qd) != (int32_t)lba)
+        return 0; /* still elsewhere */
+    memcpy(sec, r->scratch, r->sector_len);
+    *origin = origin_byte(ACCUDISC_ORIGIN_QPOS, r->rung);
+    return 1;
+}
+
 static int qpos_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
                        unsigned *attempts, uint8_t *origin)
 {
-    for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2; a++) {
-        uint8_t qf[12];
-        accudisc_q qd;
+    for (unsigned a = 1; a <= ADSC_QPOS_ATTEMPTS; a++) {
+        int k = qpos_attempt(r, lba, sec, a, attempts, origin);
 
-        if (stop(r))
-            return 0;
-        ladder_speed(r, a);
-        cache_defeat(r, lba, lba, 1);
-        if (read_sector(r, lba, r->scratch, ACCUDISC_STAGE_QPOS) !=
-            ACCUDISC_OK)
-            continue;
-        r->st.rereads++;
-        *attempts = a;
-        accudisc_sub_extract_q(r->scratch + r->audio_len + r->c2_len, qf);
-        accudisc_q_parse(qf, &qd);
-        if (!qd.crc_ok || qd.adr != ACCUDISC_Q_POSITION)
-            continue;
-        if (adsc_q_position_lba(&qd) != (int32_t)lba)
-            continue; /* still elsewhere */
-        memcpy(sec, r->scratch, r->sector_len);
-        *origin = origin_byte(ACCUDISC_ORIGIN_QPOS, r->rung);
-        return 1;
+        if (k != 0)
+            return k > 0;
     }
     return 0;
 }
@@ -694,42 +711,52 @@ static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
  * sector whose neighbours within two sectors are all unstable or silent cannot
  * be lined up, and keeps its flagged copy. That is a lost rescue, not a wrong
  * delivery, and it is the right way round. */
+/* One C2-rescue attempt: 0 = done (whatever it found), -1 = stopped. */
+static int c2_attempt(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *best,
+                      unsigned a, unsigned *attempts,
+                      const struct adsc_ref *refs, unsigned nref,
+                      uint8_t *origin)
+{
+    static const int32_t start[] = { -1, -2, 0 };
+    int64_t w = (int64_t)lba + start[(a - 1) % 3];
+
+    if (stop(r))
+        return -1;
+    if (w < 0)
+        w = lba;
+    uint32_t w0 = (uint32_t)w;
+
+    ladder_speed(r, a);
+    cache_defeat(r, lba, w0, ADSC_ANCHOR_SPAN);
+    if (read_run(r, w0, ADSC_ANCHOR_SPAN, r->context,
+                 ACCUDISC_STAGE_C2_RESCUE) != ACCUDISC_OK)
+        return 0;
+    r->st.rereads++;
+    *attempts = a;
+    if (!corroborated(r, r->context, w0, lba, refs, nref))
+        return 0;
+
+    const uint8_t *x = r->context + (size_t)(lba - w0) * r->sector_len;
+    uint32_t b = popcount_buf(x + r->audio_len, r->c2_len);
+
+    if (b < *best) {
+        memcpy(sec, x, r->sector_len);
+        *best = b;
+        *origin = origin_byte(ACCUDISC_ORIGIN_C2_RESCUE, r->rung);
+    }
+    return 0;
+}
+
 static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *bits,
                       unsigned *attempts, const struct adsc_ref *refs,
                       unsigned nref, uint8_t *origin)
 {
-    static const int32_t start[] = { -1, -2, 0 };
     uint32_t best = *bits;
 
     *attempts = 0;
-    for (unsigned a = 1; a <= r->req->c2_retries && best > 0; a++) {
-        int64_t w = (int64_t)lba + start[(a - 1) % 3];
-
-        if (stop(r))
+    for (unsigned a = 1; a <= r->req->c2_retries && best > 0; a++)
+        if (c2_attempt(r, lba, sec, &best, a, attempts, refs, nref, origin) < 0)
             break;
-        if (w < 0)
-            w = lba;
-        uint32_t w0 = (uint32_t)w;
-
-        ladder_speed(r, a);
-        cache_defeat(r, lba, w0, ADSC_ANCHOR_SPAN);
-        if (read_run(r, w0, ADSC_ANCHOR_SPAN, r->context,
-                     ACCUDISC_STAGE_C2_RESCUE) != ACCUDISC_OK)
-            continue;
-        r->st.rereads++;
-        *attempts = a;
-        if (!corroborated(r, r->context, w0, lba, refs, nref))
-            continue;
-
-        const uint8_t *x = r->context + (size_t)(lba - w0) * r->sector_len;
-        uint32_t b = popcount_buf(x + r->audio_len, r->c2_len);
-
-        if (b < best) {
-            memcpy(sec, x, r->sector_len);
-            best = b;
-            *origin = origin_byte(ACCUDISC_ORIGIN_C2_RESCUE, r->rung);
-        }
-    }
     *bits = best;
 }
 
@@ -741,58 +768,131 @@ static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *bits,
  * known on entry (`shifted`) or found among the rereads. Then agreement is not
  * evidence (a slip reproduces), and the sector is settled by anchor_position
  * against the transfers in refs, or not at all. */
+/* One sector's consensus, as state that survives between attempts, so that
+ * rung order can interleave many sectors' attempts (0.54.0). */
+struct cons_job {
+    uint32_t lba;
+    uint8_t *sec;
+    uint8_t *samples; /* ADSC_SAMPLES_MAX sectors */
+    unsigned count;
+    int shifted;
+    int state;        /* 0 re-reading, 1 accepted, 2 agreement among slipped
+                       * copies: no more re-reads, anchoring decides */
+    unsigned used;
+    uint8_t *origin;
+};
+
+static void cons_init(struct rd *r, struct cons_job *j, uint32_t lba,
+                      uint8_t *sec, const uint8_t *alt, int shifted,
+                      uint8_t *samples, uint8_t *origin)
+{
+    j->lba = lba;
+    j->sec = sec;
+    j->samples = samples;
+    j->shifted = shifted;
+    j->state = 0;
+    j->used = 0;
+    j->origin = origin;
+    memcpy(samples, sec, r->sector_len);
+    j->count = 1;
+    if (alt) {
+        memcpy(samples + r->sector_len, alt, r->sector_len);
+        j->count = 2;
+    }
+}
+
+/* One consensus attempt. -1 = stopped; otherwise the job's state says what
+ * happened. */
+static int cons_attempt(struct rd *r, struct cons_job *j, unsigned a)
+{
+    if (stop(r))
+        return -1;
+    ladder_speed(r, a);
+    cache_defeat(r, j->lba, j->lba, 1);
+    if (read_sector(r, j->lba, r->scratch, ACCUDISC_STAGE_CONSENSUS) !=
+        ACCUDISC_OK)
+        return 0;
+    r->st.rereads++;
+    j->used = a;
+    int matched = 0;
+
+    for (unsigned i = 0; i < j->count; i++) {
+        const uint8_t *smp = j->samples + (size_t)i * r->sector_len;
+        int32_t sh;
+
+        if (adsc_audio_diff(r->scratch, smp) == 0)
+            matched = 1;
+        else if (!j->shifted && adsc_shift_find(r->scratch, smp, &sh))
+            j->shifted = 1;
+    }
+    if (matched && !j->shifted) {
+        memcpy(j->sec, r->scratch, r->sector_len);
+        *j->origin = origin_byte(ACCUDISC_ORIGIN_CONSENSUS, r->rung);
+        j->state = 1;
+        return 0;
+    }
+    if (matched) {
+        j->state = 2; /* agreement, but among copies a slip has been seen in */
+        return 0;
+    }
+    if (j->count < ADSC_SAMPLES_MAX) {
+        memcpy(j->samples + (size_t)j->count * r->sector_len, r->scratch,
+               r->sector_len);
+        j->count++;
+    }
+    return 0;
+}
+
+/* After the attempts: 1 = recovered, 0 = suspect. */
+static int cons_finish(struct rd *r, struct cons_job *j,
+                       const struct adsc_ref *refs, unsigned nref)
+{
+    if (j->state == 1)
+        return 1;
+    if (!j->shifted || stop(r))
+        return 0;
+    ladder_restore(r);
+    return anchor_position(r, j->lba, j->sec, refs, nref, &j->used, j->origin);
+}
+
 static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
                      const uint8_t *alt, int shifted,
                      const struct adsc_ref *refs, unsigned nref,
                      unsigned *attempts, uint8_t *origin)
 {
-    unsigned count = 0;
+    struct cons_job j;
+    int res;
 
-    memcpy(r->samples, sec, r->sector_len);
-    count = 1;
-    if (alt) {
-        memcpy(r->samples + r->sector_len, alt, r->sector_len);
-        count = 2;
-    }
-
-    for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2; a++) {
-        if (stop(r))
+    cons_init(r, &j, lba, sec, alt, shifted, r->samples, origin);
+    for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2 && j.state == 0; a++)
+        if (cons_attempt(r, &j, a) < 0) {
+            *attempts = j.used;
             return 0;
-        ladder_speed(r, a);
-        cache_defeat(r, lba, lba, 1);
-        if (read_sector(r, lba, r->scratch, ACCUDISC_STAGE_CONSENSUS) !=
-            ACCUDISC_OK)
-            continue;
-        r->st.rereads++;
-        *attempts = a;
-        int matched = 0;
+        }
+    res = cons_finish(r, &j, refs, nref);
+    *attempts = j.used;
+    return res;
+}
 
-        for (unsigned i = 0; i < count; i++) {
-            const uint8_t *smp = r->samples + (size_t)i * r->sector_len;
-            int32_t sh;
-
-            if (adsc_audio_diff(r->scratch, smp) == 0)
-                matched = 1;
-            else if (!shifted && adsc_shift_find(r->scratch, smp, &sh))
-                shifted = 1;
+/* RUNG ORDER for consensus (0.54.0): every job's attempt 1, then attempt 2 for
+ * those still re-reading, and so on; then anchoring, in job order. res[i] is
+ * 1 (recovered) or 0 (suspect). A cancel leaves the rest 0; the chunk is
+ * discarded by the caller's cancel point anyway. */
+static void cons_batch(struct rd *r, struct cons_job *jobs, unsigned nj,
+                       const struct adsc_ref *refs, unsigned nref, int *res)
+{
+    for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2; a++)
+        for (unsigned i = 0; i < nj; i++) {
+            if (jobs[i].state != 0)
+                continue;
+            if (cons_attempt(r, &jobs[i], a) < 0) {
+                for (unsigned k = 0; k < nj; k++)
+                    res[k] = jobs[k].state == 1;
+                return;
+            }
         }
-        if (matched && !shifted) {
-            memcpy(sec, r->scratch, r->sector_len);
-            *origin = origin_byte(ACCUDISC_ORIGIN_CONSENSUS, r->rung);
-            return 1;
-        }
-        if (matched)
-            break; /* agreement, but among copies a slip has been seen in */
-        if (count < ADSC_SAMPLES_MAX) {
-            memcpy(r->samples + (size_t)count * r->sector_len, r->scratch,
-                   r->sector_len);
-            count++;
-        }
-    }
-    if (!shifted || stop(r))
-        return 0;
-    ladder_restore(r);
-    return anchor_position(r, lba, sec, refs, nref, attempts, origin);
+    for (unsigned i = 0; i < nj; i++)
+        res[i] = cons_finish(r, &jobs[i], refs, nref);
 }
 
 /* ONE WITNESSED PASS over a chunk already in buf: re-read it as a separate,
@@ -813,6 +913,15 @@ static void witness_pass(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
                          uint8_t *susp, unsigned *att, uint32_t *bits,
                          uint32_t *diffb, uint8_t *origin)
 {
+    const struct adsc_ref refs[2] = {
+        { lba, n, prim, hard },
+        { lba, n, buf2, hard2 },
+    };
+    struct cons_job jobs[ADSC_CHUNK_MAX];
+    uint32_t idx[ADSC_CHUNK_MAX];
+    int res[ADSC_CHUNK_MAX];
+    unsigned nj = 0;
+
     if (stop(r))
         return;
     ladder_restore(r);
@@ -843,17 +952,37 @@ static void witness_pass(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
                 r->st.slips++;
         }
         diffb[s] = diff;
+        if (r->bsamples) { /* rung order: queue it, settle all below */
+            cons_init(r, &jobs[nj], lba + s, sec, hard2[s] ? NULL : alt,
+                      shifted, r->bsamples + (size_t)s * ADSC_SAMPLES_MAX *
+                                                 r->sector_len,
+                      &origin[s]);
+            idx[nj++] = s;
+            continue;
+        }
         unsigned used = 0;
-        const struct adsc_ref refs[2] = {
-            { lba, n, prim, hard },
-            { lba, n, buf2, hard2 },
-        };
         if (consensus(r, lba + s, sec, hard2[s] ? NULL : alt, shifted, refs,
                       2, &used, &origin[s])) {
             recov[s] = 1;
             att[s] += used;
             if (r->c2_len)
                 bits[s] = popcount_buf(sec + r->audio_len, r->c2_len);
+        } else {
+            susp[s] = 1;
+        }
+    }
+    if (!nj)
+        return;
+    cons_batch(r, jobs, nj, refs, 2, res);
+    for (unsigned i = 0; i < nj; i++) {
+        uint32_t s = idx[i];
+
+        if (res[i]) {
+            recov[s] = 1;
+            att[s] += jobs[i].used;
+            if (r->c2_len)
+                bits[s] = popcount_buf(buf + (size_t)s * r->sector_len +
+                                       r->audio_len, r->c2_len);
         } else {
             susp[s] = 1;
         }
@@ -1017,6 +1146,15 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     if (req->c2_witness && req->c2 == ACCUDISC_C2_NONE)
         return ACCUDISC_ERR_INVAL;
 
+    /* 0.54.0: reserved3 MUST be zero. It is where the shift test and the
+     * budget will go, and a request for either from a caller built against a
+     * later header must be refused here, not read as an ordinary read. */
+    for (unsigned i = 0; i < sizeof(req->reserved3); i++)
+        if (req->reserved3[i])
+            return ACCUDISC_ERR_INVAL;
+    if (req->rescue_by_rung > 1)
+        return ACCUDISC_ERR_INVAL;
+
     /* 0.51.0: the far-read range. hi == 0 is the only "unknown"; lo == 0 is
      * session 1's real start. A range that cannot be meant is refused, never
      * quietly treated as unknown. */
@@ -1137,6 +1275,9 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     r.samples = malloc((size_t)ADSC_SAMPLES_MAX * r.sector_len);
     r.context = malloc((size_t)ADSC_ANCHOR_SPAN * r.sector_len);
     r.anchored = malloc(r.sector_len);
+    if (req->rescue_by_rung)
+        r.bsamples = malloc((size_t)ADSC_CHUNK_MAX * ADSC_SAMPLES_MAX *
+                            r.sector_len);
     int rc = ACCUDISC_OK;
 
     uint8_t prev_ext_hard[ADSC_OVERLAP_MAX];
@@ -1144,6 +1285,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
     if (!slot[0].buf || !slot[1].buf || !r.flush || !r.scratch ||
         !r.samples || !r.context || !r.anchored ||
+        (req->rescue_by_rung && !r.bsamples) ||
         (need_wit && !buf2) || (overlap && !prev_ext) ||
         (need_prim && (!slot[0].prim || !slot[1].prim))) {
         rc = ACCUDISC_ERR_NOMEM;
@@ -1281,17 +1423,48 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                     qsus[k] = 1;
             }
 
-            for (uint32_t s = 0; s < n; s++) {
-                unsigned used = 0;
+            if (req->rescue_by_rung) {
+                /* RUNG ORDER (0.54.0): every suspect sector at attempt 1,
+                 * then the unresolved ones at attempt 2, and so on. */
+                unsigned used[ADSC_CHUNK_MAX] = {0};
+                uint8_t done[ADSC_CHUNK_MAX] = {0};
 
-                if (!qsus[s] || hard[s] || susp[s])
-                    continue;
-                if (qpos_rescue(&r, lba + s, buf + (size_t)s * r.sector_len,
-                                &used, &cur->origin[s])) {
-                    recov[s] = 1;
-                    att[s] += used;
-                } else {
-                    susp[s] = 1;
+                for (unsigned a = 1; a <= ADSC_QPOS_ATTEMPTS; a++)
+                    for (uint32_t s = 0; s < n; s++) {
+                        if (!qsus[s] || hard[s] || done[s])
+                            continue;
+                        int k = qpos_attempt(&r, lba + s,
+                                             buf + (size_t)s * r.sector_len,
+                                             a, &used[s], &cur->origin[s]);
+                        if (k < 0)
+                            goto qpos_stopped;
+                        done[s] = (uint8_t)k;
+                    }
+            qpos_stopped:
+                for (uint32_t s = 0; s < n; s++) {
+                    if (!qsus[s] || hard[s])
+                        continue;
+                    if (done[s]) {
+                        recov[s] = 1;
+                        att[s] += used[s];
+                    } else {
+                        susp[s] = 1;
+                    }
+                }
+            } else {
+                for (uint32_t s = 0; s < n; s++) {
+                    unsigned used = 0;
+
+                    if (!qsus[s] || hard[s] || susp[s])
+                        continue;
+                    if (qpos_rescue(&r, lba + s,
+                                    buf + (size_t)s * r.sector_len, &used,
+                                    &cur->origin[s])) {
+                        recov[s] = 1;
+                        att[s] += used;
+                    } else {
+                        susp[s] = 1;
+                    }
                 }
             }
             CANCEL_POINT();
@@ -1303,6 +1476,15 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
          * consensus settles the sectors compared, and the widening below
          * settles the rest of both transfers. */
         int seam_bad = 0;
+        const struct adsc_ref seam_refs[2] = {
+            { lba, n, prim, hard },
+            { lba, prev_ext_n, prev_ext, prev_ext_hard },
+        };
+        struct cons_job sjobs[ADSC_OVERLAP_MAX];
+        uint32_t sidx[ADSC_OVERLAP_MAX];
+        int sres[ADSC_OVERLAP_MAX];
+        unsigned snj = 0;
+
         for (uint32_t s = 0; s < prev_ext_n && s < n; s++) {
             if (prev_ext_hard[s] || hard[s] || susp[s])
                 continue;
@@ -1323,17 +1505,32 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             if (shifted)
                 r.st.slips++;
             diffb[s] = diff;
+            if (r.bsamples) { /* rung order: queue it */
+                cons_init(&r, &sjobs[snj], lba + s, sec, alt, shifted,
+                          r.bsamples + (size_t)s * ADSC_SAMPLES_MAX *
+                                           r.sector_len,
+                          &cur->origin[s]);
+                sidx[snj++] = s;
+                continue;
+            }
             unsigned used = 0;
-            const struct adsc_ref refs[2] = {
-                { lba, n, prim, hard },
-                { lba, prev_ext_n, prev_ext, prev_ext_hard },
-            };
-            if (consensus(&r, lba + s, sec, alt, shifted, refs, 2, &used,
+            if (consensus(&r, lba + s, sec, alt, shifted, seam_refs, 2, &used,
                           &cur->origin[s])) {
                 recov[s] = 1;
                 att[s] += used;
             } else {
                 susp[s] = 1;
+            }
+        }
+        if (snj) {
+            cons_batch(&r, sjobs, snj, seam_refs, 2, sres);
+            for (unsigned i = 0; i < snj; i++) {
+                if (sres[i]) {
+                    recov[sidx[i]] = 1;
+                    att[sidx[i]] += sjobs[i].used;
+                } else {
+                    susp[sidx[i]] = 1;
+                }
             }
         }
         CANCEL_POINT();
@@ -1347,7 +1544,39 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             }
 
         /* C2-guided rescue: hunt a clean copy of every flagged sector. */
-        if (req->c2_retries && r.c2_len) {
+        if (req->c2_retries && r.c2_len && req->rescue_by_rung) {
+            /* RUNG ORDER (0.54.0): attempt a for every flagged sector whose
+             * best copy still carries bits, then attempt a + 1. */
+            const struct adsc_ref refs[2] = {
+                { lba, n, prim, hard },
+                { lba, prev_ext_n, prev_ext, prev_ext_hard },
+            };
+            uint32_t best[ADSC_CHUNK_MAX], before[ADSC_CHUNK_MAX];
+            unsigned used[ADSC_CHUNK_MAX] = {0};
+
+            for (uint32_t s = 0; s < n; s++)
+                best[s] = before[s] = hard[s] ? 0 : bits[s];
+            for (unsigned a = 1; a <= req->c2_retries; a++)
+                for (uint32_t s = 0; s < n; s++) {
+                    if (best[s] == 0)
+                        continue;
+                    if (c2_attempt(&r, lba + s, buf + (size_t)s * r.sector_len,
+                                   &best[s], a, &used[s], refs, 2,
+                                   &cur->origin[s]) < 0)
+                        goto c2_stopped;
+                }
+        c2_stopped:
+            for (uint32_t s = 0; s < n; s++) {
+                if (before[s] == 0)
+                    continue;
+                bits[s] = best[s];
+                if (bits[s] == 0) {
+                    recov[s] = 1;
+                    att[s] += used[s];
+                }
+            }
+            CANCEL_POINT();
+        } else if (req->c2_retries && r.c2_len) {
             for (uint32_t s = 0; s < n; s++) {
                 if (hard[s] || bits[s] == 0)
                     continue;
@@ -1483,6 +1712,7 @@ out:
     free(r.flush);
     free(r.scratch);
     free(r.samples);
+    free(r.bsamples);
     r.st.us_total = (adsc_mono_ns() - t_start) / 1000u;
     if (stats) {
         /* Only as far as the caller said their allocation reaches — a whole

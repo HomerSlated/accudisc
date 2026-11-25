@@ -664,6 +664,8 @@ typedef struct accudisc_read_req {
     uint32_t readable_lo;
     uint32_t readable_hi;
     uint8_t *origin_map;
+    uint8_t rescue_by_rung;
+    uint8_t reserved3[7];
     ...;
 } accudisc_read_req;
 

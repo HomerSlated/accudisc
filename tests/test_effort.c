@@ -35,6 +35,14 @@ static struct {
     uint32_t mispos_lba;     /* its Q names lba - 2048 on its FIRST read only */
     unsigned mispos_seen;
     uint32_t noise_lba;      /* the 2nd chunk transfer flips a byte here */
+    uint32_t nz_lo, nz_hi;   /* chunk transfer #nz_chunk flips a byte in
+                              * every sector of [nz_lo, nz_hi) ... */
+    unsigned nz_chunk;
+    uint8_t nz_single[256];  /* ... and each such sector's FIRST single-sector
+                              * read flips a different byte, so consensus
+                              * needs a second attempt (index lba - 10000) */
+    int mispos_reads;        /* reads of mispos_lba that name lba - 2048
+                              * (0 means 1, the original behaviour) */
     unsigned chunk_reads;
     unsigned delay_us;       /* every READ CD takes at least this long */
 } fk;
@@ -148,13 +156,20 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
             p[b] = audio(cur, b);
         if (chunk && fk.chunk_reads == 2 && cur == fk.noise_lba)
             p[1000] ^= 0x5A;
+        if (chunk && fk.nz_chunk && fk.chunk_reads == fk.nz_chunk &&
+            cur >= fk.nz_lo && cur < fk.nz_hi)
+            p[500] ^= 0x33;
+        if (!chunk && nsec == 1 && type != 0 && cur >= fk.nz_lo &&
+            cur < fk.nz_hi && cur - 10000 < 256 && !fk.nz_single[cur - 10000]++)
+            p[700] ^= 0x44;
         memset(p + S, (cur >= fk.c2_lo && cur < fk.c2_hi) ? 0x01 : 0x00,
                c2len);
         if (chunk && fk.c2_chunk_only && cur == fk.c2_chunk_only)
             memset(p + S, 0xFF, 4);
         if (sub == 1) {
             uint32_t q = cur;
-            if (fk.mispos_lba && cur == fk.mispos_lba && fk.mispos_seen++ == 0)
+            if (fk.mispos_lba && cur == fk.mispos_lba &&
+                fk.mispos_seen++ < (unsigned)(fk.mispos_reads ? fk.mispos_reads : 1))
                 q = cur - 2048;
             make_sub(q, p + S + c2len);
         }
@@ -373,6 +388,240 @@ static void test_ladder_rescue(void)
            "17 changes, rungs read back 24/8/4\n");
 }
 
+/* 0.54.0: the C.7 case in RUNG ORDER. The same 15 rescue reads at the same
+ * rungs, but the ladder is walked once per chunk instead of once per sector:
+ *   head set 32 + its read-back                        2
+ *   rung sets 24 8 4, once each                        3
+ *   one read-back per rung                             3
+ *   restore to 32                                      1   => SPEED = 9
+ *   speed_changes = 1 + 3 + 1 = 5  (17 in sector order)
+ * Everything else, bytes, map, lane and every non-speed stat, equals the
+ * sector-order run. */
+static void test_ladder_rescue_by_rung(void)
+{
+    static const uint16_t ladder[] = { 24, 8, 4 };
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t origin0[46], status0[46];
+
+    reset();
+    fk.c2_lo = 10005;
+    fk.c2_hi = 10010;
+    req.lba = 10000;
+    req.count = 46;
+    req.c2 = ACCUDISC_C2_PTRS;
+    req.speed_x = 32;
+    req.c2_retries = 3;
+    req.verify_passes = 2;
+    req.speed_ladder = ladder;
+    req.ladder_len = 3;
+    accudisc_read_stats a = run(&req);
+    memcpy(origin0, origin, 46);
+    memcpy(status0, status, 46);
+
+    reset();
+    fk.c2_lo = 10005;
+    fk.c2_hi = 10010;
+    req.rescue_by_rung = 1;
+    accudisc_read_stats b = run(&req);
+    assert(b.cmds[ACCUDISC_STAGE_SPEED] == 9);
+    assert(b.speed_changes == 5);
+    assert(b.rung_honoured_x[1] == 24 && b.rung_honoured_x[2] == 8 &&
+           b.rung_honoured_x[3] == 4);
+    assert(memcmp(origin0, origin, 46) == 0 && memcmp(status0, status, 46) == 0);
+    for (unsigned i = 0; i < 16; i++) {
+        if (i == ACCUDISC_STAGE_SPEED)
+            continue;
+        assert(a.cmds[i] == b.cmds[i] && a.cmds_failed[i] == b.cmds_failed[i]);
+        assert(a.rung_cmds[i] == b.rung_cmds[i]);
+        assert(a.won_by[i] == b.won_by[i] && a.rung_wins[i] == b.rung_wins[i]);
+    }
+    assert(a.rereads == b.rereads && a.sectors_flagged == b.sectors_flagged);
+    printf("ok - ladder rescue in rung order: SPEED 21 -> 9, changes 17 -> 5, "
+           "the same 15 reads\n");
+}
+
+/* Q-position rescue in rung order: one misposition (10050, first read only)
+ * makes 9 suspects (the 4-sector margin), a 2-rung ladder. The first attempt
+ * fixes every one, so all 9 are re-read at rung 1 in one round with ONE rung
+ * set. */
+static void test_qpos_by_rung(void)
+{
+    static const uint16_t ladder[] = { 8, 4 };
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    reset();
+    fk.mispos_lba = 10050;
+    req.lba = 10046;
+    req.count = 23;
+    req.c2 = ACCUDISC_C2_PTRS;
+    req.sub = ACCUDISC_SUB_RAW;
+    req.speed_x = 32;
+    req.speed_ladder = ladder;
+    req.ladder_len = 2;
+    req.rescue_by_rung = 1;
+    accudisc_read_stats st = run(&req);
+    assert(st.cmds[ACCUDISC_STAGE_QPOS] == 9);
+    assert(st.rung_cmds[1] == 9);
+    for (uint32_t i = 0; i <= 8; i++)
+        assert(origin[i] == (ACCUDISC_ORIGIN_QPOS | 1u << 4));
+    /* head 32 + read-back, rung 8 + read-back, restore 32 = 5 operations */
+    assert(st.cmds[ACCUDISC_STAGE_SPEED] == 5 && st.speed_changes == 3);
+    printf("ok - Q rescue in rung order: 9 re-reads at rung 1, one rung set\n");
+}
+
+/* Run the same scripted read in both orders and require everything but speed
+ * and time to match; return the two stats for the caller's speed checks. */
+static void both_orders(void (*setup)(accudisc_read_req *), uint32_t count,
+                        accudisc_read_stats *a, accudisc_read_stats *b)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t origin0[256], status0[256];
+
+    reset();
+    setup(&req);
+    *a = run(&req);
+    memcpy(origin0, origin, count);
+    memcpy(status0, status, count);
+
+    accudisc_read_req req2 = ACCUDISC_READ_REQ_INIT;
+    reset();
+    setup(&req2);
+    req2.rescue_by_rung = 1;
+    *b = run(&req2);
+    assert(memcmp(origin0, origin, count) == 0);
+    assert(memcmp(status0, status, count) == 0);
+    for (unsigned i = 0; i < 16; i++) {
+        if (i == ACCUDISC_STAGE_SPEED)
+            continue;
+        assert(a->cmds[i] == b->cmds[i]);
+        assert(a->cmds_failed[i] == b->cmds_failed[i]);
+        assert(a->rung_cmds[i] == b->rung_cmds[i]);
+        assert(a->won_by[i] == b->won_by[i]);
+        assert(a->rung_wins[i] == b->rung_wins[i]);
+    }
+    assert(a->rereads == b->rereads && a->slips == b->slips);
+    assert(a->sectors_recovered == b->sectors_recovered);
+    assert(a->sectors_suspect == b->sectors_suspect);
+}
+
+static const uint16_t ladder84[] = { 8, 4 };
+
+/* Consensus, three sectors, each needing attempt 2: the witness transfer
+ * (chunk transfer #2) flips a byte in 10003-10005, and each one's first
+ * re-read flips a different byte, so only its second re-read (rung 2, 4x)
+ * matches the first copy.
+ *   sector order: head 32 + rb, then 8 + rb, 4 + rb, 8, 4, 8, 4, restore = 11
+ *                 changes 1 + 6 + 1 = 8
+ *   rung order:   head 32 + rb, 8 + rb, 4 + rb, restore             = 7
+ *                 changes 1 + 2 + 1 = 4 */
+static void setup_cons(accudisc_read_req *req)
+{
+    fk.nz_lo = 10003;
+    fk.nz_hi = 10006;
+    fk.nz_chunk = 2;
+    req->lba = 10000;
+    req->count = 24;
+    req->c2 = ACCUDISC_C2_PTRS;
+    req->speed_x = 32;
+    req->verify_passes = 2;
+    req->speed_ladder = ladder84;
+    req->ladder_len = 2;
+}
+
+static void test_consensus_by_rung(void)
+{
+    accudisc_read_stats a, b;
+
+    both_orders(setup_cons, 24, &a, &b);
+    assert(a.cmds[ACCUDISC_STAGE_CONSENSUS] == 6);
+    assert(a.cmds[ACCUDISC_STAGE_SPEED] == 11 && a.speed_changes == 8);
+    assert(b.cmds[ACCUDISC_STAGE_SPEED] == 7 && b.speed_changes == 4);
+    for (uint32_t i = 3; i <= 5; i++)
+        assert(origin[i] == (ACCUDISC_ORIGIN_CONSENSUS | 2u << 4));
+    printf("ok - consensus, 3 sectors x 2 attempts: changes 8 -> 4, same "
+           "bytes, map and lane\n");
+}
+
+/* The same through a SEAM: overlap 2, chunk transfer #2 flips 10022-10023
+ * (the head of chunk 2, which the previous transfer's extension covers clean),
+ * and each sector's first re-read is noisy. The seam's consensus needs attempt
+ * 2 on both sectors; sector order walks 8, 4 twice, rung order once. */
+static void setup_seam(accudisc_read_req *req)
+{
+    fk.nz_lo = 10022;
+    fk.nz_hi = 10024;
+    fk.nz_chunk = 2;
+    req->lba = 10000;
+    req->count = 46;
+    req->c2 = ACCUDISC_C2_PTRS;
+    req->speed_x = 32;
+    req->overlap_sectors = 2;
+    req->speed_ladder = ladder84;
+    req->ladder_len = 2;
+}
+
+static void test_seam_by_rung(void)
+{
+    accudisc_read_stats a, b;
+
+    both_orders(setup_seam, 46, &a, &b);
+    assert(a.cmds[ACCUDISC_STAGE_CONSENSUS] == 4);
+    assert(b.speed_changes == a.speed_changes - 2);
+    assert(b.cmds[ACCUDISC_STAGE_SPEED] == a.cmds[ACCUDISC_STAGE_SPEED] - 2);
+    printf("ok - seam consensus, 2 sectors x 2 attempts: 2 fewer speed "
+           "changes, same everything else\n");
+}
+
+/* Q rescue where 10050 is mispositioned on its first TWO reads (the chunk
+ * transfer and its first re-read): the other 8 suspects resolve at rung 1,
+ * 10050 needs rung 2. Sector order: 8 for 10046-10049, 8 then 4 for 10050,
+ * 8 again for 10051 = changes 8,4,8; rung order: 8, 4. */
+static void setup_qpos2(accudisc_read_req *req)
+{
+    fk.mispos_lba = 10050;
+    fk.mispos_reads = 2;
+    req->lba = 10046;
+    req->count = 23;
+    req->c2 = ACCUDISC_C2_PTRS;
+    req->sub = ACCUDISC_SUB_RAW;
+    req->speed_x = 32;
+    req->speed_ladder = ladder84;
+    req->ladder_len = 2;
+}
+
+static void test_qpos_two_rungs(void)
+{
+    accudisc_read_stats a, b;
+
+    both_orders(setup_qpos2, 23, &a, &b);
+    assert(a.cmds[ACCUDISC_STAGE_QPOS] == 10);
+    assert(origin[4] == (ACCUDISC_ORIGIN_QPOS | 2u << 4));
+    /* head 1 + 8,4,8 + restore 1 = 5 ; head 1 + 8,4 + restore 1 = 4 */
+    assert(a.speed_changes == 5 && b.speed_changes == 4);
+    printf("ok - Q rescue needing rung 2 on one sector: changes 5 -> 4\n");
+}
+
+/* reserved3 must be zero, and rescue_by_rung is a flag. */
+static void test_reserved_must_be_zero(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_stats st = ACCUDISC_READ_STATS_INIT;
+
+    reset();
+    req.lba = 10000;
+    req.count = 24;
+    for (unsigned i = 0; i < sizeof(req.reserved3); i++) {
+        memset(req.reserved3, 0, sizeof(req.reserved3));
+        req.reserved3[i] = 1;
+        assert(accudisc_read_cdda(&dev, &req, NULL, NULL, &st) ==
+               ACCUDISC_ERR_INVAL);
+    }
+    memset(req.reserved3, 0, sizeof(req.reserved3));
+    req.rescue_by_rung = 2;
+    assert(accudisc_read_cdda(&dev, &req, NULL, NULL, &st) == ACCUDISC_ERR_INVAL);
+    printf("ok - every reserved3 byte and rescue_by_rung > 1 are refused\n");
+}
+
 /* The rung nibble: the witness transfer carries a flipped byte at 10003, the
  * consensus re-read at rung 1 (8x) matches the first copy, so 10003's bytes
  * came from CONSENSUS at rung 1. */
@@ -503,6 +752,12 @@ int main(void)
     test_qpos();
     test_fallback();
     test_ladder_rescue();
+    test_ladder_rescue_by_rung();
+    test_qpos_by_rung();
+    test_reserved_must_be_zero();
+    test_consensus_by_rung();
+    test_seam_by_rung();
+    test_qpos_two_rungs();
     test_consensus_rung();
     test_c2_rescue_wins();
     test_seam_confirms();

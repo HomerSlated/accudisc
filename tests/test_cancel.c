@@ -129,9 +129,14 @@ static void reset(void)
     delivered = 0;
 }
 
+/* 0.54.0: the read cases run twice, the second time in rung order
+ * (rescue_by_rung), whose interleaved loops must honour the same bound. */
+static uint8_t by_rung;
+
 static int run(accudisc_read_req *req, accudisc_read_stats *st)
 {
     req->buffer_bytes = ACCUDISC_BUFFER_NONE;
+    req->rescue_by_rung = by_rung;
     *st = (accudisc_read_stats)ACCUDISC_READ_STATS_INIT;
     return accudisc_read_cdda(&dev, req, sink, NULL, st);
 }
@@ -343,10 +348,14 @@ static void test_c2_lag_probe(void)
 
 int main(void)
 {
-    test_per_sector_retries();
-    test_consensus_and_ladder_restore();
-    test_c2_rescue();
-    test_handle_flag_on_a_read();
+    for (by_rung = 0; by_rung < 2; by_rung++) {
+        if (by_rung)
+            printf("-- again, in rung order (rescue_by_rung)\n");
+        test_per_sector_retries();
+        test_consensus_and_ladder_restore();
+        test_c2_rescue();
+        test_handle_flag_on_a_read();
+    }
     test_speed_ladder_probe();
     test_c2_lag_probe();
     free(dev.xfer_bounce);

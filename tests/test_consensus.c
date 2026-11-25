@@ -159,7 +159,8 @@ static int sink(void *user, const accudisc_chunk *c)
  * WHICH read's bytes went out, not only that the sector was recovered. */
 static uint8_t omap[MAXN];
 
-static accudisc_read_stats run(accudisc_read_req *req, uint8_t *map)
+static accudisc_read_stats run_once(accudisc_read_req *req, uint8_t *map,
+                                    uint8_t by_rung)
 {
     static struct accudisc_device dev;
     accudisc_read_stats st = ACCUDISC_READ_STATS_INIT;
@@ -173,10 +174,65 @@ static accudisc_read_stats run(accudisc_read_req *req, uint8_t *map)
     req->sub = ACCUDISC_SUB_NONE;
     req->status_map = map;
     req->buffer_bytes = ACCUDISC_BUFFER_NONE;
+    req->rescue_by_rung = by_rung;
     memset(omap, 0, sizeof(omap));
     req->origin_map = req->count <= MAXN ? omap : NULL;
     assert(accudisc_read_cdda(&dev, req, sink, NULL, &st) == ACCUDISC_OK);
     return st;
+}
+
+/* EVERY CASE IS ALSO AN EQUIVALENCE TEST (0.54.0). The same read runs twice
+ * from the same fake state, in sector order and then in rung order
+ * (rescue_by_rung), and everything a caller can see must match: the bytes
+ * delivered, the status map, the origin lane, the fake's own read counters
+ * (so the same reads were issued), and every stat except the ones the
+ * ordering exists to change: speed operations, speed changes and time. Then
+ * each test's own assertions run on the rung-order result. */
+static void zero_order_dependent(accudisc_read_stats *st)
+{
+    memset(st->us, 0, sizeof(st->us));
+    st->us_total = 0;
+    st->cmds[ACCUDISC_STAGE_SPEED] = 0;
+    st->cmds_failed[ACCUDISC_STAGE_SPEED] = 0;
+    st->speed_changes = 0;
+}
+
+static unsigned equivalence_runs;
+
+static accudisc_read_stats run(accudisc_read_req *req, uint8_t *map)
+{
+    __typeof__(fk) before = fk;
+    uint8_t map0[MAXN], omap0[MAXN];
+    char verdict0[MAXN];
+    uint32_t n = req->count < MAXN ? req->count : MAXN;
+
+    if (map)
+        memset(map, 0, n);
+    accudisc_read_stats a = run_once(req, map, 0);
+    __typeof__(fk) after0 = fk;
+    if (map)
+        memcpy(map0, map, n);
+    memcpy(omap0, omap, sizeof(omap0));
+    memcpy(verdict0, out.verdict, sizeof(verdict0));
+
+    fk = before;
+    if (map)
+        memset(map, 0, n);
+    accudisc_read_stats b = run_once(req, map, 1);
+
+    assert(memcmp(verdict0, out.verdict, sizeof(verdict0)) == 0);
+    if (map)
+        assert(memcmp(map0, map, n) == 0);
+    assert(memcmp(omap0, omap, sizeof(omap0)) == 0);
+    assert(after0.singles == fk.singles);
+    assert(after0.chunk_reads == fk.chunk_reads);
+    assert(after0.anchor_reads == fk.anchor_reads);
+    accudisc_read_stats za = a, zb = b;
+    zero_order_dependent(&za);
+    zero_order_dependent(&zb);
+    assert(memcmp(&za, &zb, sizeof(za)) == 0);
+    equivalence_runs++;
+    return b;
 }
 
 static void show(const char *name, const accudisc_read_stats *st,
@@ -855,5 +911,8 @@ int main(void)
     test_c2_rescue_accepts_aligned_copy();
     test_c2_rescue_silent_neighbours();
     test_c2_rescue_requires_verify();
+    printf("ok - every case above also ran in rung order: %u equivalent pairs\n",
+           equivalence_runs);
+    assert(equivalence_runs > 20);
     return 0;
 }

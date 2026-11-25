@@ -8354,6 +8354,31 @@ before `span-flagged` gets its rescue ladder.
       exact test.
     - **Acceptance test:** their table must reproduce exactly through a
       binding entry point (`shift_test`, no drive) before the build lands.
+  - **BUILT 0.54.0 (2026-11-25): the rescue ordered by rung only,**
+    `read_req.rescue_by_rung` at byte 104, with `reserved3` at 105–111 that
+    must be zero. Keith said go at 13:26; the notice is 25o. The shift test
+    moves to 0.55.0, the budget to 0.56.0, policy to 0.57.0 and compare to
+    0.58.0, and none of the published offsets move.
+    - **Shared attempt bodies.** Each stage's attempt is one function
+      (`qpos_attempt`, `c2_attempt`, `cons_attempt`, with `cons_finish` for
+      anchoring), called by both orders. So the two orders cannot disagree
+      about what an attempt is.
+    - **Equivalence.** Every `test_consensus` case now runs both ways from the
+      same fake state: 24 pairs, compared on bytes, map, lane, the fake's read
+      counters and every non-speed stat.
+    - **The flag takes effect.** In `test_effort`, the C.7 case drops from
+      SPEED 21 to 9 and from 17 changes to 5. Consensus (via verify), consensus
+      via a seam, and Q rescue each have a case needing a second attempt,
+      checked both ways.
+    - **Cancel.** `test_cancel` runs its read cases in both orders.
+    - **Mutation run.** 20 mutants in an isolated copy, 17 killed. The 3
+      survivors each drop a batch loop's early exit on cancel, and they are
+      EQUIVALENT: once stop() latches, every gated helper refuses I/O, so the
+      loop spins over attempts that read nothing, and CANCEL_POINT discards
+      the chunk. This is the same class as 0.52.0's duplicate CANCEL_POINT.
+    - **Suite.** 60/60, after updating the CLI usage golden for
+      `--rescue-by-rung`.
+    - **No read changes** unless the caller asks for the flag.
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 

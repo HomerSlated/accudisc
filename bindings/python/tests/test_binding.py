@@ -132,10 +132,13 @@ def test_struct_sizes_match_api_plan():
     table and the ABI rules were reasoned about, so a silent change should
     fail something.
     """
-    assert ffi.sizeof("accudisc_read_req") == 104  # 64 -> 72 in 0.22.0, 72 -> 80 in 0.45.0,
+    assert ffi.sizeof("accudisc_read_req") == 112  # 64 -> 72 in 0.22.0, 72 -> 80 in 0.45.0,
                                                    # 80 -> 88 in 0.49.0, 88 -> 96 in 0.51.0,
-                                                   # 96 -> 104 in 0.53.0 (origin_map)
+                                                   # 96 -> 104 in 0.53.0 (origin_map),
+                                                   # 104 -> 112 in 0.54.0 (rescue_by_rung)
     assert ffi.offsetof("accudisc_read_req", "origin_map") == 96
+    assert ffi.offsetof("accudisc_read_req", "rescue_by_rung") == 104
+    assert ffi.offsetof("accudisc_read_req", "reserved3") == 105
     assert ffi.sizeof("accudisc_read_stats") == 656  # 136 -> 144 in 0.7.0,
                                                      # 144 -> 160 in 0.22.0,
                                                      # 160 -> 656 in 0.53.0 (effort)
@@ -1317,7 +1320,7 @@ def test_origin_lane_surface():
     assert [s.name for s in ad.Stage] == [
         "STREAM", "FALLBACK", "QPOS", "C2_RESCUE", "CONSENSUS", "ANCHOR",
         "WITNESS", "FAR", "SPEED"]
-    assert {"effort_stats", "origin_map"} <= ad.features
+    assert {"effort_stats", "origin_map", "rescue_by_rung"} <= ad.features
     r = ad.ReadResult(lba=0, count=3, stats=None)
     assert r.origin_map is None and r.origin_counts() == {}
 

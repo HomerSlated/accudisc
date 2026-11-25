@@ -156,6 +156,10 @@ read options:
   --ladder LIST  speed ladder for problem-sector rereads, e.g.
                  32,16,8,4 — attempt n runs at the n-th speed;
                  pass speed is restored for streaming
+  --rescue-by-rung  walk --ladder once per chunk, re-reading every
+                 problem sector at each rung in turn, instead of
+                 once per sector: the same reads, far fewer speed
+                 changes (off by default)
   --speed X      set drive read speed to Xx first (best-effort)
   --cache-defeat before the first transfer, read one sector 5000
                  away, so a re-read straight after another read

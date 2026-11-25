@@ -175,6 +175,10 @@ static void usage(FILE *to)
         "  --ladder LIST  speed ladder for problem-sector rereads, e.g.\n"
         "                 32,16,8,4 — attempt n runs at the n-th speed;\n"
         "                 pass speed is restored for streaming\n"
+        "  --rescue-by-rung  walk --ladder once per chunk, re-reading every\n"
+        "                 problem sector at each rung in turn, instead of\n"
+        "                 once per sector: the same reads, far fewer speed\n"
+        "                 changes (off by default)\n"
         "  --speed X      set drive read speed to Xx first (best-effort)\n"
         "  --cache-defeat before the first transfer, read one sector 5000\n"
         "                 away, so a re-read straight after another read\n"
@@ -2547,6 +2551,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             req.c2_witness = 1;
         else if (!strcmp(a, "--cache-defeat"))
             req.cache_defeat = 1;
+        else if (!strcmp(a, "--rescue-by-rung"))
+            req.rescue_by_rung = 1;
         else if (opt_val(argv, argc, &i, "--verify", &optv, &optbad))
             req.verify_passes = (uint8_t)strtol(optv, NULL, 0);
         else if (opt_val(argv, argc, &i, "--overlap", &optv, &optbad))

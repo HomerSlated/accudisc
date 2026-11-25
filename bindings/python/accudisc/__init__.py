@@ -202,6 +202,10 @@ features = frozenset({
     # Device.read(origin_map=...), ReadResult.origin_map and the Origin enum
     # exist (0.53.0): per sector, whose bytes were delivered.
     "origin_map",
+    # Device.read(rescue_by_rung=True) exists (0.54.0): the Q-position rescue,
+    # the C2 rescue and consensus walk speed_ladder once per chunk instead of
+    # once per problem sector. The same reads; fewer speed changes.
+    "rescue_by_rung",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -3492,6 +3496,7 @@ class Device:
         cache_defeat: bool = False,
         readable: tuple[int, int] | None = None,
         origin_map: bool | Any = False,
+        rescue_by_rung: bool = False,
     ) -> ReadResult:
         """Stream ``count`` sectors from ``lba`` to ``sink``.
 
@@ -3520,6 +3525,14 @@ class Device:
         (``cmds``, ``us``, ``won_by``, ``speed_changes`` and the rest, indexed
         by :class:`Stage`). Detect both with ``"origin_map"`` and
         ``"effort_stats"`` in ``accudisc.features``.
+
+        ``rescue_by_rung`` (0.54.0, off by default): within each chunk, the
+        Q-position rescue, the C2 rescue and consensus re-read every problem
+        sector at ``speed_ladder``'s first rung, then the ones still
+        unresolved at the second, and so on, instead of walking the whole
+        ladder for one sector before the next. Per sector the reads are the
+        same; the speed changes drop from (sectors x rungs) to rungs per chunk.
+        Detect it with ``"rescue_by_rung" in accudisc.features``.
 
         ``c2_witness`` (0.45.0, off by default, needs ``c2`` other than
         ``C2.NONE`` or the read raises): where C2 fires, that chunk and both
@@ -3633,6 +3646,7 @@ class Device:
         req.overlap_sectors = overlap_sectors
         req.c2_witness = 1 if c2_witness else 0
         req.cache_defeat = 1 if cache_defeat else 0
+        req.rescue_by_rung = 1 if rescue_by_rung else 0
         if readable is not None:
             req.readable_lo, req.readable_hi = readable
 

@@ -27,7 +27,15 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 53 /* 0.53.0: EFFORT STATS and the ORIGIN LANE.
+#define ACCUDISC_VERSION_MINOR 54 /* 0.54.0: accudisc_read_req.rescue_by_rung
+                                  * (opt-in): the Q-position rescue, the C2
+                                  * rescue and consensus re-read a chunk's
+                                  * problem sectors rung by rung, not sector by
+                                  * sector, so the speed changes per chunk drop
+                                  * from k x L to L. read_req 104 -> 112, with
+                                  * reserved3 MUST-BE-ZERO for the shift test
+                                  * and the budget to come.
+                                  * Previously 0.53.0: EFFORT STATS and the ORIGIN LANE.
                                   * accudisc_read_stats grows 160 -> 656 with
                                   * per-stage operations issued/failed and
                                   * µs, wins per origin class and per rung,
@@ -3920,6 +3928,34 @@ typedef struct accudisc_read_req {
      * rule). A caller that sets it against a library older than 0.53.0 gets
      * ACCUDISC_ERR_ABI, never a silently empty lane. */
     uint8_t *origin_map;
+    /* 0.54.0, OPT-IN: ORDER THE RESCUE BY RUNG. 0 = the order of 0.53 and
+     * earlier, where each problem sector of a chunk walks speed_ladder from
+     * attempt 1 before the next sector starts. So k sectors that each need
+     * every attempt on an L-rung ladder cost k x L speed changes per chunk:
+     * 17 for five sectors on {24,8,4} (tests/test_effort.c).
+     *
+     * 1 = the same reads in another order. Within each chunk, the Q-position
+     * rescue, the C2 rescue and consensus each re-read every unresolved
+     * sector at rung 1, then the ones still unresolved at rung 2, and so on.
+     * Per sector this changes nothing: the same reads at the same rungs, a
+     * far read before each, and the same stopping rule. Shifted sectors are
+     * anchored after the rounds, at the pass speed, after one restore. The
+     * speed changes become at most L per stage per chunk, plus the restore.
+     *
+     * Every READ CD is still preceded by its own far read, so no read is
+     * meant to depend on the one before it. On a real drive the order is not
+     * proven irrelevant (the cache model is two drives, one disc each), which
+     * is why this is a request field rather than the new default. Costs up to
+     * six sector copies per disagreeing sector of a chunk in memory, allocated
+     * only when set. */
+    uint8_t rescue_by_rung;
+    uint8_t reserved3[7]; /* MUST BE ZERO, unlike reserved0-2: anything else is
+                           * ACCUDISC_ERR_INVAL. Byte 105 is to carry the shift
+                           * test (0.55.0) and 106-111 a per-read budget
+                           * (0.56.0), so a caller asking an older library for
+                           * either is refused rather than silently given a
+                           * read without it (cdda2img correspondence,
+                           * AccuDisc 2026-11-25j/o). */
 } accudisc_read_req;
 
 /* accudisc_read_req.origin_map, one byte per sector. LOW NIBBLE: the class of
