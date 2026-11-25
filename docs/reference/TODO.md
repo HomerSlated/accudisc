@@ -8414,8 +8414,11 @@ before `span-flagged` gets its rescue ladder.
       - the seam `(chunk, previous extension)`
     - **`slips_off_frame`** counts slips whose shift is not a multiple of 6
       samples. It is counted whether or not the flag is set.
-    - **Equivalence.** Every `test_consensus` case runs with the flag off and
-      on (30 pairs, each in both orders), and the two must be identical.
+    - **Equivalence.** Every `test_consensus` case built on `run()` runs with
+      the flag off and on, each in both orders, and the two must be
+      identical. After the 277 follow-up that is 31 pairs: 23 cases from
+      before 0.56 and 8 new ones. 25t's "31 existing cases" overstated it;
+      the correction goes in the 0.57 notice.
       - **The one exception, pinned by its own test:**
         `test_seam_widens_on_damaged_evidence`.
       - Its seam pair is late AND damaged. With the flag off, two true
