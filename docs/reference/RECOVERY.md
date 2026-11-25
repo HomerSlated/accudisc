@@ -412,14 +412,22 @@ read-engine side; "caller" means cdda2img (or any application driving AccuDisc).
 - **Bench evidence** (July 2026, original PX-716A, 4 discs, n=3/cell):
   `max-variation` 13/20 (fastest at low n, 0/9 at high n), `whole-disc` 11/20,
   `sector-runup` 2/20, `sector-hammer` 2/20, `span-fixed` 1/16; against
-  `track-ladder` 19/20. All five profiles are `experimental`: the plans were
-  scored on a drive, and this implementation first ran on one on 2026-11-22,
+  `track-ladder` 19/20. All five profiles were `experimental` until 2026-11-25:
+  the plans were scored on a drive, and this implementation first ran on one on 2026-11-22,
   when kgr began testing each profile alone on Tracy (PX-716A, `-x20` copies,
   `--profile-only`). To 2026-11-24: `sector-hammer` 0 matches in 320 reads on the
   track 8/9 damage (one or two flagged sectors per track, every read honoured,
   no time limit hit); `sector-runup` matched on read 1, on track 2's sector
   15268, the bench's easy target, so the two are not yet compared on the same
-  damage.
+  damage. **On AccuDisc 0.59 (2026-11-25, every read-policy feature on)** each
+  strategy recovered track 8 damage at least once except `sector-hammer`, which
+  stayed at zero (2.5d); the four others lost the `experimental` mark, and
+  `sector-hammer` kept it, which now disables it. Same-damage comparisons became
+  possible once `recovery_damage_lbas_track_<n>` recorded what each run was
+  handed. `span-fixed` recovered track 8 at a fixed 32X with no variation, which
+  contradicts the bench's reading of its 1/16 ("span size is not the story");
+  every rip read asks for a cache defeat and no bench read did, and which of the
+  two results describes it is open.
 - **Not comparable to the bench without care**: the cache defeat; the speed
   stepping (the bench held one speed, `base_speed = 32`, for every arm but
   `track-ladder` and `max-variation`); the bench's fixed ladder
@@ -463,18 +471,26 @@ read-engine side; "caller" means cdda2img (or any application driving AccuDisc).
   `--ad-*` flags, which no read ever received, were deleted on 2026-11-25.)
 - **Order**: per failed track, by `n`, the sectors the capture pass flagged in
   it (the bench found `n`, not radius, decides which strategy wins):
-  - **none flagged**: `track-ladder`, `track-constant` (the sector shapes would aim
-    at the track's first sector; the span rung has nothing to read);
-  - **1 to 5** (the bench's threshold): `span-flagged`, `max-variation`,
+  - **none flagged**: `track-constant`, `track-ladder` (swapped 2026-11-25 by Keith,
+    the light-damage rule; the sector shapes would aim at the track's first sector
+    and the span rung has nothing to read);
+  - **1 to 5** (the bench's threshold): `span-flagged`, `span-fixed`,
+    `sector-runup`, `max-variation`, `track-constant`, `track-ladder`
+    (reordered 2026-11-25 by Keith after the AccuDisc 0.59 profile series, by
+    success per unit of drive work; until then `span-flagged`, `max-variation`,
     `track-ladder`, `track-constant`, `sector-runup`, `span-fixed`,
-    `sector-hammer`;
-  - **more than 5**: `track-ladder`, `track-constant`, `span-flagged`,
-    `max-variation`, `sector-runup`, `span-fixed`, `sector-hammer`;
+    `sector-hammer`);
+  - **more than 5**: `track-ladder`, `track-constant`, `span-flagged` (the four
+    per-target strategies left heavy damage on 2026-11-25 to protect the drive:
+    their reads scale as flagged sectors x rungs x passes);
   - then one `whole-disc` stage shared by every track still failing, since one
     read serves them all.
 
-  The order is the July bench's evidence turned into a rule, and is meant to be
-  revised from real rips: PROV records every stage and every read.
+  The order was the July bench's evidence turned into a rule, revised from real
+  rips as planned: PROV records every stage and every read. A profile marked
+  `experimental = true` is **disabled** (Keith, 2026-11-25): the chain skips it
+  and records `<stage>:disabled`, and `--profile`/`default_profile` refuse it.
+  Only `sector-hammer` is marked (2.5d).
 - **Speed**: a profile's `ladder` field is its whole speed policy. `full` reads
   each read at the next admitted rung (each round of targets, for the plans that
   take them in turn: 2.5b); `single` holds `recovery_speed`
@@ -494,7 +510,11 @@ read-engine side; "caller" means cdda2img (or any application driving AccuDisc).
   the flagged sectors vary, so every shipped profile has `passes = 1`.
   `recovery_passes` (config, or `--recovery-passes`; default 1, 0 = no recovery)
   repeats each stage's sweeps inside one call, so a strategy's working copy keeps
-  every read. It was `recovery_attempts` from 2026-11-24 until Keith merged it into
+  every read. **Every chain stage gets at least 3 sweeps** (Keith, 2026-11-25;
+  `_CHAIN_MIN_SWEEPS`, PROV `recovery_sweeps__<stage>`): on Tracy track 8 span-fixed
+  and max-variation each matched only on the last read of three sweeps, and one
+  sweep would have missed both. The first match still ends a stage, so the floor
+  costs reads only where a stage is failing anyway. It was `recovery_attempts` from 2026-11-24 until Keith merged it into
   `recovery_passes` on 2026-11-25 ("keep the name as recovery_passes"); the kept
   name changed meaning, having counted only the `--ad-*` path's ladder sweeps.
   `budget_s` is seconds per read: a track may take `budget_s` x its planned
@@ -513,6 +533,158 @@ read-engine side; "caller" means cdda2img (or any application driving AccuDisc).
   carry a `__<stage>` suffix so that no two stages overwrite each other's read
   records. A rip whose chain fails writes no container; the same record goes to
   the failure report.
+
+### 2.5d sector-hammer: why it never works
+
+Written 2026-11-25 at Keith's request ("write up the details of the mechanism, how it
+compares with the rest, and why it can never work, at least not with this type of damage"),
+when `sector-hammer` became the only disabled profile (`experimental = true`, 2.5c).
+
+**What it does.** Each read is the flagged sector and nothing else:
+`strategy_reads` yields `ReadReq(lba, 1, speed)`, one sector, no run-up before it and no
+tail after it. In the rip every such read is preceded by AccuDisc's cache defeat (one far
+read 5000 sectors away, 2.5), so every read is the same sequence: seek from about 5000
+sectors away, land on the target, transfer one sector. With `ladder = "full"` the speed
+steps once per round of targets (2.5b). The one sector is spliced into the working copy of
+the track and the track is checked against AccurateRip; only a match is written.
+
+**How it differs from the others.** Every profile re-reads the damage; they differ in how
+the read arrives at it:
+
+| profile | read, around a flagged sector | speed | variation |
+|---|---|---|---|
+| `sector-hammer` | the sector alone (1) | each rung, per round | none |
+| `sector-runup` | 32 before, the sector, 2 after (35) | each rung, per round | none |
+| `span-fixed` | 512 before, the sector, 2 after (515) | `recovery_speed` | none |
+| `max-variation` | 0/8/32/128/512 before, 2/16/64 after, at random | random rung | all three |
+| `span-flagged` | clustered flagged spans padded by 4, engine verify and rescue | each rung | engine's |
+| `track-constant`, `track-ladder` | the whole track | held / each rung | none |
+| `whole-disc` | the whole audio session, no cache defeat | each rung | none |
+
+`sector-hammer` is the only one that reads and writes nothing but the flagged sector: the
+drive starts reading AT the sector it is asked to fix, and no sector around it is ever
+replaced.
+
+**Evidence** (PX-716A, Tracy Chapman, tracks 8 and 9; `--profile-only`; every read `done`,
+every speed honoured, no time limit ever hit):
+
+| when | targets | hammer | the same sectors, another profile |
+|---|---|---|---|
+| 2026-11-22 to 11-24 | 113044, 114437, 129409, 112766, 113058 | 0 / 520 | |
+| 11-25, AccuDisc 0.59 | 112502 + 113058 | 0 / 30 (both at each of 5 rungs, 3 passes) | `sector-runup`: hit at read 8 |
+| 11-25, 0.59 | 113058 (with 112766) | (above) | `span-fixed`: hit at read 6, all 32X |
+| 11-25, 0.59, a clone at `passes = 10` | 113044 alone | **0 / 150, 30 at each of 40, 32, 24, 8, 4X** | `whole-disc`: hit at 8X; `max-variation`: hit within 15 reads |
+
+700 reads, 0 matches, on six distinct sectors. Five of them (113044, 114437, 112502,
+112766, 113058) another profile recovered in a run whose capture flagged them; the sixth
+(129409) has no such run. Bench (July, four discs, one speed, no
+cache defeat): 2/20.
+
+**What the contrasts isolate.** Measured, not inferred:
+
+- **Not speed.** It read 113044 thirty times at each admitted rung, including 8X, where a
+  whole-disc read recovered the same sector.
+- **Not repetition.** 150 reads of one sector; `max-variation` needed at most 15 and
+  `whole-disc` 4.
+- **Not a fault in the path.** `tools/strategy_replay.py` drove `_recover_by_strategy`
+  against a simulated drive at the real read offset and the live dBAR and recovered every
+  case it was given (2026-11-24, 8/8 hammer cases as predicted), so a correct sector would
+  have been written.
+- **The same targets, a different read.** `sector-runup` read the same two sectors with the
+  same ladder policy, the same per-round stepping and the same cache defeat, and matched at
+  read 8. The two plans differ only in the 32 sectors before the target and the 2 after it,
+  and those sectors are both **read** (the drive streams into the target) and **spliced**
+  (they replace the capture's copies in the working track).
+
+So what is measured is: **a plan that re-reads and writes only the flagged sector fails on
+this damage; plans that also read and write the sectors around it succeed.** Two
+explanations fit that, and no run has separated them:
+
+1. **Reach.** The capture's damage may not be confined to the sectors it flagged. If an
+   unflagged sector near a target is also wrong, no hammer read can produce an AccurateRip
+   match however well it reads the target, because hammer never writes that sector; every
+   other profile does. C2 is precise but blind to some errors (positioning and jitter
+   slips raise no flag), so unflagged damage is plausible.
+2. **Approach.** A read that starts AT the sector may read it worse than one that streams
+   into it. The bench measured this directly: at 114436@40x a bare single-sector read was
+   byte-exact 0.20 of the time, against 0.60 with a 16-64 sector run-up.
+
+The arithmetic narrows approach. As a settling penalty it predicts a low success rate, not
+zero: at the bench's 0.20 (measured at 114436@40x, so applying it to the other sectors is
+an extrapolation), 700 reads would be expected to give on the order of a hundred hits, and
+they gave none. What fits 0/700 is a SYSTEMATIC cause: reach, the long seek the
+cache defeat imposes (below), or approach as mispositioning (hypothesis 4), which delivers
+the same wrong sector the same way every time.
+
+**Why it cannot work on this damage, and the condition.** If reach is the explanation, the
+"never" is structural: a plan that cannot write the sector that is actually wrong can never
+match, at any read count, speed or approach. That is the strong claim, and it holds **only
+where the capture left unflagged damage within the track**. If approach is the explanation,
+the "never" holds only for as long as hammer keeps the approach that fails: as a settling
+penalty it would merely be bad (0.20 or less per read, so the 0/700 needs another factor);
+as mispositioning after a long seek it would also be structural. Either
+way it has never recovered a sector that another profile could not.
+
+**The experiment that decides it.** Keep a failing capture's PCM (the rip deletes its
+scratch; this needs an option to retain it, not yet built), diff each failing track against
+a verified rip of the same disc (Tracy has several), and count the sectors that differ and
+how many of them the capture flagged. Unflagged differing sectors near the targets confirm
+reach; none confirms approach (or the cache defeat). To tell mispositioning (4) from settling
+(1), look for each hammer read's 588 stereo samples **at any sample offset** near the target
+in the verified rip, not only at whole-sector offsets: this drive's shifts come in samples
+(12 on 2026-10-10), and a sub-sector shift matches no neighbouring sector. The window must be
+wider than the engine's own shift test, which covers only about ±290 stereo samples
+(AccuDisc 2026-11-25ah/ai).
+
+**Hypotheses for approach, not measured.** Why the approach would matter is a cause, and the
+bench's rule is to rank strategies, not causes. Recorded so they can be tested:
+
+1. *Settling.* A read that begins at the target transfers it straight after a seek, while
+   tracking, focus and the data clock may still be settling.
+2. *De-interleaving.* CIRC spreads each sector's bytes over about 108 frames (a little over
+   one sector), so correcting a sector uses frames before and after it. AccuDisc (2026-11-25ag)
+   points out that a drive cannot "begin decoding at the address": CD-DA sectors carry no
+   header, so the drive finds the address by decoding Q, and must already be decoding
+   when the target passes. This therefore folds mostly into 1: what matters is how far
+   before the target the drive lands after the seek, and its state by then. Neither is
+   measured (the PX-716A's read-AHEAD past a span's end is, 0.7-0.9 ms per buffered
+   sector; read-behind is not).
+3. *The tail.* `sector-runup` also reads 2 sectors past the target and hammer reads none;
+   no run has separated the run-up from the tail.
+4. *Position* (AccuDisc, 2026-11-25ag). After a long seek the drive locates the target by
+   searching Q, and Tracy's Q is badly damaged in exactly these regions. Landing on the
+   wrong sector delivers a whole, error-free but wrong or shifted sector, which
+   AccurateRip rejects every time and the same way on every read that approaches the
+   same way; a streaming read reaches the target by continuity instead. The engine's
+   records cannot exclude it: its misposition flag fires only on a Q frame whose CRC
+   passes and whose address disagrees, so `subq_misposition = 0` on this damage means
+   "nothing contradicted the position", not "the position was confirmed".
+
+**Open: the cache defeat.** Every rip hammer read follows a far read; no bench read did. The
+bench's 2/20 and its 0.20 single-sector rate were measured without it (and without it a
+back-to-back re-read of the PX-716A may be answered from its cache, measured 2026-11-21, so
+the bench's reads may not all have been reads of the disc). Whether the defeat is what took
+a single-sector read from 0.20 to 0 is not measured. **For hammer the defeat is a seek-length
+variable** (AccuDisc, 2026-11-25ag): in the rip every hammer read is a seek of about 5000
+sectors (67 s of audio) onto the target, where a bench re-read was a jump back of about one
+revolution, or a cache answer with no disc access. So for hammer this confound and
+hypothesis 1 may be one variable; `sector-runup` makes the same 5000-sector seek and
+succeeds, so a 32-sector run-up would be enough to absorb whatever the seek leaves
+unsettled. For `span-fixed` (2.5b) the defeat may act the other way: it makes each re-read
+an independent disc access, where some bench re-reads may have been cache echoes, which
+would make the bench's 1/16 an undercount. One confound, possibly two mechanisms.
+
+**What damage it could work on.** A transient error: a sector that reads correctly when
+simply asked again, from any approach (a one-off transport error, for example, which the
+intermittently faulty USB bridge this drive is attached through has produced). On that class every other profile
+works too, since each re-reads the sector, at the cost of a few more sectors per read. No
+measured damage class exists where it beats another profile, which is why it is disabled
+rather than demoted.
+
+**Scope.** One drive (the PX-716A, through the Innostor bridge), one disc for the rip
+results, four for the bench. On another drive the approach may matter less or more. It is
+kept, disabled, as the control that would falsify this section: copy it to a user profile
+with `experimental = false` (`cdda2img setup` does that) and run it with `--profile`.
 
 ### 2.6 Intra-read verification
 
@@ -2331,4 +2503,4 @@ That set lets a future reader distinguish "we never checked" from "we checked
 thoroughly and this disc cannot be verified" — which is the only useful thing
 left to say about it.
 
-Blake3 cefb596fe8d00cd67386a92e2fa927bd35e27a349850e2025ff0ea12d18380fb
+Blake3 c7b7cdc9091935830fd13cc347ca3cfc17be3999e58b8608798bca0db90eafc2
