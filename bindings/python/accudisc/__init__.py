@@ -804,6 +804,11 @@ class ReadPolicy:
     ``origin_map``, ``cancel``, ``buffer_bytes``) and change nothing else, or
     the read is no longer the one ``revision`` describes. Record ``revision``
     and ``reasons`` with the result.
+
+    Every field is a plain COPY: ``speed_ladder`` is a tuple, and nothing here
+    borrows from the C ``accudisc_read_policy_info`` (whose ladder the C
+    request points into). :meth:`Device.read` marshals the tuple itself, so a
+    ``ReadPolicy`` may be dropped, kept or reused freely (cdda2img 281).
     """
 
     revision: int

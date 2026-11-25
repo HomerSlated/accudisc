@@ -1678,6 +1678,12 @@ def test_read_policy_surface():
         "budget_cmds": 5000, "budget_speed_changes": 7,
     }
     assert type(kw["c2"]) is ad.C2 and type(kw["sub"]) is ad.Sub
+    # nothing borrows from C memory (cdda2img 281): every field is a plain value
+    import dataclasses as _dc
+    for f in _dc.fields(p):
+        v = getattr(p, f.name)
+        assert not isinstance(v, ffi.CData), f.name
+    assert type(p.speed_ladder) is tuple
     # every key is a Device.read keyword, and none is a caller-owned one
     params = inspect.signature(ad.Device.read).parameters
     assert set(kw) <= set(params)
