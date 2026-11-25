@@ -8399,6 +8399,54 @@ before `span-flagged` gets its rescue ladder.
         `s_k = 0`, so it was not transcribed.
       - `r ≤ 1/2` is implied by `r ≤ s_k/2`, so it was kept and documented.
       Both are recorded as equivalent.
+  - **BUILT 0.56.0 (2026-11-25): `read_req.shift_search`** (byte 105,
+    opt-in; `reserved3` is now 106–111) and **`read_stats.slips_off_frame`**
+    (at 656, so the struct is 664 bytes). Notice 25s.
+    - **The rule is a UNION.** A pair is a slip when the exact test of 0.41
+      finds one, **or**, when it does not, `accudisc_shift_test` does.
+      - The tests are not nested. The exact test can fire where the tolerant
+        one sees no signal.
+      - So the flag only ever adds detections.
+    - **Where it is used:** in the three places that call a pair a slip,
+      always over the 2352 audio bytes, with the copy already held as x:
+      - consensus `(scratch, sample)`
+      - the witness pass `(first, second)`
+      - the seam `(chunk, previous extension)`
+    - **`slips_off_frame`** counts slips whose shift is not a multiple of 6
+      samples. It is counted whether or not the flag is set.
+    - **Equivalence.** Every `test_consensus` case runs with the flag off and
+      on (30 pairs, each in both orders), and the two must be identical.
+      - **The one exception, pinned by its own test:**
+        `test_seam_widens_on_damaged_evidence`.
+      - Its seam pair is late AND damaged. With the flag off, two true
+        re-reads settle it by agreement (E, RECOVERED). With the flag on, the
+        slip is seen, agreement stops counting, and anchoring has no
+        neighbour, so the sector is SUSPECT.
+      - That is exactly what the same transfer gets without the damage, flag
+        off: the map, the origin lane and the counts match. The flag makes a
+        damaged slip count as a slip, and nothing more.
+    - **25d's S1 regression, both ways:**
+      - the setup: both chunk transfers damage one sector differently, single
+        re-reads land late, anchoring reads land true
+      - flag off: delivered LATE, RECOVERED by consensus
+      - flag on: EXACT, from ANCHOR
+    - **Negative case:** damage in place with no shift finds no slip either
+      way.
+    - **The witness pass's own comparison:** a late, damaged witness pair
+      counts 5 slips with the flag off and 6 with it on.
+    - **Off-frame counting:** shifts of 8 and 9 samples (off-frame) and 6 and
+      24 (on-frame), at both the witness pass and the seam.
+    - **Mutation run.** 25 mutants in an isolated copy; 21 killed. The 4
+      survivors are equivalent:
+      - `== 1` changed to `!= 0`. `ERR_INVAL` is unreachable, because the
+        engine always passes valid buffers.
+      - x and y swapped at each of the three callers. Every sector in the
+        fake has signal, and a displaced copy's self-difference differs from
+        the original's only at the edges.
+    - **Suite 60/60.** The CLI gets `--shift-search`, with the usage golden
+      updated. Python gets `read(shift_search=)`, the token `shift_search`
+      and `ReadStats.slips_off_frame`.
+    - **No read changes** unless the caller asks for the flag.
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 

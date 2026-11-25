@@ -27,7 +27,9 @@
 #include "mmc/mmc.h"
 
 #define S 2352u
-#define LATE 96
+/* 96 bytes = 24 samples = 4 CIRC frames, as measured (2026-09-16). fk.late
+ * overrides it, for an off-frame slip (0.56.0's slips_off_frame). */
+#define LATE (fk.late ? fk.late : 96)
 
 static struct {
     int chunk_late_on;       /* 1-based chunk-transfer index read LATE; 0 none */
@@ -49,6 +51,11 @@ static struct {
                               * every reread of it decodes clean */
     uint32_t single_fail_lo; /* single-sector reads of [lo, hi) fail */
     uint32_t single_fail_hi;
+    uint32_t late;           /* bytes; 0 = 96 */
+    uint32_t damage_lba;     /* EVERY chunk transfer damages this sector in
+                              * place, DIFFERENTLY each time (0.56.0): a copy
+                              * displaced and damaged, which the exact slip test
+                              * cannot see (AccuDisc 2026-11-25d) */
     unsigned singles;
     unsigned chunk_reads, anchor_reads;
 } fk;
@@ -122,6 +129,10 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
             o[1000] ^= 0x5A;
         if (noise >= 2)
             o[100 + 13 * noise] ^= 0xA5;
+        if (fk.damage_lba && nsec != 1 && nsec != 3 && lba + s == fk.damage_lba)
+            for (uint32_t j = 0; j < 40; j++) /* no two transfers share a byte */
+                o[(j * 37 + fk.chunk_reads * 211) % S] ^=
+                    (uint8_t)(0x11 * fk.chunk_reads | 1);
         if (c2 == 1 && nsec != 1 && nsec != 3 && lba + s == fk.c2_hot_lba)
             memset(o + S, 0xFF, 4); /* 32 fired bits */
     }
@@ -199,7 +210,7 @@ static void zero_order_dependent(accudisc_read_stats *st)
 
 static unsigned equivalence_runs;
 
-static accudisc_read_stats run(accudisc_read_req *req, uint8_t *map)
+static accudisc_read_stats run_orders(accudisc_read_req *req, uint8_t *map)
 {
     __typeof__(fk) before = fk;
     uint8_t map0[MAXN], omap0[MAXN];
@@ -232,6 +243,50 @@ static accudisc_read_stats run(accudisc_read_req *req, uint8_t *map)
     zero_order_dependent(&zb);
     assert(memcmp(&za, &zb, sizeof(za)) == 0);
     equivalence_runs++;
+    return b;
+}
+
+/* AND EVERY CASE IS RUN WITH shift_search OFF AND ON (0.56.0), and must come
+ * out the same: these cases' slips are exact or absent, and the flag may only
+ * ADD detections of damaged ones. The cases built to differ call run_orders()
+ * with the flag set themselves. Returns the flag-on result. */
+static unsigned shift_runs;
+
+static accudisc_read_stats run(accudisc_read_req *req, uint8_t *map)
+{
+    __typeof__(fk) before = fk;
+    uint8_t map0[MAXN], omap0[MAXN];
+    char verdict0[MAXN];
+    uint32_t n = req->count < MAXN ? req->count : MAXN;
+
+    req->shift_search = 0;
+    accudisc_read_stats a = run_orders(req, map);
+    __typeof__(fk) after0 = fk;
+    if (map)
+        memcpy(map0, map, n);
+    memcpy(omap0, omap, sizeof(omap0));
+    memcpy(verdict0, out.verdict, sizeof(verdict0));
+
+    fk = before;
+    req->shift_search = 1;
+    accudisc_read_stats b = run_orders(req, map);
+    req->shift_search = 0;
+
+    if (memcmp(verdict0, out.verdict, sizeof(verdict0)) != 0)
+        fprintf(stderr, "shift_search off %.*s, on %.*s (lba %u)\n", (int)n,
+                verdict0, (int)n, out.verdict, req->lba);
+    assert(memcmp(verdict0, out.verdict, sizeof(verdict0)) == 0);
+    if (map)
+        assert(memcmp(map0, map, n) == 0);
+    assert(memcmp(omap0, omap, sizeof(omap0)) == 0);
+    assert(after0.singles == fk.singles);
+    assert(after0.chunk_reads == fk.chunk_reads);
+    assert(after0.anchor_reads == fk.anchor_reads);
+    zero_order_dependent(&a);
+    accudisc_read_stats zb = b;
+    zero_order_dependent(&zb);
+    assert(memcmp(&a, &zb, sizeof(a)) == 0);
+    shift_runs++;
     return b;
 }
 
@@ -277,6 +332,7 @@ static void test_reproducing_slip_is_anchored(void)
     for (unsigned i = 0; i < 8; i++)
         assert((map[i] & 15) == ACCUDISC_MAP_RECOVERED);
     assert(st.slips >= 8 && fk.anchor_reads > 0);
+    assert(st.slips_off_frame == 0); /* 24 samples: 4 whole frames */
     /* 0.53.0: the slipped sectors' bytes came from anchoring, at the pass
      * speed: the reread that reproduced the slip is never the winner. */
     for (unsigned i = 1; i < 4; i++)
@@ -482,6 +538,7 @@ static void test_seam_slip_is_anchored(void)
     accudisc_read_stats st = run(&req, map);
 
     show("seam slip", &st, map, 12);
+    assert(st.slips > 0 && st.slips_off_frame == 0);
     assert(out.verdict[4] == 'E' && out.verdict[5] == 'E');
     assert((map[4] & 15) == ACCUDISC_MAP_RECOVERED);
     assert((map[5] & 15) == ACCUDISC_MAP_RECOVERED);
@@ -571,7 +628,7 @@ static void test_seam_widens_on_damaged_evidence(void)
     req.count = 8; /* the late transfer is LAST: no later seam to rescue it */
     req.chunk_sectors = 4;
     req.overlap_sectors = 1;
-    accudisc_read_stats st = run(&req, map);
+    accudisc_read_stats st = run_orders(&req, map);
 
     show("seam, damaged evidence", &st, map, 8);
     for (uint32_t i = 0; i < 8; i++)
@@ -579,6 +636,37 @@ static void test_seam_widens_on_damaged_evidence(void)
     for (uint32_t i = 5; i < 8; i++)
         assert((map[i] & 15) == ACCUDISC_MAP_RECOVERED);
     assert_no_false_ok(map, 8);
+    assert(st.slips == 3 && omap[4] == ACCUDISC_ORIGIN_CONSENSUS);
+
+    /* THE ONE CASE HERE THAT shift_search CHANGES, and why it should (0.56.0).
+     * 20004's seam pair is late AND damaged, so the exact test missed the slip
+     * and single re-reads, landing true, settled it by agreement. With the
+     * flag the slip is seen, so agreement is no longer evidence: anchoring
+     * decides, and it cannot, since the true extension has no neighbour to
+     * corroborate. SUSPECT, and the copy held goes out. That is exactly what
+     * the same transfer WITHOUT the damage gets with the flag off: the flag
+     * makes a damaged slip count as a slip, no more. */
+    uint8_t map_on[MAXN] = {0}, omap_on[MAXN];
+    memset(&fk, 0, sizeof(fk));
+    fk.chunk_late_on = 2;
+    fk.noise_lba = 20004;
+    req.shift_search = 1;
+    accudisc_read_stats on = run_orders(&req, map_on);
+    memcpy(omap_on, omap, sizeof(omap_on));
+    show("  ...shift_search on", &on, map_on, 8);
+    assert(out.verdict[4] == '?' && (map_on[4] & 15) == ACCUDISC_MAP_SUSPECT);
+    assert(on.slips == st.slips + 1);
+    assert_no_false_ok(map_on, 8);
+
+    memset(&fk, 0, sizeof(fk));
+    fk.chunk_late_on = 2; /* the same slip, undamaged, flag off */
+    req.shift_search = 0;
+    accudisc_read_stats exact = run_orders(&req, map);
+    assert(out.verdict[4] == 'L');
+    assert(memcmp(map, map_on, 8) == 0 && memcmp(omap, omap_on, 8) == 0);
+    assert(exact.slips == on.slips &&
+           exact.sectors_suspect == on.sectors_suspect &&
+           exact.sectors_recovered == on.sectors_recovered);
 }
 
 /* The step inside a transfer, which is the shape of the fault actually
@@ -887,6 +975,156 @@ static void test_c2_rescue_requires_verify(void)
     free(dev.xfer_bounce);
 }
 
+/* ---- shift_search (0.56.0) ---------------------------------------------- */
+
+/* 25d's S1, THE CASE IT EXISTS FOR. Both chunk transfers damage 20002 in
+ * place, differently, so they disagree; single re-reads of 20002 land late and
+ * clean; anchoring reads land true. A late re-read against a damaged true copy
+ * fails the exact test, so with the flag off two late re-reads agree and go
+ * out LATE, RECOVERED: today's weakness, pinned. With it on, the first late
+ * re-read is seen as displaced, agreement stops counting, and anchoring
+ * delivers the true copy. */
+static void test_damaged_slip_is_anchored_with_shift_search(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    for (int flag = 0; flag <= 1; flag++) {
+        memset(&fk, 0, sizeof(fk));
+        memset(map, 0, sizeof(map));
+        fk.damage_lba = 20002;
+        fk.single_late_lo = 20002;
+        fk.single_late_hi = 20003;
+        req.lba = 20000;
+        req.count = 5;
+        req.verify_passes = 2;
+        req.shift_search = (uint8_t)flag;
+        accudisc_read_stats st = run_orders(&req, map);
+
+        show(flag ? "damaged slip, on" : "damaged slip, off", &st, map, 5);
+        assert(memcmp(out.verdict, flag ? "EEEEE" : "EELEE", 5) == 0);
+        assert((map[2] & 15) == ACCUDISC_MAP_RECOVERED);
+        assert(st.sectors_recovered == 1 && st.sectors_suspect == 0);
+        assert(st.slips == 0); /* the transfers' pair is damage, not a slip */
+        if (flag) {
+            assert(omap[2] == ACCUDISC_ORIGIN_ANCHOR && fk.anchor_reads > 0);
+        } else {
+            assert(ACCUDISC_ORIGIN_CLASS(omap[2]) == ACCUDISC_ORIGIN_CONSENSUS);
+            assert(fk.anchor_reads == 0);
+        }
+    }
+}
+
+/* Damage in place and NO shift anywhere: the flag must find nothing. The two
+ * transfers' copies differ, true re-reads agree, consensus settles it, and not
+ * one anchoring read is spent, with the flag off and on alike (run()). */
+static void test_damage_in_place_is_not_a_slip(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.damage_lba = 20002;
+    req.lba = 20000;
+    req.count = 5;
+    req.verify_passes = 2;
+    accudisc_read_stats st = run(&req, map);
+
+    show("damage in place", &st, map, 5);
+    assert(memcmp(out.verdict, "EEEEE", 5) == 0);
+    assert((map[2] & 15) == ACCUDISC_MAP_RECOVERED);
+    assert(st.slips == 0 && fk.anchor_reads == 0);
+    assert(ACCUDISC_ORIGIN_CLASS(omap[2]) == ACCUDISC_ORIGIN_CONSENSUS);
+}
+
+/* The WITNESS pass's own comparison. The witness transfer lands late and
+ * damages 20003, so that pair is displaced AND damaged: the exact test counts
+ * the other five slips, the flag counts all six. Every sector comes out true
+ * and RECOVERED either way (true re-reads agree on 20003 with the flag off;
+ * anchoring settles it with the flag on). Six sectors, not five: a last
+ * sector whose only neighbour in the read is the damaged one has nothing to
+ * corroborate it, and would be SUSPECT both ways. */
+static void test_witness_sees_damaged_slip(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+    uint64_t slips[2];
+
+    for (int flag = 0; flag <= 1; flag++) {
+        memset(&fk, 0, sizeof(fk));
+        memset(map, 0, sizeof(map));
+        fk.chunk_late_on = 2;
+        fk.damage_lba = 20003;
+        req.lba = 20000;
+        req.count = 6;
+        req.verify_passes = 2;
+        req.shift_search = (uint8_t)flag;
+        accudisc_read_stats st = run_orders(&req, map);
+
+        show(flag ? "witness damaged, on" : "witness damaged, off", &st, map, 6);
+        assert(memcmp(out.verdict, "EEEEEE", 6) == 0);
+        assert(st.sectors_recovered == 6 && st.sectors_suspect == 0);
+        slips[flag] = st.slips;
+        assert(omap[3] == (flag ? ACCUDISC_ORIGIN_ANCHOR
+                                : ACCUDISC_ORIGIN_CONSENSUS)); /* rung 0 */
+    }
+    assert(slips[0] == 5 && slips[1] == 6);
+}
+
+/* slips_off_frame, at the witness pass and at the seam. Counted with the flag
+ * off: it is about the slip, not about which test found it. The shifts are
+ * chosen so that only "a multiple of 6" fits them all: 8 and 9 samples are
+ * off-frame (8 is even, 9 a multiple of 3), and 6 is on-frame (not a
+ * multiple of 4, 12 or 24); the measured 24 is asserted above. */
+static void off_frame_witness(uint32_t late_bytes, uint64_t want_off)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.late = late_bytes;
+    fk.chunk_late_on = 2;
+    fk.single_late_lo = 20001;
+    fk.single_late_hi = 20004;
+    req.lba = 20000;
+    req.count = 8;
+    req.verify_passes = 2;
+    accudisc_read_stats st = run(&req, map);
+    show("slip at the witness", &st, map, 8);
+    assert(memcmp(out.verdict, "EEEEEEEE", 8) == 0);
+    assert(st.slips == 8 && st.slips_off_frame == want_off);
+}
+
+static void off_frame_seam(uint32_t late_bytes, uint64_t want_off)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.late = late_bytes;
+    fk.chunk_late_on = 1;
+    fk.single_late_lo = 20004;
+    fk.single_late_hi = 20006;
+    req.lba = 20000;
+    req.count = 12;
+    req.chunk_sectors = 4;
+    req.overlap_sectors = 2;
+    accudisc_read_stats st = run(&req, map);
+    show("slip at the seam", &st, map, 12);
+    assert(out.verdict[4] == 'E' && out.verdict[5] == 'E');
+    assert(st.slips == 6 && st.slips_off_frame == want_off);
+}
+
+static void test_off_frame_slips_are_counted(void)
+{
+    off_frame_witness(32, 8); /* 8 samples */
+    off_frame_witness(36, 8); /* 9 */
+    off_frame_witness(24, 0); /* 6: one frame */
+    off_frame_seam(32, 6);
+    off_frame_seam(36, 6);
+    off_frame_seam(24, 0);
+}
+
 int main(void)
 {
     test_reproducing_slip_is_anchored();
@@ -911,6 +1149,13 @@ int main(void)
     test_c2_rescue_accepts_aligned_copy();
     test_c2_rescue_silent_neighbours();
     test_c2_rescue_requires_verify();
+    test_damaged_slip_is_anchored_with_shift_search();
+    test_damage_in_place_is_not_a_slip();
+    test_witness_sees_damaged_slip();
+    test_off_frame_slips_are_counted();
+    printf("ok - and with shift_search off and on: %u identical pairs\n",
+           shift_runs);
+    assert(shift_runs > 20);
     printf("ok - every case above also ran in rung order: %u equivalent pairs\n",
            equivalence_runs);
     assert(equivalence_runs > 20);

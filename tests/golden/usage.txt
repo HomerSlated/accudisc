@@ -160,6 +160,10 @@ read options:
                  problem sector at each rung in turn, instead of
                  once per sector: the same reads, far fewer speed
                  changes (off by default)
+  --shift-search call two copies a slip when they match at an
+                 offset despite damage, not only when they match
+                 exactly, so a displaced and damaged copy is
+                 anchored rather than accepted (off by default)
   --speed X      set drive read speed to Xx first (best-effort)
   --cache-defeat before the first transfer, read one sector 5000
                  away, so a re-read straight after another read

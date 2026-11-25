@@ -27,7 +27,14 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 55 /* 0.55.0: accudisc_shift_test (new), the
+#define ACCUDISC_VERSION_MINOR 56 /* 0.56.0: accudisc_read_req.shift_search
+                                  * (opt-in, byte 105): a slip is found by the
+                                  * exact test OR accudisc_shift_test, so a
+                                  * displaced copy that is also damaged is
+                                  * anchored rather than accepted by agreement.
+                                  * accudisc_read_stats 656 -> 664 with
+                                  * slips_off_frame; reserved3 -> 106-111.
+                                  * Previously 0.55.0: accudisc_shift_test (new), the
                                   * damage-tolerant shift test as a pure
                                   * function, so cdda2img can measure it on
                                   * real audio before any read uses it. No read
@@ -3954,14 +3961,32 @@ typedef struct accudisc_read_req {
      * six sector copies per disagreeing sector of a chunk in memory, allocated
      * only when set. */
     uint8_t rescue_by_rung;
-    uint8_t reserved3[7]; /* MUST BE ZERO, unlike reserved0-2: anything else is
-                           * ACCUDISC_ERR_INVAL. Byte 105 is to carry the shift
-                           * search (0.56.0; the test itself is
-                           * accudisc_shift_test, 0.55.0) and 106-111 a per-read
+    /* 0.56.0, OPT-IN: THE DAMAGE-TOLERANT SLIP TEST. 0 = the test of 0.41 to
+     * 0.55: two copies are a slip only if their whole overlap matches EXACTLY
+     * at one offset. So a copy that is displaced AND damaged is not seen as
+     * displaced, and two displaced re-reads that agree with each other are
+     * accepted by agreement (AccuDisc correspondence 2026-11-25d).
+     *
+     * 1 = a slip when the exact test finds one OR, failing that,
+     * accudisc_shift_test (below) does. The UNION, not a replacement: the two
+     * tests are not nested (the exact test can fire on audio that equals itself
+     * at some k, where accudisc_shift_test sees no signal), so with the flag
+     * set the engine finds every slip it found without it, and more. Used in
+     * the three places that decide whether two copies are a slip: consensus,
+     * the witness pass and the seam. Over the 2352 audio bytes only, so +-294
+     * samples; the copy already held is x. A found slip is settled by
+     * anchoring, as every slip is since 0.41.0.
+     *
+     * Costs about 2.8 M byte compares per test, run only on copies that
+     * already differ and that the exact test did not call a slip. Anything
+     * other than 0 or 1 is ACCUDISC_ERR_INVAL. */
+    uint8_t shift_search;
+    uint8_t reserved3[6]; /* MUST BE ZERO, unlike reserved0-2: anything else is
+                           * ACCUDISC_ERR_INVAL. 106-111 are to carry a per-read
                            * budget (0.57.0), so a caller asking an older library
-                           * for either is refused rather than silently given a
-                           * read without it (cdda2img correspondence,
-                           * AccuDisc 2026-11-25j/o/q). */
+                           * for it is refused rather than silently given a read
+                           * without it (cdda2img correspondence, AccuDisc
+                           * 2026-11-25j/o/q/s). */
 } accudisc_read_req;
 
 /* ---- shift test (0.55.0) ---------------------------------------------------
@@ -3972,7 +3997,7 @@ typedef struct accudisc_read_req {
  * them. The engine's own test (since 0.41.0) demands an EXACT match over the
  * whole overlap, so a copy that is both displaced and damaged is not seen as
  * displaced (AccuDisc correspondence 2026-11-25d). This is the tolerant test
- * that 0.56.0 is to offer as `shift_search`.
+ * that 0.56.0 offers as `shift_search`, together with the exact test.
  *
  * DEFINITION, cdda2img's `_shifted` in tools/shift_margin.py (their 2e23787),
  * transcribed. For k in [-max_k, +max_k], k != 0, with b = 4k bytes, compare
@@ -4131,13 +4156,14 @@ typedef struct accudisc_read_stats {
     uint64_t sectors_suspect;   /* consensus failed, best-effort delivered.
                                  * CONTRACT — third input to the caveat verdict;
                                  * see the note at sectors_flagged above. */
-    uint64_t slips;           /* disagreements that were a pure positional
-                               * shift (reads identical modulo offset) — the
-                               * C2-invisible slip class; a nonzero count on
-                               * a drive says: use overlap checking. Counted
-                               * where the verify and seam comparisons find
-                               * them; since 0.41.0 each is settled by
-                               * anchoring, not by agreement */
+    uint64_t slips;           /* disagreements that were a positional shift:
+                               * reads identical modulo offset, or with
+                               * shift_search (0.56.0) also a displaced copy
+                               * that is damaged — the C2-invisible slip class;
+                               * a nonzero count on a drive says: use overlap
+                               * checking. Counted where the verify and seam
+                               * comparisons find them; since 0.41.0 each is
+                               * settled by anchoring, not by agreement */
     /* Q-subchannel health, counted only for --sub raw reads over the sector
      * data actually delivered. The subchannel has no CIRC (C1/C2) protection —
      * a per-frame CRC-16 is its only integrity check, and it fails
@@ -4262,6 +4288,13 @@ typedef struct accudisc_read_stats {
                                * speed_honoured_x. 0 = asked, no answer, or
                                * never used. Same four-state rule as
                                * speed_honoured_x above. */
+    /* ---- 0.56.0 ---- */
+    uint64_t slips_off_frame; /* the slips whose shift is not a multiple of 6
+                               * samples (one CIRC frame). Every shift either
+                               * project has measured was a whole number of
+                               * frames, so an off-frame one is worth a look.
+                               * Counted whether or not shift_search is set,
+                               * at the same places as slips; a subset of it. */
 } accudisc_read_stats;
 
 /* accudisc_read_stats.cache_defeat */

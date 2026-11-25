@@ -594,6 +594,30 @@ static int alignment_signal(const uint8_t *a)
     return !adsc_shift_find(a, a, &d);
 }
 
+/* Are these two copies a SLIP? The exact test of 0.41.0 always; with
+ * shift_search (0.56.0) also accudisc_shift_test when the exact one does not
+ * fire, so a displaced copy that is also damaged is seen as displaced. The
+ * union, never a replacement: the tests are not nested, and the flag must
+ * only ever ADD detections. x is the copy already held: the tolerant test
+ * asks about x's own signal and self-difference only. */
+static int slip_test(const struct rd *r, const uint8_t *x, const uint8_t *y,
+                     int32_t *shift)
+{
+    if (adsc_shift_find(x, y, shift))
+        return 1;
+    return r->req->shift_search &&
+           accudisc_shift_test(x, y, ACCUDISC_BYTES_AUDIO, shift) == 1;
+}
+
+/* A slip found where verify or the seam compares two transfers: counted, and
+ * flagged when its shift is not a whole number of CIRC frames (0.56.0). */
+static void count_slip(struct rd *r, int32_t shift)
+{
+    r->st.slips++;
+    if (shift % 6 != 0)
+        r->st.slips_off_frame++;
+}
+
 /* Does this context read line up with a DIFFERENT transfer? True when one of
  * its neighbour sectors byte-matches another transfer's copy of that neighbour,
  * and that copy carries enough signal for the match to fix an alignment. */
@@ -822,7 +846,7 @@ static int cons_attempt(struct rd *r, struct cons_job *j, unsigned a)
 
         if (adsc_audio_diff(r->scratch, smp) == 0)
             matched = 1;
-        else if (!j->shifted && adsc_shift_find(r->scratch, smp, &sh))
+        else if (!j->shifted && slip_test(r, r->scratch, smp, &sh))
             j->shifted = 1;
     }
     if (matched && !j->shifted) {
@@ -947,9 +971,9 @@ static void witness_pass(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
         int shifted = 0;
         if (!hard2[s]) {
             int32_t sh;
-            shifted = adsc_shift_find(sec, alt, &sh);
+            shifted = slip_test(r, sec, alt, &sh);
             if (shifted)
-                r->st.slips++;
+                count_slip(r, sh);
         }
         diffb[s] = diff;
         if (r->bsamples) { /* rung order: queue it, settle all below */
@@ -1146,13 +1170,14 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     if (req->c2_witness && req->c2 == ACCUDISC_C2_NONE)
         return ACCUDISC_ERR_INVAL;
 
-    /* 0.54.0: reserved3 MUST be zero. It is where the shift test and the
-     * budget will go, and a request for either from a caller built against a
-     * later header must be refused here, not read as an ordinary read. */
+    /* 0.54.0: reserved3 MUST be zero. It is where the budget will go (0.57.0;
+     * byte 105 became shift_search in 0.56.0), and a request for it from a
+     * caller built against a later header must be refused here, not read as
+     * an ordinary read. */
     for (unsigned i = 0; i < sizeof(req->reserved3); i++)
         if (req->reserved3[i])
             return ACCUDISC_ERR_INVAL;
-    if (req->rescue_by_rung > 1)
+    if (req->rescue_by_rung > 1 || req->shift_search > 1)
         return ACCUDISC_ERR_INVAL;
 
     /* 0.51.0: the far-read range. hi == 0 is the only "unknown"; lo == 0 is
@@ -1501,9 +1526,9 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             }
             seam_bad = 1;
             int32_t sh;
-            int shifted = adsc_shift_find(sec, alt, &sh);
+            int shifted = slip_test(&r, sec, alt, &sh);
             if (shifted)
-                r.st.slips++;
+                count_slip(&r, sh);
             diffb[s] = diff;
             if (r.bsamples) { /* rung order: queue it */
                 cons_init(&r, &sjobs[snj], lba + s, sec, alt, shifted,

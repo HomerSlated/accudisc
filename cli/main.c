@@ -179,6 +179,10 @@ static void usage(FILE *to)
         "                 problem sector at each rung in turn, instead of\n"
         "                 once per sector: the same reads, far fewer speed\n"
         "                 changes (off by default)\n"
+        "  --shift-search call two copies a slip when they match at an\n"
+        "                 offset despite damage, not only when they match\n"
+        "                 exactly, so a displaced and damaged copy is\n"
+        "                 anchored rather than accepted (off by default)\n"
         "  --speed X      set drive read speed to Xx first (best-effort)\n"
         "  --cache-defeat before the first transfer, read one sector 5000\n"
         "                 away, so a re-read straight after another read\n"
@@ -2553,6 +2557,8 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             req.cache_defeat = 1;
         else if (!strcmp(a, "--rescue-by-rung"))
             req.rescue_by_rung = 1;
+        else if (!strcmp(a, "--shift-search"))
+            req.shift_search = 1;
         else if (opt_val(argv, argc, &i, "--verify", &optv, &optbad))
             req.verify_passes = (uint8_t)strtol(optv, NULL, 0);
         else if (opt_val(argv, argc, &i, "--overlap", &optv, &optbad))

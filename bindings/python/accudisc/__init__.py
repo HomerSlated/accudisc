@@ -209,6 +209,11 @@ features = frozenset({
     # shift_test() exists (0.55.0): the damage-tolerant shift test as a pure
     # function, the definition cdda2img measured (correspondence 275).
     "shift_test",
+    # Device.read(shift_search=True) and ReadStats.slips_off_frame exist
+    # (0.56.0): the engine's slip detection also uses shift_test(), so a
+    # displaced copy that is also damaged is anchored, not accepted by
+    # agreement.
+    "shift_search",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -1599,6 +1604,9 @@ class ReadStats:
     chunks_witnessed: int = 0
     speed_changes: int = 0
     rung_honoured_x: tuple[int, ...] = (0,) * 16
+    # 0.56.0: the slips whose shift is not a whole CIRC frame (6 samples).
+    # A subset of ``slips``, counted whether or not shift_search was set.
+    slips_off_frame: int = 0
 
     @property
     def recovery_cmds(self) -> int:
@@ -3520,6 +3528,7 @@ class Device:
         readable: tuple[int, int] | None = None,
         origin_map: bool | Any = False,
         rescue_by_rung: bool = False,
+        shift_search: bool = False,
     ) -> ReadResult:
         """Stream ``count`` sectors from ``lba`` to ``sink``.
 
@@ -3556,6 +3565,14 @@ class Device:
         ladder for one sector before the next. Per sector the reads are the
         same; the speed changes drop from (sectors x rungs) to rungs per chunk.
         Detect it with ``"rescue_by_rung" in accudisc.features``.
+
+        ``shift_search`` (0.56.0, off by default): two copies are a slip when
+        the exact test finds one OR :func:`shift_test` does, in consensus, the
+        verify comparison and the seam. So a displaced copy that is also
+        damaged is settled by anchoring instead of being accepted because two
+        re-reads agreed. The flag only adds detections; a slip that anchoring
+        cannot settle is SUSPECT, as an exact one always was. Detect it with
+        ``"shift_search" in accudisc.features``.
 
         ``c2_witness`` (0.45.0, off by default, needs ``c2`` other than
         ``C2.NONE`` or the read raises): where C2 fires, that chunk and both
@@ -3670,6 +3687,7 @@ class Device:
         req.c2_witness = 1 if c2_witness else 0
         req.cache_defeat = 1 if cache_defeat else 0
         req.rescue_by_rung = 1 if rescue_by_rung else 0
+        req.shift_search = 1 if shift_search else 0
         if readable is not None:
             req.readable_lo, req.readable_hi = readable
 
@@ -4561,6 +4579,7 @@ def _stats_from_c(s) -> ReadStats:
         chunks_witnessed=s.chunks_witnessed,
         speed_changes=s.speed_changes,
         rung_honoured_x=tuple(s.rung_honoured_x),
+        slips_off_frame=s.slips_off_frame,
         cache_defeat=CacheDefeat(s.cache_defeat),
     )
 

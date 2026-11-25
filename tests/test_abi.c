@@ -63,8 +63,12 @@ _Static_assert(sizeof(accudisc_read_req) == 112, "read_req grew — see above");
  * the budget. */
 _Static_assert(offsetof(accudisc_read_req, rescue_by_rung) == 104,
                "read_req: rescue_by_rung must sit past 0.53.0's end");
-_Static_assert(offsetof(accudisc_read_req, reserved3) == 105,
-               "read_req: reserved3 must cover 105-111");
+/* 0.56.0: shift_search takes byte 105 (published 2026-11-25j/s), and
+ * reserved3 shrinks to 106-111 for the budget. Same size. */
+_Static_assert(offsetof(accudisc_read_req, shift_search) == 105,
+               "read_req: shift_search is byte 105");
+_Static_assert(offsetof(accudisc_read_req, reserved3) == 106,
+               "read_req: reserved3 must cover 106-111");
 /* 0.53.0: 96 -> 104. 0.52.0's struct ended at 96 with no tail padding (it
  * closes on two uint32_t at 88 and 92), so origin_map goes straight to 96,
  * past every older caller's declared end, where the import zero-extends it to
@@ -97,7 +101,11 @@ _Static_assert(offsetof(accudisc_read_req, reserved0) == 68,
                "read_req: reserved0 must cover 0.44.0's padding");
 _Static_assert(offsetof(accudisc_read_req, c2_witness) == 72,
                "read_req: c2_witness must sit past 0.44.0's end");
-_Static_assert(sizeof(accudisc_read_stats) == 656, "read_stats grew — see above");
+_Static_assert(sizeof(accudisc_read_stats) == 664, "read_stats grew — see above");
+/* 0.56.0: 656 -> 664, slips_off_frame straight after rung_honoured_x, which
+ * ends at 656 on an 8-byte boundary (2026-11-25j/s). */
+_Static_assert(offsetof(accudisc_read_stats, slips_off_frame) == 656,
+               "read_stats: slips_off_frame must sit past 0.55.0's end");
 /* 0.53.0: 160 -> 656, the effort block, ordered by alignment. These offsets
  * were published to cdda2img before the build (correspondence 2026-11-25j), so
  * they are pinned field by field: a reordering would read the wrong counter

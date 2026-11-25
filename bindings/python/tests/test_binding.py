@@ -138,10 +138,13 @@ def test_struct_sizes_match_api_plan():
                                                    # 104 -> 112 in 0.54.0 (rescue_by_rung)
     assert ffi.offsetof("accudisc_read_req", "origin_map") == 96
     assert ffi.offsetof("accudisc_read_req", "rescue_by_rung") == 104
-    assert ffi.offsetof("accudisc_read_req", "reserved3") == 105
-    assert ffi.sizeof("accudisc_read_stats") == 656  # 136 -> 144 in 0.7.0,
+    assert ffi.offsetof("accudisc_read_req", "shift_search") == 105  # 0.56.0
+    assert ffi.offsetof("accudisc_read_req", "reserved3") == 106
+    assert ffi.sizeof("accudisc_read_stats") == 664  # 136 -> 144 in 0.7.0,
                                                      # 144 -> 160 in 0.22.0,
-                                                     # 160 -> 656 in 0.53.0 (effort)
+                                                     # 160 -> 656 in 0.53.0 (effort),
+                                                     # 656 -> 664 in 0.56.0
+    assert ffi.offsetof("accudisc_read_stats", "slips_off_frame") == 656
     # The 0.53.0 offsets were published to cdda2img before the build; the
     # binding must see exactly those (tests/test_abi.c pins the C side).
     assert ffi.offsetof("accudisc_read_stats", "us") == 160
@@ -642,6 +645,7 @@ def test_public_dataclass_field_names_are_pinned():
         # 0.53.0: the effort block
         "us", "us_total", "cmds", "cmds_failed", "won_by", "rung_cmds",
         "rung_wins", "chunks_witnessed", "speed_changes", "rung_honoured_x",
+        "slips_off_frame",  # 0.56.0
     }
 
     assert {f.name for f in dataclasses.fields(ad.Chunk)} == {
@@ -1297,8 +1301,11 @@ def test_effort_stats_arrive_from_the_c_struct():
     c.us_total = 7
     c.chunks_witnessed = 8
     c.speed_changes = 9
+    c.slips = 11
+    c.slips_off_frame = 10  # 0.56.0: from its own field, not from slips
 
     st = ad._stats_from_c(c)
+    assert (st.slips, st.slips_off_frame) == (11, 10)
     for k, name in enumerate(arrays):
         assert getattr(st, name) == tuple(1000 * (k + 1) + i for i in range(16)), name
     assert (st.us_total, st.chunks_witnessed, st.speed_changes) == (7, 8, 9)
@@ -1321,7 +1328,9 @@ def test_origin_lane_surface():
         "STREAM", "FALLBACK", "QPOS", "C2_RESCUE", "CONSENSUS", "ANCHOR",
         "WITNESS", "FAR", "SPEED"]
     assert {"effort_stats", "origin_map", "rescue_by_rung",
-            "shift_test"} <= ad.features
+            "shift_test", "shift_search"} <= ad.features
+    import inspect
+    assert inspect.signature(ad.Device.read).parameters["shift_search"].default is False
     r = ad.ReadResult(lba=0, count=3, stats=None)
     assert r.origin_map is None and r.origin_counts() == {}
 

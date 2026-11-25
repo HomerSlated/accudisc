@@ -619,7 +619,13 @@ static void test_reserved_must_be_zero(void)
     memset(req.reserved3, 0, sizeof(req.reserved3));
     req.rescue_by_rung = 2;
     assert(accudisc_read_cdda(&dev, &req, NULL, NULL, &st) == ACCUDISC_ERR_INVAL);
-    printf("ok - every reserved3 byte and rescue_by_rung > 1 are refused\n");
+    req.rescue_by_rung = 0;
+    req.shift_search = 2; /* 0.56.0: a flag too */
+    assert(accudisc_read_cdda(&dev, &req, NULL, NULL, &st) == ACCUDISC_ERR_INVAL);
+    req.shift_search = 1;
+    assert(accudisc_read_cdda(&dev, &req, NULL, NULL, &st) == ACCUDISC_OK);
+    printf("ok - every reserved3 byte, rescue_by_rung > 1 and shift_search > 1 "
+           "are refused\n");
 }
 
 /* The rung nibble: the witness transfer carries a flipped byte at 10003, the
@@ -743,6 +749,16 @@ static void test_old_caller(void)
     assert(st->size == 160 && st->sectors_read == 24);
     assert(st->us_total == 0xABABABABABABABABull); /* past 160: untouched */
     printf("ok - a 0.52 caller (96-byte request, 160-byte stats) is unaffected\n");
+
+    /* 0.55 caller: 656-byte stats, nothing written past them (0.56.0) */
+    reset();
+    req.size = 112;
+    memset(st, 0xAB, sizeof(*st));
+    st->size = 656;
+    assert(accudisc_read_cdda(&dev, &req, NULL, NULL, st) == ACCUDISC_OK);
+    assert(st->size == 656 && st->sectors_read == 24);
+    assert(st->slips_off_frame == 0xABABABABABABABABull);
+    printf("ok - a 0.55 caller (656-byte stats) gets 656 bytes back\n");
 }
 
 int main(void)
