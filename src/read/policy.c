@@ -1,6 +1,6 @@
 /* accudisc_read_policy (0.58.0): what a read is FOR -> the request that does it.
  *
- * Revision 1 of the table in accudisc.h, which is the contract; this file only
+ * Revision 2 (0.59.0, REFERENCE_VERIFY added; revision 1 was 0.58.0) of the table in accudisc.h, which is the contract; this file only
  * implements it. Pure: no device, no I/O. Everything is validated before
  * anything is written, so a refused intent leaves out and info exactly as the
  * caller had them.
@@ -44,9 +44,8 @@ int accudisc_read_policy(const accudisc_read_intent *in, accudisc_read_req *out,
     case ACCUDISC_PURPOSE_CAPTURE:
     case ACCUDISC_PURPOSE_GATED_REREAD:
     case ACCUDISC_PURPOSE_SPAN_RESCUE:
+    case ACCUDISC_PURPOSE_REFERENCE_VERIFY: /* revision 2 */
         break;
-    case ACCUDISC_PURPOSE_REFERENCE_VERIFY:
-        return ACCUDISC_ERR_UNSUPPORTED; /* accudisc_compare_read, 0.59.0 */
     default:
         return ACCUDISC_ERR_INVAL; /* 0 included: an uninitialised intent */
     }
@@ -85,6 +84,30 @@ int accudisc_read_policy(const accudisc_read_intent *in, accudisc_read_req *out,
     if (rescue && (!it.speed_x || !it.c2_usable))
         return ACCUDISC_ERR_INVAL;
 
+    /* REFERENCE_VERIFY picks its own rung: the NEAREST different one, the
+     * highest admitted below the reference's honoured speed, else the lowest
+     * above; never the reference's own nor exclude_speed_x. Nearest because it
+     * buys a second independent read at close to the capture's cost; NOT
+     * because slower is more reliable (Keith, 2026-10-22: it was not). */
+    int refv = it.purpose == ACCUDISC_PURPOSE_REFERENCE_VERIFY;
+    uint16_t speed = it.speed_x;
+    int ref_above = 0;
+    if (refv) {
+        if (it.speed_x || !it.ref_speed_x)
+            return ACCUDISC_ERR_INVAL;
+        speed = 0;
+        for (unsigned i = 0; i < na; i++)
+            if (adm[i] < it.ref_speed_x && adm[i] != it.exclude_speed_x)
+                speed = adm[i]; /* ascending: the last one below is highest */
+        for (unsigned i = 0; i < na && !speed; i++)
+            if (adm[i] > it.ref_speed_x && adm[i] != it.exclude_speed_x) {
+                speed = adm[i];
+                ref_above = 1;
+            }
+        if (!speed)
+            return ACCUDISC_ERR_INVAL; /* no rung but the excluded ones */
+    }
+
     /* ---- revision 1 ---- */
     accudisc_read_policy_info pi;
     memset(&pi, 0, sizeof(pi));
@@ -94,7 +117,13 @@ int accudisc_read_policy(const accudisc_read_intent *in, accudisc_read_req *out,
     uint8_t c2 = it.c2_usable ? ACCUDISC_C2_PTRS : ACCUDISC_C2_NONE;
     if (!it.c2_usable)
         pi.reasons |= ACCUDISC_POLICY_R_NO_C2;
-    uint8_t sub = it.purpose == ACCUDISC_PURPOSE_GATED_REREAD
+    if (!it.c2_usable && refv)
+        pi.reasons |= ACCUDISC_POLICY_R_NO_C2_THIRD_PASS;
+    if (ref_above)
+        pi.reasons |= ACCUDISC_POLICY_R_REF_RUNG_ABOVE;
+    /* sub NONE for the re-reads: on RAW the Q-position rescue would add far
+     * reads, and REFERENCE_VERIFY promises one */
+    uint8_t sub = it.purpose == ACCUDISC_PURPOSE_GATED_REREAD || refv
                       ? ACCUDISC_SUB_NONE
                       : ACCUDISC_SUB_RAW;
 
@@ -111,7 +140,7 @@ int accudisc_read_policy(const accudisc_read_intent *in, accudisc_read_req *out,
         else
             defeat = 1;
     }
-    if (it.purpose == ACCUDISC_PURPOSE_GATED_REREAD)
+    if (it.purpose == ACCUDISC_PURPOSE_GATED_REREAD || refv)
         pi.reasons |= ACCUDISC_POLICY_R_ENGINE_RECOVERY_PENDING_AB;
 
     unsigned ladder_len = 0;
@@ -141,7 +170,7 @@ int accudisc_read_policy(const accudisc_read_intent *in, accudisc_read_req *out,
     out->any_type = 0;
     out->retries = 0;
     out->chunk_sectors = 0;
-    out->speed_x = it.speed_x;
+    out->speed_x = speed;
     out->c2_retries = 0;
     out->verify_passes = rescue ? 2 : 0;
     out->overlap_sectors = 0;

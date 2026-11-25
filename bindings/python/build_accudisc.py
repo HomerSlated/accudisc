@@ -767,6 +767,8 @@ int accudisc_shift_test(const uint8_t *x, const uint8_t *y, uint32_t len,
 #define ACCUDISC_POLICY_R_LADDER_NEXT_UP ...
 #define ACCUDISC_POLICY_R_NO_LADDER ...
 #define ACCUDISC_POLICY_R_SLIPS_KNOWN_RELATIVE_ONLY ...
+#define ACCUDISC_POLICY_R_REF_RUNG_ABOVE ...
+#define ACCUDISC_POLICY_R_NO_C2_THIRD_PASS ...
 
 typedef struct accudisc_read_intent {
     uint32_t size;
@@ -780,6 +782,8 @@ typedef struct accudisc_read_intent {
     uint32_t lba, count;
     uint32_t readable_lo, readable_hi;
     uint32_t budget_cmds;
+    uint16_t ref_speed_x;
+    uint16_t exclude_speed_x;
     ...;
 } accudisc_read_intent;
 
@@ -798,6 +802,32 @@ int accudisc_read_policy(const accudisc_read_intent *in,
 int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                        accudisc_sink_fn sink, void *user,
                        accudisc_read_stats *stats);
+
+#define ACCUDISC_AGREE_NOT_COMPARED ...
+#define ACCUDISC_AGREE ...
+#define ACCUDISC_AGREE_C2 ...
+#define ACCUDISC_AGREE_DIFFER ...
+#define ACCUDISC_AGREE_SHIFTED ...
+#define ACCUDISC_AGREE_HARD ...
+#define ACCUDISC_AGREE_REF_MISSING ...
+
+typedef int (*accudisc_ref_fn)(void *user, uint32_t lba, uint32_t n,
+                               uint8_t *audio_out, uint8_t *absent);
+
+typedef struct accudisc_compare_stats {
+    uint32_t size;
+    uint32_t reserved0;
+    uint64_t agree, agree_c2, differ, shifted;
+    uint64_t shifted_off_frame;
+    uint64_t hard, ref_missing;
+    ...;
+} accudisc_compare_stats;
+
+int accudisc_compare_read(accudisc_device *dev, const accudisc_read_req *req,
+                          accudisc_ref_fn ref, void *ref_user,
+                          uint8_t *agree_map, accudisc_sink_fn sink,
+                          void *user, accudisc_read_stats *stats,
+                          accudisc_compare_stats *cstats);
 
 /* ---- MSF / Q ----------------------------------------------------------- */
 int32_t accudisc_msf_to_lba(uint8_t m, uint8_t s, uint8_t f);

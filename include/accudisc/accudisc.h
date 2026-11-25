@@ -27,7 +27,11 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 58 /* 0.58.0: accudisc_read_policy (new): a
+#define ACCUDISC_VERSION_MINOR 59 /* 0.59.0: accudisc_compare_read (new): a
+                                  * read held sector by sector against the
+                                  * caller's reference; read policy revision 2
+                                  * (REFERENCE_VERIFY), intent 64 -> 68.
+                                  * Previously 0.58.0: accudisc_read_policy (new): a
                                   * pure function that fills a read request
                                   * from what the read is for, revision 1.
                                   * Previously 0.57.0: a per-read budget for local
@@ -4116,7 +4120,22 @@ ACCUDISC_API int accudisc_shift_test(const uint8_t *x, const uint8_t *y,
  *                 admitted rungs below speed_x, descending, else the next one
  *                 up (R_LADDER_NEXT_UP), else none (R_NO_LADDER);
  *                 rescue_by_rung on; shift_search OFF (R_SHIFT_SEARCH_PENDING_AB).
- *   REFERENCE_VERIFY  ACCUDISC_ERR_UNSUPPORTED until accudisc_compare_read.
+ *   REFERENCE_VERIFY (revision 2, for accudisc_compare_read): c2 PTRS if
+ *                 c2_usable else NONE (R_NO_C2 + R_NO_C2_THIRD_PASS: without
+ *                 C2 a third compare at a third rung settles a disagreement),
+ *                 sub NONE (the Q rescue would add far reads); cache_defeat on
+ *                 unless no target; no engine recovery
+ *                 (R_ENGINE_RECOVERY_PENDING_AB); speed_x = the highest
+ *                 admitted rung BELOW ref_speed_x, else the lowest above
+ *                 (R_REF_RUNG_ABOVE), never ref_speed_x nor exclude_speed_x.
+ *                 WHY the NEAREST different rung: a second independent read
+ *                 at close to the capture's cost (a 40x capture is checked at
+ *                 32x, not 4x). NOT "slower is more reliable": Keith ruled on
+ *                 2026-10-22, on cdda2img's bench evidence, that slow re-reads
+ *                 were not more successful, so a revision must not "improve"
+ *                 this by reaching lower. exclude_speed_x lets a third pass
+ *                 avoid BOTH earlier rungs. The caller passes speed_x 0 and a
+ *                 nonzero ref_speed_x.
  *
  * THE HEAD FAR READ is decided by the rule the engine applies before its first
  * transfer (one shared function): where no target fits, which includes a
@@ -4127,14 +4146,17 @@ ACCUDISC_API int accudisc_shift_test(const uint8_t *x, const uint8_t *y,
  * ACCUDISC_ERR_INVAL, never a substituted value: purpose 0 or unknown; count
  * 0; readable_hi != 0 with lo >= hi; n_admitted > 16; an admitted rung of 0 or
  * a duplicate; a nonzero speed_x that is not an admitted rung; speed_x 0 for
- * SPAN_RESCUE (its ladder is built relative to it); SPAN_RESCUE without C2.
+ * SPAN_RESCUE (its ladder is built relative to it); SPAN_RESCUE without C2;
+ * for REFERENCE_VERIFY a nonzero speed_x, ref_speed_x 0, or no admitted rung
+ * other than ref_speed_x and exclude_speed_x.
  * NULL in, out or info is ACCUDISC_ERR_INVAL too. */
 #define ACCUDISC_PURPOSE_CAPTURE          1 /* whole-range first pass */
 #define ACCUDISC_PURPOSE_GATED_REREAD     2 /* one AR-gated attempt at speed_x */
 #define ACCUDISC_PURPOSE_SPAN_RESCUE      3 /* re-read of a C2-flagged span */
-#define ACCUDISC_PURPOSE_REFERENCE_VERIFY 4 /* reserved for 0.59.0 */
+#define ACCUDISC_PURPOSE_REFERENCE_VERIFY 4 /* accudisc_compare_read (0.59.0) */
 
-#define ACCUDISC_POLICY_REVISION 1 /* bumps whenever the table above changes */
+#define ACCUDISC_POLICY_REVISION 2 /* bumps whenever the table above changes:
+                                    * 1 = 0.58.0; 2 = 0.59.0, REFERENCE_VERIFY */
 
 #define ACCUDISC_POLICY_R_NO_C2                     (1ull << 0)
 #define ACCUDISC_POLICY_R_DEFEAT_NO_TARGET          (1ull << 1)
@@ -4145,6 +4167,8 @@ ACCUDISC_API int accudisc_shift_test(const uint8_t *x, const uint8_t *y,
 #define ACCUDISC_POLICY_R_LADDER_NEXT_UP            (1ull << 6)
 #define ACCUDISC_POLICY_R_NO_LADDER                 (1ull << 7)
 #define ACCUDISC_POLICY_R_SLIPS_KNOWN_RELATIVE_ONLY (1ull << 8)
+#define ACCUDISC_POLICY_R_REF_RUNG_ABOVE            (1ull << 9)  /* rev 2 */
+#define ACCUDISC_POLICY_R_NO_C2_THIRD_PASS          (1ull << 10) /* rev 2 */
 
 typedef struct accudisc_read_intent {
     uint32_t size;          /* = sizeof; a shorter struct zero-extends (IN) */
@@ -4159,6 +4183,12 @@ typedef struct accudisc_read_intent {
     uint32_t lba, count;
     uint32_t readable_lo, readable_hi; /* passed through; hi 0 = unknown */
     uint32_t budget_cmds;   /* passed through */
+    /* ---- 0.59.0 ---- */
+    uint16_t ref_speed_x;   /* REFERENCE_VERIFY: the reference's HONOURED
+                             * speed (read_stats.speed_honoured_x) */
+    uint16_t exclude_speed_x; /* REFERENCE_VERIFY: a second rung the pick must
+                             * avoid, e.g. the capture's when building a third
+                             * pass; 0 = none (cdda2img 282) */
 } accudisc_read_intent;
 
 #define ACCUDISC_READ_INTENT_INIT { .size = sizeof(accudisc_read_intent) }
@@ -4473,6 +4503,78 @@ ACCUDISC_API int accudisc_read_cdda(accudisc_device *dev,
                                     const accudisc_read_req *req,
                                     accudisc_sink_fn sink, void *user,
                                     accudisc_read_stats *stats);
+
+/* ---- compare read (0.59.0) ------------------------------------------------
+ * A read held against a REFERENCE the caller supplies (their own earlier
+ * capture, on their disk), sector by sector. accudisc_read_cdda with a
+ * comparison: the request is honoured exactly as there, normally the output
+ * of accudisc_read_policy(ACCUDISC_PURPOSE_REFERENCE_VERIFY), a single pass at
+ * another rung than the reference's with one far read at the head. RELATIVE,
+ * like every check here: two passes that agree are still two relative
+ * opinions, and the caller's absolute gate (AccurateRip/CTDB) stays the gate
+ * (cdda2img correspondence, AccuDisc 2026-11-25k/aa, their 274).
+ *
+ * THE CALLBACK fills audio_out with n * 2352 reference bytes for
+ * [lba, lba + n) and sets absent[i] = 1 for each sector it has no copy of
+ * (absent arrives zeroed); such a sector is ACCUDISC_AGREE_REF_MISSING and
+ * its audio is not compared, so a reference's own zero-filled hole cannot
+ * read as a disagreement. absent[i]: 0 = present, 1 = absent, ANY OTHER VALUE
+ * RESERVED (a later state, e.g. a reference copy known C2-flagged): it stops
+ * the read with ACCUDISC_ERR_INVAL rather than being read as "absent" (their
+ * 282). lba is the n-th RAW sector AS READ: no offset arithmetic, on either
+ * side. Return nonzero to cancel the read.
+ *
+ * WHERE IT RUNS: once per delivered chunk, in address order, never
+ * concurrently with itself or the sink, and just before the sink sees the
+ * same chunk: on the SINK's thread, which with the default AccuBuffer
+ * (buffer_bytes 0) is the buffer thread even when sink is NULL, and the read
+ * thread with ACCUDISC_BUFFER_NONE. A cancel, a nonzero callback or a refusing
+ * sink stops the read, and chunks still queued are discarded: their agree_map
+ * bytes stay ACCUDISC_AGREE_NOT_COMPARED.
+ *
+ * agree_map (count bytes, may be NULL) is written with relaxed atomic stores,
+ * like status_map. LOW NIBBLE, in order of precedence: HARD (this pass could
+ * not read it), REF_MISSING, then the comparison: AGREE (byte-identical audio
+ * and this pass's copy C2-clean, or C2 not asked for), AGREE_C2 (identical,
+ * but this pass's copy has C2 bits), SHIFTED, DIFFER. SHIFTED uses the
+ * shift_search union (the exact test OR accudisc_shift_test) ALWAYS, whatever
+ * req->shift_search says: a classification, not a recovery decision. x is
+ * this pass's copy, y the reference; it says the two are a shift apart, not
+ * which one moved. HIGH NIBBLE, SHIFTED only: |shift| in whole frames (6
+ * samples), capped at 15, or 0 when off-frame.
+ *
+ * ACCUDISC_ERR_INVAL for a NULL ref; otherwise as accudisc_read_cdda, with
+ * cstats under the OUT size rule (NULL allowed). */
+#define ACCUDISC_AGREE_NOT_COMPARED 0
+#define ACCUDISC_AGREE              1
+#define ACCUDISC_AGREE_C2           2
+#define ACCUDISC_AGREE_DIFFER       3
+#define ACCUDISC_AGREE_SHIFTED      4
+#define ACCUDISC_AGREE_HARD         5
+#define ACCUDISC_AGREE_REF_MISSING  6
+#define ACCUDISC_AGREE_STATE(b)  ((uint8_t)(b) & 0x0f)
+#define ACCUDISC_AGREE_FRAMES(b) ((uint8_t)(b) >> 4)
+
+typedef int (*accudisc_ref_fn)(void *user, uint32_t lba, uint32_t n,
+                               uint8_t *audio_out, uint8_t *absent);
+
+typedef struct accudisc_compare_stats { /* 64 bytes */
+    uint32_t size;          /* = sizeof; OUT, as accudisc_read_stats */
+    uint32_t reserved0;
+    uint64_t agree, agree_c2, differ, shifted;
+    uint64_t shifted_off_frame; /* a subset of shifted */
+    uint64_t hard, ref_missing;
+} accudisc_compare_stats;
+
+#define ACCUDISC_COMPARE_STATS_INIT { .size = sizeof(accudisc_compare_stats) }
+
+ACCUDISC_API int accudisc_compare_read(accudisc_device *dev,
+                                       const accudisc_read_req *req,
+                                       accudisc_ref_fn ref, void *ref_user,
+                                       uint8_t *agree_map,
+                                       accudisc_sink_fn sink, void *user,
+                                       accudisc_read_stats *stats,
+                                       accudisc_compare_stats *cstats);
 
 /* ---- MSF <-> LBA ----------------------------------------------------------
  * MSF as it appears on disc; LBA 0 == 00:02:00 (the 150-sector pregap). An LBA

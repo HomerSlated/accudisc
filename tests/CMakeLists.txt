@@ -36,7 +36,7 @@ foreach(t test_version test_cdb test_sense test_toc test_map test_decode
         test_write_offset test_accubuf test_write_health test_trace test_ready
         test_layout test_consensus test_wparams test_features
         test_cache_defeat test_toc_from_raw test_cancel test_effort
-        test_policy)
+        test_policy test_compare)
     add_executable(${t} ${t}.c)
     # test_accubuf drives the ring's own threads; the others do not care.
     target_link_libraries(${t} PRIVATE accudisc_static Threads::Threads)
@@ -129,6 +129,7 @@ target_link_options(test_toc_from_raw PRIVATE -Wl,--wrap=adsc_dev_exec)
 # so the assertion can be on the commands issued after it (0.52.0).
 target_link_options(test_cancel PRIVATE -Wl,--wrap=adsc_dev_exec)
 target_link_options(test_effort PRIVATE -Wl,--wrap=adsc_dev_exec)
+target_link_options(test_compare PRIVATE -Wl,--wrap=adsc_dev_exec)
 
 add_executable(test_burn_flow test_burn_flow.c
                ${PROJECT_SOURCE_DIR}/src/write/burn.c

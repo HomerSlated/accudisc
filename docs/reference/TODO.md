@@ -8573,6 +8573,60 @@ before `span-flagged` gets its rescue ladder.
     - **Python:** `read_policy()`, `Purpose`, `PolicyReason`, `ReadPolicy`,
       token `read_policy`. No CLI.
     - **Suite 61/61.**
+  - **BUILT 0.59.0 (2026-11-25): `accudisc_compare_read()` and policy
+    revision 2** (`src/read/compare.c`). Note 5, notice 25aa, with all of
+    cdda2img's §282 asks taken.
+    - **The read:** `accudisc_read_cdda` with a sink wrapped around it. The
+      reference callback runs where the sink runs (the AccuBuffer thread by
+      default), in address order, before the caller's sink sees the chunk.
+    - **The callback's `absent[]`:** 0 = present, 1 = absent (giving
+      `REF_MISSING`), any other value reserved (`ERR_INVAL`). So a hole in
+      the reference cannot read as DIFFER, and `AGREE_REF_C2` can be added
+      later without a signature change.
+    - **The agree map:** NOT_COMPARED 0, AGREE 1, AGREE_C2 2, DIFFER 3,
+      SHIFTED 4 (|frames| in the high nibble, capped at 15, 0 if
+      off-frame), HARD 5, REF_MISSING 6.
+      - Precedence: HARD, then REF_MISSING, then the comparison.
+      - SHIFTED always uses the union (exact OR tolerant), with x = this pass.
+    - **`accudisc_compare_stats`:** 64 bytes. (25aa said 56; §282 caught
+      it.)
+    - **Policy revision 2,** `REFERENCE_VERIFY`. The intent is 68 bytes
+      (`ref_speed_x` at 64, `exclude_speed_x` at 66).
+      - The rung is the NEAREST admitted one below the reference's honoured
+        speed, else the lowest above, never the reference's rung or
+        `exclude_speed_x`.
+      - The documented reason is cost: a 40x capture is checked at 32x.
+        Keith ruled on 2026-10-22 that slower re-reads are NOT more
+        reliable, so no revision may reach lower on that ground.
+      - The rest of the row: sub NONE (keeps the single far read), the head
+        far read, no recovery, `R_NO_C2_THIRD_PASS` without C2.
+    - **Tests:**
+      - `test_compare`, with buffer on and off identical:
+        - the policy output with an identical reference: all AGREE, one far
+          read
+        - DIFFER
+        - SHIFTED: on-frame, off-frame, 15/20 frames (cap), 1 frame,
+          displaced and damaged, and periodic audio (the exact half of the
+          union)
+        - AGREE_C2, including the last C2 byte
+        - HARD, REF_MISSING, and HARD outranking REF_MISSING
+        - stopping: a cancelling callback, a reserved `absent` value, a
+          refusing sink
+        - the size rule
+      - `test_policy`: the revision-2 cells, including §282's 4x → 8x → 16x
+        third pass.
+    - **Mutation run:** 38 mutants, 37 killed. The 1 survivor swaps x and y in
+      the exact test, which is equivalent (detection is symmetric, and the
+      sign is dropped).
+    - **Python:** `Device.compare_read(lba, count, reference, *, agree_map,
+      **read kwargs)`, sharing `Device._execute` with `read`. Also
+      `AgreeState`, `agree_frames`, `CompareStats`, and `ReadResult.compare`
+      / `.agree_map`; `read_policy(ref_speed_x=, exclude_speed_x=)`; token
+      `compare_read`.
+      - `read_kwargs()` includes `lba` and `count`, so the form is
+        `dev.compare_read(reference=ref, **kw)`. 25aa's positional form
+        raises TypeError.
+    - **Suite 62/62.**
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 

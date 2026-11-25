@@ -108,7 +108,17 @@ _Static_assert(offsetof(accudisc_read_req, c2_witness) == 72,
                "read_req: c2_witness must sit past 0.44.0's end");
 _Static_assert(sizeof(accudisc_read_stats) == 688, "read_stats grew — see above");
 /* 0.58.0: accudisc_read_policy's two structs, as published (2026-11-25y). */
-_Static_assert(sizeof(accudisc_read_intent) == 64, "read_intent: 64 bytes");
+_Static_assert(sizeof(accudisc_read_intent) == 68, "read_intent: 68 bytes");
+/* 0.59.0: 64 -> 68 (2026-11-25aa, cdda2img 282) */
+_Static_assert(offsetof(accudisc_read_intent, ref_speed_x) == 64,
+               "intent: ref_speed_x");
+_Static_assert(offsetof(accudisc_read_intent, exclude_speed_x) == 66,
+               "intent: exclude_speed_x");
+_Static_assert(sizeof(accudisc_compare_stats) == 64, "compare_stats: 64");
+_Static_assert(offsetof(accudisc_compare_stats, agree) == 8,
+               "compare_stats: agree");
+_Static_assert(offsetof(accudisc_compare_stats, ref_missing) == 56,
+               "compare_stats: ref_missing");
 _Static_assert(offsetof(accudisc_read_intent, purpose) == 4, "intent: purpose");
 _Static_assert(offsetof(accudisc_read_intent, admitted_x) == 8,
                "intent: admitted_x");

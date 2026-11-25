@@ -70,7 +70,7 @@ static int call(const accudisc_read_intent *in, accudisc_read_req *out,
     int rc = accudisc_read_policy(in, out, info);
     if (rc == ACCUDISC_OK) {
         callers_fields_untouched(out);
-        assert(info->revision == 1 && ACCUDISC_POLICY_REVISION == 1);
+        assert(info->revision == 2 && ACCUDISC_POLICY_REVISION == 2);
         assert(info->size == sizeof(*info));
         /* fixed in every row of revision 1 */
         assert(out->lba == in->lba && out->count == in->count);
@@ -78,7 +78,8 @@ static int call(const accudisc_read_intent *in, accudisc_read_req *out,
         assert(out->chunk_sectors == 0 && out->overlap_sectors == 0);
         assert(out->c2_retries == 0 && out->c2_witness == 0);
         assert(out->shift_search == 0);
-        assert(out->speed_x == in->speed_x);
+        if (in->purpose != ACCUDISC_PURPOSE_REFERENCE_VERIFY)
+            assert(out->speed_x == in->speed_x);
         assert(out->readable_lo == in->readable_lo &&
                out->readable_hi == in->readable_hi);
         assert(out->budget_cmds == in->budget_cmds &&
@@ -194,6 +195,69 @@ static void test_span_rescue(void)
 }
 
 /* drive_slips == 2 changes NOTHING but the reason bit. */
+/* REFERENCE_VERIFY, revision 2: the NEAREST different rung (cdda2img 282:
+ * a second independent read at close to the capture's cost), sub NONE so the
+ * Q rescue adds no far reads, no recovery, the head far read. */
+static void test_reference_verify(void)
+{
+    accudisc_read_req out;
+    accudisc_read_policy_info info;
+    const uint64_t base = R(ENGINE_RECOVERY_PENDING_AB);
+    accudisc_read_intent in = intent(ACCUDISC_PURPOSE_REFERENCE_VERIFY, 0);
+
+    in.admitted_x[5] = 4; /* 4 8 16 24 32 40 */
+    in.n_admitted = 6;
+    in.ref_speed_x = 40; /* a 40x capture: checked at 32x */
+    assert(call(&in, &out, &info) == ACCUDISC_OK);
+    assert(out.speed_x == 32);
+    assert(out.c2 == ACCUDISC_C2_PTRS && out.sub == ACCUDISC_SUB_NONE);
+    assert(out.cache_defeat == 1 && out.verify_passes == 0);
+    assert(out.ladder_len == 0 && out.rescue_by_rung == 0);
+    assert(info.reasons == base);
+
+    in.ref_speed_x = 20; /* not itself a rung: the highest below, 16 */
+    assert(call(&in, &out, &info) == ACCUDISC_OK);
+    assert(out.speed_x == 16 && info.reasons == base);
+
+    /* 282's case: a 4x capture, the second pass goes UP to 8x; the third,
+     * with ref 8 and the capture's 4 excluded, must not come back to 4x. */
+    in.ref_speed_x = 8;
+    assert(call(&in, &out, &info) == ACCUDISC_OK);
+    assert(out.speed_x == 4); /* without the exclusion: the 4x rung */
+    in.exclude_speed_x = 4;
+    assert(call(&in, &out, &info) == ACCUDISC_OK);
+    assert(out.speed_x == 16 && info.reasons == (base | R(REF_RUNG_ABOVE)));
+    in.ref_speed_x = 4;
+    in.exclude_speed_x = 0;
+    assert(call(&in, &out, &info) == ACCUDISC_OK);
+    assert(out.speed_x == 8 && info.reasons == (base | R(REF_RUNG_ABOVE)));
+
+    in.ref_speed_x = 4; /* at the bottom, excluding the next one up */
+    in.exclude_speed_x = 8;
+    assert(call(&in, &out, &info) == ACCUDISC_OK);
+    assert(out.speed_x == 16 && info.reasons == (base | R(REF_RUNG_ABOVE)));
+
+    in.ref_speed_x = 40; /* excluding the nearest below takes the next one */
+    in.exclude_speed_x = 32;
+    assert(call(&in, &out, &info) == ACCUDISC_OK);
+    assert(out.speed_x == 24);
+
+    in.exclude_speed_x = 0;
+    in.c2_usable = 0; /* no C2: a third pass settles a disagreement */
+    assert(call(&in, &out, &info) == ACCUDISC_OK);
+    assert(out.c2 == ACCUDISC_C2_NONE);
+    assert(info.reasons == (base | R(NO_C2) | R(NO_C2_THIRD_PASS)));
+
+    in.c2_usable = 1; /* a whole-extent verify: no head far read */
+    in.lba = 0;
+    in.count = 195656;
+    in.readable_hi = 195656;
+    assert(call(&in, &out, &info) == ACCUDISC_OK);
+    assert(out.cache_defeat == 0 && info.reasons == (base | R(DEFEAT_NO_TARGET)));
+    printf("ok - REFERENCE_VERIFY: the nearest rung other than the reference's "
+           "and the excluded one; sub NONE; third-pass reason without C2\n");
+}
+
 static void test_slips(void)
 {
     static const uint8_t purposes[] = { ACCUDISC_PURPOSE_CAPTURE,
@@ -252,7 +316,18 @@ static void test_refusals(void)
 
     BAD(in.purpose = 0, ACCUDISC_ERR_INVAL);
     BAD(in.purpose = 5, ACCUDISC_ERR_INVAL);
-    BAD(in.purpose = ACCUDISC_PURPOSE_REFERENCE_VERIFY, ACCUDISC_ERR_UNSUPPORTED);
+    /* REFERENCE_VERIFY (revision 2): the policy picks the rung */
+    BAD((in.purpose = ACCUDISC_PURPOSE_REFERENCE_VERIFY, in.ref_speed_x = 24),
+        ACCUDISC_ERR_INVAL);                               /* speed_x given */
+    BAD((in.purpose = ACCUDISC_PURPOSE_REFERENCE_VERIFY, in.speed_x = 0),
+        ACCUDISC_ERR_INVAL);                               /* ref_speed_x 0 */
+    BAD((in.purpose = ACCUDISC_PURPOSE_REFERENCE_VERIFY, in.speed_x = 0,
+         in.ref_speed_x = 8, in.n_admitted = 1, in.admitted_x[0] = 8),
+        ACCUDISC_ERR_INVAL);                               /* only its rung */
+    BAD((in.purpose = ACCUDISC_PURPOSE_REFERENCE_VERIFY, in.speed_x = 0,
+         in.ref_speed_x = 8, in.exclude_speed_x = 4, in.n_admitted = 2,
+         in.admitted_x[0] = 8, in.admitted_x[1] = 4),
+        ACCUDISC_ERR_INVAL); /* two-rung ladder, both excluded (282) */
     BAD(in.count = 0, ACCUDISC_ERR_INVAL);
     BAD((in.readable_lo = 5, in.readable_hi = 5), ACCUDISC_ERR_INVAL);
     BAD((in.readable_lo = 6, in.readable_hi = 5), ACCUDISC_ERR_INVAL);
@@ -322,9 +397,9 @@ static void test_short_intent(void)
     info.size = sizeof(info);
     assert(accudisc_read_policy(&in, &out, &info) == ACCUDISC_OK);
     assert(out.budget_cmds == 0 && out.budget_speed_changes == 9);
-    assert(sizeof(accudisc_read_intent) == 64);
+    assert(sizeof(accudisc_read_intent) == 68);
     assert(sizeof(accudisc_read_policy_info) == 48);
-    printf("ok - a shorter intent zero-extends; intent 64, info 48 bytes\n");
+    printf("ok - a shorter intent zero-extends; intent 68, info 48 bytes\n");
 }
 
 int main(void)
@@ -332,6 +407,7 @@ int main(void)
     test_capture();
     test_gated();
     test_span_rescue();
+    test_reference_verify();
     test_slips();
     test_refusals();
     test_short_intent();

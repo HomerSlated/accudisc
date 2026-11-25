@@ -1658,14 +1658,14 @@ def test_read_policy_surface():
     exactly Device.read's policy-owned keywords. The table itself is pinned in
     tests/test_policy.c; this checks the translation and the refusals."""
     import inspect
-    assert ffi.sizeof("accudisc_read_intent") == 64
+    assert ffi.sizeof("accudisc_read_intent") == 68  # 0.59.0: +ref/exclude
     assert ffi.sizeof("accudisc_read_policy_info") == 48
     assert [p.value for p in ad.Purpose] == [1, 2, 3, 4]
     p = ad.read_policy(ad.Purpose.SPAN_RESCUE, 10000, 46, c2_usable=True,
                        admitted=(32, 8, 24, 16), speed_x=24,
                        readable=(0, 200000), budget_cmds=5000,
                        budget_speed_changes=7)
-    assert p.revision == 1
+    assert p.revision == 2
     assert p.reasons == (ad.PolicyReason.C2_RESCUE_KEPT_OFF
                          | ad.PolicyReason.SHIFT_SEARCH_PENDING_AB)
     kw = p.read_kwargs()
@@ -1709,12 +1709,78 @@ def test_read_policy_surface():
             pass
         else:
             raise AssertionError(f"{purpose} {bad} must be refused")
+    # revision 2: REFERENCE_VERIFY picks the nearest rung other than the
+    # reference's and the excluded one (cdda2img 282)
+    r = ad.read_policy(ad.Purpose.REFERENCE_VERIFY, 0, 10, c2_usable=False,
+                       admitted=(4, 8, 16), ref_speed_x=8, exclude_speed_x=4,
+                       readable=(0, 100000))
+    assert r.speed_x == 16 and r.sub is ad.Sub.NONE and r.verify_passes == 0
+    assert r.reasons == (ad.PolicyReason.NO_C2 | ad.PolicyReason.NO_C2_THIRD_PASS
+                         | ad.PolicyReason.ENGINE_RECOVERY_PENDING_AB
+                         | ad.PolicyReason.REF_RUNG_ABOVE)
     try:
-        ad.read_policy(ad.Purpose.REFERENCE_VERIFY, 0, 10, c2_usable=True)
-    except ad.AccuDiscError as exc:
-        assert isinstance(exc, ad.Unsupported)
+        ad.read_policy(ad.Purpose.REFERENCE_VERIFY, 0, 10, c2_usable=True,
+                       admitted=(4, 8), ref_speed_x=8, exclude_speed_x=4)
+    except ad.InvalidArgument:
+        pass
     else:
-        raise AssertionError("REFERENCE_VERIFY is unsupported until 0.59.0")
+        raise AssertionError("no rung but the excluded ones must be refused")
+
+
+def test_compare_read_surface():
+    """0.59.0: compare_read's keywords are read()'s (bound against its
+    signature, so a typo raises TypeError before any I/O); the reference
+    trampoline copies the audio, marks absent offsets and refuses bad shapes;
+    the call reaches C."""
+    assert ffi.sizeof("accudisc_compare_stats") == 64
+    assert ffi.offsetof("accudisc_compare_stats", "ref_missing") == 56
+    assert [s.value for s in ad.AgreeState] == [0, 1, 2, 3, 4, 5, 6]
+    assert ad.agree_frames(0x44) == 4 and ad.agree_frames(0xF4) == 15
+    assert "compare_read" in ad.features
+    import inspect
+
+    d = ad.Device.__new__(ad.Device)
+    ref = lambda lba, n: (bytes(n * 2352), None)  # noqa: E731
+    try:
+        d.compare_read(0, 1, ref, not_a_read_keyword=1)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("an unknown keyword must raise TypeError")
+
+    # the policy's kwargs bind and the whole request builds: the first thing
+    # that stops it is the missing device handle (the C path is test_compare.c)
+    p = ad.read_policy(ad.Purpose.REFERENCE_VERIFY, 100, 10, c2_usable=True,
+                       admitted=(8, 16, 24), ref_speed_x=24)
+    # read_kwargs() carries lba and count too, so the forms are
+    # dev.read(**kw) and dev.compare_read(reference=ref, **kw)
+    kw = p.read_kwargs()
+    inspect.signature(ad.Device.read).bind(d, **kw)
+    try:
+        d.compare_read(reference=ref, **kw)
+    except ValueError as exc:
+        assert "closed" in str(exc), exc
+    else:
+        raise AssertionError("a Device with no handle must refuse")
+
+    # the trampoline, called as the library would call it
+    got = []
+    t = ad._RefTrampoline(lambda lba, n: (got.append((lba, n)) or
+                                          (bytes(range(256)) * 19)[:n * 2352],
+                                          [1]))
+    audio = ffi.new("uint8_t[]", 2 * 2352)
+    absent = ffi.new("uint8_t[]", 2)
+    assert t._call(ffi.NULL, 500, 2, audio, absent) == 0
+    assert got == [(500, 2)] and list(absent) == [0, 1]
+    assert bytes(ffi.buffer(audio, 4)) == bytes([0, 1, 2, 3])
+    for bad in (lambda lba, n: (bytes(10), None),
+                lambda lba, n: (bytes(n * 2352), [n])):
+        try:
+            ad._RefTrampoline(bad)._call(ffi.NULL, 0, 2, audio, absent)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("a wrong length or offset must raise")
 
 
 def test_read_span_refuses_over_the_ceiling():

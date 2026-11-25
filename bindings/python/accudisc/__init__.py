@@ -53,6 +53,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import enum
+import inspect
 import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Sequence
@@ -76,6 +77,7 @@ __all__ = [
     "C2Verdict", "FeaturesMedium", "CacheDefeat", "Origin", "Stage",
     "origin_class", "origin_rung", "shift_test",
     "Purpose", "PolicyReason", "ReadPolicy", "read_policy",
+    "AgreeState", "agree_frames", "CompareStats",
     "DiscKind", "DiscReason", "TrayState", "DiscProbe",
     "CtdbRepair", "ctdb_repair",
     "Verdict", "WriteResult",
@@ -223,6 +225,10 @@ features = frozenset({
     # read_policy(), Purpose, PolicyReason and ReadPolicy exist (0.58.0): the
     # library fills a read's settings from what the read is for.
     "read_policy",
+    # Device.compare_read, CompareStats, AgreeState and agree_frames exist
+    # (0.59.0), and read_policy takes ref_speed_x / exclude_speed_x for
+    # Purpose.REFERENCE_VERIFY (policy revision 2).
+    "compare_read",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -793,6 +799,8 @@ class PolicyReason(enum.IntFlag):
     LADDER_NEXT_UP = lib.ACCUDISC_POLICY_R_LADDER_NEXT_UP
     NO_LADDER = lib.ACCUDISC_POLICY_R_NO_LADDER
     SLIPS_KNOWN_RELATIVE_ONLY = lib.ACCUDISC_POLICY_R_SLIPS_KNOWN_RELATIVE_ONLY
+    REF_RUNG_ABOVE = lib.ACCUDISC_POLICY_R_REF_RUNG_ABOVE        # revision 2
+    NO_C2_THIRD_PASS = lib.ACCUDISC_POLICY_R_NO_C2_THIRD_PASS    # revision 2
 
 
 @dataclass(frozen=True)
@@ -800,7 +808,8 @@ class ReadPolicy:
     """The request :func:`read_policy` chose, and why (0.58.0).
 
     ``read_kwargs()`` is exactly the POLICY-OWNED keywords of
-    :meth:`Device.read`; add your own (``sink``, ``status_map``, ``subq_map``,
+    :meth:`Device.read`, ``lba`` and ``count`` included, so the call is
+    ``dev.read(**p.read_kwargs(), ...)``; add your own (``sink``, ``status_map``, ``subq_map``,
     ``origin_map``, ``cancel``, ``buffer_bytes``) and change nothing else, or
     the read is no longer the one ``revision`` describes. Record ``revision``
     and ``reasons`` with the result.
@@ -845,14 +854,18 @@ def read_policy(purpose: "Purpose | int", lba: int, count: int, *,
                 speed_x: int = 0, drive_slips: int = 0,
                 readable: tuple[int, int] | None = None,
                 budget_cmds: int = 0,
-                budget_speed_changes: int = 0) -> ReadPolicy:
+                budget_speed_changes: int = 0,
+                ref_speed_x: int = 0,
+                exclude_speed_x: int = 0) -> ReadPolicy:
     """Fill a read's settings from what it is FOR (0.58.0). Pure: no device.
 
     ``admitted``: the ADMITTED rungs from :meth:`Device.probe_speed_ladder`,
     any order. ``speed_x`` must be one of them, or 0 (drive-managed; not for
     ``SPAN_RESCUE``). ``drive_slips``: 0 unknown, 1 none known, 2 known to
     slip. ``readable``: :func:`session_extent_at`'s ``(lo, hi)``, or ``None``
-    when unknown. The table (revision 1) and every refusal are documented at
+    when unknown. ``REFERENCE_VERIFY`` (revision 2) picks its own rung: pass
+    ``speed_x=0``, the reference's HONOURED speed as ``ref_speed_x``, and,
+    building a third pass, the other rung to avoid as ``exclude_speed_x``. The table (revision 1) and every refusal are documented at
     ``accudisc_read_policy`` in accudisc.h; an impossible intent raises
     :class:`InvalidArgument`, never a substituted value.
     """
@@ -879,6 +892,8 @@ def read_policy(purpose: "Purpose | int", lba: int, count: int, *,
         in_.readable_lo, in_.readable_hi = readable
     in_.budget_cmds = budget_cmds
     in_.budget_speed_changes = budget_speed_changes
+    in_.ref_speed_x = ref_speed_x
+    in_.exclude_speed_x = exclude_speed_x
     out = ffi.new("accudisc_read_req*")
     out.size = ffi.sizeof("accudisc_read_req")
     info = ffi.new("accudisc_read_policy_info*")
@@ -909,6 +924,74 @@ def read_policy(purpose: "Purpose | int", lba: int, count: int, *,
         budget_cmds=out.budget_cmds,
         budget_speed_changes=out.budget_speed_changes,
     )
+
+
+class AgreeState(enum.IntEnum):
+    """Low nibble of an agree-map byte (0.59.0, :meth:`Device.compare_read`).
+
+    In order of precedence: HARD, REF_MISSING, then the comparison. SHIFTED
+    carries ``|shift|`` in whole frames in the high nibble (:func:`agree_frames`),
+    0 when off-frame; it says the two copies are a shift apart, not which moved.
+    """
+
+    NOT_COMPARED = lib.ACCUDISC_AGREE_NOT_COMPARED  # never delivered (cancelled)
+    AGREE = lib.ACCUDISC_AGREE                      # identical, this copy C2-clean
+    AGREE_C2 = lib.ACCUDISC_AGREE_C2                # identical, this copy flagged
+    DIFFER = lib.ACCUDISC_AGREE_DIFFER              # differs, not a shift
+    SHIFTED = lib.ACCUDISC_AGREE_SHIFTED            # a displaced copy
+    HARD = lib.ACCUDISC_AGREE_HARD                  # this pass could not read it
+    REF_MISSING = lib.ACCUDISC_AGREE_REF_MISSING    # the reference had no copy
+
+
+def agree_frames(b: int) -> int:
+    """High nibble of an agree-map byte: |shift| in frames, capped at 15."""
+    return (b >> 4) & 0x0F
+
+
+@dataclass(frozen=True)
+class CompareStats:
+    """Counts per agreement state (``accudisc_compare_stats``, 0.59.0)."""
+
+    agree: int = 0
+    agree_c2: int = 0
+    differ: int = 0
+    shifted: int = 0
+    shifted_off_frame: int = 0  # a subset of shifted
+    hard: int = 0
+    ref_missing: int = 0
+
+
+class _RefTrampoline:
+    """Bridges a Python reference to ``accudisc_ref_fn``. Same rule as
+    :class:`_SinkTrampoline`: an exception must cancel (``error=1``), and it is
+    kept and re-raised after the read rather than read as "continue"."""
+
+    def __init__(self, fn):
+        self._fn = fn
+        self.error: BaseException | None = None
+        self.cffi_callback = ffi.callback(
+            "int(void*, uint32_t, uint32_t, uint8_t*, uint8_t*)", self._call,
+            error=1, onerror=self._onerror)
+
+    def _onerror(self, exc, value, tb) -> None:
+        if self.error is None:
+            self.error = value
+
+    def _call(self, _user, lba, n, audio, absent) -> int:
+        data, missing = self._fn(lba, n)
+        mv = memoryview(data).cast("B")
+        if len(mv) != n * 2352:
+            raise ValueError(
+                f"reference({lba}, {n}) returned {len(mv)} bytes, "
+                f"expected {n * 2352}")
+        ffi.memmove(audio, mv, len(mv))
+        for i in missing or ():
+            if not 0 <= i < n:
+                raise ValueError(
+                    f"reference({lba}, {n}): absent offset {i} is outside "
+                    f"[0, {n})")
+            absent[i] = 1
+        return 0
 
 
 def origin_class(b: int) -> Origin:
@@ -2077,6 +2160,16 @@ class ReadResult:
     _subq: object = None
     _keepalive: list = field(default_factory=list)
     _origin: object = None
+    compare: "CompareStats | None" = None  # 0.59.0, compare_read only
+    _agree: object = None
+
+    @property
+    def agree_map(self) -> memoryview | None:
+        """Per-sector agree bytes (0.59.0, :meth:`Device.compare_read`), or
+        ``None``. Decode with :class:`AgreeState` and :func:`agree_frames`."""
+        if self._agree is None:
+            return None
+        return memoryview(ffi.buffer(self._agree, self.count))
 
     @property
     def origin_map(self) -> memoryview | None:
@@ -3830,6 +3923,38 @@ class Device:
         the streaming passes — for a speed-diverse sweep, run whole-range
         passes at different ``speed_x`` yourself.
         """
+        args = dict(locals())
+        del args["self"]
+        return self._execute(args, None)
+
+    def _execute(self, a: dict, compare) -> ReadResult:
+        """The body of :meth:`read`, shared with :meth:`compare_read`."""
+        lba = a["lba"]
+        count = a["count"]
+        sink = a["sink"]
+        copy = a["copy"]
+        c2 = a["c2"]
+        sub = a["sub"]
+        any_type = a["any_type"]
+        retries = a["retries"]
+        chunk_sectors = a["chunk_sectors"]
+        speed_x = a["speed_x"]
+        c2_retries = a["c2_retries"]
+        verify_passes = a["verify_passes"]
+        overlap_sectors = a["overlap_sectors"]
+        speed_ladder = a["speed_ladder"]
+        status_map = a["status_map"]
+        subq_map = a["subq_map"]
+        cancel = a["cancel"]
+        buffer_bytes = a["buffer_bytes"]
+        c2_witness = a["c2_witness"]
+        cache_defeat = a["cache_defeat"]
+        readable = a["readable"]
+        origin_map = a["origin_map"]
+        rescue_by_rung = a["rescue_by_rung"]
+        shift_search = a["shift_search"]
+        budget_cmds = a["budget_cmds"]
+        budget_speed_changes = a["budget_speed_changes"]
         if count <= 0:
             raise ValueError("count must be > 0")
         # 0.57.0: raise, never wrap. cffi would raise OverflowError on its own,
@@ -3897,11 +4022,28 @@ class Device:
         stats.size = ffi.sizeof("accudisc_read_stats")
 
         tramp = _SinkTrampoline(sink, copy) if sink is not None else None
-        rc = lib.accudisc_read_cdda(
-            self._handle, req,
-            tramp.cffi_callback if tramp else ffi.NULL, ffi.NULL,
-            stats,
-        )
+        sink_cb = tramp.cffi_callback if tramp else ffi.NULL
+        if compare is None:
+            rc = lib.accudisc_read_cdda(self._handle, req, sink_cb, ffi.NULL,
+                                        stats)
+            cmp_stats = agree_buf = None
+        else:
+            reference, agree_map = compare
+            rtramp = _RefTrampoline(reference)
+            agree_buf = _lane_buffer("agree_map", agree_map, count, keepalive)
+            cs = ffi.new("accudisc_compare_stats*")
+            cs.size = ffi.sizeof("accudisc_compare_stats")
+            rc = lib.accudisc_compare_read(
+                self._handle, req, rtramp.cffi_callback, ffi.NULL,
+                agree_buf if agree_buf is not None else ffi.NULL,
+                sink_cb, ffi.NULL, stats, cs)
+            # The reference's error first: it ran before the sink saw the chunk.
+            if rtramp.error is not None:
+                raise rtramp.error
+            cmp_stats = CompareStats(
+                agree=cs.agree, agree_c2=cs.agree_c2, differ=cs.differ,
+                shifted=cs.shifted, shifted_off_frame=cs.shifted_off_frame,
+                hard=cs.hard, ref_missing=cs.ref_missing)
         # A sink that raised cancelled the read; report the CAUSE, not the
         # symptom, or the traceback says "cancelled" and loses the real error.
         if tramp is not None and tramp.error is not None:
@@ -3916,7 +4058,39 @@ class Device:
             _subq=subq_buf,
             _keepalive=keepalive,
             _origin=origin_buf,
+            compare=cmp_stats,
+            _agree=agree_buf,
         )
+
+    def compare_read(self, lba: int, count: int,
+                     reference: "Callable[[int, int], tuple]", *,
+                     agree_map: bool | Any = True, **kwargs) -> ReadResult:
+        """A read held sector by sector against YOUR reference (0.59.0).
+
+        ``reference(lba, n)`` returns ``(audio, absent)``: ``n * 2352`` bytes
+        of reference audio for ``[lba, lba + n)`` (``lba`` is the n-th RAW
+        sector as read: no offset arithmetic), and an iterable of the offsets
+        in ``[0, n)`` you have no copy of, or ``None``. It is called once per
+        chunk in address order, never concurrently with itself or ``sink``,
+        and before ``sink`` sees the same chunk, on the SINK's thread (the
+        AccuBuffer's by default). Raise to cancel: the read stops and your
+        exception is re-raised (before any from ``sink``).
+
+        Every other keyword is :meth:`read`'s, normally the policy's:
+        ``dev.compare_read(reference=ref, **policy.read_kwargs())`` (those
+        kwargs carry ``lba`` and ``count`` too, so pass the reference by
+        name).
+        ``agree_map`` takes the same three forms as ``status_map``; decode it
+        with :class:`AgreeState` and :func:`agree_frames`. The result carries
+        ``.compare`` (:class:`CompareStats`) and ``.agree_map``. A RELATIVE
+        check: two passes that agree are not a verification; your absolute
+        gate stays the gate. See ``accudisc_compare_read`` in accudisc.h.
+        """
+        bound = inspect.signature(Device.read).bind(self, lba, count, **kwargs)
+        bound.apply_defaults()
+        args = dict(bound.arguments)
+        del args["self"]
+        return self._execute(args, (reference, agree_map))
 
     def read_span(
         self,
