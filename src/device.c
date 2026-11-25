@@ -286,6 +286,8 @@ int accudisc_set_speed(accudisc_device *dev, unsigned speed_x)
 {
     if (!dev)
         return ACCUDISC_ERR_INVAL;
+    dev->speed_req_valid = 1;
+    dev->speed_req_last = speed_x;
 
     /* Prefer SET STREAMING (0xB6): a performance-descriptor ceiling the drive
      * actually enforces. SET CD SPEED / CDROM_SELECT_SPEED is advisory on
@@ -336,6 +338,9 @@ int accudisc_set_speed_range(accudisc_device *dev, unsigned speed_x,
      * that would ignore the requested range. */
     unsigned exact = (flags & ACCUDISC_SPEED_EXACT) ? 1u : 0u;
     unsigned wkbps = 0;
+
+    dev->speed_req_valid = 1;
+    dev->speed_req_last = speed_x;
 
     (void)adsc_dev_cur_write_kbps(dev, &wkbps); /* see accudisc_set_speed */
     return adsc_mmc_set_streaming(dev, speed_x, (uint32_t)start_lba,

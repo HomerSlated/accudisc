@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "../mmc/mmc.h"
+#include "../trace.h"
 #include "accubuf.h"
 #include "engine.h"
 #include "far.h"
@@ -193,8 +194,57 @@ struct rd {
     uint8_t *anchored; /* one sector, the first corroborated copy */
     uint32_t far_lo, far_hi; /* readable range for far reads; hi 0 = unknown */
     int cancelled;    /* latched: a cancel flag was seen (0.52.0) */
+    unsigned rung;    /* 0.53.0: 0 = pass speed, n = speed_ladder[n - 1] */
+    uint8_t rung_seen[16]; /* rung's honoured speed already read back */
     accudisc_read_stats st;
 };
+
+/* EFFORT ACCOUNTING (0.53.0). Every operation the engine issues is booked
+ * here, to exactly one stage, by the helper that issues it: far_read,
+ * read_sector, read_run and the two speed helpers below. Callers name the
+ * stage; nothing books its own command. That single rule is what lets a
+ * caller sum cmds[] into the whole drive work of a read. */
+static void book(struct rd *r, unsigned stage, int ok, uint64_t t0)
+{
+    r->st.cmds[stage]++;
+    if (!ok)
+        r->st.cmds_failed[stage]++;
+    r->st.us[stage] += (adsc_mono_ns() - t0) / 1000u;
+    if (stage == ACCUDISC_STAGE_QPOS || stage == ACCUDISC_STAGE_C2_RESCUE ||
+        stage == ACCUDISC_STAGE_CONSENSUS)
+        r->st.rung_cmds[r->rung]++;
+}
+
+/* A speed set. A CHANGE is a request that differs from the last one on the
+ * handle (device.c records every request), checked before the set. */
+static int speed_set_booked(struct rd *r, unsigned speed)
+{
+    uint64_t t0;
+    int rc;
+
+    if (!r->dev->speed_req_valid || r->dev->speed_req_last != speed)
+        r->st.speed_changes++;
+    t0 = adsc_mono_ns();
+    rc = accudisc_set_speed(r->dev, speed);
+    book(r, ACCUDISC_STAGE_SPEED, rc == ACCUDISC_OK, t0);
+    return rc;
+}
+
+/* Page 2A's current speed in x (kB/s / 176), or 0 = no answer. */
+static uint16_t speed_readback_booked(struct rd *r)
+{
+    uint64_t t0 = adsc_mono_ns();
+    unsigned kbps = 0;
+    int rc = accudisc_get_speed(r->dev, NULL, &kbps);
+
+    book(r, ACCUDISC_STAGE_SPEED, rc == ACCUDISC_OK, t0);
+    return rc == ACCUDISC_OK ? (uint16_t)(kbps / 176) : 0;
+}
+
+static uint8_t origin_byte(unsigned cls, unsigned rung)
+{
+    return (uint8_t)(cls | (rung > 15 ? 15u : rung) << 4);
+}
 
 /* CANCELLATION WITHIN ONE READ CD (0.52.0, cdda2img 262).
  *
@@ -229,12 +279,15 @@ static void count_sense(struct rd *r)
 
 /* Speed changes make real drives recalibrate (seconds each) — never issue
  * a no-op change. */
-static void set_speed_once(struct rd *r, int speed)
+static int set_speed_once(struct rd *r, int speed)
 {
+    int rc;
+
     if (speed == r->cur_speed)
-        return;
-    accudisc_set_speed(r->dev, (unsigned)speed);
+        return 0;
+    rc = speed_set_booked(r, (unsigned)speed);
     r->cur_speed = speed;
+    return rc == ACCUDISC_OK ? 1 : -1;
 }
 
 /* Rescue/consensus attempt n runs at ladder[min(n-1, len-1)]. */
@@ -248,8 +301,15 @@ static void ladder_speed(struct rd *r, unsigned attempt)
     idx = attempt - 1;
     if (idx >= req->ladder_len)
         idx = (unsigned)req->ladder_len - 1;
-    set_speed_once(r, req->speed_ladder[idx]);
+    int set = set_speed_once(r, req->speed_ladder[idx]);
     r->speed_dirty = 1;
+    r->rung = idx + 1 > 15 ? 15 : idx + 1;
+    /* Each rung's honoured speed, read back once, after its first set. */
+    if (set != 0 && !r->rung_seen[r->rung]) {
+        r->rung_seen[r->rung] = 1;
+        if (set == 1)
+            r->st.rung_honoured_x[r->rung] = speed_readback_booked(r);
+    }
 }
 
 /* Back to the pass speed (or the drive's own management) for streaming. */
@@ -259,6 +319,7 @@ static void ladder_restore(struct rd *r)
         return;
     set_speed_once(r, r->req->speed_x); /* 0 = drive default */
     r->speed_dirty = 0;
+    r->rung = 0;
 }
 
 /* A back-to-back reread often just replays the drive cache; read one sector
@@ -282,10 +343,14 @@ static int far_read(struct rd *r, uint32_t lba)
 {
     if (stop(r))
         return 0;
+    uint64_t t0 = adsc_mono_ns();
     int rc = adsc_mmc_read_cd(r->dev, lba, 1, ADSC_SECTOR_ANY,
                               ACCUDISC_C2_NONE, ACCUDISC_SUB_NONE, r->flush,
                               ACCUDISC_BYTES_AUDIO);
-    return rc == ACCUDISC_OK || rc == ACCUDISC_ERR_SHORT;
+    int ok = rc == ACCUDISC_OK || rc == ACCUDISC_ERR_SHORT;
+
+    book(r, ACCUDISC_STAGE_FAR, ok, t0);
+    return ok;
 }
 
 static enum adsc_far far_pick(const struct rd *r, uint32_t cur, uint32_t a,
@@ -332,22 +397,32 @@ static uint8_t defeat_before_read(struct rd *r)
                               : ACCUDISC_CACHE_DEFEAT_DONE;
 }
 
-static int read_sector(struct rd *r, uint32_t lba, uint8_t *dst)
+static int read_sector(struct rd *r, uint32_t lba, uint8_t *dst,
+                       unsigned stage)
 {
     if (stop(r))
         return ACCUDISC_ERR_CANCELLED;
-    return adsc_mmc_read_cd(r->dev, lba, 1, r->sector_type, r->req->c2,
-                            r->req->sub, dst, r->sector_len);
+    uint64_t t0 = adsc_mono_ns();
+    int rc = adsc_mmc_read_cd(r->dev, lba, 1, r->sector_type, r->req->c2,
+                              r->req->sub, dst, r->sector_len);
+
+    book(r, stage, rc == ACCUDISC_OK, t0);
+    return rc;
 }
 
 /* n sectors in one transfer, in the read's own format. Gated like
  * read_sector. */
-static int read_run(struct rd *r, uint32_t lba, uint32_t n, uint8_t *dst)
+static int read_run(struct rd *r, uint32_t lba, uint32_t n, uint8_t *dst,
+                    unsigned stage)
 {
     if (stop(r))
         return ACCUDISC_ERR_CANCELLED;
-    return adsc_mmc_read_cd(r->dev, lba, n, r->sector_type, r->req->c2,
-                            r->req->sub, dst, r->sector_len);
+    uint64_t t0 = adsc_mono_ns();
+    int rc = adsc_mmc_read_cd(r->dev, lba, n, r->sector_type, r->req->c2,
+                              r->req->sub, dst, r->sector_len);
+
+    book(r, stage, rc == ACCUDISC_OK, t0);
+    return rc;
 }
 
 /* Is the last failure a statement about the REQUEST rather than about this
@@ -369,11 +444,15 @@ static int sense_is_categorical(struct rd *r)
  * extension, or all of a verify pass with primary_n 0) are only marked in
  * hard[] — their failure is a missing signal, not a hard error. */
 static void read_span(struct rd *r, uint32_t lba, uint32_t total,
-                      uint8_t *buf, uint8_t *hard, uint32_t primary_n)
+                      uint8_t *buf, uint8_t *hard, uint32_t primary_n,
+                      unsigned stage, uint8_t *origin)
 {
     memset(hard, 0, total);
-    if (read_run(r, lba, total, buf) == ACCUDISC_OK)
+    if (read_run(r, lba, total, buf, stage) == ACCUDISC_OK) {
+        if (origin)
+            memset(origin, ACCUDISC_ORIGIN_FIRST, total);
         return;
+    }
 
     for (uint32_t s = 0; s < total; s++) {
         uint8_t *sec = buf + (size_t)s * r->sector_len;
@@ -385,17 +464,21 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
                 return; /* the caller discards the chunk; nothing is booked */
             if (attempt > 0)
                 cache_defeat(r, cur, cur, 1);
-            src = read_sector(r, cur, sec);
+            src = read_sector(r, cur, sec, ACCUDISC_STAGE_FALLBACK);
             if (src == ACCUDISC_OK)
                 break;
             if (sense_is_categorical(r))
                 break; /* the answer will not change; stop burning seeks */
         }
-        if (src == ACCUDISC_OK)
+        if (src == ACCUDISC_OK) {
+            if (origin)
+                origin[s] = ACCUDISC_ORIGIN_FALLBACK;
             continue;
+        }
         if (stop(r))
             return; /* cancelled, not failed: book nothing */
-        hard[s] = 1;
+        hard[s] = 1; /* its origin is irrelevant: publish() writes NONE for
+                      * every HARD sector */
         if (s < primary_n) {
             memset(sec, 0, r->audio_len);
             memset(sec + r->audio_len, 0xff, r->c2_len);
@@ -424,7 +507,7 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
  * the thing it is replacing. A reread whose Q is unreadable is not usable
  * either: with no claim there is nothing to check, and silence is not consent. */
 static int qpos_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
-                       unsigned *attempts)
+                       unsigned *attempts, uint8_t *origin)
 {
     for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2; a++) {
         uint8_t qf[12];
@@ -434,7 +517,8 @@ static int qpos_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
             return 0;
         ladder_speed(r, a);
         cache_defeat(r, lba, lba, 1);
-        if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
+        if (read_sector(r, lba, r->scratch, ACCUDISC_STAGE_QPOS) !=
+            ACCUDISC_OK)
             continue;
         r->st.rereads++;
         *attempts = a;
@@ -445,6 +529,7 @@ static int qpos_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
         if (adsc_q_position_lba(&qd) != (int32_t)lba)
             continue; /* still elsewhere */
         memcpy(sec, r->scratch, r->sector_len);
+        *origin = origin_byte(ACCUDISC_ORIGIN_QPOS, r->rung);
         return 1;
     }
     return 0;
@@ -473,6 +558,7 @@ struct adsc_chunk_state {
     uint8_t recov[ADSC_CHUNK_MAX], susp[ADSC_CHUNK_MAX];
     unsigned att[ADSC_CHUNK_MAX];
     uint32_t bits[ADSC_CHUNK_MAX], diffb[ADSC_CHUNK_MAX];
+    uint8_t origin[ADSC_SPAN_MAX]; /* ACCUDISC_ORIGIN_* per sector (0.53.0) */
 };
 
 /* Can a byte-exact match against this sector say anything about ALIGNMENT?
@@ -547,7 +633,7 @@ static int corroborated(struct rd *r, const uint8_t *ctx, uint32_t w0,
  * gate (AccurateRip/CTDB, in the caller) can. */
 static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
                            const struct adsc_ref *refs, unsigned nref,
-                           unsigned *attempts)
+                           unsigned *attempts, uint8_t *origin)
 {
     static const int32_t start[] = { -1, -2, 0 };
     unsigned agree = 0;
@@ -562,7 +648,8 @@ static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
         uint32_t w0 = (uint32_t)w;
 
         cache_defeat(r, lba, w0, ADSC_ANCHOR_SPAN);
-        if (read_run(r, w0, ADSC_ANCHOR_SPAN, r->context) != ACCUDISC_OK)
+        if (read_run(r, w0, ADSC_ANCHOR_SPAN, r->context,
+                     ACCUDISC_STAGE_ANCHOR) != ACCUDISC_OK)
             continue;
         r->st.rereads++;
         (*attempts)++;
@@ -581,6 +668,7 @@ static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
         }
         if (agree >= 2) {
             memcpy(sec, r->anchored, r->sector_len);
+            *origin = origin_byte(ACCUDISC_ORIGIN_ANCHOR, r->rung);
             return 1;
         }
     }
@@ -608,7 +696,7 @@ static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
  * delivery, and it is the right way round. */
 static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *bits,
                       unsigned *attempts, const struct adsc_ref *refs,
-                      unsigned nref)
+                      unsigned nref, uint8_t *origin)
 {
     static const int32_t start[] = { -1, -2, 0 };
     uint32_t best = *bits;
@@ -625,7 +713,8 @@ static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *bits,
 
         ladder_speed(r, a);
         cache_defeat(r, lba, w0, ADSC_ANCHOR_SPAN);
-        if (read_run(r, w0, ADSC_ANCHOR_SPAN, r->context) != ACCUDISC_OK)
+        if (read_run(r, w0, ADSC_ANCHOR_SPAN, r->context,
+                     ACCUDISC_STAGE_C2_RESCUE) != ACCUDISC_OK)
             continue;
         r->st.rereads++;
         *attempts = a;
@@ -638,6 +727,7 @@ static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *bits,
         if (b < best) {
             memcpy(sec, x, r->sector_len);
             best = b;
+            *origin = origin_byte(ACCUDISC_ORIGIN_C2_RESCUE, r->rung);
         }
     }
     *bits = best;
@@ -654,7 +744,7 @@ static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *bits,
 static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
                      const uint8_t *alt, int shifted,
                      const struct adsc_ref *refs, unsigned nref,
-                     unsigned *attempts)
+                     unsigned *attempts, uint8_t *origin)
 {
     unsigned count = 0;
 
@@ -670,7 +760,8 @@ static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
             return 0;
         ladder_speed(r, a);
         cache_defeat(r, lba, lba, 1);
-        if (read_sector(r, lba, r->scratch) != ACCUDISC_OK)
+        if (read_sector(r, lba, r->scratch, ACCUDISC_STAGE_CONSENSUS) !=
+            ACCUDISC_OK)
             continue;
         r->st.rereads++;
         *attempts = a;
@@ -687,6 +778,7 @@ static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
         }
         if (matched && !shifted) {
             memcpy(sec, r->scratch, r->sector_len);
+            *origin = origin_byte(ACCUDISC_ORIGIN_CONSENSUS, r->rung);
             return 1;
         }
         if (matched)
@@ -700,7 +792,7 @@ static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
     if (!shifted || stop(r))
         return 0;
     ladder_restore(r);
-    return anchor_position(r, lba, sec, refs, nref, attempts);
+    return anchor_position(r, lba, sec, refs, nref, attempts, origin);
 }
 
 /* ONE WITNESSED PASS over a chunk already in buf: re-read it as a separate,
@@ -719,13 +811,13 @@ static void witness_pass(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
                          const uint8_t *prim, const uint8_t *hard,
                          uint8_t *buf2, uint8_t *hard2, uint8_t *recov,
                          uint8_t *susp, unsigned *att, uint32_t *bits,
-                         uint32_t *diffb)
+                         uint32_t *diffb, uint8_t *origin)
 {
     if (stop(r))
         return;
     ladder_restore(r);
     cache_defeat(r, lba, lba, n);
-    read_span(r, lba, n, buf2, hard2, 0);
+    read_span(r, lba, n, buf2, hard2, 0, ACCUDISC_STAGE_WITNESS, NULL);
     for (uint32_t s = 0; s < n; s++) {
         if (stop(r))
             return; /* buf2/hard2 are partial: compare nothing against them */
@@ -735,8 +827,14 @@ static void witness_pass(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
         const uint8_t *alt = buf2 + (size_t)s * r->sector_len;
         uint32_t diff = hard2[s] ? 0 : adsc_audio_diff(sec, alt);
 
-        if (!hard2[s] && diff == 0)
-            continue; /* confirmed */
+        if (!hard2[s] && diff == 0) {
+            /* confirmed: a FIRST copy is now CONFIRMED; a rescued copy keeps
+             * the class of the read that produced it */
+            if (ACCUDISC_ORIGIN_CLASS(origin[s]) == ACCUDISC_ORIGIN_FIRST)
+                origin[s] = origin_byte(ACCUDISC_ORIGIN_CONFIRMED,
+                                        ACCUDISC_ORIGIN_RUNG(origin[s]));
+            continue;
+        }
         int shifted = 0;
         if (!hard2[s]) {
             int32_t sh;
@@ -751,7 +849,7 @@ static void witness_pass(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
             { lba, n, buf2, hard2 },
         };
         if (consensus(r, lba + s, sec, hard2[s] ? NULL : alt, shifted, refs,
-                      2, &used)) {
+                      2, &used, &origin[s])) {
             recov[s] = 1;
             att[s] += used;
             if (r->c2_len)
@@ -781,9 +879,14 @@ static int publish(struct rd *r, struct adsc_chunk_state *c,
              * zero-filled Q frame FAILS CRC-16, so anyone recomputing this
              * downstream records fabricated Q damage here. */
             map_store(req->subq_map, idx, ACCUDISC_SUBQ_NO_AUDIO);
+            map_store(req->origin_map, idx, ACCUDISC_ORIGIN_NONE);
+            r->st.won_by[ACCUDISC_ORIGIN_NONE]++;
             continue;
         }
         r->st.sectors_read++;
+        map_store(req->origin_map, idx, c->origin[s]);
+        r->st.won_by[ACCUDISC_ORIGIN_CLASS(c->origin[s])]++;
+        r->st.rung_wins[ACCUDISC_ORIGIN_RUNG(c->origin[s])]++;
         r->st.c2_bits += c->bits[s];
 
         /* Q-subchannel CRC health of the delivered sector. Raw P-W only;
@@ -828,6 +931,8 @@ static int publish(struct rd *r, struct adsc_chunk_state *c,
             map_store(req->status_map, idx, ACCUDISC_MAP_OK);
         }
     }
+    if (c->witnessed)
+        r->st.chunks_witnessed++;
     c->live = 0;
 
     if (!sink)
@@ -853,6 +958,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     size_t stats_bytes = 0;
 
     memset(&r, 0, sizeof(r));
+    uint64_t t_start = adsc_mono_ns();
     r.st.first_flagged_lba = -1;
     r.st.last_flagged_lba = -1;
 
@@ -986,11 +1092,9 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
      * existed. Nothing here can fail the read. */
     if (req->speed_x) {
         r.st.speed_requested_x = req->speed_x;
-        if (accudisc_set_speed(dev, req->speed_x) == ACCUDISC_OK) {
-            unsigned cur_kbps = 0;
-            if (accudisc_get_speed(dev, NULL, &cur_kbps) == ACCUDISC_OK)
-                r.st.speed_honoured_x = (uint16_t)(cur_kbps / 176);
-        }
+        if (speed_set_booked(&r, req->speed_x) == ACCUDISC_OK)
+            r.st.speed_honoured_x = speed_readback_booked(&r);
+        r.st.rung_honoured_x[0] = r.st.speed_honoured_x;
     }
 
     /* AccuBuffer, if the caller asked for one. Declared here so `out:` can see
@@ -1114,7 +1218,8 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         CANCEL_POINT();
 
         ladder_restore(&r);
-        read_span(&r, lba, n + ext, buf, hard, n);
+        read_span(&r, lba, n + ext, buf, hard, n, ACCUDISC_STAGE_STREAM,
+                  cur->origin);
         CANCEL_POINT();
         if (prim)
             memcpy(prim, buf, (size_t)n * r.sector_len);
@@ -1182,7 +1287,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                 if (!qsus[s] || hard[s] || susp[s])
                     continue;
                 if (qpos_rescue(&r, lba + s, buf + (size_t)s * r.sector_len,
-                                &used)) {
+                                &used, &cur->origin[s])) {
                     recov[s] = 1;
                     att[s] += used;
                 } else {
@@ -1205,8 +1310,13 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
             const uint8_t *alt = prev_ext + (size_t)s * r.sector_len;
             uint32_t diff = adsc_audio_diff(sec, alt);
 
-            if (diff == 0)
+            if (diff == 0) {
+                /* the previous transfer's extension agrees: a second transfer */
+                if (ACCUDISC_ORIGIN_CLASS(cur->origin[s]) ==
+                    ACCUDISC_ORIGIN_FIRST)
+                    cur->origin[s] = ACCUDISC_ORIGIN_CONFIRMED;
                 continue;
+            }
             seam_bad = 1;
             int32_t sh;
             int shifted = adsc_shift_find(sec, alt, &sh);
@@ -1218,7 +1328,8 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                 { lba, n, prim, hard },
                 { lba, prev_ext_n, prev_ext, prev_ext_hard },
             };
-            if (consensus(&r, lba + s, sec, alt, shifted, refs, 2, &used)) {
+            if (consensus(&r, lba + s, sec, alt, shifted, refs, 2, &used,
+                          &cur->origin[s])) {
                 recov[s] = 1;
                 att[s] += used;
             } else {
@@ -1247,7 +1358,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                     { lba, prev_ext_n, prev_ext, prev_ext_hard },
                 };
                 c2_rescue(&r, lba + s, buf + (size_t)s * r.sector_len,
-                          &bits[s], &used, refs, 2);
+                          &bits[s], &used, refs, 2, &cur->origin[s]);
                 if (bits[s] == 0 && before > 0) {
                     recov[s] = 1;
                     att[s] += used;
@@ -1267,7 +1378,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
          * speed-diverse. */
         for (unsigned pass = 2; pass <= passes; pass++) {
             witness_pass(&r, lba, n, buf, prim, hard, buf2, hard2, recov, susp,
-                         att, bits, diffb);
+                         att, bits, diffb, cur->origin);
             CANCEL_POINT();
         }
         if (passes > 1)
@@ -1302,13 +1413,13 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         if (wit_pend && pend->live && !pend->witnessed) {
             witness_pass(&r, pend->lba, pend->n, pend->buf, pend->prim,
                          pend->hard, buf2, hard2, pend->recov, pend->susp,
-                         pend->att, pend->bits, pend->diffb);
+                         pend->att, pend->bits, pend->diffb, pend->origin);
             pend->witnessed = 1;
             CANCEL_POINT();
         }
         if (wit_cur && !cur->witnessed) {
             witness_pass(&r, lba, n, buf, prim, hard, buf2, hard2, recov,
-                         susp, att, bits, diffb);
+                         susp, att, bits, diffb, cur->origin);
             cur->witnessed = 1;
             CANCEL_POINT();
         }
@@ -1372,6 +1483,7 @@ out:
     free(r.flush);
     free(r.scratch);
     free(r.samples);
+    r.st.us_total = (adsc_mono_ns() - t_start) / 1000u;
     if (stats) {
         /* Only as far as the caller said their allocation reaches — a whole
          * struct assignment here would write sizeof(*stats) bytes into memory

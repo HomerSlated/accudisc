@@ -57,7 +57,13 @@ _Static_assert(sizeof(accudisc_speed_rung) == 20,
  * updating the number below, bumping ACCUDISC_VERSION_MINOR so the .so version
  * moves with the layout, and adding a row to API_PLAN §8. Tripping these is a
  * reminder, not a defect. */
-_Static_assert(sizeof(accudisc_read_req) == 96, "read_req grew — see above");
+_Static_assert(sizeof(accudisc_read_req) == 104, "read_req grew — see above");
+/* 0.53.0: 96 -> 104. 0.52.0's struct ended at 96 with no tail padding (it
+ * closes on two uint32_t at 88 and 92), so origin_map goes straight to 96,
+ * past every older caller's declared end, where the import zero-extends it to
+ * NULL. */
+_Static_assert(offsetof(accudisc_read_req, origin_map) == 96,
+               "read_req: origin_map must sit past 0.52.0's end");
 /* 0.51.0: 88 -> 96, the third time. 0.50.1's struct ended in seven bytes of
  * tail padding at 81, so reserved2 covers 81-87 and is never read, and the
  * far-read range starts at 88, beyond a 0.50.1 caller's declared end. */
@@ -84,7 +90,27 @@ _Static_assert(offsetof(accudisc_read_req, reserved0) == 68,
                "read_req: reserved0 must cover 0.44.0's padding");
 _Static_assert(offsetof(accudisc_read_req, c2_witness) == 72,
                "read_req: c2_witness must sit past 0.44.0's end");
-_Static_assert(sizeof(accudisc_read_stats) == 160, "read_stats grew — see above");
+_Static_assert(sizeof(accudisc_read_stats) == 656, "read_stats grew — see above");
+/* 0.53.0: 160 -> 656, the effort block, ordered by alignment. These offsets
+ * were published to cdda2img before the build (correspondence 2026-11-25j), so
+ * they are pinned field by field: a reordering would read the wrong counter
+ * with no error anywhere. */
+_Static_assert(offsetof(accudisc_read_stats, us) == 160, "effort: us");
+_Static_assert(offsetof(accudisc_read_stats, us_total) == 288, "effort: us_total");
+_Static_assert(offsetof(accudisc_read_stats, cmds) == 296, "effort: cmds");
+_Static_assert(offsetof(accudisc_read_stats, cmds_failed) == 360,
+               "effort: cmds_failed");
+_Static_assert(offsetof(accudisc_read_stats, won_by) == 424, "effort: won_by");
+_Static_assert(offsetof(accudisc_read_stats, rung_cmds) == 488,
+               "effort: rung_cmds");
+_Static_assert(offsetof(accudisc_read_stats, rung_wins) == 552,
+               "effort: rung_wins");
+_Static_assert(offsetof(accudisc_read_stats, chunks_witnessed) == 616,
+               "effort: chunks_witnessed");
+_Static_assert(offsetof(accudisc_read_stats, speed_changes) == 620,
+               "effort: speed_changes");
+_Static_assert(offsetof(accudisc_read_stats, rung_honoured_x) == 624,
+               "effort: rung_honoured_x");
 
 /* 0.22.0 moved these: read_req 64 -> 72 (buffer_bytes, plus the padding it
  * pulled in) and read_stats 144 -> 160 (buffer_peak_chunks, buffer_stalls).
@@ -95,7 +121,7 @@ _Static_assert(offsetof(accudisc_read_stats, subq_misposition) == 140,
                "subq_misposition moved: 0.21.0 consumers read the wrong field");
 /* 0.49.0 put read_stats.cache_defeat in the padding between the two AccuBuffer
  * counters. It must not have moved anything: buffer_stalls keeps its offset
- * and the size stays 160 (asserted above). */
+ * and the size stayed 160 at the time (0.53.0 then appended past it). */
 _Static_assert(offsetof(accudisc_read_stats, cache_defeat) == 148,
                "read_stats: cache_defeat was supposed to land in padding");
 _Static_assert(offsetof(accudisc_read_stats, buffer_stalls) == 152,

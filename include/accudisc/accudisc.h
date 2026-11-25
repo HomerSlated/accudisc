@@ -27,7 +27,18 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 52 /* 0.52.0: cancellation lands within one
+#define ACCUDISC_VERSION_MINOR 53 /* 0.53.0: EFFORT STATS and the ORIGIN LANE.
+                                  * accudisc_read_stats grows 160 -> 656 with
+                                  * per-stage operations issued/failed and
+                                  * µs, wins per origin class and per rung,
+                                  * speed CHANGES, and each rung's honoured
+                                  * speed; accudisc_read_req grows 96 -> 104
+                                  * with origin_map, one byte per sector
+                                  * saying whose bytes were delivered. No read
+                                  * behaves differently (cdda2img
+                                  * correspondence 268-274, AccuDisc
+                                  * 2026-11-25g/j).
+                                  * Previously 0.52.0: cancellation lands within one
                                   * READ CD. accudisc_set_cancel (new) gives a
                                   * HANDLE-level flag that every long read call
                                   * polls, including the speed-ladder and C2-lag
@@ -3899,7 +3910,62 @@ typedef struct accudisc_read_req {
      * not. Two drives; one disc on the PX-716A. 5000 stays the first choice,
      * because a drive that evicts sector by sector would need it.
      * cache_defeat records a near target as ACCUDISC_CACHE_DEFEAT_NEAR. */
+    /* 0.53.0: count bytes, or NULL. The ORIGIN LANE: for each delivered
+     * sector, WHOSE BYTES were delivered. It never says whether they are
+     * right. Indexed relative to the request, and written with the same
+     * allocation, lifetime and live semantics as status_map above. Works
+     * with any c2/sub. Values are ACCUDISC_ORIGIN_* below.
+     *
+     * Appended, so an older caller's struct zero-extends to NULL (the IN
+     * rule). A caller that sets it against a library older than 0.53.0 gets
+     * ACCUDISC_ERR_ABI, never a silently empty lane. */
+    uint8_t *origin_map;
 } accudisc_read_req;
+
+/* accudisc_read_req.origin_map, one byte per sector. LOW NIBBLE: the class of
+ * read whose bytes were delivered. HIGH NIBBLE: the rung, where 0 is the pass
+ * speed (speed_x, or drive-managed) and n is speed_ladder[n - 1], capped at
+ * 15. The caller holds the ladder, so the index is enough.
+ *
+ * A SUSPECT sector's byte names whose best-effort bytes went out, which is
+ * usually FIRST. The status map still says SUSPECT. Added for the hardware
+ * A/B of engine recovery (cdda2img correspondence 268-274), so that a result
+ * can be attributed to the read that produced it. */
+#define ACCUDISC_ORIGIN_NONE      0 /* pending, or HARD (zero-filled) */
+#define ACCUDISC_ORIGIN_FIRST     1 /* the chunk's first transfer, never
+                                     * compared with another transfer */
+#define ACCUDISC_ORIGIN_CONFIRMED 2 /* the first transfer, and a second
+                                     * transfer (verify, witness or the seam
+                                     * extension) agreed byte for byte */
+#define ACCUDISC_ORIGIN_FALLBACK  3 /* a single-sector read after the chunk
+                                     * transfer failed */
+#define ACCUDISC_ORIGIN_QPOS      4 /* a Q-position rescue re-read */
+#define ACCUDISC_ORIGIN_C2_RESCUE 5 /* a C2-rescue context read (fewer bits,
+                                     * not necessarily zero) */
+#define ACCUDISC_ORIGIN_CONSENSUS 6 /* a single-sector re-read that matched an
+                                     * earlier copy */
+#define ACCUDISC_ORIGIN_ANCHOR    7 /* an anchoring context read, two
+                                     * corroborated reads agreeing */
+#define ACCUDISC_ORIGIN_CLASS(b) ((uint8_t)(b) & 0x0f)
+#define ACCUDISC_ORIGIN_RUNG(b)  ((uint8_t)(b) >> 4)
+
+/* accudisc_read_stats.cmds[] and friends: the stage each drive operation is
+ * booked to. Every operation the read engine issues is booked to exactly one
+ * stage, from one place (the engine's I/O helpers). */
+#define ACCUDISC_STAGE_STREAM    0 /* first-transfer chunk reads */
+#define ACCUDISC_STAGE_FALLBACK  1 /* single-sector reads after any failed
+                                    * chunk transfer (first or witness) */
+#define ACCUDISC_STAGE_QPOS      2 /* Q-position rescue re-reads */
+#define ACCUDISC_STAGE_C2_RESCUE 3 /* C2-rescue context reads */
+#define ACCUDISC_STAGE_CONSENSUS 4 /* consensus single-sector re-reads */
+#define ACCUDISC_STAGE_ANCHOR    5 /* anchoring context reads */
+#define ACCUDISC_STAGE_WITNESS   6 /* second-transfer chunk reads (verify,
+                                    * seam, c2_witness) */
+#define ACCUDISC_STAGE_FAR       7 /* every cache-defeat far read, including
+                                    * read_req.cache_defeat's head read */
+#define ACCUDISC_STAGE_SPEED     8 /* speed sets (the pass speed, each rung,
+                                    * each restore) and their read-backs */
+#define ACCUDISC_STAGE_COUNT     9 /* 9-15 reserved */
 
 /* One delivered chunk. data holds nsec sectors, each sector_len bytes laid
  * out AUDIO (audio_len) + C2 (c2_len) + SUB (sub_len). Hard-unreadable
@@ -4021,10 +4087,10 @@ typedef struct accudisc_read_stats {
      * never happened — a different failure needing a different response.
      *
      * SCOPE: the PASS speed (req->speed_x), read back once immediately after
-     * it is applied. RECOVERY-LADDER RUNGS ARE NOT COVERED — speed_ladder moves
-     * the speed mid-read, and a per-rung answer needs per-rung storage. Use
-     * accudisc_probe_speed_ladder, whose ACCUDISC_RUNG_QUANTIZED verdict is
-     * exactly that question asked per rung, before the read. */
+     * it is applied. Recovery-ladder rungs are covered since 0.53.0 by
+     * rung_honoured_x[] at the end of this struct, read back once after each
+     * rung's first set. accudisc_probe_speed_ladder still asks the same
+     * question per rung BEFORE the read (ACCUDISC_RUNG_QUANTIZED). */
     uint16_t speed_requested_x; /* echo of req->speed_x; 0 = none asked */
     uint16_t speed_honoured_x;  /* page 2A current after the set; 0 = unknown */
     uint32_t subq_misposition;  /* sectors whose CRC-valid ADR=1 Q reported a
@@ -4070,6 +4136,48 @@ typedef struct accudisc_read_stats {
      * reading it. */
     uint8_t cache_defeat;
     uint64_t buffer_stalls;
+
+    /* ---- 0.53.0: EFFORT. What the engine's own local recovery cost, so a
+     * caller can record it beside its own and budget whole rips (cdda2img
+     * correspondence 268-274). Informational: none of these feeds the caveat
+     * verdict, and `rereads` keeps its 0.52 meaning.
+     *
+     * The unit is an ENGINE OPERATION, and each one is booked to exactly one
+     * ACCUDISC_STAGE_*. A READ CD is one operation. So is a speed set, though
+     * it issues a MODE SENSE for the write speed and then SET STREAMING (or the
+     * select-speed ioctl). So is a read-back, one MODE SENSE. The transport's
+     * own retries are inside the operation and are not counted separately:
+     * unit attention, and the 0.51.2 exact-length retry.
+     *
+     * Arrays are indexed by stage, or by rung where noted (0 is the pass speed,
+     * n is speed_ladder[n - 1], capped at 15). Appended, so a shorter caller
+     * never sees them (the OUT rule). From a library older than 0.53.0 they do
+     * not exist: check "effort_stats" in the binding's features, or the
+     * version. */
+    uint64_t us[16];          /* µs spent inside each stage's operations */
+    uint64_t us_total;        /* µs inside accudisc_read_cdda. Minus the sum of
+                               * us[], it is time outside drive operations:
+                               * mostly the sink, when there is no buffer */
+    uint32_t cmds[16];        /* operations ISSUED per stage. Gated off by a
+                               * cancel = not issued = not counted */
+    uint32_t cmds_failed[16]; /* of those, how many failed */
+    uint32_t won_by[16];      /* sectors per ACCUDISC_ORIGIN_* class, HARD ones
+                               * under NONE: the classes sum to sectors
+                               * delivered */
+    uint32_t rung_cmds[16];   /* QPOS + C2_RESCUE + CONSENSUS reads per rung */
+    uint32_t rung_wins[16];   /* non-HARD sectors whose bytes came from rung i */
+    uint32_t chunks_witnessed; /* chunks compared with a second transfer */
+    uint32_t speed_changes;   /* speed sets whose requested value differs from
+                               * the previous request on this HANDLE, the head
+                               * pass-speed set included. The first set on a
+                               * fresh handle counts. A set equal to the last
+                               * request is still in cmds[SPEED] but not here:
+                               * what wears a drive is a change, not a command */
+    uint16_t rung_honoured_x[16]; /* page 2A's current speed read back after
+                               * each rung's FIRST set in this read; [0] is
+                               * speed_honoured_x. 0 = asked, no answer, or
+                               * never used. Same four-state rule as
+                               * speed_honoured_x above. */
 } accudisc_read_stats;
 
 /* accudisc_read_stats.cache_defeat */

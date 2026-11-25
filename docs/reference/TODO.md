@@ -8311,7 +8311,31 @@ before `span-flagged` gets its rescue ladder.
     a per-sector agree map (`AGREE`, `AGREE_C2`, `DIFFER`, `SHIFTED`, `HARD`).
     It is the engine home for cdda2img's `--digital-media` consensus, and does
     one far read in total, not one per chunk.
-  - Build order: 0.53 → 0.57, every step opt-in. Nothing is built yet.
+  - Build order: 0.53 → 0.57, every step opt-in.
+  - **BUILT 0.53.0 (2026-11-25): the effort stats and the origin lane,** as
+    published in 25j. cdda2img reviewed notes 1–5 in 274 and accepted them;
+    the API notice is 25l.
+    - **Booking.** Every engine operation is booked to exactly one stage by
+      the helper that issues it: `far_read`, `read_sector`, `read_run`, and
+      the speed set and read-back helpers. `speed_changes` compares each
+      request with the handle's last one, which `accudisc_set_speed` now
+      records. Each rung is read back once, after its first set.
+    - **The origin lane.** Origins are tracked per chunk sector (FIRST from the
+      bulk transfer, FALLBACK, and QPOS, C2_RESCUE, CONSENSUS or ANCHOR with
+      their rung) and upgraded to CONFIRMED when a witness transfer or the
+      seam extension agrees.
+    - **Tests.** `tests/test_effort.c` has 10 cases with counts derived by hand
+      and asserted exactly; the C.7 ladder case reads SPEED 21 and 17 changes.
+      `test_consensus` now asserts that anchoring wins with rung 0.
+    - **Mutation run.** 32 mutants of the booking and origin code, built in an
+      isolated copy (`/var/tmp`, because cdda2img loads `build/`). 31 were
+      killed after the tests were strengthened. The 32nd was a dead store (a
+      HARD sector's origin, which `publish` overwrites), and it was removed.
+    - **Suite.** 60/60, with the binding tests for the new fields and lane
+      included.
+    - **No read behaves differently.** Every existing test passed unchanged.
+      The only new commands are one MODE SENSE per rung, after that rung's
+      first set, on reads that pass a ladder (none of cdda2img's do today).
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 

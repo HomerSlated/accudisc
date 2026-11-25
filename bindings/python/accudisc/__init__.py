@@ -72,7 +72,8 @@ __all__ = [
     "Cancelled", "CrcError",
     "NotFound", "AbiMismatch", "RetainedBufferError",
     "C2", "Sub", "MapState", "SubQState", "Anomaly", "TocSource", "TocDegrade",
-    "C2Verdict", "FeaturesMedium", "CacheDefeat",
+    "C2Verdict", "FeaturesMedium", "CacheDefeat", "Origin", "Stage",
+    "origin_class", "origin_rung",
     "DiscKind", "DiscReason", "TrayState", "DiscProbe",
     "CtdbRepair", "ctdb_repair",
     "Verdict", "WriteResult",
@@ -193,6 +194,14 @@ features = frozenset({
     # CD rather than only at chunk boundaries (0.52.0). Absent means a Cancel
     # is seen at the next chunk, and the probes cannot be cancelled at all.
     "handle_cancel",
+    # ReadStats carries the 0.53.0 effort fields (cmds, cmds_failed, us,
+    # us_total, won_by, rung_cmds, rung_wins, chunks_witnessed, speed_changes,
+    # rung_honoured_x) and the Stage enum indexes them. Absent means none
+    # exist, which is not the same as "the engine did nothing".
+    "effort_stats",
+    # Device.read(origin_map=...), ReadResult.origin_map and the Origin enum
+    # exist (0.53.0): per sector, whose bytes were delivered.
+    "origin_map",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -702,6 +711,53 @@ class FeaturesMedium(enum.IntEnum):
     AUDIO = lib.ACCUDISC_FEATURES_MEDIUM_AUDIO
     NONE = lib.ACCUDISC_FEATURES_MEDIUM_NONE
     NO_AUDIO = lib.ACCUDISC_FEATURES_MEDIUM_NO_AUDIO
+
+
+class Origin(enum.IntEnum):
+    """Low nibble of an origin-lane byte (0.53.0): WHOSE bytes were delivered.
+
+    Never whether they are right. The high nibble is the rung: 0 is the pass
+    speed, n is ``speed_ladder[n - 1]``. Decode with :func:`origin_class` and
+    :func:`origin_rung`. See ``ACCUDISC_ORIGIN_*`` in accudisc.h.
+    """
+
+    NONE = lib.ACCUDISC_ORIGIN_NONE            # pending, or HARD (zero-filled)
+    FIRST = lib.ACCUDISC_ORIGIN_FIRST          # first transfer, never compared
+    CONFIRMED = lib.ACCUDISC_ORIGIN_CONFIRMED  # first transfer, a second agreed
+    FALLBACK = lib.ACCUDISC_ORIGIN_FALLBACK    # single-sector read after a failed chunk
+    QPOS = lib.ACCUDISC_ORIGIN_QPOS            # Q-position rescue re-read
+    C2_RESCUE = lib.ACCUDISC_ORIGIN_C2_RESCUE  # C2-rescue context read
+    CONSENSUS = lib.ACCUDISC_ORIGIN_CONSENSUS  # re-read that matched an earlier copy
+    ANCHOR = lib.ACCUDISC_ORIGIN_ANCHOR        # anchoring context read
+
+
+def origin_class(b: int) -> Origin:
+    """Class nibble of an origin-lane byte."""
+    return Origin(b & 0x0F)
+
+
+def origin_rung(b: int) -> int:
+    """Rung nibble of an origin-lane byte: 0 = pass speed, n = ladder[n - 1]."""
+    return (b >> 4) & 0x0F
+
+
+class Stage(enum.IntEnum):
+    """Index into the 0.53.0 effort arrays (``ReadStats.cmds`` and friends).
+
+    Every engine operation is booked to exactly one stage. The unit is an
+    engine operation: a speed set is one, though it issues more than one
+    command. See ``ACCUDISC_STAGE_*`` in accudisc.h.
+    """
+
+    STREAM = lib.ACCUDISC_STAGE_STREAM
+    FALLBACK = lib.ACCUDISC_STAGE_FALLBACK
+    QPOS = lib.ACCUDISC_STAGE_QPOS
+    C2_RESCUE = lib.ACCUDISC_STAGE_C2_RESCUE
+    CONSENSUS = lib.ACCUDISC_STAGE_CONSENSUS
+    ANCHOR = lib.ACCUDISC_STAGE_ANCHOR
+    WITNESS = lib.ACCUDISC_STAGE_WITNESS
+    FAR = lib.ACCUDISC_STAGE_FAR
+    SPEED = lib.ACCUDISC_STAGE_SPEED
 
 
 class CacheDefeat(enum.IntEnum):
@@ -1502,6 +1558,29 @@ class ReadStats:
     buffer_peak_chunks: int
     buffer_stalls: int
     cache_defeat: CacheDefeat
+    # ---- 0.53.0 effort ("effort_stats" in features). Defaults exist only so
+    # synthetic ReadStats in tests stay constructible; a real one always
+    # carries the library's values. Per-stage tuples are indexed by Stage,
+    # per-rung ones by rung (0 = pass speed, n = speed_ladder[n - 1]).
+    us: tuple[int, ...] = (0,) * 16
+    us_total: int = 0
+    cmds: tuple[int, ...] = (0,) * 16
+    cmds_failed: tuple[int, ...] = (0,) * 16
+    won_by: tuple[int, ...] = (0,) * 16
+    rung_cmds: tuple[int, ...] = (0,) * 16
+    rung_wins: tuple[int, ...] = (0,) * 16
+    chunks_witnessed: int = 0
+    speed_changes: int = 0
+    rung_honoured_x: tuple[int, ...] = (0,) * 16
+
+    @property
+    def recovery_cmds(self) -> int:
+        """Operations spent on local recovery: everything but STREAM and SPEED.
+
+        Includes the head far read of ``cache_defeat=True`` under FAR; subtract
+        one when that is DONE, FAILED or NEAR if you budget it separately.
+        """
+        return sum(self.cmds) - self.cmds[Stage.STREAM] - self.cmds[Stage.SPEED]
 
     @property
     def speed_quantized(self) -> bool:
@@ -1516,10 +1595,10 @@ class ReadStats:
         request was honoured. Hence the nonzero test: a missing answer must not
         read as "fine".
 
-        This is the PASS speed only. Recovery-ladder rungs move the speed
-        mid-read and are not covered — use
-        :meth:`Device.probe_speed_ladder` and its ``RungVerdict.QUANTIZED``,
-        which asks the same question per rung, before the read.
+        This is the PASS speed only. Since 0.53.0 each recovery-ladder rung's
+        honoured speed is in ``rung_honoured_x[n]``, read back after the
+        rung's first set; :meth:`Device.probe_speed_ladder` and its
+        ``RungVerdict.QUANTIZED`` ask the same question before the read.
         """
         return bool(self.speed_honoured_x
                     and self.speed_honoured_x < self.speed_requested_x)
@@ -1808,6 +1887,29 @@ class ReadResult:
     _map: object = None
     _subq: object = None
     _keepalive: list = field(default_factory=list)
+    _origin: object = None
+
+    @property
+    def origin_map(self) -> memoryview | None:
+        """Per-sector origin bytes (0.53.0), or ``None`` if not requested.
+
+        Byte *i* is LBA ``self.lba + i``: WHOSE bytes were delivered, decoded
+        with :func:`origin_class` and :func:`origin_rung`. It never says whether
+        they are right. Same live-vs-post-mortem rule as :attr:`status_map`.
+        """
+        if self._origin is None:
+            return None
+        return memoryview(ffi.buffer(self._origin, self.count))
+
+    def origin_counts(self) -> dict[Origin, int]:
+        """Census of the origin lane by class."""
+        mv = self.origin_map
+        if mv is None:
+            return {}
+        counts = dict.fromkeys(Origin, 0)
+        for b in mv:
+            counts[Origin(b & 0x0F)] += 1
+        return counts
 
     @property
     def status_map(self) -> memoryview | None:
@@ -3389,6 +3491,7 @@ class Device:
         c2_witness: bool = False,
         cache_defeat: bool = False,
         readable: tuple[int, int] | None = None,
+        origin_map: bool | Any = False,
     ) -> ReadResult:
         """Stream ``count`` sectors from ``lba`` to ``sink``.
 
@@ -3408,6 +3511,15 @@ class Device:
         retry, rescue and verify pass, so none lands between sessions or past
         a short session's lead-out. ``None`` keeps 0.50.1's unbounded rule.
         Detect it with ``"readable_range" in accudisc.features``.
+
+        ``origin_map`` (0.53.0): the origin lane, in the same three forms as
+        ``status_map`` below. Per sector, WHOSE bytes were delivered (the first
+        transfer, a confirmed one, or which rescue at which rung), never
+        whether they are right; see :class:`Origin`. It works with any
+        ``c2``/``sub``. ``ReadStats`` also carries the effort counters
+        (``cmds``, ``us``, ``won_by``, ``speed_changes`` and the rest, indexed
+        by :class:`Stage`). Detect both with ``"origin_map"`` and
+        ``"effort_stats"`` in ``accudisc.features``.
 
         ``c2_witness`` (0.45.0, off by default, needs ``c2`` other than
         ``C2.NONE`` or the read raises): where C2 fires, that chunk and both
@@ -3539,6 +3651,10 @@ class Device:
         if subq_buf is not None:
             req.subq_map = subq_buf
 
+        origin_buf = _lane_buffer("origin_map", origin_map, count, keepalive)
+        if origin_buf is not None:
+            req.origin_map = origin_buf
+
         if cancel is not None:
             keepalive.append(cancel._flag)
             req.cancel = cancel._flag
@@ -3565,6 +3681,7 @@ class Device:
             _map=map_buf,
             _subq=subq_buf,
             _keepalive=keepalive,
+            _origin=origin_buf,
         )
 
     def read_span(
@@ -4397,6 +4514,16 @@ def _stats_from_c(s) -> ReadStats:
         subq_misposition=s.subq_misposition,
         buffer_peak_chunks=s.buffer_peak_chunks,
         buffer_stalls=s.buffer_stalls,
+        us=tuple(s.us),
+        us_total=s.us_total,
+        cmds=tuple(s.cmds),
+        cmds_failed=tuple(s.cmds_failed),
+        won_by=tuple(s.won_by),
+        rung_cmds=tuple(s.rung_cmds),
+        rung_wins=tuple(s.rung_wins),
+        chunks_witnessed=s.chunks_witnessed,
+        speed_changes=s.speed_changes,
+        rung_honoured_x=tuple(s.rung_honoured_x),
         cache_defeat=CacheDefeat(s.cache_defeat),
     )
 

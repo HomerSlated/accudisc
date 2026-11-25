@@ -132,10 +132,18 @@ def test_struct_sizes_match_api_plan():
     table and the ABI rules were reasoned about, so a silent change should
     fail something.
     """
-    assert ffi.sizeof("accudisc_read_req") == 96   # 64 -> 72 in 0.22.0, 72 -> 80 in 0.45.0,
-                                                   # 80 -> 88 in 0.49.0, 88 -> 96 in 0.51.0
-    assert ffi.sizeof("accudisc_read_stats") == 160  # 136 -> 144 in 0.7.0,
-                                                     # 144 -> 160 in 0.22.0
+    assert ffi.sizeof("accudisc_read_req") == 104  # 64 -> 72 in 0.22.0, 72 -> 80 in 0.45.0,
+                                                   # 80 -> 88 in 0.49.0, 88 -> 96 in 0.51.0,
+                                                   # 96 -> 104 in 0.53.0 (origin_map)
+    assert ffi.offsetof("accudisc_read_req", "origin_map") == 96
+    assert ffi.sizeof("accudisc_read_stats") == 656  # 136 -> 144 in 0.7.0,
+                                                     # 144 -> 160 in 0.22.0,
+                                                     # 160 -> 656 in 0.53.0 (effort)
+    # The 0.53.0 offsets were published to cdda2img before the build; the
+    # binding must see exactly those (tests/test_abi.c pins the C side).
+    assert ffi.offsetof("accudisc_read_stats", "us") == 160
+    assert ffi.offsetof("accudisc_read_stats", "cmds") == 296
+    assert ffi.offsetof("accudisc_read_stats", "rung_honoured_x") == 624
     assert ffi.sizeof("accudisc_chunk") == 32
     assert ffi.sizeof("accudisc_offset_info") == 44   # 36 -> 44 in 0.23.0
     # 36 is the size a 0.22.0 consumer still passes, and the library has to keep
@@ -628,6 +636,9 @@ def test_public_dataclass_field_names_are_pinned():
         "speed_requested_x", "speed_honoured_x",
         "buffer_peak_chunks", "buffer_stalls",
         "cache_defeat",  # 0.49.0: whether the pre-read far read ran
+        # 0.53.0: the effort block
+        "us", "us_total", "cmds", "cmds_failed", "won_by", "rung_cmds",
+        "rung_wins", "chunks_witnessed", "speed_changes", "rung_honoured_x",
     }
 
     assert {f.name for f in dataclasses.fields(ad.Chunk)} == {
@@ -1267,6 +1278,48 @@ def test_read_refuses_a_readable_range_that_cannot_be_meant():
     import inspect
     assert inspect.signature(ad.Device.read).parameters["readable"].default is None
     assert "readable_range" in ad.features
+
+
+def test_effort_stats_arrive_from_the_c_struct():
+    """0.53.0: every effort field converts, element by element, from the right
+    source. Distinct values in every slot, because a tuple wired to the WRONG
+    array still arrives as sixteen plausible ints."""
+    c = ffi.new("accudisc_read_stats*")
+    c.size = ffi.sizeof("accudisc_read_stats")
+    arrays = ("us", "cmds", "cmds_failed", "won_by", "rung_cmds",
+              "rung_wins", "rung_honoured_x")
+    for k, name in enumerate(arrays):
+        for i in range(16):
+            getattr(c, name)[i] = 1000 * (k + 1) + i
+    c.us_total = 7
+    c.chunks_witnessed = 8
+    c.speed_changes = 9
+
+    st = ad._stats_from_c(c)
+    for k, name in enumerate(arrays):
+        assert getattr(st, name) == tuple(1000 * (k + 1) + i for i in range(16)), name
+    assert (st.us_total, st.chunks_witnessed, st.speed_changes) == (7, 8, 9)
+    # recovery_cmds: everything but STREAM and SPEED
+    want = sum(1000 * 2 + i for i in range(16)) - (2000 + ad.Stage.STREAM) \
+        - (2000 + ad.Stage.SPEED)
+    assert st.recovery_cmds == want
+
+
+def test_origin_lane_surface():
+    """The origin byte decodes as the header defines it, and the enums carry the
+    header's values (cffi reads them from the header itself)."""
+    assert ad.origin_class(0x16) is ad.Origin.CONSENSUS
+    assert ad.origin_rung(0x16) == 1
+    assert ad.origin_class(0xF5) is ad.Origin.C2_RESCUE and ad.origin_rung(0xF5) == 15
+    assert [o.name for o in ad.Origin] == [
+        "NONE", "FIRST", "CONFIRMED", "FALLBACK", "QPOS", "C2_RESCUE",
+        "CONSENSUS", "ANCHOR"]
+    assert [s.name for s in ad.Stage] == [
+        "STREAM", "FALLBACK", "QPOS", "C2_RESCUE", "CONSENSUS", "ANCHOR",
+        "WITNESS", "FAR", "SPEED"]
+    assert {"effort_stats", "origin_map"} <= ad.features
+    r = ad.ReadResult(lba=0, count=3, stats=None)
+    assert r.origin_map is None and r.origin_counts() == {}
 
 
 def test_set_cancel_marshals_and_holds_its_flag():

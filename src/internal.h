@@ -22,6 +22,12 @@ struct accudisc_device {
      * (unsupported/illegal/unprivileged) — fall back to CDROM_SELECT_SPEED. */
     int streaming;
 
+    /* The last read speed REQUESTED through this handle (0.53.0), whatever
+     * became of it: what accudisc_read_stats.speed_changes compares against.
+     * A change of request is what spins the spindle up or down. */
+    int speed_req_valid;
+    unsigned speed_req_last;
+
     /* Non-zero suspends the NOT-READY cooldown in adsc_dev_exec. Set for the
      * duration of a burn and nowhere else.
      *

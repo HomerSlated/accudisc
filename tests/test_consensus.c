@@ -155,6 +155,10 @@ static int sink(void *user, const accudisc_chunk *c)
     return 0;
 }
 
+/* 0.53.0: the origin lane of the last run(), so the anchoring cases can say
+ * WHICH read's bytes went out, not only that the sector was recovered. */
+static uint8_t omap[MAXN];
+
 static accudisc_read_stats run(accudisc_read_req *req, uint8_t *map)
 {
     static struct accudisc_device dev;
@@ -169,6 +173,8 @@ static accudisc_read_stats run(accudisc_read_req *req, uint8_t *map)
     req->sub = ACCUDISC_SUB_NONE;
     req->status_map = map;
     req->buffer_bytes = ACCUDISC_BUFFER_NONE;
+    memset(omap, 0, sizeof(omap));
+    req->origin_map = req->count <= MAXN ? omap : NULL;
     assert(accudisc_read_cdda(&dev, req, sink, NULL, &st) == ACCUDISC_OK);
     return st;
 }
@@ -215,6 +221,31 @@ static void test_reproducing_slip_is_anchored(void)
     for (unsigned i = 0; i < 8; i++)
         assert((map[i] & 15) == ACCUDISC_MAP_RECOVERED);
     assert(st.slips >= 8 && fk.anchor_reads > 0);
+    /* 0.53.0: the slipped sectors' bytes came from anchoring, at the pass
+     * speed: the reread that reproduced the slip is never the winner. */
+    for (unsigned i = 1; i < 4; i++)
+        assert(omap[i] == ACCUDISC_ORIGIN_ANCHOR);
+    assert(st.won_by[ACCUDISC_ORIGIN_ANCHOR] >= 3);
+    assert(st.cmds[ACCUDISC_STAGE_ANCHOR] == fk.anchor_reads);
+
+    /* With a ladder, the consensus rereads run at rung 1, and the restore
+     * before anchoring must put the RUNG back too: the anchored bytes were
+     * read at the pass speed, so their origin carries rung 0. */
+    static const uint16_t rung8[] = { 8 };
+    memset(&fk, 0, sizeof(fk));
+    memset(map, 0, sizeof(map));
+    fk.chunk_late_on = 2;
+    fk.single_late_lo = 20001;
+    fk.single_late_hi = 20004;
+    req.speed_ladder = rung8;
+    req.ladder_len = 1;
+    st = run(&req, map);
+    assert(memcmp(out.verdict, "EEEEEEEE", 8) == 0);
+    for (unsigned i = 1; i < 4; i++)
+        assert(omap[i] == ACCUDISC_ORIGIN_ANCHOR); /* rung nibble 0 */
+    assert(st.rung_cmds[1] > 0);                   /* the ladder was used */
+    req.speed_ladder = NULL;
+    req.ladder_len = 0;
 
     /* The same with every single-sector reread of 20001-20003 FAILING: the
      * verify comparison's own shift verdict is the only evidence, so it must be
