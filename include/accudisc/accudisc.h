@@ -3974,8 +3974,12 @@ typedef struct accudisc_read_req {
      * set the engine finds every slip it found without it, and more. Used in
      * the three places that decide whether two copies are a slip: consensus,
      * the witness pass and the seam. Over the 2352 audio bytes only, so +-294
-     * samples; the copy already held is x. A found slip is settled by
-     * anchoring, as every slip is since 0.41.0.
+     * samples. x is the copy whose alignment is being judged: the first
+     * transfer's copy in the witness pass and the seam, the NEW re-read in
+     * consensus (against each copy seen before it as y). When the exact test
+     * fires, its shift is the one counted and accudisc_shift_test is not run,
+     * so slips_off_frame follows the exact test whenever it has an answer. A
+     * found slip is settled by anchoring, as every slip is since 0.41.0.
      *
      * Costs about 2.8 M byte compares per test, run only on copies that
      * already differ and that the exact test did not call a slip. Anything

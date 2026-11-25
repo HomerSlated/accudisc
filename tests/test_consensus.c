@@ -56,6 +56,9 @@ static struct {
                               * place, DIFFERENTLY each time (0.56.0): a copy
                               * displaced and damaged, which the exact slip test
                               * cannot see (AccuDisc 2026-11-25d) */
+    int damage_single;       /* single re-reads of damage_lba are damaged too,
+                              * each differently: in consensus the NEW re-read
+                              * is x, so x is damaged (cdda2img 277) */
     unsigned singles;
     unsigned chunk_reads, anchor_reads;
 } fk;
@@ -104,6 +107,8 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
             shift = LATE;
         if (fk.noise_single && lba == fk.noise_lba)
             noise = 2 + (int)fk.singles++;
+        if (fk.damage_single && lba == fk.damage_lba)
+            fk.singles++;
     } else if (nsec == 3) {
         fk.anchor_reads++;
         shift = fk.anchor_mode == 1   ? LATE
@@ -133,6 +138,10 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
             for (uint32_t j = 0; j < 40; j++) /* no two transfers share a byte */
                 o[(j * 37 + fk.chunk_reads * 211) % S] ^=
                     (uint8_t)(0x11 * fk.chunk_reads | 1);
+        if (fk.damage_single && nsec == 1 && lba == fk.damage_lba)
+            for (uint32_t j = 0; j < 40; j++) /* nor any two re-reads */
+                o[(j * 41 + fk.singles * 53 + 7) % S] ^=
+                    (uint8_t)(0x13 * fk.singles | 1);
         if (c2 == 1 && nsec != 1 && nsec != 3 && lba + s == fk.c2_hot_lba)
             memset(o + S, 0xFF, 4); /* 32 fired bits */
     }
@@ -1037,6 +1046,30 @@ static void test_damage_in_place_is_not_a_slip(void)
     assert(ACCUDISC_ORIGIN_CLASS(omap[2]) == ACCUDISC_ORIGIN_CONSENSUS);
 }
 
+/* cdda2img's 277: consensus with SIX copies, every one damaged differently in
+ * place, no shift anywhere. Each new re-read is x against every earlier copy
+ * as y, so x is damaged too, which their acceptance table had not covered
+ * until 277 (0 false positives there). Here: never a slip, never an anchoring
+ * read, SUSPECT, with the flag off and on alike (run()). */
+static void test_damaged_copies_in_consensus_are_not_slips(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    uint8_t map[MAXN] = {0};
+
+    memset(&fk, 0, sizeof(fk));
+    fk.damage_lba = 20002;
+    fk.damage_single = 1;
+    req.lba = 20000;
+    req.count = 5;
+    req.verify_passes = 2;
+    accudisc_read_stats st = run(&req, map);
+
+    show("six damaged copies", &st, map, 5);
+    assert((map[2] & 15) == ACCUDISC_MAP_SUSPECT);
+    assert(st.sectors_suspect == 1 && st.slips == 0 && fk.anchor_reads == 0);
+    assert(fk.singles == 4); /* all 4 attempts: 2 transfer copies + 4 = 6 */
+}
+
 /* The WITNESS pass's own comparison. The witness transfer lands late and
  * damages 20003, so that pair is displaced AND damaged: the exact test counts
  * the other five slips, the flag counts all six. Every sector comes out true
@@ -1151,6 +1184,7 @@ int main(void)
     test_c2_rescue_requires_verify();
     test_damaged_slip_is_anchored_with_shift_search();
     test_damage_in_place_is_not_a_slip();
+    test_damaged_copies_in_consensus_are_not_slips();
     test_witness_sees_damaged_slip();
     test_off_frame_slips_are_counted();
     printf("ok - and with shift_search off and on: %u identical pairs\n",

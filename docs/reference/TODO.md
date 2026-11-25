@@ -8447,6 +8447,19 @@ before `span-flagged` gets its rescue ladder.
       updated. Python gets `read(shift_search=)`, the token `shift_search`
       and `ReadStats.slips_off_frame`.
     - **No read changes** unless the caller asks for the flag.
+    - **Follow-up after cdda2img 277** (landed note 25t):
+      - **x is the copy whose alignment is being judged.** That is the first
+        transfer at the witness pass and the seam, and the new re-read in
+        consensus. Their damaged-x run shows 0 false positives in every cell.
+        The header and `slip_test` comments now say so; the notice had said
+        "the copy already held", which contradicted itself.
+      - **When the exact test fires, its shift is the one counted.**
+      - **Added:** `test_damaged_copies_in_consensus_are_not_slips`, with six
+        copies, each damaged differently, and the re-reads damaged as well.
+      - **OPEN, optimisation only:** compute x's self-difference once per
+        re-read in consensus instead of once per pair. That halves the cost
+        of each pair after the first, but needs `shift_test` split into
+        self-rates and x-against-y. Not taken unless a profile shows it.
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 

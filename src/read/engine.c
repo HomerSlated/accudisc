@@ -598,8 +598,11 @@ static int alignment_signal(const uint8_t *a)
  * shift_search (0.56.0) also accudisc_shift_test when the exact one does not
  * fire, so a displaced copy that is also damaged is seen as displaced. The
  * union, never a replacement: the tests are not nested, and the flag must
- * only ever ADD detections. x is the copy already held: the tolerant test
- * asks about x's own signal and self-difference only. */
+ * only ever ADD detections. x is the copy whose alignment is being judged
+ * (the first transfer's copy at the witness pass and the seam, the new re-read
+ * in consensus): the tolerant test asks about x's own signal and
+ * self-difference only. When the exact test fires, its shift is the one
+ * returned and the tolerant test never runs. */
 static int slip_test(const struct rd *r, const uint8_t *x, const uint8_t *y,
                      int32_t *shift)
 {
