@@ -214,6 +214,10 @@ features = frozenset({
     # displaced copy that is also damaged is anchored, not accepted by
     # agreement.
     "shift_search",
+    # Device.read(budget_cmds=, budget_speed_changes=) and the ReadStats
+    # budget_* / sectors_budget_cut fields exist (0.57.0): a per-read budget
+    # for local recovery, and what was spent and cut.
+    "read_budget",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -1607,6 +1611,12 @@ class ReadStats:
     # 0.56.0: the slips whose shift is not a whole CIRC frame (6 samples).
     # A subset of ``slips``, counted whether or not shift_search was set.
     slips_off_frame: int = 0
+    # 0.57.0: the per-read budget. spent_* is filled in with or without a
+    # budget; budget_cut_lba is the LOWEST cut lba, or -1.
+    budget_spent_cmds: int = 0
+    budget_spent_changes: int = 0
+    budget_cut_lba: int = -1
+    sectors_budget_cut: int = 0
 
     @property
     def recovery_cmds(self) -> int:
@@ -3529,6 +3539,8 @@ class Device:
         origin_map: bool | Any = False,
         rescue_by_rung: bool = False,
         shift_search: bool = False,
+        budget_cmds: int = 0,
+        budget_speed_changes: int = 0,
     ) -> ReadResult:
         """Stream ``count`` sectors from ``lba`` to ``sink``.
 
@@ -3573,6 +3585,18 @@ class Device:
         re-reads agreed. The flag only adds detections; a slip that anchoring
         cannot settle is SUSPECT, as an exact one always was. Detect it with
         ``"shift_search" in accudisc.features``.
+
+        ``budget_cmds`` / ``budget_speed_changes`` (0.57.0, 0 = unlimited):
+        a budget for the engine's local recovery, charged per attempt before
+        anything is issued; STREAM transfers and the head costs are never
+        charged. When it runs out, no later recovery command is issued and
+        each cut sector is left as it stands (C2 stays C2, an unsettled
+        disagreement is SUSPECT, a cut fallback is HARD); see
+        ``ReadStats.sectors_budget_cut`` and ``budget_spent_*``. **0 means
+        unlimited, so a caller tracking a REMAINING budget must not issue the
+        read at all when the remainder is 0.** Out of range (below 0, or over
+        2**32 - 1 / 65535) raises ``ValueError``; clamp first. Detect it with
+        ``"read_budget" in accudisc.features``.
 
         ``c2_witness`` (0.45.0, off by default, needs ``c2`` other than
         ``C2.NONE`` or the read raises): where C2 fires, that chunk and both
@@ -3664,6 +3688,15 @@ class Device:
         """
         if count <= 0:
             raise ValueError("count must be > 0")
+        # 0.57.0: raise, never wrap. cffi would raise OverflowError on its own,
+        # but a NEGATIVE remainder (a per-rip budget overspent) must not
+        # become an error type a caller does not catch, and the message names
+        # the fix.
+        if not 0 <= budget_cmds <= 0xFFFFFFFF:
+            raise ValueError(f"budget_cmds {budget_cmds} is outside 0..2**32-1")
+        if not 0 <= budget_speed_changes <= 0xFFFF:
+            raise ValueError(
+                f"budget_speed_changes {budget_speed_changes} is outside 0..65535")
         if readable is not None:
             lo, hi = readable
             if not 0 <= lo < hi <= 0xFFFFFFFF:
@@ -3688,6 +3721,8 @@ class Device:
         req.cache_defeat = 1 if cache_defeat else 0
         req.rescue_by_rung = 1 if rescue_by_rung else 0
         req.shift_search = 1 if shift_search else 0
+        req.budget_cmds = budget_cmds
+        req.budget_speed_changes = budget_speed_changes
         if readable is not None:
             req.readable_lo, req.readable_hi = readable
 
@@ -4580,6 +4615,10 @@ def _stats_from_c(s) -> ReadStats:
         speed_changes=s.speed_changes,
         rung_honoured_x=tuple(s.rung_honoured_x),
         slips_off_frame=s.slips_off_frame,
+        budget_spent_cmds=s.budget_spent_cmds,
+        budget_spent_changes=s.budget_spent_changes,
+        budget_cut_lba=s.budget_cut_lba,
+        sectors_budget_cut=s.sectors_budget_cut,
         cache_defeat=CacheDefeat(s.cache_defeat),
     )
 

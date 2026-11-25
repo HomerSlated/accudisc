@@ -183,6 +183,12 @@ static void usage(FILE *to)
         "                 offset despite damage, not only when they match\n"
         "                 exactly, so a displaced and damaged copy is\n"
         "                 anchored rather than accepted (off by default)\n"
+        "  --budget-cmds N  allow local recovery at most N commands\n"
+        "                 (re-reads, far reads, verify transfers; never\n"
+        "                 streaming); sectors cut short are left as they\n"
+        "                 stand (0 = unlimited, the default)\n"
+        "  --budget-changes N  at most N speed changes for recovery (a\n"
+        "                 ladder trip costs 2: the rung and the restore)\n"
         "  --speed X      set drive read speed to Xx first (best-effort)\n"
         "  --cache-defeat before the first transfer, read one sector 5000\n"
         "                 away, so a re-read straight after another read\n"
@@ -2559,6 +2565,14 @@ static int cmd_read(accudisc_device *dev, int argc, char **argv)
             req.rescue_by_rung = 1;
         else if (!strcmp(a, "--shift-search"))
             req.shift_search = 1;
+        else if (opt_val(argv, argc, &i, "--budget-cmds", &optv, &optbad)) {
+            unsigned long long v = strtoull(optv, NULL, 0);
+            req.budget_cmds = (uint32_t)(v > 0xFFFFFFFFull ? 0xFFFFFFFFull : v);
+        }
+        else if (opt_val(argv, argc, &i, "--budget-changes", &optv, &optbad)) {
+            unsigned long v = strtoul(optv, NULL, 0);
+            req.budget_speed_changes = (uint16_t)(v > 0xFFFF ? 0xFFFF : v);
+        }
         else if (opt_val(argv, argc, &i, "--verify", &optv, &optbad))
             req.verify_passes = (uint8_t)strtol(optv, NULL, 0);
         else if (opt_val(argv, argc, &i, "--overlap", &optv, &optbad))

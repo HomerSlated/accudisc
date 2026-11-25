@@ -198,8 +198,26 @@ struct rd {
     uint8_t rung_seen[16]; /* rung's honoured speed already read back */
     uint8_t *bsamples; /* 0.54.0 rung order: ADSC_SAMPLES_MAX sectors per
                         * chunk sector, or NULL */
+    int head;          /* 0.57.0: in the head (pass-speed set, cache_defeat's
+                        * far read), whose costs the budget never charges */
+    int budget_out;    /* 0.57.0: latched, the budget refused an attempt */
     accudisc_read_stats st;
 };
+
+/* A command the BUDGET refused (0.57.0): not issued, not booked, and not a
+ * failure of the disc. Internal; never returned to a caller. */
+#define ADSC_REFUSED (-1000)
+
+/* Stages whose commands read_req.budget_cmds charges. FAR is charged except
+ * in the head (r->head). */
+static int charged(unsigned stage)
+{
+    return stage == ACCUDISC_STAGE_FALLBACK || stage == ACCUDISC_STAGE_QPOS ||
+           stage == ACCUDISC_STAGE_C2_RESCUE ||
+           stage == ACCUDISC_STAGE_CONSENSUS ||
+           stage == ACCUDISC_STAGE_ANCHOR || stage == ACCUDISC_STAGE_WITNESS ||
+           stage == ACCUDISC_STAGE_FAR;
+}
 
 /* EFFORT ACCOUNTING (0.53.0). Every operation the engine issues is booked
  * here, to exactly one stage, by the helper that issues it: far_read,
@@ -212,6 +230,8 @@ static void book(struct rd *r, unsigned stage, int ok, uint64_t t0)
     if (!ok)
         r->st.cmds_failed[stage]++;
     r->st.us[stage] += (adsc_mono_ns() - t0) / 1000u;
+    if (!r->head && charged(stage))
+        r->st.budget_spent_cmds++;
     if (stage == ACCUDISC_STAGE_QPOS || stage == ACCUDISC_STAGE_C2_RESCUE ||
         stage == ACCUDISC_STAGE_CONSENSUS)
         r->st.rung_cmds[r->rung]++;
@@ -224,8 +244,11 @@ static int speed_set_booked(struct rd *r, unsigned speed)
     uint64_t t0;
     int rc;
 
-    if (!r->dev->speed_req_valid || r->dev->speed_req_last != speed)
+    if (!r->dev->speed_req_valid || r->dev->speed_req_last != speed) {
         r->st.speed_changes++;
+        if (!r->head)
+            r->st.budget_spent_changes++;
+    }
     t0 = adsc_mono_ns();
     rc = accudisc_set_speed(r->dev, speed);
     book(r, ACCUDISC_STAGE_SPEED, rc == ACCUDISC_OK, t0);
@@ -324,6 +347,62 @@ static void ladder_restore(struct rd *r)
     r->rung = 0;
 }
 
+/* The speed attempt n's rung would set, or -1 with no ladder. */
+static int ladder_target(const struct rd *r, unsigned attempt)
+{
+    const accudisc_read_req *req = r->req;
+
+    if (!req->ladder_len || !req->speed_ladder)
+        return -1;
+    unsigned idx = attempt - 1;
+    if (idx >= req->ladder_len)
+        idx = (unsigned)req->ladder_len - 1;
+    return req->speed_ladder[idx];
+}
+
+/* THE BUDGET (0.57.0, read_req.budget_*). One recovery ATTEMPT is admitted
+ * whole or refused whole, BEFORE anything is issued: cmds is every charged
+ * command it will issue (its far read, if a target exists, and its read),
+ * speed the rung it sets first (-1 = none). So a budget never buys a seek or
+ * a spindle change whose read is then refused.
+ *
+ * A rung change is admitted only if the RESTORE to the pass speed after it
+ * also fits: the restore is never refused (ladder_restore is clean-up), so it
+ * is reserved here, and the spend can never exceed the limit. One trip down
+ * the ladder costs two changes.
+ *
+ * The first refusal LATCHES: no later recovery command in this read. The
+ * gated helpers refuse too, as a backstop; this is the decision. */
+static int admit(struct rd *r, unsigned cmds, int speed)
+{
+    const accudisc_read_req *req = r->req;
+
+    if (r->budget_out)
+        return 0;
+    if (req->budget_cmds &&
+        (uint64_t)r->st.budget_spent_cmds + cmds > req->budget_cmds)
+        goto refuse;
+    if (req->budget_speed_changes && speed >= 0) {
+        unsigned need = 0;
+
+        /* the set itself: issued (set_speed_once) AND a change (the handle
+         * rule speed_set_booked counts by) */
+        if (speed != r->cur_speed &&
+            (!r->dev->speed_req_valid ||
+             r->dev->speed_req_last != (unsigned)speed))
+            need++;
+        if ((unsigned)speed != req->speed_x)
+            need++; /* the restore after it, reserved */
+        if ((uint64_t)r->st.budget_spent_changes + need >
+            req->budget_speed_changes)
+            goto refuse;
+    }
+    return 1;
+refuse:
+    r->budget_out = 1;
+    return 0;
+}
+
 /* A back-to-back reread often just replays the drive cache; read one sector
  * far away first so the next read is a real disc access (readcd pattern).
  *
@@ -343,7 +422,7 @@ static void ladder_restore(struct rd *r)
  * read is for, so it counts as done. */
 static int far_read(struct rd *r, uint32_t lba)
 {
-    if (stop(r))
+    if (stop(r) || (r->budget_out && !r->head))
         return 0;
     uint64_t t0 = adsc_mono_ns();
     int rc = adsc_mmc_read_cd(r->dev, lba, 1, ADSC_SECTOR_ANY,
@@ -372,6 +451,15 @@ static void cache_defeat(struct rd *r, uint32_t cur, uint32_t a, uint32_t n)
 
     if (far_pick(r, cur, a, n, &away) != ADSC_FAR_NONE)
         far_read(r, away);
+}
+
+/* Would cache_defeat(r, cur, a, n) issue a far read? (For admit.) */
+static unsigned far_needed(const struct rd *r, uint32_t cur, uint32_t a,
+                           uint32_t n)
+{
+    uint32_t away;
+
+    return far_pick(r, cur, a, n, &away) != ADSC_FAR_NONE;
 }
 
 /* accudisc_read_req.cache_defeat (0.49.0): the same one-sector far read, once,
@@ -404,6 +492,8 @@ static int read_sector(struct rd *r, uint32_t lba, uint8_t *dst,
 {
     if (stop(r))
         return ACCUDISC_ERR_CANCELLED;
+    if (r->budget_out && stage != ACCUDISC_STAGE_STREAM)
+        return ADSC_REFUSED;
     uint64_t t0 = adsc_mono_ns();
     int rc = adsc_mmc_read_cd(r->dev, lba, 1, r->sector_type, r->req->c2,
                               r->req->sub, dst, r->sector_len);
@@ -419,6 +509,8 @@ static int read_run(struct rd *r, uint32_t lba, uint32_t n, uint8_t *dst,
 {
     if (stop(r))
         return ACCUDISC_ERR_CANCELLED;
+    if (r->budget_out && stage != ACCUDISC_STAGE_STREAM)
+        return ADSC_REFUSED;
     uint64_t t0 = adsc_mono_ns();
     int rc = adsc_mmc_read_cd(r->dev, lba, n, r->sector_type, r->req->c2,
                               r->req->sub, dst, r->sector_len);
@@ -445,11 +537,17 @@ static int sense_is_categorical(struct rd *r)
  * and accounted as hard errors. Sectors at/above primary_n (overlap
  * extension, or all of a verify pass with primary_n 0) are only marked in
  * hard[] — their failure is a missing signal, not a hard error. */
+/* cut[] (0.57.0, may be NULL): a sector whose fallback the budget refused.
+ * It is HARD exactly as a failed one, and zero-filled and a hard error below
+ * primary_n, but its sense is not counted: no command was issued for it, and
+ * the last sense belongs to an earlier one. */
 static void read_span(struct rd *r, uint32_t lba, uint32_t total,
                       uint8_t *buf, uint8_t *hard, uint32_t primary_n,
-                      unsigned stage, uint8_t *origin)
+                      unsigned stage, uint8_t *origin, uint8_t *cut)
 {
     memset(hard, 0, total);
+    if (cut)
+        memset(cut, 0, total);
     if (read_run(r, lba, total, buf, stage) == ACCUDISC_OK) {
         if (origin)
             memset(origin, ACCUDISC_ORIGIN_FIRST, total);
@@ -459,11 +557,16 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
     for (uint32_t s = 0; s < total; s++) {
         uint8_t *sec = buf + (size_t)s * r->sector_len;
         uint32_t cur = lba + s;
-        int src = -1;
+        int src = -1, refused = 0;
 
         for (unsigned attempt = 0; attempt < r->retries; attempt++) {
             if (stop(r))
                 return; /* the caller discards the chunk; nothing is booked */
+            if (!admit(r, 1 + (attempt > 0 ? far_needed(r, cur, cur, 1) : 0),
+                       -1)) {
+                refused = 1;
+                break;
+            }
             if (attempt > 0)
                 cache_defeat(r, cur, cur, 1);
             src = read_sector(r, cur, sec, ACCUDISC_STAGE_FALLBACK);
@@ -481,13 +584,16 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
             return; /* cancelled, not failed: book nothing */
         hard[s] = 1; /* its origin is irrelevant: publish() writes NONE for
                       * every HARD sector */
+        if (refused && cut)
+            cut[s] = 1;
         if (s < primary_n) {
             memset(sec, 0, r->audio_len);
             memset(sec + r->audio_len, 0xff, r->c2_len);
             if (r->sub_len)
                 memset(sec + r->audio_len + r->c2_len, 0, r->sub_len);
             r->st.hard_errors++;
-            count_sense(r);
+            if (!refused)
+                count_sense(r);
         }
     }
 }
@@ -514,7 +620,8 @@ static void read_span(struct rd *r, uint32_t lba, uint32_t total,
  * about what an attempt does. Returns -1 when stopped by a cancel. */
 #define ADSC_QPOS_ATTEMPTS (ADSC_SAMPLES_MAX - 2)
 
-/* 1 = a position-correct copy replaced the sector, 0 = not this attempt. */
+/* 1 = a position-correct copy replaced the sector, 0 = not this attempt,
+ * -2 = refused by the budget (0.57.0). */
 static int qpos_attempt(struct rd *r, uint32_t lba, uint8_t *sec, unsigned a,
                         unsigned *attempts, uint8_t *origin)
 {
@@ -523,6 +630,8 @@ static int qpos_attempt(struct rd *r, uint32_t lba, uint8_t *sec, unsigned a,
 
     if (stop(r))
         return -1;
+    if (!admit(r, 1 + far_needed(r, lba, lba, 1), ladder_target(r, a)))
+        return -2; /* the budget: no more attempts, for any sector */
     ladder_speed(r, a);
     cache_defeat(r, lba, lba, 1);
     if (read_sector(r, lba, r->scratch, ACCUDISC_STAGE_QPOS) != ACCUDISC_OK)
@@ -541,11 +650,13 @@ static int qpos_attempt(struct rd *r, uint32_t lba, uint8_t *sec, unsigned a,
 }
 
 static int qpos_rescue(struct rd *r, uint32_t lba, uint8_t *sec,
-                       unsigned *attempts, uint8_t *origin)
+                       unsigned *attempts, uint8_t *origin, uint8_t *cut)
 {
     for (unsigned a = 1; a <= ADSC_QPOS_ATTEMPTS; a++) {
         int k = qpos_attempt(r, lba, sec, a, attempts, origin);
 
+        if (k == -2)
+            *cut = 1;
         if (k != 0)
             return k > 0;
     }
@@ -576,6 +687,7 @@ struct adsc_chunk_state {
     unsigned att[ADSC_CHUNK_MAX];
     uint32_t bits[ADSC_CHUNK_MAX], diffb[ADSC_CHUNK_MAX];
     uint8_t origin[ADSC_SPAN_MAX]; /* ACCUDISC_ORIGIN_* per sector (0.53.0) */
+    uint8_t cut[ADSC_SPAN_MAX];    /* 0.57.0: the budget cut its effort */
 };
 
 /* Can a byte-exact match against this sector say anything about ALIGNMENT?
@@ -677,7 +789,7 @@ static int corroborated(struct rd *r, const uint8_t *ctx, uint32_t w0,
  * gate (AccurateRip/CTDB, in the caller) can. */
 static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
                            const struct adsc_ref *refs, unsigned nref,
-                           unsigned *attempts, uint8_t *origin)
+                           unsigned *attempts, uint8_t *origin, int *cut)
 {
     static const int32_t start[] = { -1, -2, 0 };
     unsigned agree = 0;
@@ -691,6 +803,10 @@ static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
             continue;
         uint32_t w0 = (uint32_t)w;
 
+        if (!admit(r, 1 + far_needed(r, lba, w0, ADSC_ANCHOR_SPAN), -1)) {
+            *cut = 1; /* the budget: undecided, so SUSPECT */
+            return 0;
+        }
         cache_defeat(r, lba, w0, ADSC_ANCHOR_SPAN);
         if (read_run(r, w0, ADSC_ANCHOR_SPAN, r->context,
                      ACCUDISC_STAGE_ANCHOR) != ACCUDISC_OK)
@@ -738,7 +854,8 @@ static int anchor_position(struct rd *r, uint32_t lba, uint8_t *sec,
  * sector whose neighbours within two sectors are all unstable or silent cannot
  * be lined up, and keeps its flagged copy. That is a lost rescue, not a wrong
  * delivery, and it is the right way round. */
-/* One C2-rescue attempt: 0 = done (whatever it found), -1 = stopped. */
+/* One C2-rescue attempt: 0 = done (whatever it found), -1 = stopped,
+ * -2 = refused by the budget (0.57.0): the sector keeps its flagged copy. */
 static int c2_attempt(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *best,
                       unsigned a, unsigned *attempts,
                       const struct adsc_ref *refs, unsigned nref,
@@ -753,6 +870,9 @@ static int c2_attempt(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *best,
         w = lba;
     uint32_t w0 = (uint32_t)w;
 
+    if (!admit(r, 1 + far_needed(r, lba, w0, ADSC_ANCHOR_SPAN),
+               ladder_target(r, a)))
+        return -2;
     ladder_speed(r, a);
     cache_defeat(r, lba, w0, ADSC_ANCHOR_SPAN);
     if (read_run(r, w0, ADSC_ANCHOR_SPAN, r->context,
@@ -776,14 +896,19 @@ static int c2_attempt(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *best,
 
 static void c2_rescue(struct rd *r, uint32_t lba, uint8_t *sec, uint32_t *bits,
                       unsigned *attempts, const struct adsc_ref *refs,
-                      unsigned nref, uint8_t *origin)
+                      unsigned nref, uint8_t *origin, uint8_t *cut)
 {
     uint32_t best = *bits;
 
     *attempts = 0;
-    for (unsigned a = 1; a <= r->req->c2_retries && best > 0; a++)
-        if (c2_attempt(r, lba, sec, &best, a, attempts, refs, nref, origin) < 0)
+    for (unsigned a = 1; a <= r->req->c2_retries && best > 0; a++) {
+        int k = c2_attempt(r, lba, sec, &best, a, attempts, refs, nref, origin);
+
+        if (k == -2)
+            *cut = 1;
+        if (k < 0)
             break;
+    }
     *bits = best;
 }
 
@@ -807,6 +932,7 @@ struct cons_job {
                        * copies: no more re-reads, anchoring decides */
     unsigned used;
     uint8_t *origin;
+    int cut;          /* 0.57.0: the budget refused an attempt or anchoring */
 };
 
 static void cons_init(struct rd *r, struct cons_job *j, uint32_t lba,
@@ -820,6 +946,7 @@ static void cons_init(struct rd *r, struct cons_job *j, uint32_t lba,
     j->state = 0;
     j->used = 0;
     j->origin = origin;
+    j->cut = 0;
     memcpy(samples, sec, r->sector_len);
     j->count = 1;
     if (alt) {
@@ -834,6 +961,10 @@ static int cons_attempt(struct rd *r, struct cons_job *j, unsigned a)
 {
     if (stop(r))
         return -1;
+    if (!admit(r, 1 + far_needed(r, j->lba, j->lba, 1), ladder_target(r, a))) {
+        j->cut = 1; /* the budget: this job re-reads no more */
+        return 0;
+    }
     ladder_speed(r, a);
     cache_defeat(r, j->lba, j->lba, 1);
     if (read_sector(r, j->lba, r->scratch, ACCUDISC_STAGE_CONSENSUS) !=
@@ -879,26 +1010,42 @@ static int cons_finish(struct rd *r, struct cons_job *j,
     if (!j->shifted || stop(r))
         return 0;
     ladder_restore(r);
-    return anchor_position(r, j->lba, j->sec, refs, nref, &j->used, j->origin);
+    return anchor_position(r, j->lba, j->sec, refs, nref, &j->used, j->origin,
+                           &j->cut);
 }
 
-static int consensus(struct rd *r, uint32_t lba, uint8_t *sec,
-                     const uint8_t *alt, int shifted,
-                     const struct adsc_ref *refs, unsigned nref,
-                     unsigned *attempts, uint8_t *origin)
+/* Sector order: one job's attempts, then its finish. j is cons_init'ed. */
+static int consensus(struct rd *r, struct cons_job *j,
+                     const struct adsc_ref *refs, unsigned nref)
 {
-    struct cons_job j;
-    int res;
-
-    cons_init(r, &j, lba, sec, alt, shifted, r->samples, origin);
-    for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2 && j.state == 0; a++)
-        if (cons_attempt(r, &j, a) < 0) {
-            *attempts = j.used;
+    for (unsigned a = 1;
+         a <= ADSC_SAMPLES_MAX - 2 && j->state == 0 && !j->cut; a++)
+        if (cons_attempt(r, j, a) < 0)
             return 0;
-        }
-    res = cons_finish(r, &j, refs, nref);
-    *attempts = j.used;
-    return res;
+    return cons_finish(r, j, refs, nref);
+}
+
+/* Where a finished job leaves its sector (0.57.0 adds the cut). A job the
+ * budget cut that never SAW a disagreement (its transfer copy was missing and
+ * no re-read differed) has no evidence against the sector: it keeps its state,
+ * unless the pass was triggered by evidence, when it is SUSPECT. Anything
+ * else unsettled is SUSPECT, as before. */
+static void cons_settle(struct rd *r, const struct cons_job *j, int res,
+                        int evidence, uint8_t *recov, uint8_t *susp,
+                        uint8_t *cut, unsigned *att, uint32_t *bits)
+{
+    if (res) {
+        *recov = 1;
+        *att += j->used;
+        if (bits && r->c2_len)
+            *bits = popcount_buf(j->sec + r->audio_len, r->c2_len);
+        return;
+    }
+    if (j->cut)
+        *cut = 1;
+    if (j->cut && j->count < 2 && !evidence)
+        return;
+    *susp = 1;
 }
 
 /* RUNG ORDER for consensus (0.54.0): every job's attempt 1, then attempt 2 for
@@ -910,7 +1057,7 @@ static void cons_batch(struct rd *r, struct cons_job *jobs, unsigned nj,
 {
     for (unsigned a = 1; a <= ADSC_SAMPLES_MAX - 2; a++)
         for (unsigned i = 0; i < nj; i++) {
-            if (jobs[i].state != 0)
+            if (jobs[i].state != 0 || jobs[i].cut)
                 continue;
             if (cons_attempt(r, &jobs[i], a) < 0) {
                 for (unsigned k = 0; k < nj; k++)
@@ -933,34 +1080,67 @@ static void cons_batch(struct rd *r, struct cons_job *jobs, unsigned nj,
  * on the LITE-ON LH-20A1S — measured 2026-09-18, a 1-sector cache_defeat forced
  * a fresh read 12/12 — so agreement here is agreement between two reads, not a
  * read and its cached echo. It is still a RELATIVE check: two transfers that
- * share one displacement agree, and only the caller's absolute gate can tell. */
-static void witness_pass(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
-                         const uint8_t *prim, const uint8_t *hard,
-                         uint8_t *buf2, uint8_t *hard2, uint8_t *recov,
-                         uint8_t *susp, unsigned *att, uint32_t *bits,
-                         uint32_t *diffb, uint8_t *origin)
+ * share one displacement agree, and only the caller's absolute gate can tell.
+ *
+ * Returns 1 when the comparison ran, 0 when the budget cut the witness
+ * transfer (0.57.0) or a cancel stopped it. `evidence`: see witness_cut. */
+/* BUDGET CUT BEFORE THE WITNESS TRANSFER (0.57.0). A ROUTINE pass
+ * (verify_passes) has nothing against the chunk yet: each sector keeps its
+ * state, and is counted cut. A pass triggered by EVIDENCE (a seam mismatch,
+ * c2_witness) has been told one of these transfers may be displaced: every
+ * sector not already settled is SUSPECT, or the 0.44 defect returns. */
+static void witness_cut(struct adsc_chunk_state *c, int evidence)
 {
+    for (uint32_t s = 0; s < c->n; s++) {
+        if (c->hard[s] || c->susp[s])
+            continue;
+        c->cut[s] = 1;
+        if (evidence && !c->recov[s])
+            c->susp[s] = 1;
+    }
+}
+
+static int witness_pass(struct rd *r, struct adsc_chunk_state *c,
+                        uint8_t *buf2, uint8_t *hard2, int evidence)
+{
+    uint32_t lba = c->lba, n = c->n;
+    uint8_t *buf = c->buf, *hard = c->hard, *recov = c->recov,
+            *susp = c->susp, *origin = c->origin, *cut = c->cut;
+    unsigned *att = c->att;
+    uint32_t *bits = c->bits, *diffb = c->diffb;
     const struct adsc_ref refs[2] = {
-        { lba, n, prim, hard },
+        { lba, n, c->prim, hard },
         { lba, n, buf2, hard2 },
     };
     struct cons_job jobs[ADSC_CHUNK_MAX];
     uint32_t idx[ADSC_CHUNK_MAX];
     int res[ADSC_CHUNK_MAX];
+    uint8_t cut2[ADSC_CHUNK_MAX];
     unsigned nj = 0;
 
     if (stop(r))
-        return;
+        return 0;
     ladder_restore(r);
+    if (!admit(r, 1 + far_needed(r, lba, lba, n), -1)) {
+        witness_cut(c, evidence);
+        return 0;
+    }
     cache_defeat(r, lba, lba, n);
-    read_span(r, lba, n, buf2, hard2, 0, ACCUDISC_STAGE_WITNESS, NULL);
+    read_span(r, lba, n, buf2, hard2, 0, ACCUDISC_STAGE_WITNESS, NULL, cut2);
     for (uint32_t s = 0; s < n; s++) {
         if (stop(r))
-            return; /* buf2/hard2 are partial: compare nothing against them */
+            return 0; /* buf2/hard2 are partial: compare nothing against them */
         if (hard[s] || susp[s])
             continue;
         uint8_t *sec = buf + (size_t)s * r->sector_len;
         const uint8_t *alt = buf2 + (size_t)s * r->sector_len;
+
+        if (hard2[s] && cut2[s]) { /* its witness copy was never read */
+            cut[s] = 1;
+            if (evidence && !recov[s])
+                susp[s] = 1;
+            continue;
+        }
         uint32_t diff = hard2[s] ? 0 : adsc_audio_diff(sec, alt);
 
         if (!hard2[s] && diff == 0) {
@@ -987,33 +1167,25 @@ static void witness_pass(struct rd *r, uint32_t lba, uint32_t n, uint8_t *buf,
             idx[nj++] = s;
             continue;
         }
-        unsigned used = 0;
-        if (consensus(r, lba + s, sec, hard2[s] ? NULL : alt, shifted, refs,
-                      2, &used, &origin[s])) {
-            recov[s] = 1;
-            att[s] += used;
-            if (r->c2_len)
-                bits[s] = popcount_buf(sec + r->audio_len, r->c2_len);
-        } else {
-            susp[s] = 1;
-        }
+        struct cons_job j;
+        cons_init(r, &j, lba + s, sec, hard2[s] ? NULL : alt, shifted,
+                  r->samples, &origin[s]);
+        int ok = consensus(r, &j, refs, 2);
+        if (stop(r))
+            return 0;
+        cons_settle(r, &j, ok, evidence, &recov[s], &susp[s], &cut[s],
+                    &att[s], &bits[s]);
     }
     if (!nj)
-        return;
+        return 1;
     cons_batch(r, jobs, nj, refs, 2, res);
     for (unsigned i = 0; i < nj; i++) {
         uint32_t s = idx[i];
 
-        if (res[i]) {
-            recov[s] = 1;
-            att[s] += jobs[i].used;
-            if (r->c2_len)
-                bits[s] = popcount_buf(buf + (size_t)s * r->sector_len +
-                                       r->audio_len, r->c2_len);
-        } else {
-            susp[s] = 1;
-        }
+        cons_settle(r, &jobs[i], res[i], evidence, &recov[s], &susp[s],
+                    &cut[s], &att[s], &bits[s]);
     }
+    return 1;
 }
 
 /* Classify, account, publish and deliver one chunk. Priority: hard > suspect >
@@ -1028,6 +1200,11 @@ static int publish(struct rd *r, struct adsc_chunk_state *c,
         uint32_t cur = c->lba + s;
         uint32_t idx = cur - req->lba;
 
+        if (c->cut[s]) { /* 0.57.0; published in lba order, so the lowest */
+            r->st.sectors_budget_cut++;
+            if (r->st.budget_cut_lba < 0)
+                r->st.budget_cut_lba = cur;
+        }
         if (c->hard[s]) {
             map_store(req->status_map, idx, ACCUDISC_MAP_HARD);
             /* No frame was delivered — the sector is zero-filled. Saying so
@@ -1117,6 +1294,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     uint64_t t_start = adsc_mono_ns();
     r.st.first_flagged_lba = -1;
     r.st.last_flagged_lba = -1;
+    r.st.budget_cut_lba = -1;
 
     if (!req)
         return ACCUDISC_ERR_INVAL;
@@ -1173,13 +1351,8 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
     if (req->c2_witness && req->c2 == ACCUDISC_C2_NONE)
         return ACCUDISC_ERR_INVAL;
 
-    /* 0.54.0: reserved3 MUST be zero. It is where the budget will go (0.57.0;
-     * byte 105 became shift_search in 0.56.0), and a request for it from a
-     * caller built against a later header must be refused here, not read as
-     * an ordinary read. */
-    for (unsigned i = 0; i < sizeof(req->reserved3); i++)
-        if (req->reserved3[i])
-            return ACCUDISC_ERR_INVAL;
+    /* 0.54.0-0.56.0 refused non-zero bytes at 106-111 (reserved3), which
+     * 0.57.0 gives to the budget: any value is meaningful now. */
     if (req->rescue_by_rung > 1 || req->shift_search > 1)
         return ACCUDISC_ERR_INVAL;
 
@@ -1256,6 +1429,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
      * Best-effort throughout: a drive that will not report page 2A leaves
      * honoured at 0 and the read proceeds, exactly as before this field
      * existed. Nothing here can fail the read. */
+    r.head = 1; /* the budget never charges the head (0.57.0) */
     if (req->speed_x) {
         r.st.speed_requested_x = req->speed_x;
         if (speed_set_booked(&r, req->speed_x) == ACCUDISC_OK)
@@ -1346,6 +1520,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
      * for. Never fails the read; the stats say whether it ran. */
     if (req->cache_defeat)
         r.st.cache_defeat = defeat_before_read(&r);
+    r.head = 0;
 
     uint32_t lba = req->lba;
     uint32_t remaining = req->count;
@@ -1380,6 +1555,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         memset(cur->att, 0, sizeof(cur->att));
         memset(cur->bits, 0, sizeof(cur->bits));
         memset(cur->diffb, 0, sizeof(cur->diffb));
+        memset(cur->cut, 0, sizeof(cur->cut));
         uint8_t *buf = cur->buf, *prim = cur->prim, *hard = cur->hard;
         uint8_t *recov = cur->recov, *susp = cur->susp;
         unsigned *att = cur->att;
@@ -1389,7 +1565,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
         ladder_restore(&r);
         read_span(&r, lba, n + ext, buf, hard, n, ACCUDISC_STAGE_STREAM,
-                  cur->origin);
+                  cur->origin, cur->cut);
         CANCEL_POINT();
         if (prim)
             memcpy(prim, buf, (size_t)n * r.sector_len);
@@ -1459,11 +1635,15 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
 
                 for (unsigned a = 1; a <= ADSC_QPOS_ATTEMPTS; a++)
                     for (uint32_t s = 0; s < n; s++) {
-                        if (!qsus[s] || hard[s] || done[s])
+                        if (!qsus[s] || hard[s] || done[s] || cur->cut[s])
                             continue;
                         int k = qpos_attempt(&r, lba + s,
                                              buf + (size_t)s * r.sector_len,
                                              a, &used[s], &cur->origin[s]);
+                        if (k == -2) {
+                            cur->cut[s] = 1; /* the budget: SUSPECT below */
+                            continue;
+                        }
                         if (k < 0)
                             goto qpos_stopped;
                         done[s] = (uint8_t)k;
@@ -1487,7 +1667,7 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                         continue;
                     if (qpos_rescue(&r, lba + s,
                                     buf + (size_t)s * r.sector_len, &used,
-                                    &cur->origin[s])) {
+                                    &cur->origin[s], &cur->cut[s])) {
                         recov[s] = 1;
                         att[s] += used;
                     } else {
@@ -1541,24 +1721,21 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                 sidx[snj++] = s;
                 continue;
             }
-            unsigned used = 0;
-            if (consensus(&r, lba + s, sec, alt, shifted, seam_refs, 2, &used,
-                          &cur->origin[s])) {
-                recov[s] = 1;
-                att[s] += used;
-            } else {
-                susp[s] = 1;
-            }
+            struct cons_job j;
+            cons_init(&r, &j, lba + s, sec, alt, shifted, r.samples,
+                      &cur->origin[s]);
+            int ok = consensus(&r, &j, seam_refs, 2);
+            /* a seam pair is a disagreement: unsettled is SUSPECT */
+            cons_settle(&r, &j, ok, 1, &recov[s], &susp[s], &cur->cut[s],
+                        &att[s], NULL);
         }
         if (snj) {
             cons_batch(&r, sjobs, snj, seam_refs, 2, sres);
             for (unsigned i = 0; i < snj; i++) {
-                if (sres[i]) {
-                    recov[sidx[i]] = 1;
-                    att[sidx[i]] += sjobs[i].used;
-                } else {
-                    susp[sidx[i]] = 1;
-                }
+                uint32_t s = sidx[i];
+
+                cons_settle(&r, &sjobs[i], sres[i], 1, &recov[s], &susp[s],
+                            &cur->cut[s], &att[s], NULL);
             }
         }
         CANCEL_POINT();
@@ -1586,11 +1763,16 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                 best[s] = before[s] = hard[s] ? 0 : bits[s];
             for (unsigned a = 1; a <= req->c2_retries; a++)
                 for (uint32_t s = 0; s < n; s++) {
-                    if (best[s] == 0)
+                    if (best[s] == 0 || cur->cut[s])
                         continue;
-                    if (c2_attempt(&r, lba + s, buf + (size_t)s * r.sector_len,
-                                   &best[s], a, &used[s], refs, 2,
-                                   &cur->origin[s]) < 0)
+                    int k = c2_attempt(&r, lba + s,
+                                       buf + (size_t)s * r.sector_len, &best[s],
+                                       a, &used[s], refs, 2, &cur->origin[s]);
+                    if (k == -2) {
+                        cur->cut[s] = 1; /* the budget: stays C2 */
+                        continue;
+                    }
+                    if (k < 0)
                         goto c2_stopped;
                 }
         c2_stopped:
@@ -1615,7 +1797,8 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                     { lba, prev_ext_n, prev_ext, prev_ext_hard },
                 };
                 c2_rescue(&r, lba + s, buf + (size_t)s * r.sector_len,
-                          &bits[s], &used, refs, 2, &cur->origin[s]);
+                          &bits[s], &used, refs, 2, &cur->origin[s],
+                          &cur->cut[s]);
                 if (bits[s] == 0 && before > 0) {
                     recov[s] = 1;
                     att[s] += used;
@@ -1634,12 +1817,11 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
          * rungs that differ from speed_x so the deciding votes really are
          * speed-diverse. */
         for (unsigned pass = 2; pass <= passes; pass++) {
-            witness_pass(&r, lba, n, buf, prim, hard, buf2, hard2, recov, susp,
-                         att, bits, diffb, cur->origin);
+            /* routine: a pass the budget cuts leaves each sector as it is */
+            if (witness_pass(&r, cur, buf2, hard2, 0))
+                cur->witnessed = 1;
             CANCEL_POINT();
         }
-        if (passes > 1)
-            cur->witnessed = 1;
 
         /* THE SEAM WIDENS (0.44.0). A seam that disagreed says one of the two
          * adjacent transfers landed somewhere else, and a displaced transfer is
@@ -1667,17 +1849,14 @@ int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
         int wit_pend = seam_bad || c2_trig;
         int wit_cur = seam_bad || c2_trig || witness_next;
 
+        /* EVIDENCE-triggered: a pass the budget cuts makes every unsettled
+         * sector of the condemned transfer SUSPECT (0.57.0, witness_cut). */
         if (wit_pend && pend->live && !pend->witnessed) {
-            witness_pass(&r, pend->lba, pend->n, pend->buf, pend->prim,
-                         pend->hard, buf2, hard2, pend->recov, pend->susp,
-                         pend->att, pend->bits, pend->diffb, pend->origin);
-            pend->witnessed = 1;
+            pend->witnessed = witness_pass(&r, pend, buf2, hard2, 1);
             CANCEL_POINT();
         }
         if (wit_cur && !cur->witnessed) {
-            witness_pass(&r, lba, n, buf, prim, hard, buf2, hard2, recov,
-                         susp, att, bits, diffb, cur->origin);
-            cur->witnessed = 1;
+            cur->witnessed = witness_pass(&r, cur, buf2, hard2, 1);
             CANCEL_POINT();
         }
         witness_next = c2_trig;

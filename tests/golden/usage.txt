@@ -164,6 +164,12 @@ read options:
                  offset despite damage, not only when they match
                  exactly, so a displaced and damaged copy is
                  anchored rather than accepted (off by default)
+  --budget-cmds N  allow local recovery at most N commands
+                 (re-reads, far reads, verify transfers; never
+                 streaming); sectors cut short are left as they
+                 stand (0 = unlimited, the default)
+  --budget-changes N  at most N speed changes for recovery (a
+                 ladder trip costs 2: the rung and the restore)
   --speed X      set drive read speed to Xx first (best-effort)
   --cache-defeat before the first transfer, read one sector 5000
                  away, so a re-read straight after another read

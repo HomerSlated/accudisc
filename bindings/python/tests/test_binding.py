@@ -139,12 +139,18 @@ def test_struct_sizes_match_api_plan():
     assert ffi.offsetof("accudisc_read_req", "origin_map") == 96
     assert ffi.offsetof("accudisc_read_req", "rescue_by_rung") == 104
     assert ffi.offsetof("accudisc_read_req", "shift_search") == 105  # 0.56.0
-    assert ffi.offsetof("accudisc_read_req", "reserved3") == 106
-    assert ffi.sizeof("accudisc_read_stats") == 664  # 136 -> 144 in 0.7.0,
+    assert ffi.offsetof("accudisc_read_req", "budget_speed_changes") == 106  # 0.57.0
+    assert ffi.offsetof("accudisc_read_req", "budget_cmds") == 108
+    assert ffi.sizeof("accudisc_read_stats") == 688  # 136 -> 144 in 0.7.0,
                                                      # 144 -> 160 in 0.22.0,
                                                      # 160 -> 656 in 0.53.0 (effort),
-                                                     # 656 -> 664 in 0.56.0
+                                                     # 656 -> 664 in 0.56.0,
+                                                     # 664 -> 688 in 0.57.0
     assert ffi.offsetof("accudisc_read_stats", "slips_off_frame") == 656
+    assert ffi.offsetof("accudisc_read_stats", "budget_spent_cmds") == 664
+    assert ffi.offsetof("accudisc_read_stats", "budget_spent_changes") == 668
+    assert ffi.offsetof("accudisc_read_stats", "budget_cut_lba") == 672
+    assert ffi.offsetof("accudisc_read_stats", "sectors_budget_cut") == 680
     # The 0.53.0 offsets were published to cdda2img before the build; the
     # binding must see exactly those (tests/test_abi.c pins the C side).
     assert ffi.offsetof("accudisc_read_stats", "us") == 160
@@ -646,6 +652,8 @@ def test_public_dataclass_field_names_are_pinned():
         "us", "us_total", "cmds", "cmds_failed", "won_by", "rung_cmds",
         "rung_wins", "chunks_witnessed", "speed_changes", "rung_honoured_x",
         "slips_off_frame",  # 0.56.0
+        "budget_spent_cmds", "budget_spent_changes", "budget_cut_lba",
+        "sectors_budget_cut",  # 0.57.0
     }
 
     assert {f.name for f in dataclasses.fields(ad.Chunk)} == {
@@ -1304,8 +1312,16 @@ def test_effort_stats_arrive_from_the_c_struct():
     c.slips = 11
     c.slips_off_frame = 10  # 0.56.0: from its own field, not from slips
 
+    c.budget_spent_cmds = 12
+    c.budget_spent_changes = 13
+    c.budget_cut_lba = -5  # signed: int64, not a wrapped uint
+    c.sectors_budget_cut = 14
+
     st = ad._stats_from_c(c)
     assert (st.slips, st.slips_off_frame) == (11, 10)
+    assert (st.budget_spent_cmds, st.budget_spent_changes, st.budget_cut_lba,
+            st.sectors_budget_cut) == (12, 13, -5, 14)
+    assert ad.ReadStats.__dataclass_fields__["budget_cut_lba"].default == -1
     for k, name in enumerate(arrays):
         assert getattr(st, name) == tuple(1000 * (k + 1) + i for i in range(16)), name
     assert (st.us_total, st.chunks_witnessed, st.speed_changes) == (7, 8, 9)
@@ -1328,7 +1344,7 @@ def test_origin_lane_surface():
         "STREAM", "FALLBACK", "QPOS", "C2_RESCUE", "CONSENSUS", "ANCHOR",
         "WITNESS", "FAR", "SPEED"]
     assert {"effort_stats", "origin_map", "rescue_by_rung",
-            "shift_test", "shift_search"} <= ad.features
+            "shift_test", "shift_search", "read_budget"} <= ad.features
     import inspect
     assert inspect.signature(ad.Device.read).parameters["shift_search"].default is False
     r = ad.ReadResult(lba=0, count=3, stats=None)
@@ -1619,6 +1635,21 @@ def test_read_rejects_a_zero_count():
         pass
     else:
         raise AssertionError("count must be > 0")
+
+
+def test_read_budget_out_of_range_raises():
+    """0.57.0 (cdda2img 279): a budget outside the field's width RAISES, before
+    any device is touched, rather than wrapping to a smaller limit (70000 would
+    wrap to 4464 in a uint16)."""
+    dev = ad.Device.__new__(ad.Device)  # no device needed; the check is first
+    for kw in ({"budget_speed_changes": 70000}, {"budget_speed_changes": -1},
+               {"budget_cmds": 1 << 32}, {"budget_cmds": -1}):
+        try:
+            dev.read(0, 1, **kw)
+        except ValueError as exc:
+            assert next(iter(kw)) in str(exc)
+        else:
+            raise AssertionError(f"{kw} must raise ValueError")
 
 
 def test_read_span_refuses_over_the_ceiling():

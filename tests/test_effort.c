@@ -30,6 +30,8 @@ static struct {
     unsigned speed;          /* last SET STREAMING speed, decoded */
     int fail_chunk_at;       /* chunk transfers starting at this LBA fail */
     uint32_t bad_lba;        /* single-sector reads of this LBA fail (0 = none) */
+    unsigned bad_skip;       /* ... except the first bad_skip of them (0.57.0) */
+    unsigned bad_seen;
     uint32_t c2_lo, c2_hi;   /* C2 fires on [lo, hi), every read */
     uint32_t c2_chunk_only;  /* C2 fires here in CHUNK transfers only */
     uint32_t mispos_lba;     /* its Q names lba - 2048 on its FIRST read only */
@@ -141,7 +143,8 @@ int __wrap_adsc_dev_exec(struct accudisc_device *dev, adsc_cmd *cmd)
             return ACCUDISC_ERR_SENSE;
         }
     }
-    if (type != 0 && nsec == 1 && fk.bad_lba && lba == fk.bad_lba) {
+    if (type != 0 && nsec == 1 && fk.bad_lba && lba == fk.bad_lba &&
+        fk.bad_seen++ >= fk.bad_skip) {
         dev->last_sense.valid = 1;
         dev->last_sense.key = 0x03;
         dev->last_sense.asc = 0x11;
@@ -200,7 +203,35 @@ static accudisc_read_stats run(accudisc_read_req *req)
     req->origin_map = origin;
     req->status_map = status;
     req->buffer_bytes = ACCUDISC_BUFFER_NONE;
+    int was_valid = dev.speed_req_valid;
+    unsigned was_last = dev.speed_req_last;
     assert(accudisc_read_cdda(&dev, req, NULL, NULL, &st) == ACCUDISC_OK);
+
+    /* 0.57.0, on EVERY read: what the budget charges is exactly the stages it
+     * names, less the head far read, and the head set is not a charged
+     * change. A gate in the wrong helper, or a missing exemption, fails here
+     * without a case of its own. */
+    uint64_t charged = 0;
+    static const unsigned ch[] = {
+        ACCUDISC_STAGE_FALLBACK, ACCUDISC_STAGE_QPOS, ACCUDISC_STAGE_C2_RESCUE,
+        ACCUDISC_STAGE_CONSENSUS, ACCUDISC_STAGE_ANCHOR, ACCUDISC_STAGE_WITNESS,
+        ACCUDISC_STAGE_FAR };
+    for (unsigned i = 0; i < sizeof(ch) / sizeof(ch[0]); i++)
+        charged += st.cmds[ch[i]];
+    if (st.cache_defeat == ACCUDISC_CACHE_DEFEAT_DONE ||
+        st.cache_defeat == ACCUDISC_CACHE_DEFEAT_NEAR)
+        charged--;
+    assert(st.budget_spent_cmds == charged);
+    unsigned head_change = req->speed_x &&
+                           (!was_valid || was_last != req->speed_x);
+    assert(st.budget_spent_changes == st.speed_changes - head_change);
+    if (req->budget_cmds)
+        assert(st.budget_spent_cmds <= req->budget_cmds);
+    if (req->budget_speed_changes)
+        assert(st.budget_spent_changes <= req->budget_speed_changes);
+    if (!req->budget_cmds && !req->budget_speed_changes)
+        assert(st.sectors_budget_cut == 0 && st.budget_cut_lba == -1);
+    assert((st.sectors_budget_cut == 0) == (st.budget_cut_lba == -1));
 
     /* Invariants that hold for every read. */
     uint64_t won = 0, wins = 0, us = 0;
@@ -601,8 +632,9 @@ static void test_qpos_two_rungs(void)
     printf("ok - Q rescue needing rung 2 on one sector: changes 5 -> 4\n");
 }
 
-/* reserved3 must be zero, and rescue_by_rung is a flag. */
-static void test_reserved_must_be_zero(void)
+/* rescue_by_rung and shift_search are flags. (0.54-0.56 also refused any
+ * non-zero byte in reserved3, 106-111; 0.57.0 gives those to the budget.) */
+static void test_flags_are_flags(void)
 {
     accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
     accudisc_read_stats st = ACCUDISC_READ_STATS_INIT;
@@ -610,22 +642,17 @@ static void test_reserved_must_be_zero(void)
     reset();
     req.lba = 10000;
     req.count = 24;
-    for (unsigned i = 0; i < sizeof(req.reserved3); i++) {
-        memset(req.reserved3, 0, sizeof(req.reserved3));
-        req.reserved3[i] = 1;
-        assert(accudisc_read_cdda(&dev, &req, NULL, NULL, &st) ==
-               ACCUDISC_ERR_INVAL);
-    }
-    memset(req.reserved3, 0, sizeof(req.reserved3));
     req.rescue_by_rung = 2;
     assert(accudisc_read_cdda(&dev, &req, NULL, NULL, &st) == ACCUDISC_ERR_INVAL);
     req.rescue_by_rung = 0;
-    req.shift_search = 2; /* 0.56.0: a flag too */
+    req.shift_search = 2;
     assert(accudisc_read_cdda(&dev, &req, NULL, NULL, &st) == ACCUDISC_ERR_INVAL);
     req.shift_search = 1;
+    req.budget_cmds = 0xFFFFFFFFu; /* any value is a budget now */
+    req.budget_speed_changes = 0xFFFF;
     assert(accudisc_read_cdda(&dev, &req, NULL, NULL, &st) == ACCUDISC_OK);
-    printf("ok - every reserved3 byte, rescue_by_rung > 1 and shift_search > 1 "
-           "are refused\n");
+    printf("ok - rescue_by_rung > 1 and shift_search > 1 are refused; any "
+           "budget is accepted\n");
 }
 
 /* The rung nibble: the witness transfer carries a flipped byte at 10003, the
@@ -761,6 +788,360 @@ static void test_old_caller(void)
     printf("ok - a 0.55 caller (656-byte stats) gets 656 bytes back\n");
 }
 
+/* ---- the per-read budget (0.57.0) ---------------------------------------- */
+
+static unsigned count_map(uint32_t n, unsigned state)
+{
+    unsigned k = 0;
+
+    for (uint32_t i = 0; i < n; i++)
+        k += (status[i] & 15) == state;
+    return k;
+}
+
+/* CONTRACT POINT 1 (notice 25w): a ROUTINE verify pass the budget cuts leaves
+ * each sector as it was. A clean verify-2 read of 92 sectors (chunks of 24)
+ * costs, per chunk, one far read + one witness transfer = 2 charged commands.
+ *   budget 1: no witness fits; 0 spent; all 92 OK and cut, from 10000
+ *   budget 3: chunk 1 (2), then 2 more would be 4 > 3: 1 left unused;
+ *             chunks 2-4 cut = 68 from 10024
+ *   budget 4: chunks 1-2; 44 cut from 10048
+ *   budget 8: exactly enough, nothing cut
+ * Never SUSPECT: a missing witness is not evidence. */
+static void budget_verify(uint32_t budget, uint32_t spent, uint64_t cut,
+                          int64_t cut_lba, uint32_t witnessed)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    reset();
+    req.lba = 10000;
+    req.count = 92;
+    req.c2 = ACCUDISC_C2_PTRS;
+    req.verify_passes = 2;
+    req.budget_cmds = budget;
+    accudisc_read_stats st = run(&req);
+    assert(st.budget_spent_cmds == spent);
+    assert(st.sectors_budget_cut == cut && st.budget_cut_lba == cut_lba);
+    assert(st.chunks_witnessed == witnessed);
+    assert(st.cmds[ACCUDISC_STAGE_WITNESS] == witnessed);
+    assert(st.sectors_suspect == 0 && st.sectors_recovered == 0);
+    assert(count_map(92, ACCUDISC_MAP_OK) == 92);
+    /* chunks of 24, 24, 24, 20 */
+    assert(st.won_by[ACCUDISC_ORIGIN_CONFIRMED] ==
+           (witnessed == 4 ? 92u : 24u * witnessed));
+}
+
+static void test_budget_routine_witness(void)
+{
+    budget_verify(1, 0, 92, 10000, 0);
+    budget_verify(3, 2, 68, 10024, 1);
+    budget_verify(4, 4, 44, 10048, 2);
+    budget_verify(8, 8, 0, -1, 4);
+    printf("ok - budget, routine verify cut: OK kept, 92/68/44/0 cut, never "
+           "SUSPECT\n");
+}
+
+/* A failed chunk's fallback: test_fallback's read costs 26 (24 single reads,
+ * and for 10030 a far read + a second read). Exactly enough: as unlimited.
+ * 96 sectors, so chunk 4 reuses chunk 2's slot: a cut flag left over from
+ * chunk 2 would show as a second cut sector.
+ *   25: the last sector, 10047, cannot be read: HARD, zero-filled, a hard
+ *       error, cut; its sense is NOT counted (10030's is).
+ *   7:  10024-10029 (6) + 10030's first read (7); its second attempt needs
+ *       2: refused, and so is everything after. 10030-10047 = 18 HARD, all
+ *       cut, no sense counted for any of them. */
+static void budget_fallback(uint32_t budget, uint32_t spent, uint64_t hard,
+                            uint64_t cut, int64_t cut_lba, uint64_t sensed)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    reset();
+    fk.fail_chunk_at = 10024;
+    fk.bad_lba = 10030;
+    req.lba = 10000;
+    req.count = 96;
+    req.c2 = ACCUDISC_C2_PTRS;
+    req.budget_cmds = budget;
+    accudisc_read_stats st = run(&req);
+    assert(st.budget_spent_cmds == spent);
+    assert(st.hard_errors == hard && count_map(96, ACCUDISC_MAP_HARD) == hard);
+    assert(st.sectors_budget_cut == cut && st.budget_cut_lba == cut_lba);
+    assert(st.sense_medium + st.sense_hardware + st.sense_other == sensed);
+    assert(st.cmds[ACCUDISC_STAGE_STREAM] == 4); /* streaming never stops */
+}
+
+static void test_budget_fallback(void)
+{
+    budget_fallback(26, 26, 1, 0, -1, 1);
+    budget_fallback(25, 25, 2, 1, 10047, 1);
+    budget_fallback(7, 7, 18, 18, 10030, 0);
+    /* 8: 10030's second attempt needs 2 with 1 left: refused, and the LATCH
+     * refuses 10031's 1-command attempt too, though it would fit. */
+    budget_fallback(8, 7, 18, 18, 10030, 0);
+    printf("ok - budget, fallback: 26 exact; 25 cuts 10047; 7 cuts "
+           "10030-10047, HARD and in hard_errors, sense not counted\n");
+}
+
+/* Q rescue: test_qpos costs 9 x (far + read) = 18.
+ *   17: 10046-10053 (16); 10054 needs 2: SUSPECT, cut
+ *   1:  nothing fits: all 9 SUSPECT, cut from 10046 */
+static void budget_qpos(uint32_t budget, uint32_t spent, uint64_t susp,
+                        int64_t cut_lba, uint8_t by_rung)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    reset();
+    req.rescue_by_rung = by_rung;
+    fk.mispos_lba = 10050;
+    req.lba = 10000;
+    req.count = 120;
+    req.c2 = ACCUDISC_C2_PTRS;
+    req.sub = ACCUDISC_SUB_RAW;
+    req.budget_cmds = budget;
+    accudisc_read_stats st = run(&req);
+    assert(st.budget_spent_cmds == spent);
+    assert(st.sectors_suspect == susp && st.sectors_budget_cut == susp);
+    assert(st.budget_cut_lba == cut_lba);
+    assert(st.sectors_recovered == 9 - susp);
+    if (susp)
+        assert((status[cut_lba - 10000] & 15) == ACCUDISC_MAP_SUSPECT);
+}
+
+static void test_budget_qpos(void)
+{
+    for (uint8_t by_rung = 0; by_rung <= 1; by_rung++) {
+        budget_qpos(18, 18, 0, -1, by_rung);
+        budget_qpos(17, 16, 1, 10054, by_rung); /* no ladder: one round */
+        budget_qpos(1, 0, 9, 10046, by_rung);
+    }
+    printf("ok - budget, Q rescue (both orders): 18 exact; 17 leaves 10054 "
+           "SUSPECT; 1 leaves all 9\n");
+}
+
+/* C2 rescue under a SPEED-CHANGE budget: the C.7 case (pass 32, ladder
+ * {24,8,4}, five flagged sectors, c2_retries 3, verify 2). A rung change is
+ * admitted only if the restore to 32 also fits, so with 3:
+ *   sector order: 10005 at 24 (spent 1; 1+1 restore <= 3), at 8 (spent 2;
+ *     2+1 <= 3), at 4 refused (3+1 > 3). 2 rescue reads.
+ *   rung order:   round 24 (spent 1), round 8 (spent 2), round 4 refused.
+ *     10 rescue reads.
+ * Either way the restore spends the 3rd change, every witness is cut (the
+ * latch), all 46 sectors are cut, the five stay C2 and nothing is SUSPECT.
+ * With 4 in rung order the whole ladder fits: spent 4 (= 5 changes - head).
+ * With 1 no rung change can ever fit: 0 rescue reads, 0 spent. */
+static accudisc_read_stats budget_c2(uint16_t changes, int by_rung)
+{
+    static const uint16_t ladder[] = { 24, 8, 4 };
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    reset();
+    fk.c2_lo = 10005;
+    fk.c2_hi = 10010;
+    req.lba = 10000;
+    req.count = 46;
+    req.c2 = ACCUDISC_C2_PTRS;
+    req.speed_x = 32;
+    req.c2_retries = 3;
+    req.verify_passes = 2;
+    req.speed_ladder = ladder;
+    req.ladder_len = 3;
+    req.rescue_by_rung = (uint8_t)by_rung;
+    req.budget_speed_changes = changes;
+    return run(&req);
+}
+
+static void test_budget_c2_changes(void)
+{
+    for (int by_rung = 0; by_rung <= 1; by_rung++) {
+        accudisc_read_stats st = budget_c2(3, by_rung);
+        assert(st.budget_spent_changes == 3);
+        assert(st.cmds[ACCUDISC_STAGE_C2_RESCUE] == (by_rung ? 10u : 2u));
+        assert(st.cmds[ACCUDISC_STAGE_WITNESS] == 0);
+        assert(st.sectors_budget_cut == 46 && st.budget_cut_lba == 10000);
+        assert(count_map(46, ACCUDISC_MAP_C2) == 5);
+        assert(count_map(46, ACCUDISC_MAP_OK) == 41);
+        assert(st.sectors_suspect == 0 && st.sectors_recovered == 0);
+    }
+    accudisc_read_stats full = budget_c2(4, 1);
+    assert(full.budget_spent_changes == 4 && full.sectors_budget_cut == 0);
+    assert(full.cmds[ACCUDISC_STAGE_C2_RESCUE] == 15);
+    accudisc_read_stats none = budget_c2(1, 0);
+    assert(none.budget_spent_changes == 0);
+    assert(none.cmds[ACCUDISC_STAGE_C2_RESCUE] == 0);
+    assert(none.sectors_budget_cut == 46);
+    printf("ok - budget, C2 rescue on 3 changes: 2 reads (sector order), 10 "
+           "(rung order), restore reserved; 4 fits the ladder; 1 never\n");
+}
+
+/* Consensus: setup_cons costs 1 far + 1 witness + 3 sectors x 2 attempts x
+ * (far + read) = 14. With 13, 10005's second attempt (needing 2 at 12 spent)
+ * is refused in both orders: SUSPECT (its copies disagreed), cut; 10003 and
+ * 10004 RECOVERED as unlimited. */
+static void test_budget_consensus(void)
+{
+    for (int by_rung = 0; by_rung <= 1; by_rung++) {
+        for (uint32_t budget = 13; budget <= 14; budget++) {
+            accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+            reset();
+            setup_cons(&req);
+            req.rescue_by_rung = (uint8_t)by_rung;
+            req.budget_cmds = budget;
+            accudisc_read_stats st = run(&req);
+            int short_one = budget == 13;
+            assert(st.budget_spent_cmds == (short_one ? 12u : 14u));
+            assert(st.sectors_recovered == (short_one ? 2u : 3u));
+            assert(st.sectors_suspect == (short_one ? 1u : 0u));
+            assert(st.sectors_budget_cut == (short_one ? 1u : 0u));
+            assert(st.budget_cut_lba == (short_one ? 10005 : -1));
+            assert((status[5] & 15) == (short_one ? ACCUDISC_MAP_SUSPECT
+                                                  : ACCUDISC_MAP_RECOVERED));
+        }
+    }
+    /* On 2 SPEED CHANGES (pass 32, ladder {8, 4}): a rung change needs room
+     * for itself and the restore. Rung 8 fits (spent 1, +1 reserved); rung 4
+     * would need 3. Sector order: 10003 at 8, then 10003 at 4 is refused;
+     * rung order: all three at 8, then the round at 4 is refused. Every
+     * sector's copies disagree: 3 SUSPECT, 3 cut; the restore spends the 2nd
+     * change. */
+    for (int by_rung = 0; by_rung <= 1; by_rung++) {
+        accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+        reset();
+        setup_cons(&req);
+        req.rescue_by_rung = (uint8_t)by_rung;
+        req.budget_speed_changes = 2;
+        accudisc_read_stats st = run(&req);
+        assert(st.budget_spent_changes == 2);
+        assert(st.cmds[ACCUDISC_STAGE_CONSENSUS] == (by_rung ? 3u : 1u));
+        assert(st.sectors_suspect == 3 && st.sectors_recovered == 0);
+        assert(st.sectors_budget_cut == 3 && st.budget_cut_lba == 10003);
+    }
+    printf("ok - budget, consensus: 14 exact; 13 leaves 10005 SUSPECT; 2 "
+           "changes stop at the second rung; both orders\n");
+}
+
+/* A MISSING witness copy is not a disagreement. Chunk 2 (10024) fails as a
+ * transfer every time, so its sectors are read singly, and 10030 reads only
+ * the FIRST time: in the stream's fallback, not in the witness pass's. So the
+ * witness has no copy of 10030, and consensus re-reads it (alt NULL). Costs:
+ *   chunk 1 witness: far + read                                   2
+ *   chunk 2 stream fallback: 24 single reads                      24
+ *   chunk 2 witness: far + failed transfer                        2
+ *   its fallback: 24 + 10030's second attempt (far + read)        26
+ *   consensus on 10030: 4 attempts x (far + failed read)          8   = 62
+ * 62: every re-read fails: SUSPECT, as before 0.57.0, nothing cut.
+ * 54: consensus's first attempt is refused. The job saw no disagreement (one
+ *     copy, nothing differing): 10030 KEEPS its state (OK), cut. */
+static void test_budget_missing_witness(void)
+{
+    for (uint32_t budget = 54; budget <= 62; budget += 8) {
+        accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+        reset();
+        fk.fail_chunk_at = 10024;
+        fk.bad_lba = 10030;
+        fk.bad_skip = 1;
+        req.lba = 10000;
+        req.count = 48;
+        req.c2 = ACCUDISC_C2_PTRS;
+        req.verify_passes = 2;
+        req.budget_cmds = budget;
+        accudisc_read_stats st = run(&req);
+        int cut = budget == 54;
+        assert(st.budget_spent_cmds == budget);
+        assert(st.cmds[ACCUDISC_STAGE_CONSENSUS] == (cut ? 0u : 4u));
+        assert((status[30] & 15) ==
+               (cut ? ACCUDISC_MAP_OK : ACCUDISC_MAP_SUSPECT));
+        assert(st.sectors_budget_cut == (cut ? 1u : 0u));
+        assert(st.budget_cut_lba == (cut ? 10030 : -1));
+        assert(st.sectors_suspect == (cut ? 0u : 1u));
+    }
+    printf("ok - budget: a missing witness copy whose re-reads are cut keeps "
+           "its state; uncut it is SUSPECT as before\n");
+}
+
+/* The same missing witness copy under an EVIDENCE-triggered pass: C2 fires
+ * on 10010 in chunk transfers only, so c2_witness witnesses chunk 1 and,
+ * through witness_next, chunk 2. Costs exactly as above (chunk 1's witness
+ * replaces the verify pass's): 62. With 54 the re-reads of 10030 are cut,
+ * and since evidence condemned the transfer, 10030 is SUSPECT, not kept. */
+static void test_budget_missing_witness_evidence(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    reset();
+    fk.fail_chunk_at = 10024;
+    fk.bad_lba = 10030;
+    fk.bad_skip = 1;
+    fk.c2_chunk_only = 10010;
+    req.lba = 10000;
+    req.count = 48;
+    req.c2 = ACCUDISC_C2_PTRS;
+    req.c2_witness = 1;
+    req.budget_cmds = 54;
+    accudisc_read_stats st = run(&req);
+    assert(st.budget_spent_cmds == 54);
+    assert(st.chunks_witnessed == 2);
+    assert((status[30] & 15) == ACCUDISC_MAP_SUSPECT);
+    assert(st.sectors_suspect == 1);
+    assert(st.sectors_budget_cut == 1 && st.budget_cut_lba == 10030);
+    printf("ok - budget: under evidence, a missing witness copy whose re-reads "
+           "are cut is SUSPECT\n");
+}
+
+/* An evidence-triggered pass cut over a chunk holding RECOVERED sectors. A Q
+ * misposition at 10010 (first read) makes 10006-10014 suspect; their 9 QPOS
+ * attempts (far + read) cost 18. C2 fires on 10020 in the chunk transfer, so
+ * c2_witness condemns the chunk (23 sectors, C2 + raw P-W). With 18 the
+ * witness is cut: the 9 Q-rescued sectors keep RECOVERED (their own stage
+ * finished, and Q validated each), the other 14 are SUSPECT; all 23 cut. */
+static void test_budget_evidence_keeps_recovered(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    reset();
+    fk.mispos_lba = 10010;
+    fk.c2_chunk_only = 10020;
+    req.lba = 10000;
+    req.count = 23;
+    req.c2 = ACCUDISC_C2_PTRS;
+    req.sub = ACCUDISC_SUB_RAW;
+    req.c2_witness = 1;
+    req.budget_cmds = 18;
+    accudisc_read_stats st = run(&req);
+    assert(st.budget_spent_cmds == 18);
+    assert(st.cmds[ACCUDISC_STAGE_WITNESS] == 0);
+    assert(st.sectors_recovered == 9 && st.sectors_suspect == 14);
+    assert(st.sectors_budget_cut == 23 && st.budget_cut_lba == 10000);
+    for (uint32_t i = 6; i <= 14; i++)
+        assert((status[i] & 15) == ACCUDISC_MAP_RECOVERED);
+    printf("ok - budget: an evidence cut leaves Q-rescued sectors RECOVERED, "
+           "the rest SUSPECT\n");
+}
+
+/* The head is never charged: cache_defeat's far read and the pass-speed set,
+ * on budgets of 1 each, spend nothing and cut nothing. */
+static void test_budget_spares_the_head(void)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    reset();
+    req.lba = 10000;
+    req.count = 24;
+    req.c2 = ACCUDISC_C2_PTRS;
+    req.speed_x = 32;
+    req.cache_defeat = 1;
+    req.budget_cmds = 1;
+    req.budget_speed_changes = 1;
+    accudisc_read_stats st = run(&req);
+    assert(st.cache_defeat == ACCUDISC_CACHE_DEFEAT_DONE);
+    assert(st.cmds[ACCUDISC_STAGE_FAR] == 1 && st.speed_changes == 1);
+    assert(st.budget_spent_cmds == 0 && st.budget_spent_changes == 0);
+    assert(st.sectors_budget_cut == 0);
+    printf("ok - budget: the head far read and pass-speed set are free\n");
+}
+
 int main(void)
 {
     test_clean_single_pass();
@@ -770,7 +1151,7 @@ int main(void)
     test_ladder_rescue();
     test_ladder_rescue_by_rung();
     test_qpos_by_rung();
-    test_reserved_must_be_zero();
+    test_flags_are_flags();
     test_consensus_by_rung();
     test_seam_by_rung();
     test_qpos_two_rungs();
@@ -779,5 +1160,14 @@ int main(void)
     test_seam_confirms();
     test_speed_change_is_per_handle();
     test_old_caller();
+    test_budget_routine_witness();
+    test_budget_fallback();
+    test_budget_qpos();
+    test_budget_c2_changes();
+    test_budget_consensus();
+    test_budget_spares_the_head();
+    test_budget_missing_witness();
+    test_budget_missing_witness_evidence();
+    test_budget_evidence_keeps_recovered();
     return 0;
 }

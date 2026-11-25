@@ -198,6 +198,25 @@ static accudisc_read_stats run_once(accudisc_read_req *req, uint8_t *map,
     memset(omap, 0, sizeof(omap));
     req->origin_map = req->count <= MAXN ? omap : NULL;
     assert(accudisc_read_cdda(&dev, req, sink, NULL, &st) == ACCUDISC_OK);
+
+    /* 0.57.0 on every read: the budget charges exactly its stages (no head
+     * costs here: no cache_defeat, no speed_x), and never more than allowed. */
+    uint64_t charged = st.cmds[ACCUDISC_STAGE_FALLBACK] +
+                       st.cmds[ACCUDISC_STAGE_QPOS] +
+                       st.cmds[ACCUDISC_STAGE_C2_RESCUE] +
+                       st.cmds[ACCUDISC_STAGE_CONSENSUS] +
+                       st.cmds[ACCUDISC_STAGE_ANCHOR] +
+                       st.cmds[ACCUDISC_STAGE_WITNESS] +
+                       st.cmds[ACCUDISC_STAGE_FAR];
+    assert(!req->cache_defeat && !req->speed_x);
+    assert(st.budget_spent_cmds == charged);
+    assert(st.budget_spent_changes == st.speed_changes);
+    if (req->budget_cmds)
+        assert(st.budget_spent_cmds <= req->budget_cmds);
+    if (req->budget_speed_changes)
+        assert(st.budget_spent_changes <= req->budget_speed_changes);
+    if (!req->budget_cmds && !req->budget_speed_changes)
+        assert(st.sectors_budget_cut == 0 && st.budget_cut_lba == -1);
     return st;
 }
 
@@ -215,6 +234,7 @@ static void zero_order_dependent(accudisc_read_stats *st)
     st->cmds[ACCUDISC_STAGE_SPEED] = 0;
     st->cmds_failed[ACCUDISC_STAGE_SPEED] = 0;
     st->speed_changes = 0;
+    st->budget_spent_changes = 0; /* 0.57.0: speed changes, charged */
 }
 
 static unsigned equivalence_runs;
@@ -1158,6 +1178,111 @@ static void test_off_frame_slips_are_counted(void)
     off_frame_seam(24, 0);
 }
 
+/* ---- the per-read budget (0.57.0) ---------------------------------------- */
+
+/* CONTRACT POINT 2 (notice 25w): an EVIDENCE-triggered pass the budget cuts
+ * makes every unsettled sector of the condemned transfers SUSPECT. The seam
+ * case (chunk 1 late, chunks of 4, overlap 2) on a budget of 1, where no
+ * attempt (far read + read) fits: the seam's two sectors are SUSPECT, the
+ * widening of BOTH transfers is cut, so 20000-20007 are SUSPECT and cut;
+ * chunk 3's seam agrees, so 20008-20011 stay OK. No displaced sector goes
+ * out as OK, which is the 0.44 defect "keep state" would have brought back.
+ * Each order separately: with a budget they may spend it differently. */
+static void test_budget_seam_evidence(void)
+{
+    for (uint8_t by_rung = 0; by_rung <= 1; by_rung++) {
+        accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+        uint8_t map[MAXN] = {0};
+
+        memset(&fk, 0, sizeof(fk));
+        fk.chunk_late_on = 1;
+        fk.single_late_lo = 20004;
+        fk.single_late_hi = 20006;
+        req.lba = 20000;
+        req.count = 12;
+        req.chunk_sectors = 4;
+        req.overlap_sectors = 2;
+        req.budget_cmds = 1;
+        accudisc_read_stats st = run_once(&req, map, by_rung);
+
+        show("budget 1, seam slip", &st, map, 12);
+        assert_no_false_ok(map, 12);
+        for (uint32_t i = 0; i < 8; i++)
+            assert((map[i] & 15) == ACCUDISC_MAP_SUSPECT);
+        for (uint32_t i = 8; i < 12; i++)
+            assert((map[i] & 15) == ACCUDISC_MAP_OK);
+        assert(st.budget_spent_cmds == 0 && fk.anchor_reads == 0);
+        assert(st.sectors_budget_cut == 8 && st.budget_cut_lba == 20000);
+        assert(st.chunks_witnessed == 0); /* both widenings were cut */
+    }
+}
+
+/* Anchoring: the reproducing slip, 8 sectors. budget(passes, t) is the read
+ * with budget t; t0 = what the unlimited read spends. Exactly t0 gives the
+ * unlimited result. With t0 - 1 the last attempt (2 commands) is refused and
+ * 1 is left unused, and what that cuts depends on what came last:
+ *   verify 2: the last ANCHORING read of the last slipped sector. That
+ *     sector is SUSPECT (a slip awaiting anchoring), delivered as the copy
+ *     held, which is exact here; the other 7 RECOVERED.
+ *   verify 3: pass 3's WITNESS transfer, a routine pass, after every sector
+ *     was already anchored. All 8 stay RECOVERED and are counted cut:
+ *     a stage that finished keeps its result; only a cut STAGE never
+ *     produces RECOVERED. */
+static accudisc_read_stats budget_slip(uint8_t passes, uint32_t t,
+                                       uint8_t *map, uint8_t by_rung)
+{
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+
+    memset(&fk, 0, sizeof(fk));
+    memset(map, 0, MAXN);
+    fk.chunk_late_on = 2;
+    fk.single_late_lo = 20001;
+    fk.single_late_hi = 20004;
+    req.lba = 20000;
+    req.count = 8;
+    req.verify_passes = passes;
+    req.budget_cmds = t;
+    return run_once(&req, map, by_rung);
+}
+
+static void test_budget_anchor(void)
+{
+    for (uint8_t by_rung = 0; by_rung <= 1; by_rung++)
+        for (uint8_t passes = 2; passes <= 3; passes++) {
+            uint8_t map[MAXN], map0[MAXN];
+            accudisc_read_stats full = budget_slip(passes, 0, map, by_rung);
+            uint32_t t0 = full.budget_spent_cmds;
+
+            memcpy(map0, map, MAXN);
+            assert(full.sectors_recovered == 8);
+            accudisc_read_stats exact = budget_slip(passes, t0, map, by_rung);
+            assert(exact.budget_spent_cmds == t0);
+            assert(exact.sectors_budget_cut == 0 && memcmp(map, map0, 8) == 0);
+
+            accudisc_read_stats shy = budget_slip(passes, t0 - 1, map, by_rung);
+            show(passes == 2 ? "budget t-1, verify 2" : "budget t-1, verify 3",
+                 &shy, map, 8);
+            assert(shy.budget_spent_cmds == t0 - 2);
+            assert(memcmp(out.verdict, "EEEEEEEE", 8) == 0);
+            assert_no_false_ok(map, 8);
+            if (passes == 2) {
+                assert(shy.sectors_suspect == 1 && shy.sectors_recovered == 7);
+                assert(shy.sectors_budget_cut == 1);
+                assert(shy.cmds[ACCUDISC_STAGE_ANCHOR] ==
+                       full.cmds[ACCUDISC_STAGE_ANCHOR] - 1);
+                assert((map[shy.budget_cut_lba - 20000] & 15) ==
+                       ACCUDISC_MAP_SUSPECT);
+            } else {
+                assert(shy.sectors_recovered == 8 && shy.sectors_suspect == 0);
+                assert(shy.sectors_budget_cut == 8 &&
+                       shy.budget_cut_lba == 20000);
+                assert(shy.cmds[ACCUDISC_STAGE_WITNESS] ==
+                       full.cmds[ACCUDISC_STAGE_WITNESS] - 1);
+                assert(shy.chunks_witnessed == 1);
+            }
+        }
+}
+
 int main(void)
 {
     test_reproducing_slip_is_anchored();
@@ -1187,6 +1312,8 @@ int main(void)
     test_damaged_copies_in_consensus_are_not_slips();
     test_witness_sees_damaged_slip();
     test_off_frame_slips_are_counted();
+    test_budget_seam_evidence();
+    test_budget_anchor();
     printf("ok - and with shift_search off and on: %u identical pairs\n",
            shift_runs);
     assert(shift_runs > 20);

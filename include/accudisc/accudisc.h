@@ -27,7 +27,12 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 56 /* 0.56.0: accudisc_read_req.shift_search
+#define ACCUDISC_VERSION_MINOR 57 /* 0.57.0: a per-read budget for local
+                                  * recovery: read_req.budget_speed_changes
+                                  * (106) and budget_cmds (108), replacing
+                                  * reserved3; read_stats 664 -> 688 with what
+                                  * was spent and what was cut.
+                                  * Previously 0.56.0: accudisc_read_req.shift_search
                                   * (opt-in, byte 105): a slip is found by the
                                   * exact test OR accudisc_shift_test, so a
                                   * displaced copy that is also damaged is
@@ -3985,12 +3990,47 @@ typedef struct accudisc_read_req {
      * already differ and that the exact test did not call a slip. Anything
      * other than 0 or 1 is ACCUDISC_ERR_INVAL. */
     uint8_t shift_search;
-    uint8_t reserved3[6]; /* MUST BE ZERO, unlike reserved0-2: anything else is
-                           * ACCUDISC_ERR_INVAL. 106-111 are to carry a per-read
-                           * budget (0.57.0), so a caller asking an older library
-                           * for it is refused rather than silently given a read
-                           * without it (cdda2img correspondence, AccuDisc
-                           * 2026-11-25j/o/q/s). */
+    /* 0.57.0, OPT-IN: A PER-READ BUDGET for local recovery, in the units of
+     * a caller's per-rip budget (cdda2img correspondence, AccuDisc 2026-11-25j,
+     * their 274, notice 2026-11-25w). 0 = unlimited, each. 0.54.0-0.56.0
+     * refuse a non-zero byte here, so an older library cannot silently read
+     * without the budget asked for.
+     *
+     * 0 MEANS UNLIMITED, SO A REMAINDER OF 0 CANNOT BE PASSED: a caller
+     * tracking what is left of a larger budget must not issue the read at all
+     * when either remainder reaches 0 (cdda2img 279). And clamp a remainder
+     * to the field's width rather than truncate it: a clamped value is still
+     * a limit, a wrapped one is a smaller one.
+     *
+     * CHARGED: budget_cmds, every command booked to FALLBACK, QPOS,
+     * C2_RESCUE, CONSENSUS, ANCHOR or WITNESS, plus every FAR except the head
+     * far read of cache_defeat. budget_speed_changes, every speed CHANGE
+     * (speed_changes' rule) except the head pass-speed set. Never charged:
+     * STREAM transfers, the head costs, speed read-backs.
+     *
+     * PER ATTEMPT, BEFORE ANYTHING IS ISSUED. A recovery attempt (its far read
+     * if a target exists, its read, the rung change before it) is admitted
+     * whole or refused whole, so a budget never buys a seek or a spindle
+     * change whose read is then refused; budget can therefore be left
+     * unused. A rung change is admitted only if the restore to the pass
+     * speed after it also fits, so one trip down the ladder costs 2 changes
+     * and a budget of 1 never permits one; the restore itself is never
+     * refused, and the spend never exceeds the limit. The FIRST refusal
+     * latches: no later recovery command is issued in this read, and
+     * streaming goes on to the end.
+     *
+     * WHAT A CUT SECTOR GETS. Never RECOVERED (that needs its stage to
+     * finish). C2-flagged: stays C2. A disagreement not yet settled, a
+     * Q-suspect position, or a slip awaiting anchoring: SUSPECT. A failed
+     * chunk's sector whose fallback was cut: zero-filled and HARD, counted in
+     * hard_errors (its sense is not counted). A ROUTINE verify pass cut
+     * (verify_passes): each sector keeps its state, since a missing witness
+     * is not a disagreement. An EVIDENCE-triggered pass cut (the seam
+     * widening after a mismatch, or c2_witness): every sector of the condemned
+     * transfer not already settled is SUSPECT, since the evidence says it may
+     * be displaced. See accudisc_read_stats.sectors_budget_cut. */
+    uint16_t budget_speed_changes;
+    uint32_t budget_cmds;
 } accudisc_read_req;
 
 /* ---- shift test (0.55.0) ---------------------------------------------------
@@ -4299,6 +4339,19 @@ typedef struct accudisc_read_stats {
                                * frames, so an off-frame one is worth a look.
                                * Counted whether or not shift_search is set,
                                * at the same places as slips; a subset of it. */
+    /* ---- 0.57.0: the per-read budget (read_req.budget_*) ---- */
+    uint32_t budget_spent_cmds;    /* recovery commands issued, by the rule at
+                                    * read_req.budget_cmds; filled in with or
+                                    * without a budget, so a per-rip budget
+                                    * can subtract it */
+    uint32_t budget_spent_changes; /* speed changes, by the rule at
+                                    * read_req.budget_speed_changes */
+    int64_t budget_cut_lba;        /* LOWEST lba among sectors_budget_cut, or
+                                    * -1. Not first in time: a held-back chunk
+                                    * is witnessed after the next one's stages */
+    uint64_t sectors_budget_cut;   /* delivered sectors (HARD included) that
+                                    * did not get the effort the request asked
+                                    * for because the budget ran out; each once */
 } accudisc_read_stats;
 
 /* accudisc_read_stats.cache_defeat */

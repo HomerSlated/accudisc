@@ -8463,6 +8463,76 @@ before `span-flagged` gets its rescue ladder.
         re-read in consensus instead of once per pair. That halves the cost
         of each pair after the first, but needs `shift_test` split into
         self-rates and x-against-y. Not taken unless a profile shows it.
+  - **BUILT 0.57.0 (2026-11-25): the per-read budget,**
+    `read_req.budget_speed_changes` (106) and `budget_cmds` (108), replacing
+    `reserved3`. `read_stats` grows from 664 to 688 bytes:
+    - `budget_spent_cmds` (664)
+    - `budget_spent_changes` (668)
+    - `budget_cut_lba` (672, the LOWEST cut LBA)
+    - `sectors_budget_cut` (680)
+
+    The notice was 25w; cdda2img's §279 agreed with both contract points.
+    - **What is charged.** This is §274's accounting:
+      - `budget_cmds`: every command booked to FALLBACK, QPOS, C2_RESCUE,
+        CONSENSUS, ANCHOR, WITNESS and FAR, except the head far read
+      - `budget_speed_changes`: every speed change except the head set
+      - STREAM transfers and speed read-backs are never charged
+    - **Admission is per attempt** (`admit()` in `engine.c`). The far read,
+      the read and the rung change are admitted whole or refused whole,
+      before anything is issued.
+      - A rung change also reserves room for its restore, so one trip down
+        the ladder costs 2 changes.
+      - The restore is never refused.
+      - The first refusal latches. The read helpers also refuse after the
+        latch, as a backstop.
+    - **The states a cut leaves:**
+      - C2 stays C2.
+      - An unsettled disagreement, a Q-suspect sector, or a slip awaiting
+        anchoring becomes SUSPECT.
+      - A cut fallback is HARD, zero-filled and counted in `hard_errors`
+        (§274), but its sense is not counted.
+      - A ROUTINE verify pass cut leaves each sector in its state, counted as
+        cut.
+      - An EVIDENCE-triggered pass cut (seam widening, `c2_witness`) makes
+        every unsettled sector SUSPECT; RECOVERED sectors keep RECOVERED.
+      - A job that saw no disagreement (a missing witness copy) keeps its
+        state, except under evidence.
+      - A stage that finished keeps its result. Only a cut stage never
+        produces RECOVERED (verify 3 with pass 3 cut: all 8 RECOVERED, all
+        cut).
+    - **Tests** (`test_effort`, `test_consensus`). Counts were worked out by
+      hand, for budgets that are exact, one short and 1, at each stage:
+      - routine witness: 1/3/4/8
+      - fallback: 26/25/8/7, over 96 sectors so a chunk slot is reused
+      - Q rescue: 18/17/1, both orders
+      - C2 on 3/4/1 speed changes, both orders
+      - consensus: 14/13, and 2 changes, both orders
+      - anchoring at t−1 with verify 2 and 3
+      - the seam evidence cut (no displaced sector delivered as OK)
+      - a missing witness copy, routine and under evidence
+      - an evidence cut that keeps Q-rescued sectors RECOVERED
+      - the head exemption
+
+      Invariants on every read: `budget_spent_cmds` equals the charged
+      stages minus the head far read; `budget_spent_changes` equals
+      `speed_changes` minus the head set.
+    - **Mutation run.** 53 mutants, 43 killed. All 10 survivors are
+      redundant guards:
+      - the latch check in `admit`, and the three helper backstops; each
+        covers the other
+      - the C2 rescue's own cut marks (verify is required, and the latched
+        witness marks the same sectors)
+      - two speed checks that agree on every reachable path
+      - the witness fallback's cut block (consensus reaches the same state)
+      - the per-chunk reset of `cut[]` (`read_span` clears it)
+    - **Python:** `read(budget_cmds=, budget_speed_changes=)`. An out-of-range
+      value raises `ValueError` before any I/O (§279 asked that it raise, not
+      wrap). Token `read_budget`.
+    - **CLI:** `--budget-cmds` and `--budget-changes`, clamped to the field
+      widths.
+    - **Header:** 0 means unlimited, so a remainder of 0 must not be passed
+      (§279).
+    - **Suite 60/60.**
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 

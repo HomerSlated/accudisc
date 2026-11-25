@@ -666,7 +666,8 @@ typedef struct accudisc_read_req {
     uint8_t *origin_map;
     uint8_t rescue_by_rung;
     uint8_t shift_search;
-    uint8_t reserved3[6];
+    uint16_t budget_speed_changes;
+    uint32_t budget_cmds;
     ...;
 } accudisc_read_req;
 
@@ -737,6 +738,10 @@ typedef struct accudisc_read_stats {
     uint32_t speed_changes;
     uint16_t rung_honoured_x[16];
     uint64_t slips_off_frame;
+    uint32_t budget_spent_cmds;
+    uint32_t budget_spent_changes;
+    int64_t budget_cut_lba;
+    uint64_t sectors_budget_cut;
     ...;
 } accudisc_read_stats;
 
