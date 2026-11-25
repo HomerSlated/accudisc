@@ -55,8 +55,9 @@ _Static_assert(sizeof(accudisc_speed_rung) == 20,
 /* NOT frozen — these two are allowed to grow; that is what the size field is
  * for. Pinned only so that growing them is *noticed*: a new field here means
  * updating the number below, bumping ACCUDISC_VERSION_MINOR so the .so version
- * moves with the layout, and adding a row to API_PLAN §8. Tripping these is a
- * reminder, not a defect. */
+ * moves with the layout, and an API notice to cdda2img BEFORE the commit (the
+ * correspondence; API_PLAN §8's ledger stopped at row 13, 0.9.0, and the
+ * notices replaced it). Tripping these is a reminder, not a defect. */
 _Static_assert(sizeof(accudisc_read_req) == 112, "read_req grew — see above");
 /* 0.54.0: 104 -> 112 at the offsets published in 2026-11-25j: rescue_by_rung
  * at 104, then reserved3 (MUST be zero) over 105-111 for the shift test and

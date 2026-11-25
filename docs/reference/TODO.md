@@ -8501,7 +8501,10 @@ before `span-flagged` gets its rescue ladder.
         produces RECOVERED (verify 3 with pass 3 cut: all 8 RECOVERED, all
         cut).
     - **Tests** (`test_effort`, `test_consensus`). Counts were worked out by
-      hand, for budgets that are exact, one short and 1, at each stage:
+      hand for exact and one-short budgets at each stage, and for a budget of
+      1 where listed below. Anchoring, consensus and the fallback were not
+      tested at 1; 25x overstated this, and the correction goes in the 0.58
+      notice:
       - routine witness: 1/3/4/8
       - fallback: 26/25/8/7, over 96 sectors so a chunk slot is reused
       - Q rescue: 18/17/1, both orders
