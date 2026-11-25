@@ -8258,6 +8258,30 @@ closes. The list:
 Posture A stays closed for now, and the earlier rulings in 268.4 are kept until
 the hardware A/B above.
 
+**Keith confirmed in our session (12:05).** That covers the relayed approvals
+of 270 and 272. 272 adds the rung-ordered rescue (G.3), the best-alignment
+shift test (25d) and "which read won" per sector. All are opt-in and land
+before `span-flagged` gets its rescue ladder.
+- **Landed:** the header comments (`1dc1828`; notice 25e, landed 25f) and the
+  RECOVERY.md B.3/B.5 text (`30b6e93`, through `hardedit`).
+- **DESIGN NOTES** go to cdda2img for review before any code.
+  - Note 1 (2026-11-25g), 0.53.0: effort stats appended to `read_stats` (160 →
+    624). That is per-stage commands issued and failed, µs per stage, wins per
+    origin class and per rung, and witnessed chunks. Plus an `origin_map` lane
+    in `read_req` (at 96, 96 → 104), one byte per sector: whose bytes were
+    delivered (low nibble a class, high nibble the ladder rung). Every command is
+    booked to one stage, from the gated helpers.
+  - Note 2 (2026-11-25h), 0.54.0: `rescue_by_rung` (loops inverted per chunk:
+    one speed set per rung per stage, the same reads per sector) and
+    `shift_search` (several anchors and a mismatch score; shifted when the best
+    non-zero offset differs in at most half as many bytes as offset 0, and in
+    at most half the overlap). Its threshold is to be CHECKED, not fitted,
+    against the 2026-09-16 LITE-ON captures before the build.
+    `alignment_signal` stays exact. `read_req` grows 104 → 112 with
+    `reserved3[6]` MUST-BE-ZERO, so the budget can take 108-111 later.
+  - Notes 3–5 (budget, policy function, reference-compare) follow once 1–2 are
+    reviewed.
+
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 
 8trax is the third correspondent and the first **GUI** consumer. Keith's ruling
