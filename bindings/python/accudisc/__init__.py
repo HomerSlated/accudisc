@@ -73,7 +73,7 @@ __all__ = [
     "NotFound", "AbiMismatch", "RetainedBufferError",
     "C2", "Sub", "MapState", "SubQState", "Anomaly", "TocSource", "TocDegrade",
     "C2Verdict", "FeaturesMedium", "CacheDefeat", "Origin", "Stage",
-    "origin_class", "origin_rung",
+    "origin_class", "origin_rung", "shift_test",
     "DiscKind", "DiscReason", "TrayState", "DiscProbe",
     "CtdbRepair", "ctdb_repair",
     "Verdict", "WriteResult",
@@ -206,6 +206,9 @@ features = frozenset({
     # the C2 rescue and consensus walk speed_ladder once per chunk instead of
     # once per problem sector. The same reads; fewer speed changes.
     "rescue_by_rung",
+    # shift_test() exists (0.55.0): the damage-tolerant shift test as a pure
+    # function, the definition cdda2img measured (correspondence 275).
+    "shift_test",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -733,6 +736,26 @@ class Origin(enum.IntEnum):
     C2_RESCUE = lib.ACCUDISC_ORIGIN_C2_RESCUE  # C2-rescue context read
     CONSENSUS = lib.ACCUDISC_ORIGIN_CONSENSUS  # re-read that matched an earlier copy
     ANCHOR = lib.ACCUDISC_ORIGIN_ANCHOR        # anchoring context read
+
+
+def shift_test(x: bytes, y: bytes) -> int | None:
+    """Is ``y`` a displaced copy of ``x``, damage allowed? (0.55.0)
+
+    Returns the displacement in samples (positive: ``y``'s audio is later), or
+    ``None`` when ``y`` is not shifted or ``x`` has no alignment signal. A pure
+    function: no device. Both buffers must be the same length, a multiple of 4
+    bytes and at least 8 (one sector is 2352). The definition, its three
+    conditions and what it was measured on are in ``accudisc_shift_test`` in
+    accudisc.h. A RELATIVE test: two copies sharing one displacement agree.
+    """
+    xb, yb = bytes(x), bytes(y)
+    if len(xb) != len(yb):
+        raise ValueError(f"shift_test: lengths differ ({len(xb)} vs {len(yb)})")
+    out = ffi.new("int32_t*")
+    rc = lib.accudisc_shift_test(xb, yb, len(xb), out)
+    if rc < 0:
+        _check(rc)
+    return int(out[0]) if rc == 1 else None
 
 
 def origin_class(b: int) -> Origin:

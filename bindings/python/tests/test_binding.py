@@ -1320,9 +1320,143 @@ def test_origin_lane_surface():
     assert [s.name for s in ad.Stage] == [
         "STREAM", "FALLBACK", "QPOS", "C2_RESCUE", "CONSENSUS", "ANCHOR",
         "WITNESS", "FAR", "SPEED"]
-    assert {"effort_stats", "origin_map", "rescue_by_rung"} <= ad.features
+    assert {"effort_stats", "origin_map", "rescue_by_rung",
+            "shift_test"} <= ad.features
     r = ad.ReadResult(lba=0, count=3, stats=None)
     assert r.origin_map is None and r.origin_counts() == {}
+
+
+def _ref_shifted(x, y):
+    """cdda2img's `_shifted` (tools/shift_margin.py, their 2e23787), with MAX_K
+    generalised exactly as accudisc_shift_test documents: min(588, len / 8).
+    numpy float64, as theirs. Returns k or None (None also for no signal)."""
+    import numpy as np
+    x = np.frombuffer(x, dtype=np.uint8)
+    y = np.frombuffer(y, dtype=np.uint8)
+    n = len(x)
+    mk = min(588, n // 8)
+
+    def rates(a0, c0):
+        out = np.empty(2 * mk + 1)
+        for j, k in enumerate(range(-mk, mk + 1)):
+            b = 4 * k
+            a, c = (a0[: n - b], c0[b:]) if b >= 0 else (a0[-b:], c0[: n + b])
+            out[j] = np.count_nonzero(a != c) / len(a)
+        return out
+
+    self_r = rates(x, x)
+    self_r[mk] = np.inf
+    if not x.any() or (self_r == 0).any():
+        return None
+    r = rates(x, y)
+    ok = (r <= r[mk] / 2) & (r <= 0.5) & (r <= self_r / 2)
+    ok[mk] = False
+    if not ok.any():
+        return None
+    return int(np.argmin(np.where(ok, r, np.inf))) - mk
+
+
+def test_shift_test_matches_the_reference():
+    """0.55.0: accudisc_shift_test must give the SAME answer as cdda2img's
+    predicate on every input: loud, quiet and held-sample audio; damage in
+    place (must stay unshifted); displacements of 1-24 samples and near the
+    +-294 edge, with damage; 3-sector copies (+-588). Their six-container
+    table is the acceptance test; this is ours, run before theirs."""
+    try:
+        import numpy as np
+    except ImportError:
+        print("SKIP shift cross-check: no numpy")
+        return
+    import random
+    rng = random.Random(20261125)
+
+    def stream(kind, n_samples):
+        t = np.arange(n_samples)
+        if kind == "loud":
+            v = 12000 * np.sin(t * 0.031) + 6000 * np.sin(t * 0.17 + 1)
+            v += np.array([rng.randrange(-900, 900) for _ in range(n_samples)])
+        elif kind == "quiet":  # about -50 dBFS, with a run of digital silence
+            v = 90 * np.sin(t * 0.013) + np.array(
+                [rng.randrange(-3, 4) for _ in range(n_samples)])
+            v[n_samples // 3: n_samples // 3 + 300] = 0
+        else:  # held samples: runs of 8 identical values, like concealment
+            base = 4000 * np.sin(t[::8] * 0.09)
+            v = np.repeat(base, 8)[:n_samples]
+        lr = np.stack([v, -v * 0.7], axis=1).astype(np.int16)
+        return lr.tobytes()
+
+    def damage(b, count):
+        b = bytearray(b)
+        for i in rng.sample(range(len(b)), count):
+            b[i] = (b[i] + rng.randrange(1, 256)) % 256
+        return bytes(b)
+
+    cases = 0
+    shifted_seen = 0
+    for kind in ("loud", "quiet", "held"):
+        for sectors in (1, 3):
+            n = 2352 * sectors
+            st = stream(kind, n // 4 + 2 * 700 + 8)
+            off = 700 * 4
+            x = st[off: off + n]
+            assert ad.shift_test(x, x) is None          # identical: no shift
+            for d in (16, 64, 256, 624):                 # damage in place
+                y = damage(x, d)
+                assert ad.shift_test(x, y) == _ref_shifted(x, y), (kind, d)
+                cases += 1
+            mk = min(588, n // 8)
+            for k in (1, -1, 6, 12, 24, mk - 4, -(mk - 4)):
+                y = damage(st[off + 4 * k: off + 4 * k + n], 624)
+                got, want = ad.shift_test(x, y), _ref_shifted(x, y)
+                assert got == want, (kind, sectors, k, got, want)
+                shifted_seen += got is not None
+                cases += 1
+    assert shifted_seen > 0, "the cross-check never saw a shift: vacuous"
+
+    # FUZZ: tiny buffers over a 2- or 3-letter alphabet, where exact ties,
+    # rates landing exactly ON a boundary, self-similar (no-signal) x and
+    # out-of-range k all happen constantly. Audio never produces those, and a
+    # transcription error that only shows there is still a different test.
+    fz = random.Random(275)
+    fuzz_shifted = 0
+    for _ in range(4000):
+        n = 4 * fz.randrange(2, 17)
+        alpha = fz.randrange(2, 4)
+        x = bytes(fz.randrange(alpha) for _ in range(n))
+        mode = fz.randrange(3)
+        if mode == 0:
+            y = bytes(fz.randrange(alpha) for _ in range(n))
+        else:
+            k = fz.randrange(-(n // 4) + 1, n // 4)
+            src = bytes(fz.randrange(alpha) for _ in range(n + 8 * abs(k) + 8))
+            mid = 4 * abs(k) + 4
+            x = src[mid: mid + n]
+            y = bytearray(src[mid + 4 * k: mid + 4 * k + n])
+            for _ in range(fz.randrange(0, 3) if mode == 2 else 0):
+                y[fz.randrange(n)] = fz.randrange(alpha)
+            y = bytes(y)
+        got, want = ad.shift_test(x, y), _ref_shifted(x, y)
+        assert got == want, (x.hex(), y.hex(), got, want)
+        fuzz_shifted += got is not None
+        cases += 1
+    assert fuzz_shifted > 100, "fuzz rarely shifted: weak"
+    with pytest_raises(ad.AccuDiscError):
+        ad.shift_test(b"\x01" * 6, b"\x01" * 6)  # not a multiple of 4
+    print(f"shift_test agrees with the reference on {cases} cases, "
+          f"{shifted_seen} of them shifted")
+
+
+def pytest_raises(exc):
+    import contextlib
+
+    @contextlib.contextmanager
+    def cm():
+        try:
+            yield
+        except exc:
+            return
+        raise AssertionError(f"{exc.__name__} not raised")
+    return cm()
 
 
 def test_set_cancel_marshals_and_holds_its_flag():

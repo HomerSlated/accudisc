@@ -27,7 +27,12 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 54 /* 0.54.0: accudisc_read_req.rescue_by_rung
+#define ACCUDISC_VERSION_MINOR 55 /* 0.55.0: accudisc_shift_test (new), the
+                                  * damage-tolerant shift test as a pure
+                                  * function, so cdda2img can measure it on
+                                  * real audio before any read uses it. No read
+                                  * changes; read_req byte 105 stays reserved.
+                                  * Previously 0.54.0: accudisc_read_req.rescue_by_rung
                                   * (opt-in): the Q-position rescue, the C2
                                   * rescue and consensus re-read a chunk's
                                   * problem sectors rung by rung, not sector by
@@ -3951,12 +3956,55 @@ typedef struct accudisc_read_req {
     uint8_t rescue_by_rung;
     uint8_t reserved3[7]; /* MUST BE ZERO, unlike reserved0-2: anything else is
                            * ACCUDISC_ERR_INVAL. Byte 105 is to carry the shift
-                           * test (0.55.0) and 106-111 a per-read budget
-                           * (0.56.0), so a caller asking an older library for
-                           * either is refused rather than silently given a
+                           * search (0.56.0; the test itself is
+                           * accudisc_shift_test, 0.55.0) and 106-111 a per-read
+                           * budget (0.57.0), so a caller asking an older library
+                           * for either is refused rather than silently given a
                            * read without it (cdda2img correspondence,
-                           * AccuDisc 2026-11-25j/o). */
+                           * AccuDisc 2026-11-25j/o/q). */
 } accudisc_read_req;
+
+/* ---- shift test (0.55.0) ---------------------------------------------------
+ * Is y a DISPLACED copy of x, damage allowed? A pure function, no device.
+ *
+ * The question the read engine's slip detection asks, made callable on its own
+ * so its answers can be measured against real audio before any read relies on
+ * them. The engine's own test (since 0.41.0) demands an EXACT match over the
+ * whole overlap, so a copy that is both displaced and damaged is not seen as
+ * displaced (AccuDisc correspondence 2026-11-25d). This is the tolerant test
+ * that 0.56.0 is to offer as `shift_search`.
+ *
+ * DEFINITION, cdda2img's `_shifted` in tools/shift_margin.py (their 2e23787),
+ * transcribed. For k in [-max_k, +max_k], k != 0, with b = 4k bytes, compare
+ * x[0 .. n-b) with y[b .. n) (or x[-b .. n) with y[0 .. n+b) for b < 0) and
+ * take, as doubles:
+ *     r_k = differing bytes / overlap bytes     (x against y)
+ *     s_k = the same for x against x            (x's own self-difference)
+ * x has SIGNAL when it is not all zero and s_k > 0 for every k in range. y is
+ * shifted by k when, at the k with the smallest r_k (the most negative on a
+ * tie), all three hold:
+ *     r_k <= r_0 / 2      much closer at k than unshifted
+ *     r_k <= 1 / 2        mostly agreeing at k
+ *     r_k <= s_k / 2      closer than x is to ITSELF at k
+ * The third is what keeps quiet and held-sample audio, which nearly equals
+ * itself one sample over, from reading damage as a 1-sample slip.
+ *
+ * max_k = min(588, len / 8) samples: +-294 for one 2352-byte sector, so the
+ * overlap is never below half of it, and +-588 for a 3-sector copy. Our first
+ * reference searched +-588 on one sector, where the overlap runs out, and could
+ * never fire; cdda2img found that by running it.
+ *
+ * MEASURED by cdda2img on six containers, 5,938 sectors with signal (275): no
+ * false positive with 16 to 624 bytes of damage in place; 94-100% of 1-24
+ * sample displacements found in loud and middle audio, fewer in quiet audio.
+ * A RELATIVE test like every other in this library: two copies that share one
+ * displacement agree, and it cannot see that.
+ *
+ * Returns 1 with *shift set (samples; positive = y's audio is later), 0 when
+ * not shifted or x has no signal, ACCUDISC_ERR_INVAL for a NULL buffer or a len
+ * that is not a positive multiple of 4 of at least 8. */
+ACCUDISC_API int accudisc_shift_test(const uint8_t *x, const uint8_t *y,
+                                     uint32_t len, int32_t *shift);
 
 /* accudisc_read_req.origin_map, one byte per sector. LOW NIBBLE: the class of
  * read whose bytes were delivered. HIGH NIBBLE: the rung, where 0 is the pass

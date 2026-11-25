@@ -8379,6 +8379,26 @@ before `span-flagged` gets its rescue ladder.
     - **Suite.** 60/60, after updating the CLI usage golden for
       `--rescue-by-rung`.
     - **No read changes** unless the caller asks for the flag.
+  - **BUILT 0.55.0 (2026-11-25): `accudisc_shift_test()`,** a pure function
+    implementing cdda2img's corrected `_shifted` (their `2e23787`) in float64,
+    exactly as numpy computes it. Notice 25q; the version was split off so it
+    tracks the ABI. The renumbering is: 0.56 `shift_search` wired in, 0.57
+    budget, 0.58 policy, 0.59 compare.
+    - **ACCEPTED by cdda2img (276).** Their six-container run went through
+      our C, 47,504 cases, with 0 disagreements and the same table as 275.
+    - **Our cross-check** (`test_shift_test_matches_the_reference`): a numpy
+      port of their predicate against the C.
+      - 66 generated audio cases (loud, quiet, held-sample, 1 and 3 sectors,
+        damage in place, shifts of 1 to 24 samples and at the range edge), 33
+        of them shifted.
+      - Plus 4,000 fuzz pairs: 8 to 64 bytes over a 2- or 3-letter alphabet,
+        so ties, inputs exactly on a boundary and no-signal x all occur.
+    - **Mutation run.** 11 mutants. The audio cases alone left 7 survivors;
+      with the fuzz, 9 are killed. Of the other 2:
+      - "not all zero" is redundant in the definition, since all-zero x has
+        `s_k = 0`, so it was not transcribed.
+      - `r ≤ 1/2` is implied by `r ≤ s_k/2`, so it was kept and documented.
+      Both are recorded as equivalent.
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 

@@ -743,6 +743,9 @@ typedef struct accudisc_read_stats {
 #define ACCUDISC_CACHE_DEFEAT_FAILED ...
 #define ACCUDISC_CACHE_DEFEAT_NEAR ...
 
+int accudisc_shift_test(const uint8_t *x, const uint8_t *y, uint32_t len,
+                        int32_t *shift);
+
 int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                        accudisc_sink_fn sink, void *user,
                        accudisc_read_stats *stats);
