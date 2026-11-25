@@ -8139,6 +8139,84 @@ on a damaged chunk, and over a minute in 0.51.1's crawl.
   counters). The CLI is unchanged: it installs no SIGINT handler, so Ctrl-C
   still ends it by the default action, with no speed restore.
 
+## AUDITED 2026-11-25 — every local re-read the engine offers (cdda2img 268; reply 2026-11-25a). Nothing built; decisions are Keith's
+
+**The ruling** (Keith, 2026-11-25 09:41, relayed verbatim in correspondence
+268): re-reads that use only local evidence (C2, for example) belong to AccuDisc;
+re-reads that use online evidence (AccurateRip) belong to cdda2img. Both sides
+were asked to audit their own. cdda2img's audit of how it calls us is in 268.
+Ours is in the reply, 2026-11-25a, which also gives the audit of each knob
+(what it does, cost, caveats, stats).
+
+The findings below were measured on a fake drive with two throwaway probes,
+linked against `libaccudisc.a` with `--wrap`. They are not tests. No drive
+access and no rebuild. Code references are at `cbe6c3d`.
+
+- **A read with every knob at its default re-reads, when `sub = RAW`.** The
+  Q-position rescue (0.21.0) is gated on raw P-W alone (`engine.c:1135`).
+  - One misposition: 9 sectors RECOVERED, from the ±4 margin.
+  - A misposition that persists: 1 SUSPECT and 8 RECOVERED.
+  - So `sectors_suspect`, an input to the caveat verdict, can go non-zero on
+    cdda2img's capture. It was verified on hardware twice (§2.23, §2.25 above).
+- **Doc defects, owed:**
+  - `accudisc.h:3364-3367`, "neither RECOVERED nor SUSPECT" at the defaults. It
+    was written 08-08 and became false 08-26.
+  - The same claim in the RECOVERED-off-by-one entry below ("cannot occur at
+    all").
+  - `accudisc.h:3084-3087` overclaims Accurate Stream. Both drives measured
+    slipping report yes, and the probe's own source says "did not slip, here,
+    at this rate".
+  - The `rereads` doc. It counts only successful rescue, consensus, anchoring
+    and Q-rescue commands. It does not count verify or witness transfers,
+    fallback attempts, far reads, or failed re-reads. Verify 2 over a clean
+    span reported `rereads = 0`.
+  - RECOVERY.md §2.7, §4.3 and §5.2–5.3 ("accurate_stream yes → skip
+    overlap").
+  - RECOVERY.md §2.10's `--recovery ERR,RETR`. No such AccuDisc control
+    exists; MODE SELECT is used for page 05 only.
+  - The header fixes are comment-only. 2026-11-25a was their API notice.
+- **2026-09-16g was wrong, and it is the reasoning 0.43.0 was decided on.**
+  - The C2 rescue (`engine.c:1238-1257`) runs **before** the verify passes
+    (`:1268-1272`). It still lines up against the chunk as first delivered.
+  - Five scenarios, one 12-sector chunk, transfers landing exact or 96 bytes
+    late. **Adding `c2_retries 3` to `verify 2` never changed the delivered
+    audio.**
+  - When the first transfer is late and the witness lands true, the anchoring
+    re-reads decide the result. If they share the first transfer's
+    displacement, **verify 2 alone delivers all 12 sectors wrong and
+    RECOVERED**. This is the documented anchoring limit (`engine.c:540-547`),
+    and it applies to verify itself.
+  - When both transfers are late, `c2_retries` relabels the flagged sector from
+    C2 to a wrong RECOVERED, and `sectors_flagged` goes from 1 to 0. The read's
+    caveat verdict turns clean with 12 of 12 wrong. The same mechanism is the
+    gain when the rescue is right.
+  - With the 0.43.0 gate relaxed in a scratch copy, `c2_witness + c2_retries`
+    matched `verify 2 + c2_retries` exactly. That is the measured half of the
+    proposal at line 894 above, which is still Keith's call under Posture B.
+- **The rescue ladder is walked once per sector.** The attempt index restarts
+  for every sector. With `{24,8,4}` and 5 persistently flagged sectors in one
+  chunk, that was 17 speed sets, against 5 for one sector. cdda2img fixed the
+  same shape in its own strategies (`006457b`). What a speed change costs on
+  the PX-716A is unmeasured. Ordering the rescue by rung would change every
+  read that passes a ladder, so it waits for Keith.
+- **The span rung's first transfer is not cache-defeated.** Verify defeats only
+  its own second transfer (`engine.c:726-728`). We recommended that cdda2img
+  set `cache_defeat` there.
+
+**Proposed in 2026-11-25a, none built, all waiting on Keith's go, after his
+per-profile series on Tracy:**
+- A pure policy function in the API_PLAN §2 "Policy" layer. It takes the read's
+  purpose and facts and returns a filled `read_req` with reason codes.
+- Effort stats appended to `read_stats`: per-stage counts, per-rung rescue
+  reads and wins, and time.
+- A count budget on a read's local re-reads.
+- Ordering the rescue by rung.
+- A reference-compare primitive for speed-diverse whole-range verify. This
+  moves cdda2img's `--digital-media` consensus here.
+
+Keith's to decide: whether the ruling reopens Posture A, and the four earlier
+rulings cdda2img listed in its 268.4.
+
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 
 8trax is the third correspondent and the first **GUI** consumer. Keith's ruling
