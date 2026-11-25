@@ -107,6 +107,24 @@ _Static_assert(offsetof(accudisc_read_req, reserved0) == 68,
 _Static_assert(offsetof(accudisc_read_req, c2_witness) == 72,
                "read_req: c2_witness must sit past 0.44.0's end");
 _Static_assert(sizeof(accudisc_read_stats) == 688, "read_stats grew — see above");
+/* 0.58.0: accudisc_read_policy's two structs, as published (2026-11-25y). */
+_Static_assert(sizeof(accudisc_read_intent) == 64, "read_intent: 64 bytes");
+_Static_assert(offsetof(accudisc_read_intent, purpose) == 4, "intent: purpose");
+_Static_assert(offsetof(accudisc_read_intent, admitted_x) == 8,
+               "intent: admitted_x");
+_Static_assert(offsetof(accudisc_read_intent, speed_x) == 40, "intent: speed_x");
+_Static_assert(offsetof(accudisc_read_intent, budget_speed_changes) == 42,
+               "intent: budget_speed_changes");
+_Static_assert(offsetof(accudisc_read_intent, lba) == 44, "intent: lba");
+_Static_assert(offsetof(accudisc_read_intent, readable_lo) == 52,
+               "intent: readable_lo");
+_Static_assert(offsetof(accudisc_read_intent, budget_cmds) == 60,
+               "intent: budget_cmds");
+_Static_assert(sizeof(accudisc_read_policy_info) == 48, "policy_info: 48");
+_Static_assert(offsetof(accudisc_read_policy_info, reasons) == 8,
+               "policy_info: reasons");
+_Static_assert(offsetof(accudisc_read_policy_info, ladder) == 16,
+               "policy_info: ladder");
 /* 0.57.0: 664 -> 688, the budget block (notice 2026-11-25w). */
 _Static_assert(offsetof(accudisc_read_stats, budget_spent_cmds) == 664,
                "budget: budget_spent_cmds");

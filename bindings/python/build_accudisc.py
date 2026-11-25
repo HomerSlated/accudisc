@@ -753,6 +753,48 @@ typedef struct accudisc_read_stats {
 int accudisc_shift_test(const uint8_t *x, const uint8_t *y, uint32_t len,
                         int32_t *shift);
 
+#define ACCUDISC_PURPOSE_CAPTURE ...
+#define ACCUDISC_PURPOSE_GATED_REREAD ...
+#define ACCUDISC_PURPOSE_SPAN_RESCUE ...
+#define ACCUDISC_PURPOSE_REFERENCE_VERIFY ...
+#define ACCUDISC_POLICY_REVISION ...
+#define ACCUDISC_POLICY_R_NO_C2 ...
+#define ACCUDISC_POLICY_R_DEFEAT_NO_TARGET ...
+#define ACCUDISC_POLICY_R_READABLE_UNKNOWN ...
+#define ACCUDISC_POLICY_R_ENGINE_RECOVERY_PENDING_AB ...
+#define ACCUDISC_POLICY_R_C2_RESCUE_KEPT_OFF ...
+#define ACCUDISC_POLICY_R_SHIFT_SEARCH_PENDING_AB ...
+#define ACCUDISC_POLICY_R_LADDER_NEXT_UP ...
+#define ACCUDISC_POLICY_R_NO_LADDER ...
+#define ACCUDISC_POLICY_R_SLIPS_KNOWN_RELATIVE_ONLY ...
+
+typedef struct accudisc_read_intent {
+    uint32_t size;
+    uint8_t  purpose;
+    uint8_t  c2_usable;
+    uint8_t  drive_slips;
+    uint8_t  n_admitted;
+    uint16_t admitted_x[16];
+    uint16_t speed_x;
+    uint16_t budget_speed_changes;
+    uint32_t lba, count;
+    uint32_t readable_lo, readable_hi;
+    uint32_t budget_cmds;
+    ...;
+} accudisc_read_intent;
+
+typedef struct accudisc_read_policy_info {
+    uint32_t size;
+    uint32_t revision;
+    uint64_t reasons;
+    uint16_t ladder[16];
+    ...;
+} accudisc_read_policy_info;
+
+int accudisc_read_policy(const accudisc_read_intent *in,
+                         accudisc_read_req *out,
+                         accudisc_read_policy_info *info);
+
 int accudisc_read_cdda(accudisc_device *dev, const accudisc_read_req *req,
                        accudisc_sink_fn sink, void *user,
                        accudisc_read_stats *stats);

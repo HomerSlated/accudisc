@@ -68,4 +68,19 @@ static inline enum adsc_far adsc_far_target(uint32_t a, uint32_t n,
     return ADSC_FAR_NONE;
 }
 
+/* The distance a cache-defeating far read aims for. Shared, so the engine and
+ * accudisc_read_policy cannot disagree about where one would land. */
+#define ADSC_FLUSH_DISTANCE 5000
+
+/* THE HEAD far read (accudisc_read_req.cache_defeat, 0.49.0) for a read of
+ * [lba, lba + count) in [lo, hi): the one rule the engine applies before its
+ * first transfer and accudisc_read_policy (0.58.0) applies to decide whether to
+ * ask for it at all. ADSC_FAR_NONE = no target, so no far read. */
+static inline enum adsc_far adsc_far_head(uint32_t lba, uint32_t count,
+                                          uint32_t lo, uint32_t hi,
+                                          uint32_t *out)
+{
+    return adsc_far_target(lba, count, lo, hi, ADSC_FLUSH_DISTANCE, out);
+}
+
 #endif

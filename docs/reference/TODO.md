@@ -8536,6 +8536,43 @@ before `span-flagged` gets its rescue ladder.
     - **Header:** 0 means unlimited, so a remainder of 0 must not be passed
       (§279).
     - **Suite 60/60.**
+  - **BUILT 0.58.0 (2026-11-25): `accudisc_read_policy()`, revision 1**
+    (`src/read/policy.c`). Note 4 with cdda2img's §274 catch; notice 25y.
+    - **One cell changed from 25k:** `shift_search` is OFF in `SPAN_RESCUE`
+      (`R_SHIFT_SEARCH_PENDING_AB`), because §278 moved it into the
+      post-series A/B.
+    - **Structs:** the intent is 64 bytes (an IN struct), the info 48 bytes
+      (an OUT struct). Purposes: CAPTURE 1, GATED_REREAD 2, SPAN_RESCUE 3,
+      REFERENCE_VERIFY 4. Purpose 0 is invalid; 4 returns `ERR_UNSUPPORTED`
+      until 0.59.
+    - **Field ownership:** the policy overwrites every field it owns and
+      never touches `status_map`, `subq_map`, `origin_map`, `cancel` or
+      `buffer_bytes`. On error it writes nothing.
+    - **`out->size`** must be at least 112 and no larger than ours. **`info`**
+      is required: `speed_ladder` points into it.
+    - **The head far read** is decided by `adsc_far_head()` in `far.h`, the
+      helper the engine's head far read now calls too.
+      - `R_DEFEAT_NO_TARGET`: no target fits.
+      - `R_READABLE_UNKNOWN`: the range is unknown, so the engine's unbounded
+        rule decided.
+    - **`ADSC_FLUSH_DISTANCE`** moved into `far.h`. `c2lag.c` keeps its own
+      copy.
+    - **Tests:**
+      - `test_policy`: the exact request and reasons for every purpose and
+        edge; every refusal leaves `out`/`info` byte-identical;
+        caller-owned fields left untouched; policy-owned fields pre-filled
+        with garbage and all overwritten; the 16/17 rung boundary.
+      - `test_effort`: every policy output runs on the fake. The engine
+        accepts each one, and its `cache_defeat` stat is DONE or NEAR
+        exactly where the policy asked for the head far read.
+      - The binding: `read_kwargs()` is exactly the policy-owned keywords of
+        `Device.read`.
+    - **Mutation run:** 54 mutants, 54 killed. The `> 16` boundary was first
+      masked: the 17th entry read past the array was `speed_x`, which the
+      duplicate check refused anyway.
+    - **Python:** `read_policy()`, `Purpose`, `PolicyReason`, `ReadPolicy`,
+      token `read_policy`. No CLI.
+    - **Suite 61/61.**
 
 ## Consumer requests — 8trax (Rust/FLTK GUI), recorded 2026-08-01
 

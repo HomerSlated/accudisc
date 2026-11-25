@@ -1120,6 +1120,64 @@ static void test_budget_evidence_keeps_recovered(void)
            "the rest SUSPECT\n");
 }
 
+/* accudisc_read_policy (0.58.0) INTO THE ENGINE. Every output the policy can
+ * produce, for each purpose and edge, run as a real read on the fake: the
+ * engine must accept it (a policy emitting something the engine's own
+ * validation refuses is caught here, not by the pure tests), and wherever the
+ * policy asked for the head far read, the engine must have made one, DONE or
+ * NEAR, never failed for want of a target. */
+static void policy_read(uint8_t purpose, int c2_usable, uint16_t speed,
+                        const uint16_t *adm, uint8_t n, uint32_t lba,
+                        uint32_t count, uint32_t lo, uint32_t hi)
+{
+    accudisc_read_intent in = ACCUDISC_READ_INTENT_INIT;
+    accudisc_read_req req = ACCUDISC_READ_REQ_INIT;
+    accudisc_read_policy_info info = ACCUDISC_READ_POLICY_INFO_INIT;
+
+    in.purpose = purpose;
+    in.c2_usable = (uint8_t)c2_usable;
+    in.speed_x = speed;
+    in.n_admitted = n;
+    memcpy(in.admitted_x, adm, n * sizeof(*adm));
+    in.lba = lba;
+    in.count = count;
+    in.readable_lo = lo;
+    in.readable_hi = hi;
+    assert(accudisc_read_policy(&in, &req, &info) == ACCUDISC_OK);
+
+    reset();
+    fk.c2_lo = lba + 5; /* a flagged sector, so the rescue path has work */
+    fk.c2_hi = lba + 6;
+    accudisc_read_stats st = run(&req);
+    assert(st.sectors_read + st.hard_errors == count);
+    if (req.cache_defeat)
+        assert(st.cache_defeat == ACCUDISC_CACHE_DEFEAT_DONE ||
+               st.cache_defeat == ACCUDISC_CACHE_DEFEAT_NEAR);
+    else
+        assert(st.cache_defeat == ACCUDISC_CACHE_DEFEAT_OFF);
+    /* the ladder's contents are pinned exactly in test_policy.c */
+}
+
+static void test_policy_into_the_engine(void)
+{
+    static const uint16_t adm[] = { 32, 8, 24, 16 }, one[] = { 24 };
+    const uint8_t PC = ACCUDISC_PURPOSE_CAPTURE,
+                  PG = ACCUDISC_PURPOSE_GATED_REREAD,
+                  PS = ACCUDISC_PURPOSE_SPAN_RESCUE;
+
+    policy_read(PC, 1, 32, adm, 4, 10000, 46, 0, 200000);
+    policy_read(PC, 0, 0, adm, 4, 10000, 46, 0, 0);
+    policy_read(PG, 1, 24, adm, 4, 10000, 46, 0, 200000); /* FULL target */
+    policy_read(PG, 1, 24, adm, 4, 2000, 46, 0, 6000);    /* NEAR target */
+    policy_read(PG, 1, 24, adm, 4, 10000, 46, 10000, 10046); /* no target */
+    policy_read(PG, 0, 0, adm, 4, 10000, 46, 0, 0);       /* unknown range */
+    policy_read(PS, 1, 24, adm, 4, 10000, 46, 0, 200000); /* ladder 16, 8 */
+    policy_read(PS, 1, 8, adm, 4, 10000, 46, 0, 200000);  /* next up: 16 */
+    policy_read(PS, 1, 24, one, 1, 10000, 46, 0, 200000); /* no ladder */
+    printf("ok - every policy output reads on the fake; the head far read "
+           "exactly where the policy asked\n");
+}
+
 /* The head is never charged: cache_defeat's far read and the pass-speed set,
  * on budgets of 1 each, spend nothing and cut nothing. */
 static void test_budget_spares_the_head(void)
@@ -1169,5 +1227,6 @@ int main(void)
     test_budget_missing_witness();
     test_budget_missing_witness_evidence();
     test_budget_evidence_keeps_recovered();
+    test_policy_into_the_engine();
     return 0;
 }

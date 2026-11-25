@@ -29,7 +29,6 @@
 #define ADSC_MAX_XFER 65535
 #define ADSC_DEFAULT_RETRIES 2
 /* Distance of the cache-defeat read: far enough to force a real seek. */
-#define ADSC_FLUSH_DISTANCE 5000
 /* Audio-only sector_len >= 2352 bounds the chunk at 27; round up. */
 #define ADSC_CHUNK_MAX 32
 #define ADSC_OVERLAP_MAX 8
@@ -472,12 +471,10 @@ static uint8_t defeat_before_read(struct rd *r)
 {
     const accudisc_read_req *req = r->req;
     uint32_t away;
-    enum adsc_far k = r->far_hi
-                          ? adsc_far_target(req->lba, req->count, r->far_lo,
-                                            r->far_hi, ADSC_FLUSH_DISTANCE,
-                                            &away)
-                          : adsc_far_target(req->lba, req->count, 0, 0,
-                                            ADSC_FLUSH_DISTANCE, &away);
+    /* far_lo is ignored when far_hi is 0 (unknown), exactly as before */
+    enum adsc_far k = adsc_far_head(req->lba, req->count,
+                                    r->far_hi ? r->far_lo : 0, r->far_hi,
+                                    &away);
 
     if (k == ADSC_FAR_NONE)
         return ACCUDISC_CACHE_DEFEAT_FAILED; /* no address to try */

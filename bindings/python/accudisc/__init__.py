@@ -51,6 +51,7 @@ Error convention, from ``cli-machine-interface.md``:
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import enum
 import os
 from dataclasses import dataclass, field
@@ -74,6 +75,7 @@ __all__ = [
     "C2", "Sub", "MapState", "SubQState", "Anomaly", "TocSource", "TocDegrade",
     "C2Verdict", "FeaturesMedium", "CacheDefeat", "Origin", "Stage",
     "origin_class", "origin_rung", "shift_test",
+    "Purpose", "PolicyReason", "ReadPolicy", "read_policy",
     "DiscKind", "DiscReason", "TrayState", "DiscProbe",
     "CtdbRepair", "ctdb_repair",
     "Verdict", "WriteResult",
@@ -218,6 +220,9 @@ features = frozenset({
     # budget_* / sectors_budget_cut fields exist (0.57.0): a per-read budget
     # for local recovery, and what was spent and cut.
     "read_budget",
+    # read_policy(), Purpose, PolicyReason and ReadPolicy exist (0.58.0): the
+    # library fills a read's settings from what the read is for.
+    "read_policy",
     # The API_PLAN §5 acquisition strategies and the rest of the surface:
     # plan_read_range, scan_pregaps, index_map_decode, parse_full_toc,
     # decode_cdtext, read_atip, set_speed_range, the speed_uncap family,
@@ -765,6 +770,140 @@ def shift_test(x: bytes, y: bytes) -> int | None:
     if rc < 0:
         _check(rc)
     return int(out[0]) if rc == 1 else None
+
+
+class Purpose(enum.IntEnum):
+    """What a read is FOR (0.58.0), the input to :func:`read_policy`."""
+
+    CAPTURE = lib.ACCUDISC_PURPOSE_CAPTURE                    # whole-range first pass
+    GATED_REREAD = lib.ACCUDISC_PURPOSE_GATED_REREAD          # one AR-gated attempt
+    SPAN_RESCUE = lib.ACCUDISC_PURPOSE_SPAN_RESCUE            # a C2-flagged span
+    REFERENCE_VERIFY = lib.ACCUDISC_PURPOSE_REFERENCE_VERIFY  # reserved, 0.59.0
+
+
+class PolicyReason(enum.IntFlag):
+    """Why :func:`read_policy` chose what it chose (``ACCUDISC_POLICY_R_*``)."""
+
+    NO_C2 = lib.ACCUDISC_POLICY_R_NO_C2
+    DEFEAT_NO_TARGET = lib.ACCUDISC_POLICY_R_DEFEAT_NO_TARGET
+    READABLE_UNKNOWN = lib.ACCUDISC_POLICY_R_READABLE_UNKNOWN
+    ENGINE_RECOVERY_PENDING_AB = lib.ACCUDISC_POLICY_R_ENGINE_RECOVERY_PENDING_AB
+    C2_RESCUE_KEPT_OFF = lib.ACCUDISC_POLICY_R_C2_RESCUE_KEPT_OFF
+    SHIFT_SEARCH_PENDING_AB = lib.ACCUDISC_POLICY_R_SHIFT_SEARCH_PENDING_AB
+    LADDER_NEXT_UP = lib.ACCUDISC_POLICY_R_LADDER_NEXT_UP
+    NO_LADDER = lib.ACCUDISC_POLICY_R_NO_LADDER
+    SLIPS_KNOWN_RELATIVE_ONLY = lib.ACCUDISC_POLICY_R_SLIPS_KNOWN_RELATIVE_ONLY
+
+
+@dataclass(frozen=True)
+class ReadPolicy:
+    """The request :func:`read_policy` chose, and why (0.58.0).
+
+    ``read_kwargs()`` is exactly the POLICY-OWNED keywords of
+    :meth:`Device.read`; add your own (``sink``, ``status_map``, ``subq_map``,
+    ``origin_map``, ``cancel``, ``buffer_bytes``) and change nothing else, or
+    the read is no longer the one ``revision`` describes. Record ``revision``
+    and ``reasons`` with the result.
+    """
+
+    revision: int
+    reasons: PolicyReason
+    lba: int
+    count: int
+    c2: "C2"
+    sub: "Sub"
+    any_type: bool
+    retries: int
+    chunk_sectors: int
+    speed_x: int
+    c2_retries: int
+    verify_passes: int
+    overlap_sectors: int
+    speed_ladder: tuple[int, ...] | None
+    c2_witness: bool
+    cache_defeat: bool
+    readable: tuple[int, int] | None
+    rescue_by_rung: bool
+    shift_search: bool
+    budget_cmds: int
+    budget_speed_changes: int
+
+    def read_kwargs(self) -> dict:
+        d = dataclasses.asdict(self)
+        del d["revision"], d["reasons"]
+        d["c2"], d["sub"] = self.c2, self.sub
+        return d
+
+
+def read_policy(purpose: "Purpose | int", lba: int, count: int, *,
+                c2_usable: bool, admitted: Sequence[int] = (),
+                speed_x: int = 0, drive_slips: int = 0,
+                readable: tuple[int, int] | None = None,
+                budget_cmds: int = 0,
+                budget_speed_changes: int = 0) -> ReadPolicy:
+    """Fill a read's settings from what it is FOR (0.58.0). Pure: no device.
+
+    ``admitted``: the ADMITTED rungs from :meth:`Device.probe_speed_ladder`,
+    any order. ``speed_x`` must be one of them, or 0 (drive-managed; not for
+    ``SPAN_RESCUE``). ``drive_slips``: 0 unknown, 1 none known, 2 known to
+    slip. ``readable``: :func:`session_extent_at`'s ``(lo, hi)``, or ``None``
+    when unknown. The table (revision 1) and every refusal are documented at
+    ``accudisc_read_policy`` in accudisc.h; an impossible intent raises
+    :class:`InvalidArgument`, never a substituted value.
+    """
+    adm = tuple(int(x) for x in admitted)
+    if len(adm) > 16:
+        raise ValueError(f"at most 16 admitted rungs, got {len(adm)}")
+    if not 0 <= budget_cmds <= 0xFFFFFFFF:
+        raise ValueError(f"budget_cmds {budget_cmds} is outside 0..2**32-1")
+    if not 0 <= budget_speed_changes <= 0xFFFF:
+        raise ValueError(
+            f"budget_speed_changes {budget_speed_changes} is outside 0..65535")
+    in_ = ffi.new("accudisc_read_intent*")
+    in_.size = ffi.sizeof("accudisc_read_intent")
+    in_.purpose = int(purpose)
+    in_.c2_usable = 1 if c2_usable else 0
+    in_.drive_slips = drive_slips
+    in_.n_admitted = len(adm)
+    for i, x in enumerate(adm):
+        in_.admitted_x[i] = x
+    in_.speed_x = speed_x
+    in_.lba = lba
+    in_.count = count
+    if readable is not None:
+        in_.readable_lo, in_.readable_hi = readable
+    in_.budget_cmds = budget_cmds
+    in_.budget_speed_changes = budget_speed_changes
+    out = ffi.new("accudisc_read_req*")
+    out.size = ffi.sizeof("accudisc_read_req")
+    info = ffi.new("accudisc_read_policy_info*")
+    info.size = ffi.sizeof("accudisc_read_policy_info")
+    _check(lib.accudisc_read_policy(in_, out, info))
+    return ReadPolicy(
+        revision=info.revision,
+        reasons=PolicyReason(info.reasons),
+        lba=out.lba,
+        count=out.count,
+        c2=C2(out.c2),
+        sub=Sub(out.sub),
+        any_type=bool(out.any_type),
+        retries=out.retries,
+        chunk_sectors=out.chunk_sectors,
+        speed_x=out.speed_x,
+        c2_retries=out.c2_retries,
+        verify_passes=out.verify_passes,
+        overlap_sectors=out.overlap_sectors,
+        speed_ladder=(tuple(info.ladder[i] for i in range(out.ladder_len))
+                      if out.ladder_len else None),
+        c2_witness=bool(out.c2_witness),
+        cache_defeat=bool(out.cache_defeat),
+        readable=((out.readable_lo, out.readable_hi)
+                  if out.readable_hi else None),
+        rescue_by_rung=bool(out.rescue_by_rung),
+        shift_search=bool(out.shift_search),
+        budget_cmds=out.budget_cmds,
+        budget_speed_changes=out.budget_speed_changes,
+    )
 
 
 def origin_class(b: int) -> Origin:

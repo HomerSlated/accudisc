@@ -35,7 +35,8 @@ foreach(t test_version test_cdb test_sense test_toc test_map test_decode
         test_abi test_speeds test_rs16 test_rs16_kat test_ctdb_api
         test_write_offset test_accubuf test_write_health test_trace test_ready
         test_layout test_consensus test_wparams test_features
-        test_cache_defeat test_toc_from_raw test_cancel test_effort)
+        test_cache_defeat test_toc_from_raw test_cancel test_effort
+        test_policy)
     add_executable(${t} ${t}.c)
     # test_accubuf drives the ring's own threads; the others do not care.
     target_link_libraries(${t} PRIVATE accudisc_static Threads::Threads)

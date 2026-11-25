@@ -1344,7 +1344,8 @@ def test_origin_lane_surface():
         "STREAM", "FALLBACK", "QPOS", "C2_RESCUE", "CONSENSUS", "ANCHOR",
         "WITNESS", "FAR", "SPEED"]
     assert {"effort_stats", "origin_map", "rescue_by_rung",
-            "shift_test", "shift_search", "read_budget"} <= ad.features
+            "shift_test", "shift_search", "read_budget",
+            "read_policy"} <= ad.features
     import inspect
     assert inspect.signature(ad.Device.read).parameters["shift_search"].default is False
     r = ad.ReadResult(lba=0, count=3, stats=None)
@@ -1650,6 +1651,64 @@ def test_read_budget_out_of_range_raises():
             assert next(iter(kw)) in str(exc)
         else:
             raise AssertionError(f"{kw} must raise ValueError")
+
+
+def test_read_policy_surface():
+    """0.58.0: read_policy() returns the C function's request, translated into
+    exactly Device.read's policy-owned keywords. The table itself is pinned in
+    tests/test_policy.c; this checks the translation and the refusals."""
+    import inspect
+    assert ffi.sizeof("accudisc_read_intent") == 64
+    assert ffi.sizeof("accudisc_read_policy_info") == 48
+    assert [p.value for p in ad.Purpose] == [1, 2, 3, 4]
+    p = ad.read_policy(ad.Purpose.SPAN_RESCUE, 10000, 46, c2_usable=True,
+                       admitted=(32, 8, 24, 16), speed_x=24,
+                       readable=(0, 200000), budget_cmds=5000,
+                       budget_speed_changes=7)
+    assert p.revision == 1
+    assert p.reasons == (ad.PolicyReason.C2_RESCUE_KEPT_OFF
+                         | ad.PolicyReason.SHIFT_SEARCH_PENDING_AB)
+    kw = p.read_kwargs()
+    assert kw == {
+        "lba": 10000, "count": 46, "c2": ad.C2.PTRS, "sub": ad.Sub.RAW,
+        "any_type": False, "retries": 0, "chunk_sectors": 0, "speed_x": 24,
+        "c2_retries": 0, "verify_passes": 2, "overlap_sectors": 0,
+        "speed_ladder": (16, 8), "c2_witness": False, "cache_defeat": True,
+        "readable": (0, 200000), "rescue_by_rung": True, "shift_search": False,
+        "budget_cmds": 5000, "budget_speed_changes": 7,
+    }
+    assert type(kw["c2"]) is ad.C2 and type(kw["sub"]) is ad.Sub
+    # every key is a Device.read keyword, and none is a caller-owned one
+    params = inspect.signature(ad.Device.read).parameters
+    assert set(kw) <= set(params)
+    assert not set(kw) & {"sink", "status_map", "subq_map", "origin_map",
+                          "cancel", "buffer_bytes", "copy"}
+
+    g = ad.read_policy(ad.Purpose.GATED_REREAD, 0, 195656, c2_usable=False,
+                       readable=(0, 195656))
+    assert g.reasons == (ad.PolicyReason.NO_C2 | ad.PolicyReason.DEFEAT_NO_TARGET
+                         | ad.PolicyReason.ENGINE_RECOVERY_PENDING_AB)
+    assert g.cache_defeat is False and g.speed_ladder is None
+    assert g.readable == (0, 195656) and g.c2 is ad.C2.NONE
+    u = ad.read_policy(ad.Purpose.CAPTURE, 0, 10, c2_usable=True)
+    assert u.readable is None and u.reasons == ad.PolicyReason(0)
+
+    for bad in (dict(purpose=0), dict(purpose=ad.Purpose.SPAN_RESCUE, speed_x=0),
+                dict(purpose=ad.Purpose.CAPTURE, speed_x=20)):
+        purpose = bad.pop("purpose")
+        try:
+            ad.read_policy(purpose, 10000, 46, c2_usable=True,
+                           admitted=(8, 16, 24), **bad)
+        except ad.InvalidArgument:
+            pass
+        else:
+            raise AssertionError(f"{purpose} {bad} must be refused")
+    try:
+        ad.read_policy(ad.Purpose.REFERENCE_VERIFY, 0, 10, c2_usable=True)
+    except ad.AccuDiscError as exc:
+        assert isinstance(exc, ad.Unsupported)
+    else:
+        raise AssertionError("REFERENCE_VERIFY is unsupported until 0.59.0")
 
 
 def test_read_span_refuses_over_the_ceiling():

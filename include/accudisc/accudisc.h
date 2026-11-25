@@ -27,7 +27,10 @@ extern "C" {
  * of ANY granularity is worth exactly what the discipline of bumping it is
  * worth, and is not a substitute for the per-struct size guards. */
 #define ACCUDISC_VERSION_MAJOR 0
-#define ACCUDISC_VERSION_MINOR 57 /* 0.57.0: a per-read budget for local
+#define ACCUDISC_VERSION_MINOR 58 /* 0.58.0: accudisc_read_policy (new): a
+                                  * pure function that fills a read request
+                                  * from what the read is for, revision 1.
+                                  * Previously 0.57.0: a per-read budget for local
                                   * recovery: read_req.budget_speed_changes
                                   * (106) and budget_cmds (108), replacing
                                   * reserved3; read_stats 664 -> 688 with what
@@ -4074,6 +4077,105 @@ typedef struct accudisc_read_req {
  * that is not a positive multiple of 4 of at least 8. */
 ACCUDISC_API int accudisc_shift_test(const uint8_t *x, const uint8_t *y,
                                      uint32_t len, int32_t *shift);
+
+/* ---- read policy (0.58.0) -------------------------------------------------
+ * You say what a read is FOR; the library fills the request. A pure function,
+ * no device and no I/O (the API_PLAN §5.2 pattern): its inputs are facts the
+ * caller already holds, its output is a request passed to accudisc_read_cdda
+ * unchanged and recorded alongside the result. The rules that pick a read's
+ * settings live here once, with a revision number, instead of in every caller
+ * (cdda2img correspondence, AccuDisc 2026-11-25k/l/y, their 274).
+ *
+ * OWNERSHIP OF THE REQUEST. On success the policy OVERWRITES every field that
+ * decides what the read does: lba, count, c2, sub, any_type (0), retries (0 =
+ * default), chunk_sectors (0), speed_x, speed_ladder/ladder_len, c2_retries,
+ * verify_passes, overlap_sectors (0), c2_witness, cache_defeat,
+ * readable_lo/hi, rescue_by_rung, shift_search, budget_speed_changes and
+ * budget_cmds, so no stale value can leak into the read. It NEVER writes the
+ * caller's own: status_map, subq_map, origin_map, cancel, buffer_bytes.
+ * Initialise out with ACCUDISC_READ_REQ_INIT. An out->size that ends before a
+ * field the policy sets, or is larger than this build's, is ACCUDISC_ERR_ABI.
+ * On any error neither out nor info is written.
+ *
+ * out->speed_ladder POINTS INTO info->ladder: keep info alive for the read.
+ * With no ladder it is NULL and ladder_len 0.
+ *
+ * REVISION 1 (in every row: readable and both budgets pass through, overlap
+ * 0, and drive_slips == 2 changes nothing but sets R_SLIPS_KNOWN_RELATIVE_ONLY,
+ * because no relative check certifies a drive known to slip):
+ *
+ *   CAPTURE       c2 PTRS if c2_usable else NONE (R_NO_C2), sub RAW; no
+ *                 cache_defeat, verify, rescue or ladder. (The Q-position
+ *                 rescue runs on any sub RAW read.)
+ *   GATED_REREAD  c2 PTRS if c2_usable else NONE (R_NO_C2), sub NONE;
+ *                 cache_defeat on unless no target; no engine recovery
+ *                 (R_ENGINE_RECOVERY_PENDING_AB: Keith's hardware A/B).
+ *   SPAN_RESCUE   c2 PTRS (c2_usable 0 is ACCUDISC_ERR_INVAL), sub RAW;
+ *                 cache_defeat on unless no target; verify 2; c2_retries 0
+ *                 and c2_witness off (R_C2_RESCUE_KEPT_OFF); ladder = the
+ *                 admitted rungs below speed_x, descending, else the next one
+ *                 up (R_LADDER_NEXT_UP), else none (R_NO_LADDER);
+ *                 rescue_by_rung on; shift_search OFF (R_SHIFT_SEARCH_PENDING_AB).
+ *   REFERENCE_VERIFY  ACCUDISC_ERR_UNSUPPORTED until accudisc_compare_read.
+ *
+ * THE HEAD FAR READ is decided by the rule the engine applies before its first
+ * transfer (one shared function): where no target fits, which includes a
+ * range covering the whole readable extent, cache_defeat stays 0 and
+ * R_DEFEAT_NO_TARGET is set. With readable_hi 0 (unknown) the range cannot be
+ * checked; the engine's unbounded rule decides and R_READABLE_UNKNOWN is set.
+ *
+ * ACCUDISC_ERR_INVAL, never a substituted value: purpose 0 or unknown; count
+ * 0; readable_hi != 0 with lo >= hi; n_admitted > 16; an admitted rung of 0 or
+ * a duplicate; a nonzero speed_x that is not an admitted rung; speed_x 0 for
+ * SPAN_RESCUE (its ladder is built relative to it); SPAN_RESCUE without C2.
+ * NULL in, out or info is ACCUDISC_ERR_INVAL too. */
+#define ACCUDISC_PURPOSE_CAPTURE          1 /* whole-range first pass */
+#define ACCUDISC_PURPOSE_GATED_REREAD     2 /* one AR-gated attempt at speed_x */
+#define ACCUDISC_PURPOSE_SPAN_RESCUE      3 /* re-read of a C2-flagged span */
+#define ACCUDISC_PURPOSE_REFERENCE_VERIFY 4 /* reserved for 0.59.0 */
+
+#define ACCUDISC_POLICY_REVISION 1 /* bumps whenever the table above changes */
+
+#define ACCUDISC_POLICY_R_NO_C2                     (1ull << 0)
+#define ACCUDISC_POLICY_R_DEFEAT_NO_TARGET          (1ull << 1)
+#define ACCUDISC_POLICY_R_READABLE_UNKNOWN          (1ull << 2)
+#define ACCUDISC_POLICY_R_ENGINE_RECOVERY_PENDING_AB (1ull << 3)
+#define ACCUDISC_POLICY_R_C2_RESCUE_KEPT_OFF        (1ull << 4)
+#define ACCUDISC_POLICY_R_SHIFT_SEARCH_PENDING_AB   (1ull << 5)
+#define ACCUDISC_POLICY_R_LADDER_NEXT_UP            (1ull << 6)
+#define ACCUDISC_POLICY_R_NO_LADDER                 (1ull << 7)
+#define ACCUDISC_POLICY_R_SLIPS_KNOWN_RELATIVE_ONLY (1ull << 8)
+
+typedef struct accudisc_read_intent {
+    uint32_t size;          /* = sizeof; a shorter struct zero-extends (IN) */
+    uint8_t  purpose;       /* ACCUDISC_PURPOSE_*; 0 is invalid */
+    uint8_t  c2_usable;     /* the caller's C2 probe verdict: 1 usable */
+    uint8_t  drive_slips;   /* 0 unknown, 1 none known, 2 known to slip */
+    uint8_t  n_admitted;    /* entries in admitted_x, at most 16 */
+    uint16_t admitted_x[16]; /* ADMITTED rungs (accudisc_probe_speed_ladder),
+                             * any order, nonzero, distinct */
+    uint16_t speed_x;       /* this attempt's speed; 0 = drive-managed */
+    uint16_t budget_speed_changes; /* passed through, accudisc_read_req's */
+    uint32_t lba, count;
+    uint32_t readable_lo, readable_hi; /* passed through; hi 0 = unknown */
+    uint32_t budget_cmds;   /* passed through */
+} accudisc_read_intent;
+
+#define ACCUDISC_READ_INTENT_INIT { .size = sizeof(accudisc_read_intent) }
+
+typedef struct accudisc_read_policy_info {
+    uint32_t size;          /* = sizeof; OUT, as accudisc_read_stats */
+    uint32_t revision;      /* ACCUDISC_POLICY_REVISION that chose this */
+    uint64_t reasons;       /* ACCUDISC_POLICY_R_* */
+    uint16_t ladder[16];    /* out->speed_ladder points here */
+} accudisc_read_policy_info;
+
+#define ACCUDISC_READ_POLICY_INFO_INIT \
+    { .size = sizeof(accudisc_read_policy_info) }
+
+ACCUDISC_API int accudisc_read_policy(const accudisc_read_intent *in,
+                                      accudisc_read_req *out,
+                                      accudisc_read_policy_info *info);
 
 /* accudisc_read_req.origin_map, one byte per sector. LOW NIBBLE: the class of
  * read whose bytes were delivered. HIGH NIBBLE: the rung, where 0 is the pass
