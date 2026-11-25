@@ -3078,15 +3078,27 @@ typedef struct accudisc_features {
 ACCUDISC_API int accudisc_probe_features(accudisc_device *dev,
                                          accudisc_features *out);
 
-/* Accurate Stream probe: does this drive read audio positionally
- * deterministically? Reads a span, then re-reads it from several different
- * starting LBAs (cache-defeated) and demands the overlapping sectors match
- * byte-for-byte. Probe a CLEAN disc area (damage reads as jitter).
- * *accurate = 1: positioning slips are largely prevented by the drive and
- * boundary overlap checking is near-redundant; 0: the drive can slip —
- * overlap checking is the only defence against the error class C2 is
- * structurally blind to. Factual drive capability: record it alongside the
- * read offset and C2 verdict. */
+/* Accurate Stream probe: did this drive re-read a CLEAN span byte-identically
+ * from several different starting LBAs? Reads a span, then re-reads it from
+ * three other starts (cache-defeated) and demands the overlapping sectors
+ * match byte-for-byte. Probe a CLEAN disc area (damage reads as jitter).
+ *
+ * *accurate = 1 means exactly that: no slip HERE, at THIS speed, on THESE
+ * re-seeks (see src/drive/features.c). It does NOT mean the drive will not
+ * slip, and it is NOT a reason to skip overlap checking. Both drives measured
+ * slipping report 1: a LITE-ON LH-20A1S (2026-09-16) and a PX-716A, which lost
+ * 12 samples in two of four whole-disc passes (2026-10-10). And overlap
+ * checking itself was measured blind to the slip those drives showed, a
+ * displacement that holds from one point onward (2026-09-19). All three are
+ * in docs/reference/TODO.md.
+ *
+ * *accurate = 0: the drive slipped here, on clean media.
+ *
+ * Either way, the class C2 cannot see is settled only by an absolute
+ * reference (AccurateRip/CTDB, in the caller). Until 2026-11-25 this comment
+ * said a 1 meant slips were "largely prevented" and overlap "near-redundant".
+ * A factual observation: record it with the read offset and C2 verdict, and
+ * with the speed and region probed. */
 ACCUDISC_API int accudisc_probe_accurate_stream(accudisc_device *dev,
                                                 uint32_t lba,
                                                 uint8_t *accurate);
@@ -3346,10 +3358,25 @@ ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
  * beat a displacement every transfer shares; an absolute gate (AccurateRip,
  * CTDB) in the caller still decides whether the audio is right.
  *
+ * THE SHIFT TEST IS EXACT: two copies count as shifted only when their whole
+ * overlap matches at one offset. A copy that is displaced AND damaged fails
+ * that test, so it is not recognised as a slip. Two agreeing displaced
+ * single-sector rereads of a DAMAGED sector are then accepted as plain
+ * agreement, which is the failure 0.41.0 fixed, for damaged sectors only. That
+ * is a fake-drive finding from 2026-11-25 (cdda2img correspondence, AccuDisc
+ * 2026-11-25d), unmeasured on hardware. A best-alignment test is approved and
+ * not yet built.
+ *
  * c2_retries has the same protection since 0.42.0: a C2-clean reread replaces a
  * flagged sector only when it was read with its neighbours and one of them lines
  * up with the chunk as first delivered. A flagged sector whose neighbours
- * cannot be lined up (unstable or silent) keeps its flagged copy and stays C2. */
+ * cannot be lined up (unstable or silent) keeps its flagged copy and stays C2.
+ * Nothing has checked that first-delivered chunk at that point, because the
+ * rescue runs BEFORE any verify pass. So a first transfer that landed displaced
+ * can hand its displacement to the rescued copy: on hardware 2026-09-16,
+ * sector 113098 was delivered RECOVERED 48 bytes late. A later verify pass
+ * compares the rescued copy with a second transfer, but anchoring can still
+ * vote with the displacement (AccuDisc 2026-11-25b/d). */
 
 /* ONE BYTE, SO A HIGHER STATE MASKS A LOWER ONE THAT ALSO APPLIES. The engine
  * classifies hard > suspect > recovered > C2 > ok, and only the winner is
@@ -3361,10 +3388,21 @@ ACCUDISC_API int accudisc_probe_speed_ladder(accudisc_device *dev,
  * accudisc_read_stats.sectors_flagged, which is accounted unconditionally. Use
  * the map to draw, use the stats to count.
  *
- * Three independent request fields make RECOVERED reachable, and a caller that
- * watches only one will be surprised by the others: `overlap_sectors`,
- * `c2_retries`, and `verify_passes >= 2`. With all three at their defaults
- * (a plain single-pass read) neither RECOVERED nor SUSPECT can occur. */
+ * FOUR things make RECOVERED and SUSPECT reachable, and a caller that watches
+ * only some will be surprised by the others: `overlap_sectors`, `c2_retries`,
+ * `verify_passes >= 2`, and `sub = ACCUDISC_SUB_RAW`.
+ *
+ * The last is not an accuracy knob. With raw P-W the engine always runs the
+ * Q-position check (0.21.0, ACCUDISC_SUBQ_MISPOSITION). A sector whose Q names
+ * another LBA, and up to four sectors either side of it within its chunk, is
+ * re-read and marked RECOVERED or SUSPECT. So a read with the three knobs at
+ * their defaults can still report sectors_suspect != 0 when it captures raw
+ * subchannel. Only a read with all three at their defaults and no raw P-W
+ * never produces either state.
+ *
+ * This paragraph named three levers from 2026-08-08 and was wrong from 0.21.0
+ * (2026-08-26) until 2026-11-25 (cdda2img correspondence 268, AccuDisc
+ * 2026-11-25a). */
 #define ACCUDISC_MAP_STATE(b)    ((uint8_t)(b) & 0x0f)
 #define ACCUDISC_MAP_SEVERITY(b) ((uint8_t)(b) >> 4)
 
@@ -3929,7 +3967,16 @@ typedef struct accudisc_read_stats {
     uint64_t sense_medium;    /* hard failures: sense key 3 */
     uint64_t sense_hardware;  /* sense key 4 */
     uint64_t sense_other;     /* any other terminal sense */
-    uint64_t rereads;         /* problem-driven extra sector reads issued */
+    uint64_t rereads;         /* problem-driven re-read COMMANDS that
+                               * SUCCEEDED: Q-position rescue, C2 rescue,
+                               * consensus and anchoring reads (a 3-sector read
+                               * counts once). NOT counted: failed re-reads,
+                               * verify and witness chunk transfers, per-sector
+                               * fallback attempts after a failed chunk, and the
+                               * far (cache-defeat) reads. So a verify_passes = 2
+                               * read of a clean span reports 0 here while
+                               * reading every sector twice. Until 2026-11-25
+                               * this said "extra sector reads issued". */
     uint64_t sectors_recovered; /* problem seen, clean/agreeing copy won */
     uint64_t sectors_suspect;   /* consensus failed, best-effort delivered.
                                  * CONTRACT — third input to the caveat verdict;

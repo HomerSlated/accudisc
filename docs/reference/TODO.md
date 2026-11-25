@@ -8592,8 +8592,17 @@ correct — proven by byte 0 and 162,882 correct `OK` bytes — and only the
 *recovery* path records at a different index. Every one of the ten anomalous
 bytes was state 4 `RECOVERED`; not one was `OK`, `C2`, `HARD` or `SUSPECT`. With
 `retries`/`c2_retries`/`verify_passes`/`overlap_sectors` at their
-`ACCUDISC_READ_REQ_INIT` zeros, `RECOVERED` cannot occur at all (the three levers
-are named at `ACCUDISC_MAP_STATE`), so no default read can hit this.
+`ACCUDISC_READ_REQ_INIT` zeros, `RECOVERED` cannot occur on a read without raw
+subchannel. **Corrected 2026-11-25:** this said "cannot occur at all" and "no
+default read can hit this". Both have been false since 0.21.0 (2026-08-26). With
+`--sub raw` the Q-position rescue runs whatever the knobs are, and it marks
+sectors RECOVERED; the levers, four of them now, are named at
+`ACCUDISC_MAP_STATE`. A default capture with raw P-W can therefore reach the
+recovery path, although only on a Q misposition, which is rare (1 in 40 passes,
+2026-08-26/27). On §2.23's hardware event (above, 2026-08-26) the RECOVERED
+bytes sat exactly on the computed run 224849-224870. That run is the 17
+mismatches widened by the margin and clipped to the transfer. So the Q-rescue
+path showed no +1 offset there.
 
 **Honest limit on "never seen again":** the disc has been read dozens of times
 since, but not once with those recovery flags. The absence is unrepeated
