@@ -8191,18 +8191,32 @@ access and no rebuild. Code references are at `cbe6c3d`.
     clean on every re-read:
     - All exact: verify alone delivers it damaged, flagged C2. With
       `c2_retries` it is repaired and RECOVERED. This is the gain.
-    - First transfer late and re-reads late or mixed: verify alone delivers it
-      correct. With `c2_retries` it comes back late, RECOVERED or SUSPECT. This
-      is 09-16g's inheritance, measured, and verify ≥2 does not undo it.
-      - Without the rescue, the damage stops the copies being a pure shift of
-        each other, so plain consensus settles the sector.
-      - With the rescue, its clean late copy is a pure shift of the clean
-        re-reads, so it goes to anchoring, which votes late.
+    - First transfer late: the outcome DEPENDS ON HOW EACH RE-READ CLASS LANDS
+      (25d).
+      - Mixed case, single re-reads true and 3-sector re-reads late or mixed
+        (25b): verify alone gets the sector right, and `c2_retries` makes it
+        worse, late and RECOVERED or SUSPECT. Without the rescue, the damage
+        hides the shift, so plain consensus between the true single re-reads
+        settles it. The rescue's clean late copy is a pure shift of those
+        re-reads, so the sector goes to anchoring, which votes late.
+      - Single re-reads late, as at 113069-71 on hardware: both configurations
+        deliver it late and RECOVERED. The rescue changes nothing.
+      - An A/B judged by AccurateRip sees the net effect only, not which class
+        landed where.
     - Shared displacement: both are wrong, and the rescue also turns
       `sectors_flagged` from 1 to 0.
     - With the 0.43.0 gate relaxed in a scratch copy, `c2_witness +
       c2_retries` matched `verify 2 + c2_retries` in every case. That is the
       proposal at line 894 above.
+  - **Engine weakness, fake drive, unmeasured on hardware (25d).** Consensus
+    finds a slip with `adsc_shift_find`, which needs an EXACT whole-overlap
+    match (`engine.c:129-162`). A damaged copy fails that, so the shift goes
+    unseen, and two agreeing late single re-reads are accepted as plain
+    agreement. Even with the witness and every 3-sector read true, verify 2
+    alone delivered a damaged sector late and RECOVERED. That is the pre-0.41
+    failure, for damaged sectors only. The fix direction is a best-alignment
+    shift test, the 09-16g scoring lesson, but it is not built, and the fix is
+    Keith's call.
 - **Keith's decisions, 10:22, relayed in correspondence 270: "Yes to all".**
   - **Approved:** design, then build opt-in (a features token, a version bump,
     no default flips), of:
